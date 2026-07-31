@@ -1,0 +1,8 @@
+{
+	"extends": "@mikode13/tsconfig/node",
+	"compilerOptions": {
+		"outDir": "dist",
+		"rootDir": "src"
+	},
+	"include": ["src"]
+}

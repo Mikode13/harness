@@ -1,0 +1,44 @@
+{
+	"name": "@mikode13/harness",
+	"version": "0.1.0",
+	"description": "Test/agent harness utility",
+	"type": "module",
+	"license": "SEE LICENSE IN LICENSE",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/mikode13/harness.git"
+	},
+	"engines": {
+		"node": "^22.13.0 || ^24.0.0"
+	},
+	"packageManager": "pnpm@11.17.0",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": "./dist/index.js"
+	},
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"preinstall": "npx only-allow pnpm",
+		"build": "tsc",
+		"typecheck": "tsc --noEmit",
+		"format": "prettier . --write",
+		"format:check": "prettier . --check",
+		"lint": "eslint . --max-warnings 0",
+		"lint:fix": "eslint . --fix",
+		"test": "echo \"no tests yet\" && exit 0"
+	},
+	"devDependencies": {
+		"@mikode13/code-quality": "0.1.0",
+		"@mikode13/code-style": "0.1.0",
+		"@mikode13/tsconfig": "0.1.0",
+		"eslint": "^10.8.0",
+		"prettier": "^3.9.6",
+		"typescript": "^6.0.3"
+	}
+}
