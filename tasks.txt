@@ -1,0 +1,61 @@
+# mikode-harness — remaining tasks
+
+Ordered so each step creates exactly the seam the next one needs.
+Rule of thumb: don't start a step until the previous one's success criterion is met.
+
+## Step 0 — finish the current chat (polish)
+- [x] Remove the debug `console.log(response)` (prints the whole Turn object).
+- [x] Delete the dead `parseResponse` method.
+- [x] Clear the "pensando..." loader line before printing the response
+      (readline.clearLine/cursorTo, or overwrite with spaces + \r).
+- [x] Print an action summary after each turn: switch on `item.type` in
+      `describeItem()` (command_execution, web_search, file_change,
+      mcp_tool_call, todo_list, error). Decided against the original plan:
+      agent_message is NOT skipped — its text is printed in chronological
+      order among the actions instead of relying on `response.finalResponse`
+      (which only keeps the last agent_message and hides turns with none).
+      reasoning stays skipped (internal, not agent output).
+- [x] Made it a standalone function (`describeItem`) that receives one item —
+      `parseResponse()` maps it over `items` and prints each line.
+Success: a full chat session looks clean end to end.
+
+## Step 1 — the Agent seam (KEY step of the whole plan)
+- [ ] Define own normalized types: `AgentResult { text, actions, usage }` and
+      `Action` (shaped by what Step 0's switch actually needed).
+- [ ] Define interface `Agent { run(input, { signal }): Promise<AgentResult> }`.
+- [ ] Implement `CodexAgent` wrapping the Codex SDK Thread.
+- [ ] Refactor Loop to depend on `Agent`, injected via constructor.
+Success: loopImpl.ts imports NOTHING from @openai/codex-sdk.
+
+## Step 2 — second implementation: ClaudeAgent
+- [ ] Wrap `query()` from @anthropic-ai/claude-agent-sdk in the same `Agent`
+      interface (iterate the stream, take the `result` message, map to AgentResult).
+Success: the same chat works by swapping one line in index.ts (CodexAgent →
+ClaudeAgent), without touching Loop.
+
+## Step 3 — minimal traceability
+- [ ] Carry `usage` (tokens) in AgentResult from both engines.
+- [ ] Log per-turn usage + duration; consider a run id.
+- [ ] Retry policy for agent calls: 3 retries on retryable failures, then exit
+      informing the user (fatal: CLI/engine not available → exit immediately).
+
+## Step 4 — first workflow (plan → execute → review)
+- [ ] Plain function, no graph: plan(sol) → execute(terra) → review(opus/claude).
+- [ ] If review rejects: loop back to plan with the feedback; cap with maxIterations.
+- [ ] Chat and workflow are two consumers of the same Agent contract; the user
+      never chooses (or sees) which model runs behind each stage.
+
+## Step 5 — later, all additive
+- [ ] Live streaming of actions while the agent works (extend Agent with events/
+      callback; replaces the static loader).
+- [ ] Type-while-thinking (Promise.race between readline question and agent run;
+      also restores Ctrl+C during agent calls without pause()).
+- [ ] Session persistence (save/resume thread ids).
+
+## Deliberately out of scope for now
+MCP, dynamic routing, long-term memory, graph engine, agent registry / file-based
+agent config (waits until >2 real agents exist), multiple provider config system.
+
+## Known future change (accepted)
+Loop's direct console.log printing must become event-based for live subagent
+progress. Mitigated by the standalone summary function from Step 0.
