@@ -60,7 +60,17 @@ ClaudeAgent), without touching Loop.
       callback; replaces the static loader).
 - [ ] Type-while-thinking (Promise.race between readline question and agent run;
       also restores Ctrl+C during agent calls without pause()).
-- [ ] Session persistence (save/resume thread ids).
+- [ ] Session persistence (save/resume thread ids). Store `{ name, engine,
+      sessionId }` behind a small `SessionStore`-style interface (same pattern
+      as `Agent`), so the implementation can change later without touching
+      callers. Start with a local JSON file in the user's home dir (same
+      pattern the SDKs themselves already use for this — `~/.codex/sessions`,
+      `~/.claude/projects/`) — it's runtime user data, not shipped in `dist/`,
+      so it never travels with the package. Considered SQLite/an external DB;
+      decided against for now — no real multi-user/concurrent-access need
+      exists yet to justify it, and it would make the CLI depend on a running
+      service instead of "just run node src/index.ts". Revisit only if a
+      concrete need for concurrent access or querying appears.
 
 ## Deliberately out of scope for now
 MCP, dynamic routing, long-term memory, graph engine, agent registry / file-based
