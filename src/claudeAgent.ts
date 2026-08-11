@@ -6,6 +6,8 @@ type Model = 'sonnet' | 'opus' | 'haiku' | 'claude-fable-5';
 
 export class ClaudeAgent implements Agent {
 	private model: Model;
+	private sessionId?: string;
+
 	constructor(model: Model) {
 		this.model = model;
 	}
@@ -16,6 +18,7 @@ export class ClaudeAgent implements Agent {
 			options: {
 				model: this.model,
 				cwd: process.cwd(),
+				resume: this.sessionId,
 				maxTurns: 3,
 			},
 		});
@@ -30,6 +33,8 @@ export class ClaudeAgent implements Agent {
 	private async parseResponse(stream: Query) {
 		const lines: string[] = [];
 		for await (const message of stream) {
+			this.sessionId ??= message.session_id;
+
 			if (message.type === 'result') {
 				if (message.subtype === 'success') {
 					lines.push(message.result);
