@@ -2,47 +2,20 @@ import type { ILoop } from './loopInterface.js';
 import * as readline from 'node:readline/promises';
 import { clearLine, cursorTo } from 'node:readline';
 import { stdin as input, stdout as output } from 'node:process';
-import type { Thread, ThreadItem } from '@openai/codex-sdk';
+import type { Agent } from './agent.ts';
 
 function isAbortError(e: unknown): boolean {
 	return e instanceof Error && e.name === 'AbortError';
 }
 
-function describeItem(item: ThreadItem): string | undefined {
-	switch (item.type) {
-		case 'agent_message':
-			return item.text;
-		case 'reasoning':
-			return undefined;
-		case 'command_execution':
-			return `executing: ${item.command}`;
-		case 'web_search':
-			return `searching: ${item.query}`;
-		case 'file_change':
-			return item.changes.map(change => `${change.kind}: ${change.path}`).join('\n');
-		case 'mcp_tool_call': {
-			const status = item.error ? `failed: ${item.error.message}` : item.status;
-			return `tool: ${item.server}/${item.tool} (${status})`;
-		}
-		case 'todo_list':
-			return item.items.map(innerItem => innerItem.text).join('\n');
-		case 'error':
-			// TODO: add retry functionallity at the moment it will fail
-			return `error: ${item.message}`;
-		default:
-			console.warn(item, 'new type');
-			return undefined;
-	}
-}
-
 export class Loop implements ILoop {
 	private rl: readline.Interface;
 	private abortController?: AbortController;
-	private thread: Thread;
+	private agent: Agent;
 
-	constructor(thread: Thread) {
+	constructor(agent: Agent) {
 		this.rl = readline.createInterface({ input, output });
-		this.thread = thread;
+		this.agent = agent;
 
 		this.rl.on('SIGINT', () => {
 			this.handleSigint();
@@ -73,15 +46,6 @@ export class Loop implements ILoop {
 		}
 	}
 
-	private parseResponse(threas: ThreadItem[]): void {
-		threas
-			.map(describeItem)
-			.filter(item => !!item)
-			.forEach(line => {
-				console.log(line);
-			});
-	}
-
 	async start(): Promise<void> {
 		const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 		let frame = 0;
@@ -101,17 +65,19 @@ export class Loop implements ILoop {
 				}, 80);
 				let response;
 				try {
-					response = await this.thread.run(prompt, { signal: this.abortController.signal });
+					response = await this.agent.run(prompt, this.abortController.signal);
 				} finally {
 					cursorTo(output, 0);
 					clearLine(output, 0);
 					clearInterval(spinnerId);
 				}
-				this.parseResponse(response.items);
+				if (response) {
+					console.log(response);
+				}
 			} catch (e) {
 				if (!isAbortError(e)) {
 					console.error(e);
-					continue;
+					break;
 				}
 
 				if (await this.confirmExit()) {

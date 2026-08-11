@@ -1,17 +1,19 @@
-import { Codex } from '@openai/codex-sdk';
 import { Loop } from './loopImpl.ts';
 import type { ILoop } from './loopInterface.ts';
+import { CodexAgent } from './codexAgent.ts';
+import { Codex } from '@openai/codex-sdk';
+import type { Agent } from './agent.ts';
+import { ClaudeAgent } from './claudeAgent.ts';
+
+const engine = process.env.AGENT_ENGINE ?? 'codex';
 
 const codex = new Codex();
-type models = 'gpt-5.6-sol' | 'gpt-5.6-luna';
-const defaultModel: models = 'gpt-5.6-luna';
+const agent: Agent =
+	engine === 'codex'
+		? new CodexAgent({ sdk: codex, model: 'gpt-5.6-luna' })
+		: new ClaudeAgent('haiku');
 
-const thread = codex.startThread({
-	model: defaultModel,
-	modelReasoningEffort: 'high',
-});
-
-const loop: ILoop = new Loop(thread);
+const loop: ILoop = new Loop(agent);
 
 await loop.start();
 loop.close();
