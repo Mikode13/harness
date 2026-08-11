@@ -19,17 +19,27 @@ Rule of thumb: don't start a step until the previous one's success criterion is 
       `parseResponse()` maps it over `items` and prints each line.
 Success: a full chat session looks clean end to end.
 
-## Step 1 — the Agent seam (KEY step of the whole plan)
-- [ ] Define own normalized types: `AgentResult { text, actions, usage }` and
-      `Action` (shaped by what Step 0's switch actually needed).
-- [ ] Define interface `Agent { run(input, { signal }): Promise<AgentResult> }`.
-- [ ] Implement `CodexAgent` wrapping the Codex SDK Thread.
-- [ ] Refactor Loop to depend on `Agent`, injected via constructor.
-Success: loopImpl.ts imports NOTHING from @openai/codex-sdk.
+## Step 1 — the Agent seam (KEY step of the whole plan) — DONE 2026-08-09
+- [x] Define interface `Agent { run(prompt: string, signal: AbortSignal): Promise<AgentResult> }`.
+      Simplified `AgentResult` to `string | undefined` for now — NOT the richer
+      `{ text, actions, usage }` originally planned. Deliberate: prove the Agent
+      seam itself works before designing the richer shape, and design it once
+      against two real engines (Step 2) instead of guessing from Codex alone.
+      `usage`/structured `actions` are still needed before Step 3 — revisit
+      AgentResult then, not before.
+- [x] Implement `CodexAgent` using `thread.runStreamed()` (NOT `thread.run()`) —
+      consumes the raw ThreadEvent stream, accumulates description lines via
+      `for await`, throws on `turn.failed`/stream-level `error` events.
+- [x] Refactor Loop to depend on `Agent`, injected via constructor.
+Success (met, verified): loopImpl.ts imports NOTHING from @openai/codex-sdk.
 
 ## Step 2 — second implementation: ClaudeAgent
 - [ ] Wrap `query()` from @anthropic-ai/claude-agent-sdk in the same `Agent`
-      interface (iterate the stream, take the `result` message, map to AgentResult).
+      interface (iterate the stream, accumulate into AgentResult the same way
+      CodexAgent does — no buffered mode exists for Claude at all).
+- [ ] Handle conversation continuity explicitly: unlike Codex's Thread, a new
+      query() call does NOT continue a prior conversation by default — needs
+      `continue`/`resume`/`sessionStore` options, or streaming input.
 Success: the same chat works by swapping one line in index.ts (CodexAgent →
 ClaudeAgent), without touching Loop.
 
@@ -50,7 +60,17 @@ ClaudeAgent), without touching Loop.
       callback; replaces the static loader).
 - [ ] Type-while-thinking (Promise.race between readline question and agent run;
       also restores Ctrl+C during agent calls without pause()).
-- [ ] Session persistence (save/resume thread ids).
+- [ ] Session persistence (save/resume thread ids). Store `{ name, engine,
+      sessionId }` behind a small `SessionStore`-style interface (same pattern
+      as `Agent`), so the implementation can change later without touching
+      callers. Start with a local JSON file in the user's home dir (same
+      pattern the SDKs themselves already use for this — `~/.codex/sessions`,
+      `~/.claude/projects/`) — it's runtime user data, not shipped in `dist/`,
+      so it never travels with the package. Considered SQLite/an external DB;
+      decided against for now — no real multi-user/concurrent-access need
+      exists yet to justify it, and it would make the CLI depend on a running
+      service instead of "just run node src/index.ts". Revisit only if a
+      concrete need for concurrent access or querying appears.
 
 ## Deliberately out of scope for now
 MCP, dynamic routing, long-term memory, graph engine, agent registry / file-based
