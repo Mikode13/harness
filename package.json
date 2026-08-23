@@ -25,6 +25,7 @@
 	},
 	"scripts": {
 		"preinstall": "npx only-allow pnpm",
+		"prepack": "pnpm run build",
 		"build": "tsc",
 		"typecheck": "tsc --noEmit && tsc --noEmit -p tests",
 		"format": "prettier . --write",
@@ -34,7 +35,9 @@
 		"test": "vitest run",
 		"test:unit": "vitest run tests/**/*.unit.test.ts",
 		"test:unit:watch": "vitest tests/**/*.unit.test.ts",
-		"test:coverage": "vitest run --coverage"
+		"test:coverage": "vitest run --coverage",
+		"pack:check": "pnpm pack --dry-run",
+		"check": "pnpm run format:check && pnpm run lint && pnpm run typecheck"
 	},
 	"devDependencies": {
 		"@mikode13/code-quality": "0.1.0",
