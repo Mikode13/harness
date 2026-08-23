@@ -44,10 +44,23 @@ Success: the same chat works by swapping one line in index.ts (CodexAgent →
 ClaudeAgent), without touching Loop.
 
 ## Step 3 — minimal traceability
-- [ ] Carry `usage` (tokens) in AgentResult from both engines.
+- [x] Carry `usage` (tokens) + `duration` in AgentResponse from both engines
+      (cost dropped — Codex has no cost field and no free way to price it;
+      see comment in models/agent.ts).
 - [ ] Log per-turn usage + duration; consider a run id.
-- [ ] Retry policy for agent calls: 3 retries on retryable failures, then exit
-      informing the user (fatal: CLI/engine not available → exit immediately).
+- [ ] Retry policy for agent calls — in progress: `RecoverableError`/
+      `UnrecoverableError` (models/errors.ts) classify throws per-agent;
+      `RetryingAgent` wraps `Agent` and retries up to 3 attempts unless
+      `UnrecoverableError` or the last attempt.
+  - [ ] KNOWN RISK, to resolve before considering this step done: retrying
+        re-runs the WHOLE turn from scratch, not just the failed part. Fine
+        for a pure API call, but Codex turns can include real side effects
+        (`command_execution`, `file_change`) — a retry could re-run an action
+        that already succeeded before the failure, and nothing here checks
+        whether that's safe/idempotent. Needs a real decision, not a
+        deferral: e.g. only retry BEFORE any side-effecting item has
+        completed in that turn, or accept the risk explicitly and document
+        it, or something else.
 
 ## Step 4 — first workflow (plan → execute → review)
 - [ ] Plain function, no graph: plan(sol) → execute(terra) → review(opus/claude).
@@ -71,6 +84,26 @@ ClaudeAgent), without touching Loop.
       exists yet to justify it, and it would make the CLI depend on a running
       service instead of "just run node src/index.ts". Revisit only if a
       concrete need for concurrent access or querying appears.
+
+## Step 6 — make it look like a finished product (explicitly not a priority —
+## do this once Steps 0-5 work well, not before)
+- [ ] Bordered chat "box" instead of a plain scrolling log — box-drawing
+      characters, redrawn/rewrapped on terminal resize (`process.stdout.columns`
+      + `'resize'` event).
+- [ ] Distinguish user vs. agent turns structurally (indentation/alignment/
+      prefix glyphs), not just by color — color alone was already tried and
+      rejected earlier ("se puede ver raro"); revisit only as an addition on
+      top of structure, not as the primary way to tell speakers apart.
+- [ ] Real markdown rendering (bold, code blocks, lists) to ANSI — responses
+      are markdown today and get dumped as plain text.
+- [ ] User-friendly error messages — several places still do `console.error(e)`
+      with the raw Error/stack trace; not acceptable for a finished product.
+- [ ] Welcome banner on start (name, active engine, how to exit).
+Open decision for when this is picked up: hand-roll the terminal rendering
+(consistent with this project's "build it yourself" ethos, but this is
+terminal-UI-rendering skill, not agent-harness skill) vs. use a small,
+narrowly-scoped TUI library just for this piece, without it leaking into the
+rest of the harness's design.
 
 ## Deliberately out of scope for now
 MCP, dynamic routing, long-term memory, graph engine, agent registry / file-based
