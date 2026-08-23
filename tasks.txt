@@ -33,21 +33,42 @@ Success: a full chat session looks clean end to end.
 - [x] Refactor Loop to depend on `Agent`, injected via constructor.
 Success (met, verified): loopImpl.ts imports NOTHING from @openai/codex-sdk.
 
-## Step 2 — second implementation: ClaudeAgent
-- [ ] Wrap `query()` from @anthropic-ai/claude-agent-sdk in the same `Agent`
+## Step 2 — second implementation: ClaudeAgent — DONE 2026-08-23
+- [x] Wrap `query()` from @anthropic-ai/claude-agent-sdk in the same `Agent`
       interface (iterate the stream, accumulate into AgentResult the same way
       CodexAgent does — no buffered mode exists for Claude at all).
-- [ ] Handle conversation continuity explicitly: unlike Codex's Thread, a new
+- [x] Handle conversation continuity explicitly: unlike Codex's Thread, a new
       query() call does NOT continue a prior conversation by default — needs
-      `continue`/`resume`/`sessionStore` options, or streaming input.
+      `continue`/`resume`/`sessionStore` options, or streaming input. Solved
+      with `resume: this.sessionId`, captured from the first message of each
+      stream (`this.sessionId ??= message.session_id`).
 Success: the same chat works by swapping one line in index.ts (CodexAgent →
 ClaudeAgent), without touching Loop.
 
 ## Step 3 — minimal traceability
-- [ ] Carry `usage` (tokens) in AgentResult from both engines.
-- [ ] Log per-turn usage + duration; consider a run id.
-- [ ] Retry policy for agent calls: 3 retries on retryable failures, then exit
-      informing the user (fatal: CLI/engine not available → exit immediately).
+- [x] Carry `usage` (tokens) + `duration` in AgentResponse from both engines
+      (cost dropped — Codex has no cost field and no free way to price it;
+      see comment in models/agent.ts).
+- [x] Retry policy for agent calls: `RecoverableError`/`UnrecoverableError`
+      (models/errors.ts) classify throws per-agent; `RetryingAgent` wraps
+      `Agent` and retries up to 3 attempts unless `UnrecoverableError` or the
+      last attempt.
+  - [x] KNOWN RISK, resolved: retrying re-runs the WHOLE turn from scratch,
+        not just the failed part — a retry could re-run a Codex side effect
+        (`command_execution`, `file_change`) that already completed before
+        the failure. Resolution: `RecoverableError`/`UnrecoverableError` now
+        type `cause` as `string` (models/errors.ts), and on a recoverable
+        failure `RetryingAgent` rewrites the retried prompt to include that
+        reason ("The past prompt failed for the following reason: ...").
+        Verified against the real Codex SDK (ad-hoc script, not committed)
+        that a Thread already recalls what happened in a prior turn without
+        being told again — server-side session memory persists regardless of
+        what the client does with a failed stream. So a retried turn has
+        both the injected failure reason and its own session history to
+        recognize an action already happened and avoid blindly repeating it.
+        This is a mitigation via context, not a structural guarantee (the
+        agent could still choose to repeat an action) — accepted as
+        sufficient for now; revisit if it proves insufficient in practice.
 
 ## Step 4 — first workflow (plan → execute → review)
 - [ ] Plain function, no graph: plan(sol) → execute(terra) → review(opus/claude).
@@ -71,6 +92,32 @@ ClaudeAgent), without touching Loop.
       exists yet to justify it, and it would make the CLI depend on a running
       service instead of "just run node src/index.ts". Revisit only if a
       concrete need for concurrent access or querying appears.
+- [ ] Log per-turn usage + duration; consider a run id — once the
+      `SessionStore` above exists, write per-turn usage/duration through it
+      instead of building a separate persistence mechanism just for this.
+      NOT the same as the console.log printed after each turn in
+      loopImpl.ts today — that's ephemeral chat output, not persisted, and
+      has no run id tying turns together.
+
+## Step 6 — make it look like a finished product (explicitly not a priority —
+## do this once Steps 0-5 work well, not before)
+- [ ] Bordered chat "box" instead of a plain scrolling log — box-drawing
+      characters, redrawn/rewrapped on terminal resize (`process.stdout.columns`
+      + `'resize'` event).
+- [ ] Distinguish user vs. agent turns structurally (indentation/alignment/
+      prefix glyphs), not just by color — color alone was already tried and
+      rejected earlier ("se puede ver raro"); revisit only as an addition on
+      top of structure, not as the primary way to tell speakers apart.
+- [ ] Real markdown rendering (bold, code blocks, lists) to ANSI — responses
+      are markdown today and get dumped as plain text.
+- [ ] User-friendly error messages — several places still do `console.error(e)`
+      with the raw Error/stack trace; not acceptable for a finished product.
+- [ ] Welcome banner on start (name, active engine, how to exit).
+Open decision for when this is picked up: hand-roll the terminal rendering
+(consistent with this project's "build it yourself" ethos, but this is
+terminal-UI-rendering skill, not agent-harness skill) vs. use a small,
+narrowly-scoped TUI library just for this piece, without it leaking into the
+rest of the harness's design.
 
 ## Deliberately out of scope for now
 MCP, dynamic routing, long-term memory, graph engine, agent registry / file-based

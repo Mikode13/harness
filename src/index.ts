@@ -1,9 +1,10 @@
 import { Loop } from './loopImpl.ts';
-import type { ILoop } from './loopInterface.ts';
+import type { ILoop } from './models/loopInterface.ts';
 import { CodexAgent } from './codexAgent.ts';
 import { Codex } from '@openai/codex-sdk';
-import type { Agent } from './agent.ts';
+import type { Agent } from './models/agent.ts';
 import { ClaudeAgent } from './claudeAgent.ts';
+import { RetryingAgent } from './retryingAgent.ts';
 
 const engine = process.env.AGENT_ENGINE ?? 'codex';
 
@@ -13,7 +14,8 @@ const agent: Agent =
 		? new CodexAgent({ sdk: codex, model: 'gpt-5.6-luna' })
 		: new ClaudeAgent('haiku');
 
-const loop: ILoop = new Loop(agent);
+const retryAgent: Agent = new RetryingAgent(agent);
+const loop: ILoop = new Loop(retryAgent);
 
 await loop.start();
 loop.close();

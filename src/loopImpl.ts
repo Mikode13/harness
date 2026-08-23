@@ -1,21 +1,16 @@
-import type { ILoop } from './loopInterface.js';
+import type { ILoop } from './models/loopInterface.ts';
 import * as readline from 'node:readline/promises';
 import { clearLine, cursorTo } from 'node:readline';
 import { stdin as input, stdout as output } from 'node:process';
-import type { Agent } from './agent.ts';
-
-function isAbortError(e: unknown): boolean {
-	return e instanceof Error && e.name === 'AbortError';
-}
+import type { Agent } from './models/agent.ts';
+import { isAbortError, UnrecoverableError } from './models/errors.ts';
 
 export class Loop implements ILoop {
 	private rl: readline.Interface;
 	private abortController?: AbortController;
-	private agent: Agent;
 
-	constructor(agent: Agent) {
+	constructor(private agent: Agent) {
 		this.rl = readline.createInterface({ input, output });
-		this.agent = agent;
 
 		this.rl.on('SIGINT', () => {
 			this.handleSigint();
@@ -63,24 +58,30 @@ export class Loop implements ILoop {
 					process.stdout.write('\r' + frames[frame % frames.length]);
 					frame++;
 				}, 80);
-				let response;
+				let agentResponse;
 				try {
-					response = await this.agent.run(prompt, this.abortController.signal);
+					agentResponse = await this.agent.run(prompt, this.abortController.signal);
 				} finally {
 					cursorTo(output, 0);
 					clearLine(output, 0);
 					clearInterval(spinnerId);
 				}
-				if (response) {
-					console.log(response);
+				if (agentResponse) {
+					console.log(agentResponse.response);
+					console.log('usage:');
+					console.log(`duration: ${agentResponse.duration}`);
+					console.log(`inputTokens: ${String(agentResponse.inputTokens)}`);
+					console.log(`outputTokens: ${String(agentResponse.outputTokens)}`);
 				}
 			} catch (e) {
-				if (!isAbortError(e)) {
-					console.error(e);
-					break;
+				if (isAbortError(e)) {
+					if (await this.confirmExit()) {
+						break;
+					}
 				}
 
-				if (await this.confirmExit()) {
+				if (e instanceof UnrecoverableError) {
+					console.log(e);
 					break;
 				}
 			}
