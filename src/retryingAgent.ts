@@ -2,10 +2,13 @@ import type { Agent, AgentResponse } from './models/agent.ts';
 import { isAbortError, RecoverableError, UnrecoverableError } from './models/errors.ts';
 
 export class RetryingAgent implements Agent {
-	constructor(
-		private inner: Agent,
-		private maxAttempts = 3,
-	) {}
+	private inner: Agent;
+	private maxAttempts: number;
+
+	constructor(inner: Agent, maxAttempts = 3) {
+		this.inner = inner;
+		this.maxAttempts = maxAttempts;
+	}
 
 	async run(prompt: string, signal: AbortSignal): Promise<AgentResponse | undefined> {
 		let lastPrompt: string | null = null;

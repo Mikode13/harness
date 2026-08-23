@@ -8,8 +8,10 @@ import { isAbortError, UnrecoverableError } from './models/errors.ts';
 export class Loop implements ILoop {
 	private rl: readline.Interface;
 	private abortController?: AbortController;
+	private agent: Agent;
 
-	constructor(private agent: Agent) {
+	constructor(agent: Agent) {
+		this.agent = agent;
 		this.rl = readline.createInterface({ input, output });
 
 		this.rl.on('SIGINT', () => {
