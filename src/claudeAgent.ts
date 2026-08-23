@@ -43,8 +43,9 @@ export class ClaudeAgent implements Agent {
 					lines.push(message.result);
 					resultMessage = message;
 				} else {
-					// lines.push(message.stop_reason ?? 'Claude sdk failed');
-					throw new RecoverableError('Claude sdk error', { cause: message });
+					throw new RecoverableError('Claude sdk error', {
+						cause: [message.stop_reason, message.terminal_reason, ...message.errors].join(','),
+					});
 				}
 			}
 		}

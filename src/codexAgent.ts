@@ -13,7 +13,7 @@ function convertEventToItem(event: ThreadEvent): ThreadItem | undefined {
 		throw new UnrecoverableError('Codex stream error', { cause: event.message });
 
 	if (event.type === 'turn.failed')
-		throw new UnrecoverableError('Turn failed from codex sdk', { cause: event.error });
+		throw new UnrecoverableError('Turn failed from codex sdk', { cause: event.error.message });
 
 	if (event.type === 'item.completed') return event.item;
 
@@ -33,8 +33,10 @@ function describeItem(item: ThreadItem): string | undefined {
 		case 'file_change':
 			return item.changes.map(change => `${change.kind}: ${change.path}`).join('\n');
 		case 'mcp_tool_call': {
-			const status = item.error ? `failed: ${item.error.message}` : item.status;
-			return `tool: ${item.server}/${item.tool} (${status})`;
+			if (item.error) {
+				throw new RecoverableError('skill failed', { cause: item.error.message });
+			}
+			return `tool: ${item.server}/${item.tool} (${item.status})`;
 		}
 		case 'todo_list':
 			return item.items.map(innerItem => innerItem.text).join('\n');
