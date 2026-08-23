@@ -40,8 +40,8 @@ describe('RetryingAgent', () => {
 
 	it('retries on RecoverableError and returns the eventual success', async () => {
 		const { agent, run } = fakeAgent(
-			new RecoverableError('flaky'),
-			new RecoverableError('flaky again'),
+			new RecoverableError('flaky', { cause: 'network blip' }),
+			new RecoverableError('flaky again', { cause: 'timeout' }),
 			okResponse,
 		);
 		const retryingAgent = new RetryingAgent(agent, 3);
@@ -54,9 +54,9 @@ describe('RetryingAgent', () => {
 
 	it('gives up after maxAttempts and rethrows the last error', async () => {
 		const { agent, run } = fakeAgent(
-			new RecoverableError('1'),
-			new RecoverableError('2'),
-			new RecoverableError('3'),
+			new RecoverableError('1', { cause: 'first failure' }),
+			new RecoverableError('2', { cause: 'second failure' }),
+			new RecoverableError('3', { cause: 'third failure' }),
 		);
 		const retryingAgent = new RetryingAgent(agent, 3);
 
@@ -65,7 +65,10 @@ describe('RetryingAgent', () => {
 	});
 
 	it('does not retry on UnrecoverableError', async () => {
-		const { agent, run } = fakeAgent(new UnrecoverableError('broken'), okResponse);
+		const { agent, run } = fakeAgent(
+			new UnrecoverableError('broken', { cause: 'fatal' }),
+			okResponse,
+		);
 		const retryingAgent = new RetryingAgent(agent, 3);
 
 		await expect(retryingAgent.run('hi', signal)).rejects.toThrow('broken');
@@ -79,5 +82,49 @@ describe('RetryingAgent', () => {
 
 		await expect(retryingAgent.run('hi', signal)).rejects.toThrow('aborted');
 		expect(run).toHaveBeenCalledTimes(1);
+	});
+
+	it('sends the original prompt unchanged on the first attempt', async () => {
+		const { agent, run } = fakeAgent(okResponse);
+		const retryingAgent = new RetryingAgent(agent);
+
+		await retryingAgent.run('hi', signal);
+
+		expect(run).toHaveBeenNthCalledWith(1, 'hi', signal);
+	});
+
+	it('includes the previous failure reason in the retried prompt', async () => {
+		const { agent, run } = fakeAgent(
+			new RecoverableError('flaky', { cause: 'network blip' }),
+			okResponse,
+		);
+		const retryingAgent = new RetryingAgent(agent, 3);
+
+		await retryingAgent.run('hi', signal);
+
+		expect(run).toHaveBeenNthCalledWith(2, expect.stringContaining('network blip'), signal);
+	});
+
+	it('carries forward only the most recent failure reason across retries', async () => {
+		const { agent, run } = fakeAgent(
+			new RecoverableError('flaky', { cause: 'first failure' }),
+			new RecoverableError('flaky again', { cause: 'second failure' }),
+			okResponse,
+		);
+		const retryingAgent = new RetryingAgent(agent, 3);
+
+		await retryingAgent.run('hi', signal);
+
+		expect(run).toHaveBeenNthCalledWith(3, expect.stringContaining('second failure'), signal);
+		expect(run).toHaveBeenNthCalledWith(3, expect.not.stringContaining('first failure'), signal);
+	});
+
+	it('does not rewrite the prompt when the failure is unrecoverable', async () => {
+		const { agent, run } = fakeAgent(new UnrecoverableError('broken', { cause: 'fatal' }));
+		const retryingAgent = new RetryingAgent(agent, 3);
+
+		await expect(retryingAgent.run('hi', signal)).rejects.toThrow('broken');
+
+		expect(run).toHaveBeenNthCalledWith(1, 'hi', signal);
 	});
 });
