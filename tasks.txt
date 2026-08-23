@@ -49,10 +49,6 @@ ClaudeAgent), without touching Loop.
 - [x] Carry `usage` (tokens) + `duration` in AgentResponse from both engines
       (cost dropped — Codex has no cost field and no free way to price it;
       see comment in models/agent.ts).
-- [ ] Log per-turn usage + duration; consider a run id. NOT the same as the
-      console.log printed after each turn in loopImpl.ts today — that's
-      ephemeral chat output, not persisted, and has no run id tying turns
-      together. Still open.
 - [x] Retry policy for agent calls: `RecoverableError`/`UnrecoverableError`
       (models/errors.ts) classify throws per-agent; `RetryingAgent` wraps
       `Agent` and retries up to 3 attempts unless `UnrecoverableError` or the
@@ -96,6 +92,12 @@ ClaudeAgent), without touching Loop.
       exists yet to justify it, and it would make the CLI depend on a running
       service instead of "just run node src/index.ts". Revisit only if a
       concrete need for concurrent access or querying appears.
+- [ ] Log per-turn usage + duration; consider a run id — once the
+      `SessionStore` above exists, write per-turn usage/duration through it
+      instead of building a separate persistence mechanism just for this.
+      NOT the same as the console.log printed after each turn in
+      loopImpl.ts today — that's ephemeral chat output, not persisted, and
+      has no run id tying turns together.
 
 ## Step 6 — make it look like a finished product (explicitly not a priority —
 ## do this once Steps 0-5 work well, not before)
