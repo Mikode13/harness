@@ -47,7 +47,7 @@ export class Loop implements ILoop {
 		const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 		let frame = 0;
 
-		// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+		// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- deliberate infinite loop, exited via `break` on user confirmation or an unrecoverable error
 		while (true) {
 			try {
 				this.abortController = new AbortController();
@@ -56,7 +56,7 @@ export class Loop implements ILoop {
 				});
 
 				const spinnerId = setInterval(() => {
-					// eslint-disable-next-line @typescript-eslint/restrict-plus-operands
+					// eslint-disable-next-line @typescript-eslint/restrict-plus-operands -- noUncheckedIndexedAccess types frames[i] as string | undefined, but `frame % frames.length` is always a valid index into the non-empty `frames` array
 					process.stdout.write('\r' + frames[frame % frames.length]);
 					frame++;
 				}, 80);

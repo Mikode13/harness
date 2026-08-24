@@ -1,8 +1,10 @@
 {
 	"extends": "@mikode13/tsconfig/node",
 	"compilerOptions": {
+		"outDir": "dist",
+		"rootDir": "src",
 		"types": ["node"],
 		"rewriteRelativeImportExtensions": true
 	},
-	"include": ["src", "vitest.config.ts"]
+	"include": ["src"]
 }

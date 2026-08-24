@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Agent, AgentResponse } from '../src/models/agent.ts';
-import { RecoverableError, UnrecoverableError } from '../src/models/errors.ts';
-import { RetryingAgent } from '../src/retryingAgent.ts';
+import type { Agent, AgentResponse } from '../../src/models/agent.ts';
+import { RecoverableError, UnrecoverableError } from '../../src/models/errors.ts';
+import { RetryingAgent } from '../../src/retryingAgent.ts';
 
 const okResponse: AgentResponse = {
 	response: 'pong',
