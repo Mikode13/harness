@@ -104,7 +104,7 @@ export class CodexAgent implements Agent {
 			response: lines.join('\n'),
 			inputTokens: usage.input_tokens,
 			outputTokens: usage.output_tokens,
-			duration: String((Date.now() - start) / 1000) + 's',
+			duration: (Date.now() - start) / 1000,
 		};
 	}
 }

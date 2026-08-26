@@ -7,7 +7,7 @@ const okResponse: AgentResponse = {
 	response: 'pong',
 	inputTokens: 1,
 	outputTokens: 1,
-	duration: '1s',
+	duration: 1,
 };
 
 const signal = new AbortController().signal;

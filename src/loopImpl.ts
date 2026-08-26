@@ -76,7 +76,7 @@ export class Loop implements ILoop {
 				}
 				if (agentResponse) {
 					console.log('usage:');
-					console.log(`duration: ${agentResponse.duration}`);
+					console.log(`duration: ${String(agentResponse.duration)}s`);
 					console.log(`inputTokens: ${String(agentResponse.inputTokens)}`);
 					console.log(`outputTokens: ${String(agentResponse.outputTokens)}`);
 				}

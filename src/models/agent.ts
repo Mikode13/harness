@@ -3,8 +3,8 @@ export interface AgentResponse {
 	response: string;
 	inputTokens: number;
 	outputTokens: number;
-	// time in seconds, like 10s, 1800s
-	duration: string;
+	// time in seconds
+	duration: number;
 }
 
 export type Callback = (item: ProgressEvent) => void;
