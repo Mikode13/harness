@@ -68,6 +68,11 @@ node src/index.ts
 
 Type your prompt at `>`; type `exit` or press Ctrl+C to leave (with confirmation).
 
+`src/index.ts` currently enables `autoApprove` for its trusted backend agents. This
+maps to each provider's permission-bypass mode and grants those processes
+unrestricted command access. Keep it disabled when the host may receive untrusted
+prompts, or provide an approval workflow from the entry point.
+
 ## License
 
 This project is source-available under the MIT License with the

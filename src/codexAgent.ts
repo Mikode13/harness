@@ -56,10 +56,21 @@ function describeItem(item: ThreadItem): ProgressEvent | undefined {
 export class CodexAgent implements Agent {
 	private thread: Thread;
 
-	constructor({ sdk, model }: { sdk: Codex; model: Model }) {
+	constructor({
+		sdk,
+		model,
+		autoApprove = false,
+	}: {
+		sdk: Codex;
+		model: Model;
+		autoApprove?: boolean;
+	}) {
 		const thread = sdk.startThread({
 			model,
 			modelReasoningEffort: 'high',
+			...(autoApprove
+				? { approvalPolicy: 'never' as const, sandboxMode: 'danger-full-access' as const }
+				: {}),
 		});
 
 		this.thread = thread;

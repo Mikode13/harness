@@ -125,10 +125,12 @@ function describeCompletedTool(
 
 export class ClaudeAgent implements Agent {
 	private model: Model;
+	private autoApprove: boolean;
 	private sessionId?: string;
 
-	constructor(model: Model) {
+	constructor(model: Model, autoApprove = false) {
 		this.model = model;
+		this.autoApprove = autoApprove;
 	}
 
 	async run(
@@ -140,9 +142,15 @@ export class ClaudeAgent implements Agent {
 			prompt,
 			options: {
 				model: this.model,
+				maxTurns: 3,
 				cwd: process.cwd(),
 				resume: this.sessionId,
-				maxTurns: 3,
+				...(this.autoApprove
+					? {
+							permissionMode: 'bypassPermissions' as const,
+							allowDangerouslySkipPermissions: true,
+						}
+					: {}),
 			},
 		});
 

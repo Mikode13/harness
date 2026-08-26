@@ -13,7 +13,7 @@ const getExecutorPrompt = (plannerPrompt: string) =>
 	`You are an spanwned agent which role is to be the executor for the following plan: ${plannerPrompt}. Make sure that follow it.`;
 
 const getReviewerPrompt = (plannerPrompt: string, executorResult: string) =>
-	`Hey you are an agent which role is to review that the previus agent executor have done the following plan ${plannerPrompt} correctly, if it's okay say OK if it's not okay, say KO and reply why is not okay and the new solution, if it helps here's the executor response: ${executorResult}`;
+	`Hey you are an agent which role is to review that the previus agent executor have done the following plan ${plannerPrompt} correctly, if it's okay say just the word "OK" if it's not okay, say KO and reply why is not okay and the new solution, if it helps here's the executor response: ${executorResult}`;
 
 export class OrchestratorAgent implements Agent {
 	private plannerAgent: Agent;

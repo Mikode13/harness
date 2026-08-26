@@ -55,20 +55,33 @@ describe('CodexAgent', () => {
 			completed({ id: 'message-1', text: 'first', type: 'agent_message' }),
 			{ type: 'turn.completed', usage: usage() },
 		]);
-		const agent = new CodexAgent({ sdk, model: 'gpt-5.6-luna' });
+		const agent = new CodexAgent({ sdk, model: 'gpt-5.6-luna', autoApprove: true });
 
 		await agent.run('first prompt', signal, firstCallback);
 		await agent.run('second prompt', signal, secondCallback);
 
 		expect(startThread).toHaveBeenCalledOnce();
 		expect(startThread).toHaveBeenCalledWith({
+			approvalPolicy: 'never',
 			model: 'gpt-5.6-luna',
 			modelReasoningEffort: 'high',
+			sandboxMode: 'danger-full-access',
 		});
 		expect(runStreamed).toHaveBeenNthCalledWith(1, 'first prompt', { signal });
 		expect(runStreamed).toHaveBeenNthCalledWith(2, 'second prompt', { signal });
 		expect(firstCallback).toHaveBeenCalledWith({ type: 'agentMessage', message: 'first' });
 		expect(secondCallback).toHaveBeenCalledWith({ type: 'agentMessage', message: 'first' });
+	});
+
+	it('keeps command execution restrictions enabled by default', () => {
+		const { sdk, startThread } = createSdk();
+
+		new CodexAgent({ sdk, model: 'gpt-5.6-sol' });
+
+		expect(startThread).toHaveBeenCalledWith({
+			model: 'gpt-5.6-sol',
+			modelReasoningEffort: 'high',
+		});
 	});
 
 	it('maps supported completed items in stream order and aggregates agent messages', async () => {

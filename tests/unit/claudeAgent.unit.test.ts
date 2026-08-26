@@ -174,7 +174,7 @@ describe('ClaudeAgent', () => {
 		vi.mocked(query)
 			.mockReturnValueOnce(stream([result('first')]))
 			.mockReturnValueOnce(stream([{ ...result('second'), session_id: secondSessionId }]));
-		const agent = new ClaudeAgent('sonnet');
+		const agent = new ClaudeAgent('sonnet', true);
 		const signal = new AbortController().signal;
 		const callback = vi.fn();
 
@@ -184,10 +184,28 @@ describe('ClaudeAgent', () => {
 		expect(query).toHaveBeenNthCalledWith(2, {
 			prompt: 'second prompt',
 			options: {
+				allowDangerouslySkipPermissions: true,
 				cwd: process.cwd(),
 				maxTurns: 3,
 				model: 'sonnet',
+				permissionMode: 'bypassPermissions',
 				resume: sessionId,
+			},
+		});
+	});
+
+	it('keeps permission checks enabled by default', async () => {
+		vi.mocked(query).mockReturnValue(stream([result()]));
+
+		await new ClaudeAgent('sonnet').run('prompt', new AbortController().signal, vi.fn());
+
+		expect(query).toHaveBeenCalledWith({
+			prompt: 'prompt',
+			options: {
+				cwd: process.cwd(),
+				maxTurns: 3,
+				model: 'sonnet',
+				resume: undefined,
 			},
 		});
 	});
