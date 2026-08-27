@@ -1,48 +1,134 @@
+import { z } from 'zod';
 import type { Agent, AgentResponse, Callback } from './models/agent.ts';
-import { RecoverableError } from './models/errors.ts';
+import { RecoverableError, UnrecoverableError } from './models/errors.ts';
 
-const getPlannerPrompt = (userPrompt: string, reviewerPrompt?: string) => {
-	if (reviewerPrompt) {
-		return `The last plan failed, the reviewer had spoted the following defects, ${reviewerPrompt}, please generate a new plan so the executor will fix them`;
-	}
+const reviewerDecisionSchema = z.discriminatedUnion('decision', [
+	z.object({ decision: z.literal('approved') }),
+	z.object({ decision: z.literal('rejected'), feedback: z.string().trim().min(1) }),
+]);
 
-	return `this is the user prompt: ${userPrompt}. You are the planner agent, your task is to create a plan for the next agent that will be the executor, the same plan will be shared with the reviewer to validate the executor work. keep it accurated short and simple.`;
+type ReviewerDecision = z.infer<typeof reviewerDecisionSchema>;
+
+const getPlannerPrompt = (userPrompt: string, previousFailureReason?: string) => {
+	const feedback = previousFailureReason
+		? `\n\nFeedback from the previous attempt:\n---\n${previousFailureReason}\n---`
+		: '';
+
+	return `You are the planner agent. Read the relevant repository code and apply the mikode-skills:mikode-code-philosophy skill. Create a concise, engineering-grade plan for the executor. Cover the requested behaviour, structural issues, affected files or symbols, API contracts and boundaries, important failure paths, and meaningful tests. Keep the plan focused on the current request and do not require an architecture skill yet.
+
+Original user request:
+---
+${userPrompt}
+---${feedback}`;
 };
 
-const getExecutorPrompt = (plannerPrompt: string) =>
-	`You are an spanwned agent which role is to be the executor for the following plan: ${plannerPrompt}. Make sure that follow it.`;
+const getExecutorPrompt = (userPrompt: string, plannerPrompt: string) =>
+	`You are the executor agent. Read the relevant repository code and implement the original user request according to the planner's current plan. Apply the mikode-skills:mikode-code-philosophy skill: preserve contracts and boundaries, handle important failure paths, keep the change focused, and add or update meaningful tests. Inspect and change the code; do not merely describe what should be done.
 
-const getReviewerPrompt = (plannerPrompt: string, executorResult: string) =>
-	`Hey you are an agent which role is to review that the previus agent executor have done the following plan ${plannerPrompt} correctly, if it's okay say just the word "OK" if it's not okay, say KO and reply why is not okay and the new solution, if it helps here's the executor response: ${executorResult}`;
+Original user request:
+---
+${userPrompt}
+---
+
+Current implementation plan:
+---
+${plannerPrompt}
+---`;
+
+const getReviewerPrompt = (
+	userPrompt: string,
+	plannerPrompt: string,
+	executorResult: string,
+	parseFailureReason?: string,
+) => {
+	const retryNotice = parseFailureReason
+		? `\n\nYour previous response could not be used: ${parseFailureReason} Respond with JSON only, matching the schema exactly, with no surrounding text and no markdown code fences.`
+		: '';
+
+	return `You are the reviewer agent. Apply the mikode-skills:mikode-code-philosophy-review skill. Independently inspect the repository, the current diff, and relevant surrounding code; do not rely on the executor's narrative. Evaluate the original request first; plan compliance is secondary and provides supporting context. Check correctness and logic errors, important failure paths, unused or artificial abstractions, races or shared state, API contract breaks, boundary violations, regressions, scope, and test quality. If it is correct, respond with JSON only: {"decision":"approved"}. If it is not correct, respond with JSON only: {"decision":"rejected","feedback":"list concrete, prioritized findings and the required direction for each"}. The feedback must contain actionable engineering findings, not a general summary.
+
+Original user request:
+---
+${userPrompt}
+---
+
+Planner's current plan:
+---
+${plannerPrompt}
+---
+
+Executor response (context only; verify it independently):
+---
+${executorResult}
+---${retryNotice}`;
+};
+
+function stripCodeFence(text: string): string {
+	const match = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(text.trim());
+	return match?.[1] ?? text;
+}
+
+function parseReviewerDecision(response: AgentResponse | undefined): ReviewerDecision {
+	if (!response?.response) {
+		throw new RecoverableError("There's no decision from the reviewer, something went wrong", {
+			cause: 'Reviewer decision is missing.',
+		});
+	}
+
+	let parsedResponse: unknown;
+	try {
+		parsedResponse = JSON.parse(stripCodeFence(response.response));
+	} catch {
+		throw new RecoverableError('Reviewer returned an invalid decision', {
+			cause: 'Reviewer response must be valid JSON.',
+		});
+	}
+
+	const decision = reviewerDecisionSchema.safeParse(parsedResponse);
+	if (!decision.success) {
+		throw new RecoverableError('Reviewer returned an invalid decision', {
+			cause: 'Reviewer response did not match the decision schema.',
+		});
+	}
+
+	return decision.data;
+}
 
 export class OrchestratorAgent implements Agent {
 	private plannerAgent: Agent;
 	private executorAgent: Agent;
 	private reviewerAgent: Agent;
+	private maxAttempts: number;
+
 	private duration: number;
 	private inputTokens: number;
 	private outputTokens: number;
 
-	increaseDuration(newDuration: number) {
-		this.duration += newDuration;
-	}
+	constructor(plannerAgent: Agent, executorAgent: Agent, reviewerAgent: Agent, maxAttempts = 3) {
+		if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
+			throw new RangeError('maxAttempts must be a positive integer');
+		}
 
-	increaseInputTokens(newInputTokens: number) {
-		this.inputTokens += newInputTokens;
-	}
-
-	increaseOutputTokens(newOutputTokens: number) {
-		this.outputTokens += newOutputTokens;
-	}
-
-	constructor(plannerAgent: Agent, executorAgent: Agent, reviewerAgent: Agent) {
 		this.plannerAgent = plannerAgent;
 		this.executorAgent = executorAgent;
 		this.reviewerAgent = reviewerAgent;
+		this.maxAttempts = maxAttempts;
 
 		this.duration = 0;
 		this.inputTokens = 0;
 		this.outputTokens = 0;
+	}
+
+	private increaseDuration(newDuration: number) {
+		this.duration += newDuration;
+	}
+
+	private increaseInputTokens(newInputTokens: number) {
+		this.inputTokens += newInputTokens;
+	}
+
+	private increaseOutputTokens(newOutputTokens: number) {
+		this.outputTokens += newOutputTokens;
 	}
 
 	private updateValues(response: AgentResponse) {
@@ -56,39 +142,86 @@ export class OrchestratorAgent implements Agent {
 		signal: AbortSignal,
 		callback: Callback,
 	): Promise<AgentResponse | undefined> {
-		let reviewerResponse: AgentResponse | undefined = undefined;
+		let lastFailureReason: string | undefined;
 
-		while (reviewerResponse?.response !== 'OK') {
+		for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
+			const isLastAttempt = attempt === this.maxAttempts;
+
 			const plannerResponse = await this.plannerAgent.run(
-				getPlannerPrompt(prompt, reviewerResponse?.response),
+				getPlannerPrompt(prompt, lastFailureReason),
 				signal,
 				callback,
 			);
 
 			if (!plannerResponse?.response) {
-				throw new RecoverableError(`There's no plan from the planner, something went wrong`, {
-					cause: 'Plan is missing.',
-				});
+				lastFailureReason = 'The planner produced no response.';
+				if (isLastAttempt) {
+					throw new UnrecoverableError('Max attempts exhausted', { cause: lastFailureReason });
+				}
+				continue;
 			}
 
 			this.updateValues(plannerResponse);
 
 			const executorResponse = await this.executorAgent.run(
-				getExecutorPrompt(plannerResponse.response),
+				getExecutorPrompt(prompt, plannerResponse.response),
 				signal,
 				callback,
 			);
 
 			if (!executorResponse?.response) {
-				throw new RecoverableError(`There's no response from the executor, something went wrong`, {
-					cause: 'Executor is missing.',
-				});
+				lastFailureReason = 'The executor produced no response.';
+				if (isLastAttempt) {
+					throw new UnrecoverableError('Max attempts exhausted', { cause: lastFailureReason });
+				}
+				continue;
 			}
 
 			this.updateValues(executorResponse);
 
-			reviewerResponse = await this.reviewerAgent.run(
-				getReviewerPrompt(plannerResponse.response, executorResponse.response),
+			const reviewerDecision = await this.getReviewerDecision(
+				prompt,
+				plannerResponse.response,
+				executorResponse.response,
+				signal,
+				callback,
+			);
+
+			if (reviewerDecision.decision === 'approved') {
+				return {
+					response: 'All job has finished',
+					duration: this.duration,
+					inputTokens: this.inputTokens,
+					outputTokens: this.outputTokens,
+				};
+			}
+
+			lastFailureReason = reviewerDecision.feedback;
+			if (isLastAttempt) {
+				throw new UnrecoverableError('Max attempts exhausted', { cause: lastFailureReason });
+			}
+		}
+
+		throw new UnrecoverableError('Max attempts exhausted', {
+			cause: lastFailureReason ?? 'Unknown failure.',
+		});
+	}
+
+	// Retries only the reviewer call on a malformed decision, instead of redoing
+	// planning/execution — a bad or unparsable reviewer response is not evidence
+	// the plan or the implementation were wrong.
+	private async getReviewerDecision(
+		userPrompt: string,
+		plannerPrompt: string,
+		executorResult: string,
+		signal: AbortSignal,
+		callback: Callback,
+	): Promise<ReviewerDecision> {
+		let parseFailureReason: string | undefined;
+
+		for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
+			const reviewerResponse = await this.reviewerAgent.run(
+				getReviewerPrompt(userPrompt, plannerPrompt, executorResult, parseFailureReason),
 				signal,
 				callback,
 			);
@@ -96,13 +229,21 @@ export class OrchestratorAgent implements Agent {
 			if (reviewerResponse) {
 				this.updateValues(reviewerResponse);
 			}
+
+			try {
+				return parseReviewerDecision(reviewerResponse);
+			} catch (error) {
+				if (!(error instanceof RecoverableError)) throw error;
+
+				parseFailureReason = error.cause;
+				if (attempt === this.maxAttempts) {
+					throw new UnrecoverableError('Max attempts exhausted', { cause: parseFailureReason });
+				}
+			}
 		}
 
-		return {
-			response: 'All job has finished',
-			duration: this.duration,
-			inputTokens: this.inputTokens,
-			outputTokens: this.outputTokens,
-		};
+		throw new UnrecoverableError('Max attempts exhausted', {
+			cause: parseFailureReason ?? 'Unknown failure.',
+		});
 	}
 }

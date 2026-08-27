@@ -174,7 +174,7 @@ describe('ClaudeAgent', () => {
 		vi.mocked(query)
 			.mockReturnValueOnce(stream([result('first')]))
 			.mockReturnValueOnce(stream([{ ...result('second'), session_id: secondSessionId }]));
-		const agent = new ClaudeAgent('sonnet', true);
+		const agent = new ClaudeAgent('sonnet', true, 'low');
 		const signal = new AbortController().signal;
 		const callback = vi.fn();
 
@@ -186,6 +186,7 @@ describe('ClaudeAgent', () => {
 			options: {
 				allowDangerouslySkipPermissions: true,
 				cwd: process.cwd(),
+				effort: 'low',
 				maxTurns: 3,
 				model: 'sonnet',
 				permissionMode: 'bypassPermissions',
@@ -203,6 +204,7 @@ describe('ClaudeAgent', () => {
 			prompt: 'prompt',
 			options: {
 				cwd: process.cwd(),
+				effort: 'high',
 				maxTurns: 3,
 				model: 'sonnet',
 				resume: undefined,

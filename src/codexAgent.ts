@@ -1,4 +1,11 @@
-import type { Codex, Thread, ThreadItem, ThreadEvent, Usage } from '@openai/codex-sdk';
+import type {
+	Codex,
+	ModelReasoningEffort,
+	Thread,
+	ThreadEvent,
+	ThreadItem,
+	Usage,
+} from '@openai/codex-sdk';
 import {
 	type Agent,
 	type AgentResponse,
@@ -60,14 +67,16 @@ export class CodexAgent implements Agent {
 		sdk,
 		model,
 		autoApprove = false,
+		reasoningEffort = 'high',
 	}: {
 		sdk: Codex;
 		model: Model;
 		autoApprove?: boolean;
+		reasoningEffort?: ModelReasoningEffort;
 	}) {
 		const thread = sdk.startThread({
 			model,
-			modelReasoningEffort: 'high',
+			modelReasoningEffort: reasoningEffort,
 			...(autoApprove
 				? { approvalPolicy: 'never' as const, sandboxMode: 'danger-full-access' as const }
 				: {}),

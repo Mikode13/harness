@@ -85,12 +85,15 @@ export class Loop implements ILoop {
 					if (await this.confirmExit()) {
 						break;
 					}
+					continue;
 				}
 
 				if (e instanceof UnrecoverableError) {
 					console.log(e);
 					break;
 				}
+
+				console.error(e);
 			}
 		}
 	}

@@ -9,11 +9,28 @@ import { ClaudeAgent } from './claudeAgent.ts';
 
 const codex = new Codex();
 const autoApprove = true;
+const plannerReasoningEffort = 'high';
+const executorReasoningEffort = 'high';
+const reviewerReasoningEffort = 'high';
 
 const orchestratorAgent: Agent = new OrchestratorAgent(
-	new RetryingAgent(new CodexAgent({ sdk: codex, model: 'gpt-5.6-sol', autoApprove })),
-	new RetryingAgent(new CodexAgent({ sdk: codex, model: 'gpt-5.6-luna', autoApprove })),
-	new RetryingAgent(new ClaudeAgent('opus', true)),
+	new RetryingAgent(
+		new CodexAgent({
+			sdk: codex,
+			model: 'gpt-5.6-sol',
+			autoApprove,
+			reasoningEffort: plannerReasoningEffort,
+		}),
+	),
+	new RetryingAgent(
+		new CodexAgent({
+			sdk: codex,
+			model: 'gpt-5.6-luna',
+			autoApprove,
+			reasoningEffort: executorReasoningEffort,
+		}),
+	),
+	new RetryingAgent(new ClaudeAgent('opus', true, reviewerReasoningEffort)),
 );
 
 const loop: ILoop = new Loop(orchestratorAgent, item => {

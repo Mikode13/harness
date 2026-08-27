@@ -1,5 +1,6 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
+	EffortLevel,
 	Query,
 	SDKAssistantMessage,
 	SDKResultSuccess,
@@ -126,11 +127,13 @@ function describeCompletedTool(
 export class ClaudeAgent implements Agent {
 	private model: Model;
 	private autoApprove: boolean;
+	private reasoningEffort: EffortLevel;
 	private sessionId?: string;
 
-	constructor(model: Model, autoApprove = false) {
+	constructor(model: Model, autoApprove = false, reasoningEffort: EffortLevel = 'high') {
 		this.model = model;
 		this.autoApprove = autoApprove;
+		this.reasoningEffort = reasoningEffort;
 	}
 
 	async run(
@@ -141,6 +144,7 @@ export class ClaudeAgent implements Agent {
 		const stream = query({
 			prompt,
 			options: {
+				effort: this.reasoningEffort,
 				model: this.model,
 				maxTurns: 3,
 				cwd: process.cwd(),

@@ -55,7 +55,12 @@ describe('CodexAgent', () => {
 			completed({ id: 'message-1', text: 'first', type: 'agent_message' }),
 			{ type: 'turn.completed', usage: usage() },
 		]);
-		const agent = new CodexAgent({ sdk, model: 'gpt-5.6-luna', autoApprove: true });
+		const agent = new CodexAgent({
+			sdk,
+			model: 'gpt-5.6-luna',
+			autoApprove: true,
+			reasoningEffort: 'low',
+		});
 
 		await agent.run('first prompt', signal, firstCallback);
 		await agent.run('second prompt', signal, secondCallback);
@@ -64,7 +69,7 @@ describe('CodexAgent', () => {
 		expect(startThread).toHaveBeenCalledWith({
 			approvalPolicy: 'never',
 			model: 'gpt-5.6-luna',
-			modelReasoningEffort: 'high',
+			modelReasoningEffort: 'low',
 			sandboxMode: 'danger-full-access',
 		});
 		expect(runStreamed).toHaveBeenNthCalledWith(1, 'first prompt', { signal });
