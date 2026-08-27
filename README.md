@@ -67,7 +67,7 @@ Remaining work (see `tasks.txt` for the actionable, dated list):
   error messages) — explicitly deferred until the above is solid.
 - Dynamic routing (deciding which flow/agent a request needs, instead of
   always running the fixed plan → execute → review workflow) — deliberately
-  built *after* that fixed flow, not alongside it, so the routing decision
+  built _after_ that fixed flow, not alongside it, so the routing decision
   reuses a technique already proven on a simpler problem.
 
 Deliberately out of scope for now: MCP, long-term memory, graph execution, and
