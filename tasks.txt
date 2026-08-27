@@ -70,15 +70,38 @@ ClaudeAgent), without touching Loop.
         agent could still choose to repeat an action) — accepted as
         sufficient for now; revisit if it proves insufficient in practice.
 
-## Step 4 — first workflow (plan → execute → review)
-- [ ] Plain function, no graph: plan(sol) → execute(terra) → review(opus/claude).
-- [ ] If review rejects: loop back to plan with the feedback; cap with maxIterations.
-- [ ] Chat and workflow are two consumers of the same Agent contract; the user
-      never chooses (or sees) which model runs behind each stage.
+## Step 4 — first workflow (plan → execute → review) — DONE 2026-08-27
+- [x] Plain function, no graph: `OrchestratorAgent` coordinates planner → executor
+      → reviewer, each an injected `Agent` (chosen/wired in index.ts, not
+      hardcoded to specific engines).
+- [x] If review rejects: loop back to plan with the feedback; capped by
+      `maxAttempts` (constructor param, validated as a positive integer).
+      Deviation from the original plan: the reviewer's decision is a
+      Zod-validated structured `{decision: 'approved'|'rejected', feedback}`,
+      not free text/'OK' string matching — that was tried first and produced a
+      real infinite loop in practice (exact-match never true, no iteration cap).
+      A malformed reviewer response retries only the reviewer call (its own
+      bounded loop, informed of why the previous response failed), not the
+      whole plan/execute cycle.
+- [x] Chat and workflow are two consumers of the same Agent contract — confirmed:
+      `OrchestratorAgent implements Agent`, `Loop` treats it identically to any
+      other agent, no special-casing.
+Success (met): a full plan → execute → review cycle runs end to end via
+`node src/index.ts`; on failure it eventually recovers or fails cleanly with
+`UnrecoverableError`, visible to the user (`Loop` no longer swallows
+`RecoverableError` silently either).
 
 ## Step 5 — later, all additive
-- [ ] Live streaming of actions while the agent works (extend Agent with events/
-      callback; replaces the static loader).
+- [x] Live streaming of actions while the agent works — DONE 2026-08-27.
+      Not literally "extend Agent with events" as originally sketched: `run()`
+      gained a third `callback: (event: ProgressEvent) => void` parameter,
+      threaded through `Agent`/`RetryingAgent`/`CodexAgent`/`ClaudeAgent`/
+      `OrchestratorAgent`. `ProgressEvent` is a shared, provider-agnostic
+      discriminated union (command/search/fileChange/mcpTool/agentMessage/
+      reasoning/todoList); each engine maps its own SDK events into it.
+      `agent_message` goes to both the callback (live) and `AgentResponse.response`
+      (accumulated) — everything else is callback-only, never mixed into the
+      final response. Replaces the static loader's post-hoc print entirely.
 - [ ] Type-while-thinking (Promise.race between readline question and agent run;
       also restores Ctrl+C during agent calls without pause()).
 - [ ] Session persistence (save/resume thread ids). Store `{ name, engine,
@@ -123,6 +146,6 @@ rest of the harness's design.
 MCP, dynamic routing, long-term memory, graph engine, agent registry / file-based
 agent config (waits until >2 real agents exist), multiple provider config system.
 
-## Known future change (accepted)
-Loop's direct console.log printing must become event-based for live subagent
-progress. Mitigated by the standalone summary function from Step 0.
+## Known future change (accepted) — RESOLVED 2026-08-27
+Loop's direct console.log printing became event-based via the typed
+`Callback`/`ProgressEvent` channel described in Step 5.

@@ -7,10 +7,11 @@ const okResponse: AgentResponse = {
 	response: 'pong',
 	inputTokens: 1,
 	outputTokens: 1,
-	duration: '1s',
+	duration: 1,
 };
 
 const signal = new AbortController().signal;
+const callback = vi.fn();
 
 // A fake Agent — RetryingAgent only depends on the Agent interface, so we can
 // script its behavior directly instead of hitting a real SDK. Returns the
@@ -32,7 +33,7 @@ describe('RetryingAgent', () => {
 		const { agent, run } = fakeAgent(okResponse);
 		const retryingAgent = new RetryingAgent(agent);
 
-		const result = await retryingAgent.run('hi', signal);
+		const result = await retryingAgent.run('hi', signal, callback);
 
 		expect(result).toBe(okResponse);
 		expect(run).toHaveBeenCalledTimes(1);
@@ -46,7 +47,7 @@ describe('RetryingAgent', () => {
 		);
 		const retryingAgent = new RetryingAgent(agent, 3);
 
-		const result = await retryingAgent.run('hi', signal);
+		const result = await retryingAgent.run('hi', signal, callback);
 
 		expect(result).toBe(okResponse);
 		expect(run).toHaveBeenCalledTimes(3);
@@ -60,7 +61,9 @@ describe('RetryingAgent', () => {
 		);
 		const retryingAgent = new RetryingAgent(agent, 3);
 
-		await expect(retryingAgent.run('hi', signal)).rejects.toThrow('3');
+		await expect(retryingAgent.run('hi', signal, callback)).rejects.toThrow(
+			'Max attempts exhausted',
+		);
 		expect(run).toHaveBeenCalledTimes(3);
 	});
 
@@ -71,7 +74,7 @@ describe('RetryingAgent', () => {
 		);
 		const retryingAgent = new RetryingAgent(agent, 3);
 
-		await expect(retryingAgent.run('hi', signal)).rejects.toThrow('broken');
+		await expect(retryingAgent.run('hi', signal, callback)).rejects.toThrow('broken');
 		expect(run).toHaveBeenCalledTimes(1);
 	});
 
@@ -80,7 +83,7 @@ describe('RetryingAgent', () => {
 		const { agent, run } = fakeAgent(abortError, okResponse);
 		const retryingAgent = new RetryingAgent(agent, 3);
 
-		await expect(retryingAgent.run('hi', signal)).rejects.toThrow('aborted');
+		await expect(retryingAgent.run('hi', signal, callback)).rejects.toThrow('aborted');
 		expect(run).toHaveBeenCalledTimes(1);
 	});
 
@@ -88,9 +91,9 @@ describe('RetryingAgent', () => {
 		const { agent, run } = fakeAgent(okResponse);
 		const retryingAgent = new RetryingAgent(agent);
 
-		await retryingAgent.run('hi', signal);
+		await retryingAgent.run('hi', signal, callback);
 
-		expect(run).toHaveBeenNthCalledWith(1, 'hi', signal);
+		expect(run).toHaveBeenNthCalledWith(1, 'hi', signal, callback);
 	});
 
 	it('includes the previous failure reason in the retried prompt', async () => {
@@ -100,9 +103,14 @@ describe('RetryingAgent', () => {
 		);
 		const retryingAgent = new RetryingAgent(agent, 3);
 
-		await retryingAgent.run('hi', signal);
+		await retryingAgent.run('hi', signal, callback);
 
-		expect(run).toHaveBeenNthCalledWith(2, expect.stringContaining('network blip'), signal);
+		expect(run).toHaveBeenNthCalledWith(
+			2,
+			expect.stringContaining('network blip'),
+			signal,
+			callback,
+		);
 	});
 
 	it('carries forward only the most recent failure reason across retries', async () => {
@@ -113,18 +121,28 @@ describe('RetryingAgent', () => {
 		);
 		const retryingAgent = new RetryingAgent(agent, 3);
 
-		await retryingAgent.run('hi', signal);
+		await retryingAgent.run('hi', signal, callback);
 
-		expect(run).toHaveBeenNthCalledWith(3, expect.stringContaining('second failure'), signal);
-		expect(run).toHaveBeenNthCalledWith(3, expect.not.stringContaining('first failure'), signal);
+		expect(run).toHaveBeenNthCalledWith(
+			3,
+			expect.stringContaining('second failure'),
+			signal,
+			callback,
+		);
+		expect(run).toHaveBeenNthCalledWith(
+			3,
+			expect.not.stringContaining('first failure'),
+			signal,
+			callback,
+		);
 	});
 
 	it('does not rewrite the prompt when the failure is unrecoverable', async () => {
 		const { agent, run } = fakeAgent(new UnrecoverableError('broken', { cause: 'fatal' }));
 		const retryingAgent = new RetryingAgent(agent, 3);
 
-		await expect(retryingAgent.run('hi', signal)).rejects.toThrow('broken');
+		await expect(retryingAgent.run('hi', signal, callback)).rejects.toThrow('broken');
 
-		expect(run).toHaveBeenNthCalledWith(1, 'hi', signal);
+		expect(run).toHaveBeenNthCalledWith(1, 'hi', signal, callback);
 	});
 });

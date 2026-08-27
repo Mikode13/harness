@@ -14,6 +14,9 @@ importers:
       '@openai/codex-sdk':
         specifier: ^0.146.0
         version: 0.146.0
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
       '@mikode13/code-quality':
         specifier: 0.1.0

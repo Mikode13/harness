@@ -2,20 +2,43 @@ import { Loop } from './loopImpl.ts';
 import type { ILoop } from './models/loopInterface.ts';
 import { CodexAgent } from './codexAgent.ts';
 import { Codex } from '@openai/codex-sdk';
-import type { Agent } from './models/agent.ts';
-import { ClaudeAgent } from './claudeAgent.ts';
+import { handleEvents, type Agent } from './models/agent.ts';
 import { RetryingAgent } from './retryingAgent.ts';
-
-const engine = process.env.AGENT_ENGINE ?? 'codex';
+import { OrchestratorAgent } from './orchestratorAgent.ts';
+import { ClaudeAgent } from './claudeAgent.ts';
 
 const codex = new Codex();
-const agent: Agent =
-	engine === 'codex'
-		? new CodexAgent({ sdk: codex, model: 'gpt-5.6-luna' })
-		: new ClaudeAgent('haiku');
+const autoApprove = true;
+const plannerReasoningEffort = 'high';
+const executorReasoningEffort = 'high';
+const reviewerReasoningEffort = 'high';
 
-const retryAgent: Agent = new RetryingAgent(agent);
-const loop: ILoop = new Loop(retryAgent);
+const orchestratorAgent: Agent = new OrchestratorAgent(
+	new RetryingAgent(
+		new CodexAgent({
+			sdk: codex,
+			model: 'gpt-5.6-sol',
+			autoApprove,
+			reasoningEffort: plannerReasoningEffort,
+		}),
+	),
+	new RetryingAgent(
+		new CodexAgent({
+			sdk: codex,
+			model: 'gpt-5.6-luna',
+			autoApprove,
+			reasoningEffort: executorReasoningEffort,
+		}),
+	),
+	new RetryingAgent(new ClaudeAgent('opus', true, reviewerReasoningEffort)),
+);
+
+const loop: ILoop = new Loop(orchestratorAgent, item => {
+	const message = handleEvents(item);
+	if (message) {
+		console.log(message);
+	}
+});
 
 await loop.start();
 loop.close();

@@ -1,5 +1,17 @@
-import type { Codex, Thread, ThreadItem, ThreadEvent, Usage } from '@openai/codex-sdk';
-import type { Agent, AgentResponse } from './models/agent.ts';
+import type {
+	Codex,
+	ModelReasoningEffort,
+	Thread,
+	ThreadEvent,
+	ThreadItem,
+	Usage,
+} from '@openai/codex-sdk';
+import {
+	type Agent,
+	type AgentResponse,
+	type Callback,
+	type ProgressEvent,
+} from './models/agent.ts';
 import { RecoverableError, UnrecoverableError } from './models/errors.ts';
 
 type Model = 'gpt-5.6-sol' | 'gpt-5.6-luna';
@@ -20,26 +32,26 @@ function convertEventToItem(event: ThreadEvent): ThreadItem | undefined {
 	return undefined;
 }
 
-function describeItem(item: ThreadItem): string | undefined {
+function describeItem(item: ThreadItem): ProgressEvent | undefined {
 	switch (item.type) {
 		case 'agent_message':
-			return item.text;
+			return { type: 'agentMessage', message: item.text };
 		case 'reasoning':
-			return undefined;
+			return { type: 'reasoning', message: item.text };
 		case 'command_execution':
-			return `executing: ${item.command}`;
+			return { type: 'command', command: item.command, exitCode: item.exit_code };
 		case 'web_search':
-			return `searching: ${item.query}`;
+			return { type: 'search', query: item.query };
 		case 'file_change':
-			return item.changes.map(change => `${change.kind}: ${change.path}`).join('\n');
+			return { type: 'fileChange', changes: item.changes };
 		case 'mcp_tool_call': {
 			if (item.error) {
 				throw new RecoverableError('skill failed', { cause: item.error.message });
 			}
-			return `tool: ${item.server}/${item.tool} (${item.status})`;
+			return { type: 'mcpTool', server: item.server, tool: item.tool, status: item.status };
 		}
 		case 'todo_list':
-			return item.items.map(innerItem => innerItem.text).join('\n');
+			return { type: 'todoList', items: item.items };
 		case 'error':
 			throw new RecoverableError('error while using the codex tools', { cause: item.message });
 		default:
@@ -51,21 +63,41 @@ function describeItem(item: ThreadItem): string | undefined {
 export class CodexAgent implements Agent {
 	private thread: Thread;
 
-	constructor({ sdk, model }: { sdk: Codex; model: Model }) {
+	constructor({
+		sdk,
+		model,
+		autoApprove = false,
+		reasoningEffort = 'high',
+	}: {
+		sdk: Codex;
+		model: Model;
+		autoApprove?: boolean;
+		reasoningEffort?: ModelReasoningEffort;
+	}) {
 		const thread = sdk.startThread({
 			model,
-			modelReasoningEffort: 'high',
+			modelReasoningEffort: reasoningEffort,
+			...(autoApprove
+				? { approvalPolicy: 'never' as const, sandboxMode: 'danger-full-access' as const }
+				: {}),
 		});
 
 		this.thread = thread;
 	}
 
-	async run(prompt: string, signal: AbortSignal): Promise<AgentResponse | undefined> {
+	async run(
+		prompt: string,
+		signal: AbortSignal,
+		callback: Callback,
+	): Promise<AgentResponse | undefined> {
 		const response = await this.thread.runStreamed(prompt, { signal });
-		return await this.parseResponse(response);
+		return await this.parseResponse(response, callback);
 	}
 
-	private async parseResponse(turn: StreamedTurn): Promise<AgentResponse | undefined> {
+	private async parseResponse(
+		turn: StreamedTurn,
+		callback: Callback,
+	): Promise<AgentResponse | undefined> {
 		const lines: string[] = [];
 		const start = Date.now();
 		let usage: Usage | undefined = undefined;
@@ -80,7 +112,8 @@ export class CodexAgent implements Agent {
 			if (!item) continue;
 
 			const description = describeItem(item);
-			if (description) lines.push(description);
+			if (description) callback(description);
+			if (description?.type === 'agentMessage') lines.push(description.message);
 		}
 
 		if (!lines.length || !usage) {
@@ -91,7 +124,7 @@ export class CodexAgent implements Agent {
 			response: lines.join('\n'),
 			inputTokens: usage.input_tokens,
 			outputTokens: usage.output_tokens,
-			duration: String((Date.now() - start) / 1000) + 's',
+			duration: (Date.now() - start) / 1000,
 		};
 	}
 }

@@ -2,16 +2,18 @@ import type { ILoop } from './models/loopInterface.ts';
 import * as readline from 'node:readline/promises';
 import { clearLine, cursorTo } from 'node:readline';
 import { stdin as input, stdout as output } from 'node:process';
-import type { Agent } from './models/agent.ts';
+import type { Agent, Callback } from './models/agent.ts';
 import { isAbortError, UnrecoverableError } from './models/errors.ts';
 
 export class Loop implements ILoop {
 	private rl: readline.Interface;
 	private abortController?: AbortController;
 	private agent: Agent;
+	private callback: Callback;
 
-	constructor(agent: Agent) {
+	constructor(agent: Agent, callback: Callback) {
 		this.agent = agent;
+		this.callback = callback;
 		this.rl = readline.createInterface({ input, output });
 
 		this.rl.on('SIGINT', () => {
@@ -62,16 +64,19 @@ export class Loop implements ILoop {
 				}, 80);
 				let agentResponse;
 				try {
-					agentResponse = await this.agent.run(prompt, this.abortController.signal);
+					agentResponse = await this.agent.run(prompt, this.abortController.signal, item => {
+						cursorTo(output, 0);
+						clearLine(output, 0);
+						this.callback(item);
+					});
 				} finally {
 					cursorTo(output, 0);
 					clearLine(output, 0);
 					clearInterval(spinnerId);
 				}
 				if (agentResponse) {
-					console.log(agentResponse.response);
 					console.log('usage:');
-					console.log(`duration: ${agentResponse.duration}`);
+					console.log(`duration: ${String(agentResponse.duration)}s`);
 					console.log(`inputTokens: ${String(agentResponse.inputTokens)}`);
 					console.log(`outputTokens: ${String(agentResponse.outputTokens)}`);
 				}
@@ -80,12 +85,15 @@ export class Loop implements ILoop {
 					if (await this.confirmExit()) {
 						break;
 					}
+					continue;
 				}
 
 				if (e instanceof UnrecoverableError) {
 					console.log(e);
 					break;
 				}
+
+				console.error(e);
 			}
 		}
 	}
