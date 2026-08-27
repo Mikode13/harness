@@ -1,8 +1,9 @@
 # @mikode13/harness
 
-A small, hand-built agent harness in TypeScript. It runs coding agents (currently
-OpenAI Codex, Claude next) behind a single terminal chat, and will grow into the
-runtime that coordinates specialized agents across MiKode projects.
+A small, hand-built agent harness in TypeScript. It coordinates OpenAI Codex and
+Claude Agent SDK instances — as a single terminal chat, or as a multi-agent
+plan → execute → review workflow — and is growing into the runtime that
+coordinates specialized agents across MiKode projects.
 
 ## Motivation
 
@@ -26,31 +27,64 @@ there is at least one real consumer.
 
 ## What it does today
 
-An interactive terminal chat backed by the OpenAI Codex SDK:
+An interactive terminal chat, backed by one `Agent` — a single engine, or a full
+multi-agent workflow, chosen entirely by what gets wired up in `index.ts`; the
+chat loop itself never knows the difference.
 
-- Prompt loop built on `node:readline/promises`, with a single active question at
-  a time (a design that removes a whole class of concurrency bugs).
-- Clean exit via `exit` or Ctrl+C, both going through the same confirmation flow.
+- **A provider-agnostic `Agent` contract** (`run(prompt, signal, callback)`) with
+  two real implementations, `CodexAgent` and `ClaudeAgent` — swapping one for the
+  other, anywhere in the composition, changes nothing else.
+- **Conversation continuity for free** in both engines: Codex reuses one `Thread`
+  across turns; Claude resumes via a captured `session_id` — the engine keeps
+  context server-side either way.
+- **`OrchestratorAgent`**: coordinates a planner, an executor, and a reviewer
+  (each an injected `Agent`) in a plan → execute → review loop. The reviewer's
+  decision is a Zod-validated structured `{decision, feedback}`, not free text —
+  a rejected or malformed decision retries with the reason fed back, bounded by
+  `maxAttempts`, converting to `UnrecoverableError` only once exhausted. A
+  malformed reviewer response retries only the reviewer call, not the whole
+  cycle. Because it implements `Agent` itself, the chat loop drives it exactly
+  like it drives a bare engine.
+- **Live progress streaming**: every engine reports ongoing activity (tool
+  calls, searches, file changes, reasoning) through a typed `ProgressEvent`
+  callback, separate from the final response — so an agent's own words never
+  get mixed with narration of what it did to produce them, and a caller (the
+  CLI today, a future web UI) decides how to render it.
+- **Retry policy** (`RetryingAgent`) wraps individual agents, not whole
+  workflows — a transient failure in one sub-agent is absorbed locally, without
+  redoing another sub-agent's already-successful work.
 - Cancellation with `AbortController`/`AbortSignal`, shared between the prompt
-  and the agent call.
-- Conversation continuity for free: one Codex `Thread` is reused across turns,
-  so the engine keeps the context server-side.
-- Model pinned by the harness (currently `gpt-5.6-sol`) — the user of the chat
-  never chooses, or sees, which model runs behind it.
+  and every agent call, all the way down through the orchestrator.
 
 ## Where it is going
 
-The agreed sequence (see `tasks.txt` for the actionable list):
+Remaining work (see `tasks.txt` for the actionable, dated list):
 
-1. A user-owned `Agent` interface with a normalized `AgentResult`, so the loop
-   depends on a contract instead of a concrete SDK.
-2. A second implementation (Claude Agent SDK) to prove the abstraction.
-3. Minimal traceability: per-turn usage, duration, retries.
-4. A first workflow as a plain function: **plan (sol) → execute (terra) →
-   review (opus)**, looping until the reviewer approves.
+- Live streaming already ships; still open: type-while-thinking (respond to
+  new input without blocking on the current agent call), session persistence
+  across process restarts, and structured per-turn usage/duration logging.
+- Terminal UX polish (bordered chat box, markdown rendering, user-friendly
+  error messages) — explicitly deferred until the above is solid.
+- Dynamic routing (deciding which flow/agent a request needs, instead of
+  always running the fixed plan → execute → review workflow) — deliberately
+  built *after* that fixed flow, not alongside it, so the routing decision
+  reuses a technique already proven on a simpler problem.
 
-Deliberately out of scope for now: MCP, dynamic routing, long-term memory, graph
-execution, and file-based agent registries — each waits for a real need.
+Deliberately out of scope for now: MCP, long-term memory, graph execution, and
+file-based agent registries — each waits for a real need.
+
+## Adding an engine
+
+A new provider only needs one thing to compose safely into everything above:
+**it must only ever reject with `RecoverableError` or `UnrecoverableError`**
+(`src/models/errors.ts`), never a raw SDK error. `RetryingAgent` and
+`OrchestratorAgent` both decide what to do next by `instanceof`-checking
+against those two types; anything else leaking through bypasses that decision
+entirely — it gets retried when it shouldn't be, or takes down a whole run
+that a retry would have recovered. Wrap every call into the underlying SDK,
+including failures the SDK itself doesn't model as a domain error (network
+errors, malformed responses). See the doc comment on `Agent` in
+`src/models/agent.ts`.
 
 ## Install
 
