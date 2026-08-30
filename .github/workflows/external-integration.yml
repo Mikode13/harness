@@ -1,0 +1,40 @@
+name: External provider integration
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: external-provider-integration
+  cancel-in-progress: false
+
+jobs:
+  external:
+    name: External provider tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - name: Check provider credentials
+        run: test -n "$CODEX_API_KEY" && test -n "$ANTHROPIC_API_KEY"
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run external provider tests
+        run: pnpm run test:integration:external

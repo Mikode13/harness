@@ -2,9 +2,9 @@
 	"extends": "@mikode13/tsconfig/node",
 	"compilerOptions": {
 		"outDir": "dist",
-		"rootDir": "src",
+		"rootDir": ".",
 		"types": ["node"],
 		"rewriteRelativeImportExtensions": true
 	},
-	"include": ["src"]
+	"include": ["src", "bin"]
 }

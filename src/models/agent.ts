@@ -52,8 +52,12 @@ export function handleEvents(item: ProgressEvent): string | undefined {
 			if (!item.query) return undefined;
 			return `searching... query:${item.query}`;
 		case 'fileChange':
+			if (!item.changes.length) return undefined;
+
 			return item.changes.map(change => `${change.path} - ${change.kind}`).join('\n');
 		case 'todoList':
+			if (!item.items.length) return undefined;
+
 			return item.items
 				.map(todoItem => `${todoItem.text} - status:${todoItem.completed ? '✔' : 'X'}`)
 				.join('\n');

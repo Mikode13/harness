@@ -1,6 +1,6 @@
 allowBuilds:
   # Native binary resolution for eslint-import-resolver-typescript (via eslint-plugin-import-x).
   unrs-resolver: true
-  # Harmless `only-allow pnpm` preinstall guard carried over from the shared packages' own repos.
-  '@mikode13/tsconfig': true
-  '@mikode13/code-quality': true
+  # Explicitly deny inherited only-allow-pnpm guards; consumers do not need them.
+  '@mikode13/code-quality': false
+  '@mikode13/tsconfig': false

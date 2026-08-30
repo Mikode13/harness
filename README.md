@@ -92,6 +92,31 @@ errors, malformed responses). See the doc comment on `Agent` in
 pnpm add @mikode13/harness
 ```
 
+## Tests
+
+The default test command runs the unit tests and the local integration workflow;
+both use deterministic fakes and do not contact a provider. The provider boundary
+tests are intentionally separate:
+
+```sh
+pnpm run test:integration:external
+```
+
+That command runs one small, read-only prompt against each SDK. It requires
+`CODEX_API_KEY` and `ANTHROPIC_API_KEY` in the environment and fails closed when
+either is missing. For an intentional local opt-out, use
+`EXTERNAL_TESTS=skip pnpm run test:integration:external`; this must not be used
+by the scheduled workflow. A real run incurs the normal provider API cost; the
+exact cost depends on the models and provider pricing. The external suite is
+never part of `pnpm test`, `pnpm run check`, or required CI.
+
+GitHub runs it manually or every Monday through
+[the external integration workflow](./.github/workflows/external-integration.yml).
+The repository maintainer owns failures caused by this package; authentication,
+quota, provider availability, pricing, and model retirement or renaming failures
+belong to the relevant provider account and should be diagnosed before changing
+harness code. Never commit either credential.
+
 ## Usage
 
 Run the chat from the repository (Node 24+, TypeScript executed natively):

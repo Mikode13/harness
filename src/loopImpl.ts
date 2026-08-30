@@ -1,22 +1,21 @@
 import type { ILoop } from './models/loopInterface.ts';
-import * as readline from 'node:readline/promises';
-import { clearLine, cursorTo } from 'node:readline';
-import { stdin as input, stdout as output } from 'node:process';
 import type { Agent, Callback } from './models/agent.ts';
 import { isAbortError, UnrecoverableError } from './models/errors.ts';
+import { createReadlineTerminal, type LoopTerminal } from './terminal.ts';
 
 export class Loop implements ILoop {
-	private rl: readline.Interface;
+	private readonly terminal: LoopTerminal;
+	private readonly unsubscribeFromInterrupt: () => void;
 	private abortController?: AbortController;
 	private agent: Agent;
 	private callback: Callback;
 
-	constructor(agent: Agent, callback: Callback) {
+	constructor(agent: Agent, callback: Callback, terminal: LoopTerminal = createReadlineTerminal()) {
 		this.agent = agent;
 		this.callback = callback;
-		this.rl = readline.createInterface({ input, output });
+		this.terminal = terminal;
 
-		this.rl.on('SIGINT', () => {
+		this.unsubscribeFromInterrupt = this.terminal.onInterrupt(() => {
 			this.handleSigint();
 		});
 	}
@@ -29,9 +28,10 @@ export class Loop implements ILoop {
 		try {
 			this.abortController = new AbortController();
 
-			const reply = await this.rl.question('Are you sure you want to exit? ', {
-				signal: this.abortController.signal,
-			});
+			const reply = await this.terminal.question(
+				'Are you sure you want to exit? ',
+				this.abortController.signal,
+			);
 			if (/^y(es)?$/i.exec(reply)) {
 				return true;
 			}
@@ -40,7 +40,7 @@ export class Loop implements ILoop {
 			if (isAbortError(e)) {
 				return this.confirmExit();
 			}
-			console.error(e);
+			this.terminal.error(e);
 			return false;
 		}
 	}
@@ -53,32 +53,30 @@ export class Loop implements ILoop {
 		while (true) {
 			try {
 				this.abortController = new AbortController();
-				const prompt = await this.rl.question('> ', {
-					signal: this.abortController.signal,
-				});
+				const prompt = await this.terminal.question('> ', this.abortController.signal);
 
 				const spinnerId = setInterval(() => {
 					// eslint-disable-next-line @typescript-eslint/restrict-plus-operands -- noUncheckedIndexedAccess types frames[i] as string | undefined, but `frame % frames.length` is always a valid index into the non-empty `frames` array
-					process.stdout.write('\r' + frames[frame % frames.length]);
+					this.terminal.write('\r' + frames[frame % frames.length]);
 					frame++;
 				}, 80);
 				let agentResponse;
 				try {
 					agentResponse = await this.agent.run(prompt, this.abortController.signal, item => {
-						cursorTo(output, 0);
-						clearLine(output, 0);
+						this.terminal.cursorToStart();
+						this.terminal.clearLine();
 						this.callback(item);
 					});
 				} finally {
-					cursorTo(output, 0);
-					clearLine(output, 0);
+					this.terminal.cursorToStart();
+					this.terminal.clearLine();
 					clearInterval(spinnerId);
 				}
 				if (agentResponse) {
-					console.log('usage:');
-					console.log(`duration: ${String(agentResponse.duration)}s`);
-					console.log(`inputTokens: ${String(agentResponse.inputTokens)}`);
-					console.log(`outputTokens: ${String(agentResponse.outputTokens)}`);
+					this.terminal.log('usage:');
+					this.terminal.log(`duration: ${String(agentResponse.duration)}s`);
+					this.terminal.log(`inputTokens: ${String(agentResponse.inputTokens)}`);
+					this.terminal.log(`outputTokens: ${String(agentResponse.outputTokens)}`);
 				}
 			} catch (e) {
 				if (isAbortError(e)) {
@@ -89,17 +87,18 @@ export class Loop implements ILoop {
 				}
 
 				if (e instanceof UnrecoverableError) {
-					console.log(e);
+					this.terminal.log(e);
 					break;
 				}
 
-				console.error(e);
+				this.terminal.error(e);
 			}
 		}
 	}
 
 	close(): void {
-		this.rl.close();
-		console.log('thanks, bye!');
+		this.unsubscribeFromInterrupt();
+		this.terminal.close();
+		this.terminal.log('thanks, bye!');
 	}
 }

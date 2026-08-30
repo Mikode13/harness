@@ -14,6 +14,9 @@
 	"packageManager": "pnpm@11.17.0",
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
+	"bin": {
+		"mikode": "./dist/bin/cli.js"
+	},
 	"exports": {
 		".": "./dist/index.js"
 	},
@@ -33,10 +36,12 @@
 		"format:check": "prettier . --check",
 		"lint": "eslint . --max-warnings 0",
 		"lint:fix": "eslint . --fix",
-		"test": "pnpm run test:unit",
+		"test": "vitest run --project unit --project integration",
 		"test:unit": "vitest run --project unit",
 		"test:unit:watch": "vitest --project unit",
-		"test:coverage": "vitest run --project unit --coverage",
+		"test:integration": "vitest run --project integration",
+		"test:integration:external": "vitest run --project external",
+		"test:coverage": "vitest run --project unit --project integration --coverage",
 		"pack:check": "pnpm pack --dry-run",
 		"check": "pnpm run format:check && pnpm run lint && pnpm run typecheck"
 	},
