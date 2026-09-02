@@ -64,12 +64,12 @@ describe('OrchestratorAgent', () => {
 			callback,
 		);
 		expect(planner.run).toHaveBeenCalledWith(
-			expect.stringContaining('mikode-skills:mikode-code-philosophy'),
+			expect.stringContaining('engineering-grade plan'),
 			signal,
 			callback,
 		);
 		expect(planner.run).toHaveBeenCalledWith(
-			expect.stringContaining('do not require an architecture skill yet'),
+			expect.stringContaining('do not require an architecture redesign yet'),
 			signal,
 			callback,
 		);
@@ -84,7 +84,7 @@ describe('OrchestratorAgent', () => {
 			callback,
 		);
 		expect(executor.run).toHaveBeenCalledWith(
-			expect.stringContaining('mikode-skills:mikode-code-philosophy'),
+			expect.stringContaining('Preserve contracts and boundaries'),
 			signal,
 			callback,
 		);
@@ -106,7 +106,7 @@ describe('OrchestratorAgent', () => {
 			callback,
 		);
 		expect(reviewer.run).toHaveBeenCalledWith(
-			expect.stringContaining('mikode-skills:mikode-code-philosophy-review'),
+			expect.stringContaining('Independently inspect the repository'),
 			signal,
 			callback,
 		);

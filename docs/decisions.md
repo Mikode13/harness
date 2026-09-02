@@ -299,3 +299,51 @@ tags: #mikode-harness #error-handling #observability
 **Consequences:** a bug that produces an unexpected error type is now visible immediately, at the cost of one extra `console.error` line.
 
 **Lesson:** a catch block's default branch should never be "do nothing" — even when every case you can think of is handled explicitly above it, the fallback is what protects you from the case you didn't think of; make it loud, not silent.
+
+---
+
+## Harness as a reusable core package, CLI as a separate consumer
+
+tags: #mikode-harness #architecture #package-design
+
+**Decision:** separate the harness into a core npm package (`@mikode13/harness`, exports only `Loop`, `Agent`, interfaces, and orchestrator classes) and a separate executable consumer (`bin/cli.ts`, which imports from `src/` and instantiates the orchestrator for interactive terminal use).
+
+**Context:** the harness started as a single executable with hardcoded models and orchestrator setup in `index.ts`. The goal was to enable multiple consumers (CLI, chatbot UI, future integration in other projects) to use the harness core independently, each bringing their own configuration, orchestration strategy, and I/O layer.
+
+**Alternatives considered:** keep everything in one package and handle consumer-specific setup through build flags or runtime config. Rejected — the risk of CLI-specific dependencies leaking into the core package, and the core carrying unused configuration concerns for consumers that don't need them.
+
+**Consequences:** the harness package is now import-clean (no `index.ts` side effects or executable code), and consumers can depend on `@mikode13/harness` as a library without inheriting terminal or CLI concerns. The CLI still works locally, consuming from `src/` during development, and compiles to `dist/bin/cli.js` for installation.
+
+**Lesson:** a shared library should have zero opinions about how it's invoked or configured — the package itself should export only abstractions; every concrete choice (which model, which orchestrator, how to read input, where to print output) belongs to a consumer layer that imports the package, not inside it.
+
+---
+
+## LoopTerminal: abstractions for I/O instead of hardcoded readline
+
+tags: #mikode-harness #abstraction #testability
+
+**Decision:** `Loop` no longer imports `readline` directly. Instead, it depends on a `LoopTerminal` interface with methods like `question()`, `onInterrupt()`, `log()`, `write()`, `clearLine()`, etc. A factory function `createReadlineTerminal()` produces the default Node.js `readline` implementation; other transports can provide different implementations.
+
+**Context:** `Loop` was deeply coupled to Node's `readline` module and `process.stdout/stdin`, making it impossible to test without capturing stdout or inject a different transport (websocket, REST, etc.) in a future consumer like the chatbot UI.
+
+**Alternatives considered:** keep readline as-is but mock it in tests. Rejected — testing doesn't reveal the real blocker: the hardcoded i/o layer prevented the harness core from being useful in non-terminal contexts without forking and rewriting that code.
+
+**Consequences:** `Loop` is now transport-agnostic. It accepts a `LoopTerminal` in its constructor (defaulting to readline), so tests can inject a fake, and future consumers (web UI, REST API) can provide their own implementation without modifying the harness.
+
+**Lesson:** when a core component (agent loop) hard-couples to a specific I/O mechanism (terminal readline), it becomes unusable as a reusable library — the abstraction layer should be inside the core, not a wrapper around it.
+
+---
+
+## Generic orchestrator prompts, not hardcoded skill names
+
+tags: #mikode-harness #prompt-design #reusability
+
+**Decision:** the planner, executor, and reviewer prompts no longer mention specific skill names like `mikode-skills:mikode-code-philosophy`. Instead, prompts describe the engineering principles and judgment directly (e.g., "preserve contracts and boundaries" instead of "apply the mikode-code-philosophy skill").
+
+**Context:** the prompts referenced MiKode-specific skills, coupling the harness to MiKode's skill ecosystem. If the harness is published or used in a different context (e.g., internal tools at a company with its own skill catalog, or a project without skills at all), the hardcoded references would be misleading or wrong.
+
+**Alternatives considered:** make skills configurable via dependency injection into the prompts. Rejected for now — the agents already have access to the skills (via tools), and a well-written prompt doesn't need to name them explicitly to guide a capable agent toward using them. Deferring injection to a future phase keeps this simpler.
+
+**Consequences:** the prompts are now generic and reusable; they rely on the model's native judgment and the available tools, not on MiKode-specific conventions. If a consumer wants to surface specific methodologies, they can wrap the orchestrator with additional context or a different model.
+
+**Lesson:** when a core component references external conventions by name, it's declaring a hard dependency on those conventions existing and being recognized everywhere the component is used — omit the name, state the principle, and let tools and context carry the specifics instead.

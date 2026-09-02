@@ -1,6 +1,15 @@
 #!/usr/bin/env node
 
-import { Loop, CodexAgent, ClaudeAgent, RetryingAgent, OrchestratorAgent, handleEvents, createReadlineTerminal, type ProgressEvent } from '../src/index.ts';
+import {
+	Loop,
+	CodexAgent,
+	ClaudeAgent,
+	RetryingAgent,
+	OrchestratorAgent,
+	handleEvents,
+	createReadlineTerminal,
+	type ProgressEvent,
+} from '../src/index.ts';
 import { Codex } from '@openai/codex-sdk';
 
 const codex = new Codex();
@@ -30,12 +39,16 @@ const orchestratorAgent = new OrchestratorAgent(
 );
 
 const terminal = createReadlineTerminal();
-const loop = new Loop(orchestratorAgent, (item: ProgressEvent) => {
-	const message = handleEvents(item);
-	if (message) {
-		terminal.log(message);
-	}
-}, terminal);
+const loop = new Loop(
+	orchestratorAgent,
+	(item: ProgressEvent) => {
+		const message = handleEvents(item);
+		if (message) {
+			terminal.log(message);
+		}
+	},
+	terminal,
+);
 
 await loop.start();
 loop.close();
