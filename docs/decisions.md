@@ -347,3 +347,20 @@ tags: #mikode-harness #prompt-design #reusability
 **Consequences:** the prompts are now generic and reusable; they rely on the model's native judgment and the available tools, not on MiKode-specific conventions. If a consumer wants to surface specific methodologies, they can wrap the orchestrator with additional context or a different model.
 
 **Lesson:** when a core component references external conventions by name, it's declaring a hard dependency on those conventions existing and being recognized everywhere the component is used — omit the name, state the principle, and let tools and context carry the specifics instead.
+
+---
+
+## Split LoopTerminal into two single-responsibility ports, not one growing interface
+
+tags: #mikode-harness #architecture #interface-segregation
+
+**Decision:** `LoopTerminal` (one interface bundling `question`, `onInterrupt`, `log`, `write`, `clearLine`) is gone. `ConversationLoop` (renamed from `Loop`) now depends on two focused ports instead: `IPromptEmitter` (`emit`, `close`) and `ILogger` (`log`, `error`). Terminal presentation that isn't a core concern at all — the spinner, cursor control — moved out of any shared interface entirely and lives only in the CLI composition root (`scripts/cli.ts`, moved from `bin/cli.ts`), alongside the rest of `src/` reorganized into one folder per bounded module (`agent`, `conversationLoop`, `engines/{claude,codex}`, `orchestration`, `retry`, `shared`), each split into `domain`/`infrastructure`.
+
+**Context:** `LoopTerminal` was introduced to decouple the loop from a hardcoded `readline` import. As more was hung off it, it turned out to bundle two genuinely different responsibilities — turn-taking I/O and logging — plus terminal cursor control that no consumer actually needed as part of a _shared_ contract; it was CLI presentation detail, not something a future web consumer would ever implement.
+
+**Alternatives considered:** keep one `LoopTerminal` and just keep adding methods as new needs appeared. Rejected — every concrete implementation and every test fake was already only using part of it, the classic sign an interface has stopped tracking one responsibility.
+
+**Consequences:** `ConversationLoop`'s dependencies are two minimal, independently fakeable ports instead of one broad one; the spinner/cursor logic in `scripts/cli.ts` doesn't need an abstraction at all, since it has exactly one implementation and one caller. Also fixed in this same pass: `ConversationLoop.cancel()` now distinguishes "abort the in-flight turn" from "exit the idle loop" (verified by dedicated tests), and the package's public entry point exports `RecoverableError` and `AgentResponse` alongside what was already exported — both are required by `Agent`'s own documented contract, so a consumer implementing a custom engine could not previously comply with it.
+
+**Lesson:** an interface that started minimal can still accumulate more than one responsibility as consumers add methods to it one at a time — the useful check isn't "does everything still compile," it's "does every implementation and every consumer actually use all of it," and splitting along the boundary consumers already respect is cheaper the earlier it happens.
+
