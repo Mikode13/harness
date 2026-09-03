@@ -64,14 +64,18 @@ const orchestratorAgent = new OrchestratorAgent(
 const logger = new Logger();
 const promptEmitter = new PromptEmitter();
 
+let turnActive = false;
+
 const loop = new ConversationLoop(
 	orchestratorAgent,
 	(item: ProgressEvent) => {
 		if (item.type === 'turnStarted') {
+			turnActive = true;
 			startSpinner();
 			return;
 		}
 		if (item.type === 'turnEnded') {
+			turnActive = false;
 			stopSpinner();
 			return;
 		}
@@ -91,8 +95,14 @@ const exitConfirmationWindowMs = 3000;
 let cancelRequestedAt: number | undefined;
 
 function onCancel(): void {
+	if (turnActive) {
+		loop.cancel();
+		return;
+	}
+
 	const now = Date.now();
 	if (cancelRequestedAt !== undefined && now - cancelRequestedAt < exitConfirmationWindowMs) {
+		cancelRequestedAt = undefined;
 		loop.cancel();
 		return;
 	}
