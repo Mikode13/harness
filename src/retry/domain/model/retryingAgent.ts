@@ -1,5 +1,6 @@
-import type { Agent, AgentResponse, Callback } from './models/agent.ts';
-import { isAbortError, RecoverableError, UnrecoverableError } from './models/errors.ts';
+import type { Agent, AgentResponse, Callback } from '../../../agent/domain/agent.ts';
+import { RecoverableError, UnrecoverableError } from '../../../agent/domain/errors.ts';
+import { isAbortError } from '../../../shared/domain/isAbortError.ts';
 
 export class RetryingAgent implements Agent {
 	private inner: Agent;

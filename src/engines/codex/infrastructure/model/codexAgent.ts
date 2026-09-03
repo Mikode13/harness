@@ -11,8 +11,8 @@ import {
 	type AgentResponse,
 	type Callback,
 	type ProgressEvent,
-} from './models/agent.ts';
-import { RecoverableError, UnrecoverableError } from './models/errors.ts';
+} from '../../../../agent/domain/agent.ts';
+import { RecoverableError, UnrecoverableError } from '../../../../agent/domain/errors.ts';
 
 type Model = 'gpt-5.6-sol' | 'gpt-5.6-luna';
 

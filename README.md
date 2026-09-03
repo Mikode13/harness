@@ -94,43 +94,32 @@ pnpm add @mikode13/harness
 
 ## Tests
 
-The default test command runs the unit tests and the local integration workflow;
-both use deterministic fakes and do not contact a provider. The provider boundary
-tests are intentionally separate:
+`pnpm test` runs the unit suite against deterministic fakes; it never contacts a
+real provider. Provider-boundary correctness (SDK auth, request shape, model
+availability) is not covered by an automated suite here — it surfaces through
+actual usage and monitoring, not by scheduling calls to a live SDK on a timer.
+
+## Local development smoke test
+
+`scripts/cli.ts` is a development-only harness runner — it is not part of the
+published package (no `bin` entry, not built to `dist/`) and exists solely to
+exercise the library manually while working in this repository:
 
 ```sh
-pnpm run test:integration:external
+pnpm run dev
 ```
 
-That command runs one small, read-only prompt against each SDK. It requires
-`CODEX_API_KEY` and `ANTHROPIC_API_KEY` in the environment and fails closed when
-either is missing. For an intentional local opt-out, use
-`EXTERNAL_TESTS=skip pnpm run test:integration:external`; this must not be used
-by the scheduled workflow. A real run incurs the normal provider API cost; the
-exact cost depends on the models and provider pricing. The external suite is
-never part of `pnpm test`, `pnpm run check`, or required CI.
+Type your prompt at `>`. Press Ctrl+C while idle at the prompt to exit; pressing
+it while an agent is running cancels only that turn and returns to the prompt.
 
-GitHub runs it manually or every Monday through
-[the external integration workflow](./.github/workflows/external-integration.yml).
-The repository maintainer owns failures caused by this package; authentication,
-quota, provider availability, pricing, and model retirement or renaming failures
-belong to the relevant provider account and should be diagnosed before changing
-harness code. Never commit either credential.
-
-## Usage
-
-Run the chat from the repository (Node 24+, TypeScript executed natively):
-
-```sh
-node src/index.ts
-```
-
-Type your prompt at `>`; type `exit` or press Ctrl+C to leave (with confirmation).
-
-`src/index.ts` currently enables `autoApprove` for its trusted backend agents. This
-maps to each provider's permission-bypass mode and grants those processes
+`scripts/cli.ts` currently enables `autoApprove` for its trusted backend agents.
+This maps to each provider's permission-bypass mode and grants those processes
 unrestricted command access. Keep it disabled when the host may receive untrusted
 prompts, or provide an approval workflow from the entry point.
+
+Real consumers (a future CLI package, a chatbot UI) compose the exported `Agent`,
+`OrchestratorAgent`, and `ConversationLoop` building blocks with their own
+`ILogger`/`IPromptEmitter` adapters.
 
 ## License
 

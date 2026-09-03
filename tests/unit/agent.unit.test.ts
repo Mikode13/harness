@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { handleEvents, type ProgressEvent } from '../../src/models/agent.ts';
+import { handleEvents, type ProgressEvent } from '../../src/agent/domain/agent.ts';
 
 describe('handleEvents', () => {
 	it.each([
@@ -43,6 +43,8 @@ describe('handleEvents', () => {
 		[{ type: 'search', query: '' }, undefined],
 		[{ type: 'fileChange', changes: [] }, undefined],
 		[{ type: 'todoList', items: [] }, undefined],
+		[{ type: 'turnStarted' }, undefined],
+		[{ type: 'turnEnded' }, undefined],
 	] satisfies [ProgressEvent, string | undefined][])(
 		'handles missing event data: %s',
 		(event, expected) => {

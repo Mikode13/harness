@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { OrchestratorAgent } from '../../src/orchestratorAgent.ts';
-import type { Agent, AgentResponse } from '../../src/models/agent.ts';
-import { UnrecoverableError } from '../../src/models/errors.ts';
+import { OrchestratorAgent } from '../../src/orchestration/domain/model/orchestratorAgent.ts';
+import type { Agent, AgentResponse } from '../../src/agent/domain/agent.ts';
+import { UnrecoverableError } from '../../src/agent/domain/errors.ts';
+import { ReviewerDecisionValidator } from '../../src/orchestration/infrastructure/model/reviewerDecisionValidator.ts';
 
 function createResponse(overrides: Partial<AgentResponse> = {}): AgentResponse {
 	return {
@@ -47,7 +48,12 @@ describe('OrchestratorAgent', () => {
 				duration: 7,
 			}),
 		);
-		const orchestrator = new OrchestratorAgent(planner.agent, executor.agent, reviewer.agent);
+		const orchestrator = new OrchestratorAgent(
+			planner.agent,
+			executor.agent,
+			reviewer.agent,
+			new ReviewerDecisionValidator(),
+		);
 		const signal = new AbortController().signal;
 		const callback = vi.fn();
 
@@ -137,7 +143,12 @@ describe('OrchestratorAgent', () => {
 			createResponse({ response: '{"decision":"rejected","feedback":"add coverage"}' }),
 			createResponse({ response: '{"decision":"approved"}' }),
 		);
-		const orchestrator = new OrchestratorAgent(planner.agent, executor.agent, reviewer.agent);
+		const orchestrator = new OrchestratorAgent(
+			planner.agent,
+			executor.agent,
+			reviewer.agent,
+			new ReviewerDecisionValidator(),
+		);
 		const signal = new AbortController().signal;
 		const callback = vi.fn();
 
@@ -207,7 +218,12 @@ describe('OrchestratorAgent', () => {
 			createResponse({ response: 'not json' }),
 			createResponse({ response: '{"decision":"approved"}' }),
 		);
-		const orchestrator = new OrchestratorAgent(planner.agent, executor.agent, reviewer.agent);
+		const orchestrator = new OrchestratorAgent(
+			planner.agent,
+			executor.agent,
+			reviewer.agent,
+			new ReviewerDecisionValidator(),
+		);
 		const signal = new AbortController().signal;
 		const callback = vi.fn();
 
@@ -230,7 +246,13 @@ describe('OrchestratorAgent', () => {
 		const planner = createFakeAgent(createResponse({ response: 'draft plan' }));
 		const executor = createFakeAgent(createResponse({ response: 'implementation' }));
 		const reviewer = createFakeAgent(undefined);
-		const orchestrator = new OrchestratorAgent(planner.agent, executor.agent, reviewer.agent, 1);
+		const orchestrator = new OrchestratorAgent(
+			planner.agent,
+			executor.agent,
+			reviewer.agent,
+			new ReviewerDecisionValidator(),
+			1,
+		);
 
 		await expect(
 			orchestrator.run('ship feature', new AbortController().signal, vi.fn()),
@@ -258,7 +280,13 @@ describe('OrchestratorAgent', () => {
 			const planner = createFakeAgent(createResponse({ response: 'draft plan' }));
 			const executor = createFakeAgent(createResponse({ response: 'implementation' }));
 			const reviewer = createFakeAgent(createResponse({ response }));
-			const orchestrator = new OrchestratorAgent(planner.agent, executor.agent, reviewer.agent, 1);
+			const orchestrator = new OrchestratorAgent(
+				planner.agent,
+				executor.agent,
+				reviewer.agent,
+				new ReviewerDecisionValidator(),
+				1,
+			);
 
 			await expect(
 				orchestrator.run('ship feature', new AbortController().signal, vi.fn()),
@@ -282,7 +310,13 @@ describe('OrchestratorAgent', () => {
 			createResponse({ response: '{"decision":"rejected","feedback":"first feedback"}' }),
 			createResponse({ response: '{"decision":"rejected","feedback":"latest feedback"}' }),
 		);
-		const orchestrator = new OrchestratorAgent(planner.agent, executor.agent, reviewer.agent, 2);
+		const orchestrator = new OrchestratorAgent(
+			planner.agent,
+			executor.agent,
+			reviewer.agent,
+			new ReviewerDecisionValidator(),
+			2,
+		);
 		const error = orchestrator.run('ship feature', new AbortController().signal, vi.fn());
 
 		await expect(error).rejects.toBeInstanceOf(UnrecoverableError);
@@ -304,7 +338,13 @@ describe('OrchestratorAgent', () => {
 			const planner = createFakeAgent(plannerResponse);
 			const executor = createFakeAgent();
 			const reviewer = createFakeAgent();
-			const orchestrator = new OrchestratorAgent(planner.agent, executor.agent, reviewer.agent, 1);
+			const orchestrator = new OrchestratorAgent(
+				planner.agent,
+				executor.agent,
+				reviewer.agent,
+				new ReviewerDecisionValidator(),
+				1,
+			);
 
 			const error = orchestrator.run('ship feature', new AbortController().signal, vi.fn());
 
@@ -327,7 +367,13 @@ describe('OrchestratorAgent', () => {
 			const planner = createFakeAgent(createResponse({ response: 'draft plan' }));
 			const executor = createFakeAgent(executorResponse);
 			const reviewer = createFakeAgent();
-			const orchestrator = new OrchestratorAgent(planner.agent, executor.agent, reviewer.agent, 1);
+			const orchestrator = new OrchestratorAgent(
+				planner.agent,
+				executor.agent,
+				reviewer.agent,
+				new ReviewerDecisionValidator(),
+				1,
+			);
 
 			const error = orchestrator.run('ship feature', new AbortController().signal, vi.fn());
 
@@ -345,8 +391,15 @@ describe('OrchestratorAgent', () => {
 		const executor = createFakeAgent();
 		const reviewer = createFakeAgent();
 
-		expect(() => new OrchestratorAgent(planner.agent, executor.agent, reviewer.agent, 0)).toThrow(
-			RangeError,
-		);
+		expect(
+			() =>
+				new OrchestratorAgent(
+					planner.agent,
+					executor.agent,
+					reviewer.agent,
+					new ReviewerDecisionValidator(),
+					0,
+				),
+		).toThrow(RangeError);
 	});
 });

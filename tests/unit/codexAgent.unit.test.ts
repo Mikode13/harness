@@ -1,7 +1,7 @@
 import type { Codex, Thread, ThreadEvent, ThreadItem, Usage } from '@openai/codex-sdk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CodexAgent } from '../../src/codexAgent.ts';
-import type { ProgressEvent } from '../../src/models/agent.ts';
+import { CodexAgent } from '../../src/engines/codex/infrastructure/model/codexAgent.ts';
+import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
 
 function streamedTurn(events: ThreadEvent[]): { events: AsyncGenerator<ThreadEvent> } {
 	return {

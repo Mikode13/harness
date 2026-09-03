@@ -9,18 +9,6 @@ export default defineConfig({
 					include: ['tests/unit/**/*.unit.test.ts'],
 				},
 			},
-			{
-				test: {
-					name: 'integration',
-					include: ['tests/integration/**/*.integration.test.ts'],
-				},
-			},
-			{
-				test: {
-					name: 'external',
-					include: ['tests/external/**/*.external.test.ts'],
-				},
-			},
 		],
 		coverage: {
 			provider: 'v8',

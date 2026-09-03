@@ -1,10 +1,19 @@
-export { Loop } from './loopImpl.ts';
-export type { ILoop } from './models/loopInterface.ts';
-export { CodexAgent } from './codexAgent.ts';
-export { ClaudeAgent } from './claudeAgent.ts';
-export { RetryingAgent } from './retryingAgent.ts';
-export { OrchestratorAgent } from './orchestratorAgent.ts';
-export { handleEvents, type Agent, type Callback, type ProgressEvent } from './models/agent.ts';
-export { isAbortError, UnrecoverableError } from './models/errors.ts';
-export type { LoopTerminal, ReadlineInput, TerminalOutput } from './terminal.ts';
-export { createReadlineTerminal, ReadlineTerminal } from './terminal.ts';
+export { ConversationLoop } from './conversationLoop/domain/model/conversationLoop.ts';
+export type { IConversationLoop } from './conversationLoop/domain/interface/conversationLoop.ts';
+export type { ILogger } from './conversationLoop/domain/interface/logger.ts';
+export type { IPromptEmitter } from './conversationLoop/domain/interface/promptEmitter.ts';
+export { CodexAgent } from './engines/codex/infrastructure/model/codexAgent.ts';
+export { ClaudeAgent } from './engines/claude/infrastructure/model/claudeAgent.ts';
+export { RetryingAgent } from './retry/domain/model/retryingAgent.ts';
+export { OrchestratorAgent } from './orchestration/domain/model/orchestratorAgent.ts';
+export {
+	handleEvents,
+	type Agent,
+	type Callback,
+	type ProgressEvent,
+} from './agent/domain/agent.ts';
+export { UnrecoverableError } from './agent/domain/errors.ts';
+export { isAbortError } from './shared/domain/isAbortError.ts';
+export type { ReviewerDecision } from './orchestration/domain/model/reviewerDecision.ts';
+export type { Validator } from './orchestration/domain/interface/validator.ts';
+export { ReviewerDecisionValidator } from './orchestration/infrastructure/model/reviewerDecisionValidator.ts';
