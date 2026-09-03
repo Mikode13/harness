@@ -9,10 +9,11 @@ export { OrchestratorAgent } from './orchestration/domain/model/orchestratorAgen
 export {
 	handleEvents,
 	type Agent,
+	type AgentResponse,
 	type Callback,
 	type ProgressEvent,
 } from './agent/domain/agent.ts';
-export { UnrecoverableError } from './agent/domain/errors.ts';
+export { RecoverableError, UnrecoverableError } from './agent/domain/errors.ts';
 export { isAbortError } from './shared/domain/isAbortError.ts';
 export type { ReviewerDecision } from './orchestration/domain/model/reviewerDecision.ts';
 export type { Validator } from './orchestration/domain/interface/validator.ts';
