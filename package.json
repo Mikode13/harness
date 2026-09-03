@@ -27,7 +27,7 @@
 		"preinstall": "npx only-allow pnpm",
 		"prepare": "mikode-git-hooks install",
 		"prepack": "pnpm run build",
-		"build": "tsc -p tsconfig.build.json",
+		"build": "rm -rf dist && tsc -p tsconfig.build.json",
 		"typecheck": "tsc --noEmit && tsc --noEmit -p tests",
 		"format": "prettier . --write",
 		"format:check": "prettier . --check",
