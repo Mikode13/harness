@@ -306,6 +306,8 @@ tags: #mikode-harness #error-handling #observability
 
 tags: #mikode-harness #architecture #package-design
 
+superseded by: "ConversationLoop is a consumption pattern, not the harness seam" (below) — the CLI entry point has since moved again, from `bin/cli.ts` to `scripts/cli.ts` to its own `cli/` workspace project; the package's export list has also grown well past `Loop`/`Agent`/interfaces/orchestrator classes. Reasoning and lesson below remain valid.
+
 **Decision:** separate the harness into a core npm package (`@mikode13/harness`, exports only `Loop`, `Agent`, interfaces, and orchestrator classes) and a separate executable consumer (`bin/cli.ts`, which imports from `src/` and instantiates the orchestrator for interactive terminal use).
 
 **Context:** the harness started as a single executable with hardcoded models and orchestrator setup in `index.ts`. The goal was to enable multiple consumers (CLI, chatbot UI, future integration in other projects) to use the harness core independently, each bringing their own configuration, orchestration strategy, and I/O layer.
@@ -321,6 +323,8 @@ tags: #mikode-harness #architecture #package-design
 ## LoopTerminal: abstractions for I/O instead of hardcoded readline
 
 tags: #mikode-harness #abstraction #testability
+
+superseded by: "Split LoopTerminal into two single-responsibility ports" (further below) — `LoopTerminal` itself no longer exists. Reasoning and lesson (decouple the loop from a hardcoded I/O mechanism) remain valid.
 
 **Decision:** `Loop` no longer imports `readline` directly. Instead, it depends on a `LoopTerminal` interface with methods like `question()`, `onInterrupt()`, `log()`, `write()`, `clearLine()`, etc. A factory function `createReadlineTerminal()` produces the default Node.js `readline` implementation; other transports can provide different implementations.
 
@@ -353,6 +357,8 @@ tags: #mikode-harness #prompt-design #reusability
 ## Split LoopTerminal into two single-responsibility ports, not one growing interface
 
 tags: #mikode-harness #architecture #interface-segregation
+
+partially superseded by: "ConversationLoop is a consumption pattern, not the harness seam" (below) — `IPromptEmitter` did not stay in the harness core as described here; it moved into `cli/` along with `ConversationLoop` itself. `ILogger` and the `ConversationLoop`/`scripts/cli.ts` renames described here remain accurate (`scripts/cli.ts` itself later moved again, to `cli/cli.ts`).
 
 **Decision:** `LoopTerminal` (one interface bundling `question`, `onInterrupt`, `log`, `write`, `clearLine`) is gone. `ConversationLoop` (renamed from `Loop`) now depends on two focused ports instead: `IPromptEmitter` (`emit`, `close`) and `ILogger` (`log`, `error`). Terminal presentation that isn't a core concern at all — the spinner, cursor control — moved out of any shared interface entirely and lives only in the CLI composition root (`scripts/cli.ts`, moved from `bin/cli.ts`), alongside the rest of `src/` reorganized into one folder per bounded module (`agent`, `conversationLoop`, `engines/{claude,codex}`, `orchestration`, `retry`, `shared`), each split into `domain`/`infrastructure`.
 
