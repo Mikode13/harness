@@ -6,8 +6,13 @@ import type {
 	SDKResultSuccess,
 	SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
-import type { Agent, AgentResponse, Callback, ProgressEvent } from './models/agent.ts';
-import { RecoverableError } from './models/errors.ts';
+import type {
+	Agent,
+	AgentResponse,
+	Callback,
+	ProgressEvent,
+} from '../../../../agent/domain/agent.ts';
+import { RecoverableError } from '../../../../agent/domain/errors.ts';
 
 type Model = 'sonnet' | 'opus' | 'haiku' | 'claude-fable-5';
 

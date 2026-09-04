@@ -1,8 +1,8 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query } from '@anthropic-ai/claude-agent-sdk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ClaudeAgent } from '../../src/claudeAgent.ts';
-import type { ProgressEvent } from '../../src/models/agent.ts';
+import { ClaudeAgent } from '../../src/engines/claude/infrastructure/model/claudeAgent.ts';
+import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 

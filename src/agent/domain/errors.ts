@@ -14,7 +14,3 @@ export class UnrecoverableError extends Error {
 		this.cause = options.cause;
 	}
 }
-
-export function isAbortError(e: unknown): boolean {
-	return e instanceof Error && e.name === 'AbortError';
-}

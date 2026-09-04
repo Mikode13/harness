@@ -1,7 +1,7 @@
 import type { Codex, Thread, ThreadEvent, ThreadItem, Usage } from '@openai/codex-sdk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CodexAgent } from '../../src/codexAgent.ts';
-import type { ProgressEvent } from '../../src/models/agent.ts';
+import { CodexAgent } from '../../src/engines/codex/infrastructure/model/codexAgent.ts';
+import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
 
 function streamedTurn(events: ThreadEvent[]): { events: AsyncGenerator<ThreadEvent> } {
 	return {
@@ -42,6 +42,10 @@ function createSdk(events: ThreadEvent[] = []) {
 	return { runStreamed, sdk, startThread };
 }
 
+function createLogger() {
+	return { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
+}
+
 describe('CodexAgent', () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
@@ -58,6 +62,7 @@ describe('CodexAgent', () => {
 		const agent = new CodexAgent({
 			sdk,
 			model: 'gpt-5.6-luna',
+			logger: createLogger(),
 			autoApprove: true,
 			reasoningEffort: 'low',
 		});
@@ -81,7 +86,7 @@ describe('CodexAgent', () => {
 	it('keeps command execution restrictions enabled by default', () => {
 		const { sdk, startThread } = createSdk();
 
-		new CodexAgent({ sdk, model: 'gpt-5.6-sol' });
+		new CodexAgent({ sdk, model: 'gpt-5.6-sol', logger: createLogger() });
 
 		expect(startThread).toHaveBeenCalledWith({
 			model: 'gpt-5.6-sol',
@@ -127,11 +132,11 @@ describe('CodexAgent', () => {
 		]);
 		const start = vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValueOnce(3_250);
 
-		const response = await new CodexAgent({ sdk, model: 'gpt-5.6-sol' }).run(
-			'prompt',
-			new AbortController().signal,
-			event => events.push(event),
-		);
+		const response = await new CodexAgent({
+			sdk,
+			model: 'gpt-5.6-sol',
+			logger: createLogger(),
+		}).run('prompt', new AbortController().signal, event => events.push(event));
 
 		expect(events).toEqual([
 			{ type: 'agentMessage', message: 'hello' },
@@ -152,6 +157,22 @@ describe('CodexAgent', () => {
 		expect(start).toHaveBeenCalledTimes(2);
 	});
 
+	it('logs and ignores a completed item of an unrecognized type', async () => {
+		const unknownItem = { id: 'unknown-1', type: 'reasoning_summary' } as unknown as ThreadItem;
+		const { sdk } = createSdk([completed(unknownItem), { type: 'turn.completed', usage: usage() }]);
+		const logger = createLogger();
+		const events: ProgressEvent[] = [];
+
+		await new CodexAgent({ sdk, model: 'gpt-5.6-sol', logger }).run(
+			'prompt',
+			new AbortController().signal,
+			event => events.push(event),
+		);
+
+		expect(events).toEqual([]);
+		expect(logger.warn).toHaveBeenCalledWith(unknownItem, 'new type');
+	});
+
 	it.each([
 		['without an agent message', [{ type: 'turn.completed', usage: usage() }] as ThreadEvent[]],
 		[
@@ -162,7 +183,7 @@ describe('CodexAgent', () => {
 		const { sdk } = createSdk(events);
 
 		await expect(
-			new CodexAgent({ sdk, model: 'gpt-5.6-sol' }).run(
+			new CodexAgent({ sdk, model: 'gpt-5.6-sol', logger: createLogger() }).run(
 				'prompt',
 				new AbortController().signal,
 				vi.fn(),
@@ -195,7 +216,7 @@ describe('CodexAgent', () => {
 		const { sdk } = createSdk([event]);
 
 		await expect(
-			new CodexAgent({ sdk, model: 'gpt-5.6-sol' }).run(
+			new CodexAgent({ sdk, model: 'gpt-5.6-sol', logger: createLogger() }).run(
 				'prompt',
 				new AbortController().signal,
 				vi.fn(),
@@ -220,7 +241,7 @@ describe('CodexAgent', () => {
 		const { sdk } = createSdk([event]);
 
 		await expect(
-			new CodexAgent({ sdk, model: 'gpt-5.6-sol' }).run(
+			new CodexAgent({ sdk, model: 'gpt-5.6-sol', logger: createLogger() }).run(
 				'prompt',
 				new AbortController().signal,
 				vi.fn(),

@@ -16,7 +16,9 @@ export type ProgressEvent =
 	| { type: 'fileChange'; changes: { path: string; kind: 'add' | 'update' | 'delete' }[] }
 	| { type: 'mcpTool'; server: string; tool: string; status: string }
 	| { type: 'agentMessage'; message: string }
-	| { type: 'todoList'; items: { text: string; completed: boolean }[] };
+	| { type: 'todoList'; items: { text: string; completed: boolean }[] }
+	| { type: 'turnStarted' }
+	| { type: 'turnEnded' };
 
 /**
  * The contract every engine (CodexAgent, ClaudeAgent, future providers) and every
@@ -52,10 +54,17 @@ export function handleEvents(item: ProgressEvent): string | undefined {
 			if (!item.query) return undefined;
 			return `searching... query:${item.query}`;
 		case 'fileChange':
+			if (!item.changes.length) return undefined;
+
 			return item.changes.map(change => `${change.path} - ${change.kind}`).join('\n');
 		case 'todoList':
+			if (!item.items.length) return undefined;
+
 			return item.items
 				.map(todoItem => `${todoItem.text} - status:${todoItem.completed ? '✔' : 'X'}`)
 				.join('\n');
+		case 'turnStarted':
+		case 'turnEnded':
+			return undefined;
 	}
 }
