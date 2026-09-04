@@ -1,7 +1,4 @@
-export { ConversationLoop } from './conversationLoop/domain/model/conversationLoop.ts';
-export type { IConversationLoop } from './conversationLoop/domain/interface/conversationLoop.ts';
-export type { ILogger } from './conversationLoop/domain/interface/logger.ts';
-export type { IPromptEmitter } from './conversationLoop/domain/interface/promptEmitter.ts';
+export type { ILogger } from './shared/domain/logger.ts';
 export { CodexAgent } from './engines/codex/infrastructure/model/codexAgent.ts';
 export { ClaudeAgent } from './engines/claude/infrastructure/model/claudeAgent.ts';
 export { RetryingAgent } from './retry/domain/model/retryingAgent.ts';

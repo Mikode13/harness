@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ConversationLoop } from '../../src/conversationLoop/domain/model/conversationLoop.ts';
-import type { Agent, AgentResponse, ProgressEvent } from '../../src/agent/domain/agent.ts';
-import { UnrecoverableError } from '../../src/agent/domain/errors.ts';
+import { ConversationLoop } from '../../conversationLoop.ts';
+import type { Agent, AgentResponse, ProgressEvent } from '../../../src/agent/domain/agent.ts';
+import { UnrecoverableError } from '../../../src/agent/domain/errors.ts';
 
 type EmitResult = string | { error: unknown };
 

@@ -49,6 +49,12 @@ importers:
         specifier: ^4.1.11
         version: 4.1.11(@types/node@26.1.2)(@vitest/coverage-v8@4.1.11)(vite@8.2.2(@types/node@26.1.2)(jiti@2.6.1))
 
+  cli:
+    dependencies:
+      '@openai/codex-sdk':
+        specifier: ^0.146.0
+        version: 0.146.0
+
 packages:
 
   '@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.220':

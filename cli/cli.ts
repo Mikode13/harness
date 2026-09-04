@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import {
-	ConversationLoop,
 	CodexAgent,
 	ClaudeAgent,
 	RetryingAgent,
@@ -10,6 +9,7 @@ import {
 	handleEvents,
 	type ProgressEvent,
 } from '../src/index.ts';
+import { ConversationLoop } from './conversationLoop.ts';
 import { Codex } from '@openai/codex-sdk';
 import { clearLine, cursorTo } from 'node:readline';
 import { Logger } from './adapters/logger.ts';
@@ -40,11 +40,15 @@ const plannerReasoningEffort = 'high';
 const executorReasoningEffort = 'high';
 const reviewerReasoningEffort = 'high';
 
+const logger = new Logger();
+const promptEmitter = new PromptEmitter();
+
 const orchestratorAgent = new OrchestratorAgent(
 	new RetryingAgent(
 		new CodexAgent({
 			sdk: codex,
 			model: 'gpt-5.6-sol',
+			logger,
 			autoApprove,
 			reasoningEffort: plannerReasoningEffort,
 		}),
@@ -53,6 +57,7 @@ const orchestratorAgent = new OrchestratorAgent(
 		new CodexAgent({
 			sdk: codex,
 			model: 'gpt-5.6-luna',
+			logger,
 			autoApprove,
 			reasoningEffort: executorReasoningEffort,
 		}),
@@ -60,9 +65,6 @@ const orchestratorAgent = new OrchestratorAgent(
 	new RetryingAgent(new ClaudeAgent('opus', true, reviewerReasoningEffort)),
 	new ReviewerDecisionValidator(),
 );
-
-const logger = new Logger();
-const promptEmitter = new PromptEmitter();
 
 let turnActive = false;
 

@@ -9,10 +9,16 @@ export default defineConfig({
 					include: ['tests/unit/**/*.unit.test.ts'],
 				},
 			},
+			{
+				test: {
+					name: 'cli',
+					include: ['cli/tests/unit/**/*.unit.test.ts'],
+				},
+			},
 		],
 		coverage: {
 			provider: 'v8',
-			include: ['src/**/*.ts'],
+			include: ['src/**/*.ts', 'cli/**/*.ts'],
 		},
 	},
 });

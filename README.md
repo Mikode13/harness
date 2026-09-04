@@ -101,9 +101,9 @@ actual usage and monitoring, not by scheduling calls to a live SDK on a timer.
 
 ## Local development smoke test
 
-`scripts/cli.ts` is a development-only harness runner — it is not part of the
-published package (no `bin` entry, not built to `dist/`) and exists solely to
-exercise the library manually while working in this repository:
+`cli/` is a separate, unpublished workspace project — a development-only harness
+runner (own `package.json`, not part of the `@mikode13/harness` package) that
+exists solely to exercise the library manually while working in this repository:
 
 ```sh
 pnpm run dev
@@ -112,14 +112,18 @@ pnpm run dev
 Type your prompt at `>`. Press Ctrl+C while idle at the prompt to exit; pressing
 it while an agent is running cancels only that turn and returns to the prompt.
 
-`scripts/cli.ts` currently enables `autoApprove` for its trusted backend agents.
+`cli/cli.ts` currently enables `autoApprove` for its trusted backend agents.
 This maps to each provider's permission-bypass mode and grants those processes
 unrestricted command access. Keep it disabled when the host may receive untrusted
 prompts, or provide an approval workflow from the entry point.
 
-Real consumers (a future CLI package, a chatbot UI) compose the exported `Agent`,
-`OrchestratorAgent`, and `ConversationLoop` building blocks with their own
-`ILogger`/`IPromptEmitter` adapters.
+Real consumers (a future REST/WebSocket server, a chatbot UI) compose the
+exported `Agent`, `OrchestratorAgent`, and other harness building blocks with
+their own I/O and `ILogger` adapter. `ConversationLoop`/`IPromptEmitter` are not
+part of the published package — they encode one specific interactive,
+turn-by-turn consumption pattern (see `cli/`), not the harness seam itself; a
+consumer that wants that same loop can use `cli/`'s implementation as a
+reference rather than depend on it as a library.
 
 ## License
 

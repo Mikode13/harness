@@ -1,11 +1,8 @@
-import type { Agent, Callback } from '../../../agent/domain/agent.ts';
-import { UnrecoverableError } from '../../../agent/domain/errors.ts';
-import { isAbortError } from '../../../shared/domain/isAbortError.ts';
-import type { ILogger } from '../interface/logger.ts';
-import type { IPromptEmitter } from '../interface/promptEmitter.ts';
-import type { IConversationLoop } from '../interface/conversationLoop.ts';
+import type { Agent, Callback, ILogger } from '../src/index.ts';
+import { UnrecoverableError, isAbortError } from '../src/index.ts';
+import type { IPromptEmitter } from './promptEmitter.ts';
 
-export class ConversationLoop implements IConversationLoop {
+export class ConversationLoop {
 	private readonly promptEmitter: IPromptEmitter;
 	private readonly logger: ILogger;
 	private abortController?: AbortController;

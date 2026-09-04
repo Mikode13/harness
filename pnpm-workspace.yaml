@@ -1,3 +1,7 @@
+packages:
+  - '.'
+  - 'cli'
+
 allowBuilds:
   # Native binary resolution for eslint-import-resolver-typescript (via eslint-plugin-import-x).
   unrs-resolver: true

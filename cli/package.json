@@ -1,0 +1,17 @@
+{
+	"name": "@mikode13/harness-cli",
+	"version": "0.1.0",
+	"description": "Development-only interactive runner for @mikode13/harness",
+	"private": true,
+	"type": "module",
+	"license": "SEE LICENSE IN LICENSE",
+	"engines": {
+		"node": "^22.13.0 || ^24.0.0"
+	},
+	"scripts": {
+		"dev": "node cli.ts"
+	},
+	"dependencies": {
+		"@openai/codex-sdk": "^0.146.0"
+	}
+}

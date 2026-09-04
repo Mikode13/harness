@@ -13,6 +13,7 @@ import {
 	type ProgressEvent,
 } from '../../../../agent/domain/agent.ts';
 import { RecoverableError, UnrecoverableError } from '../../../../agent/domain/errors.ts';
+import type { ILogger } from '../../../../shared/domain/logger.ts';
 
 type Model = 'gpt-5.6-sol' | 'gpt-5.6-luna';
 
@@ -32,7 +33,7 @@ function convertEventToItem(event: ThreadEvent): ThreadItem | undefined {
 	return undefined;
 }
 
-function describeItem(item: ThreadItem): ProgressEvent | undefined {
+function describeItem(item: ThreadItem, logger: ILogger): ProgressEvent | undefined {
 	switch (item.type) {
 		case 'agent_message':
 			return { type: 'agentMessage', message: item.text };
@@ -55,22 +56,25 @@ function describeItem(item: ThreadItem): ProgressEvent | undefined {
 		case 'error':
 			throw new RecoverableError('error while using the codex tools', { cause: item.message });
 		default:
-			console.warn(item, 'new type');
+			logger.warn(item, 'new type');
 			return undefined;
 	}
 }
 
 export class CodexAgent implements Agent {
 	private thread: Thread;
+	private logger: ILogger;
 
 	constructor({
 		sdk,
 		model,
+		logger,
 		autoApprove = false,
 		reasoningEffort = 'high',
 	}: {
 		sdk: Codex;
 		model: Model;
+		logger: ILogger;
 		autoApprove?: boolean;
 		reasoningEffort?: ModelReasoningEffort;
 	}) {
@@ -83,6 +87,7 @@ export class CodexAgent implements Agent {
 		});
 
 		this.thread = thread;
+		this.logger = logger;
 	}
 
 	async run(
@@ -111,7 +116,7 @@ export class CodexAgent implements Agent {
 
 			if (!item) continue;
 
-			const description = describeItem(item);
+			const description = describeItem(item, this.logger);
 			if (description) callback(description);
 			if (description?.type === 'agentMessage') lines.push(description.message);
 		}

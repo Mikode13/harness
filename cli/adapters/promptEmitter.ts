@@ -1,4 +1,4 @@
-import type { IPromptEmitter } from '../../src/index.ts';
+import type { IPromptEmitter } from '../promptEmitter.ts';
 import * as readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 
