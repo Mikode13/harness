@@ -11,8 +11,16 @@ import {
 	type AgentResponse,
 	type Callback,
 	type ProgressEvent,
-} from './models/agent.ts';
-import { RecoverableError, UnrecoverableError } from './models/errors.ts';
+} from '../../../../agent/domain/agent.ts';
+import { RecoverableError, UnrecoverableError } from '../../../../agent/domain/errors.ts';
+import {
+	classifiedProviderStream,
+	classifyHostFailure,
+	classifyLocalFailure,
+	classifyProviderFailure,
+	describeFailure,
+} from '../../../../agent/domain/providerFailure.ts';
+import type { ILogger } from '../../../../shared/domain/logger.ts';
 
 type Model = 'gpt-5.6-sol' | 'gpt-5.6-luna';
 
@@ -32,7 +40,7 @@ function convertEventToItem(event: ThreadEvent): ThreadItem | undefined {
 	return undefined;
 }
 
-function describeItem(item: ThreadItem): ProgressEvent | undefined {
+function describeItem(item: ThreadItem, logger: ILogger): ProgressEvent | undefined {
 	switch (item.type) {
 		case 'agent_message':
 			return { type: 'agentMessage', message: item.text };
@@ -55,34 +63,49 @@ function describeItem(item: ThreadItem): ProgressEvent | undefined {
 		case 'error':
 			throw new RecoverableError('error while using the codex tools', { cause: item.message });
 		default:
-			console.warn(item, 'new type');
+			try {
+				logger.warn(item, 'new type');
+			} catch (error) {
+				throw classifyHostFailure(error, 'Codex logger failed while reporting progress');
+			}
 			return undefined;
 	}
 }
 
 export class CodexAgent implements Agent {
 	private thread: Thread;
+	private logger: ILogger;
 
 	constructor({
 		sdk,
 		model,
+		logger,
 		autoApprove = false,
 		reasoningEffort = 'high',
 	}: {
 		sdk: Codex;
 		model: Model;
+		logger: ILogger;
 		autoApprove?: boolean;
 		reasoningEffort?: ModelReasoningEffort;
 	}) {
-		const thread = sdk.startThread({
-			model,
-			modelReasoningEffort: reasoningEffort,
-			...(autoApprove
-				? { approvalPolicy: 'never' as const, sandboxMode: 'danger-full-access' as const }
-				: {}),
-		});
+		try {
+			this.thread = sdk.startThread({
+				model,
+				modelReasoningEffort: reasoningEffort,
+				...(autoApprove
+					? { approvalPolicy: 'never' as const, sandboxMode: 'danger-full-access' as const }
+					: {}),
+			});
+		} catch (error) {
+			// Not recoverable, unlike a request: a thread the SDK refused to open at all is
+			// rejected configuration, and running the same constructor again cannot fix it.
+			throw new UnrecoverableError('Codex rejected the thread configuration', {
+				cause: describeFailure(error),
+			});
+		}
 
-		this.thread = thread;
+		this.logger = logger;
 	}
 
 	async run(
@@ -90,8 +113,15 @@ export class CodexAgent implements Agent {
 		signal: AbortSignal,
 		callback: Callback,
 	): Promise<AgentResponse | undefined> {
-		const response = await this.thread.runStreamed(prompt, { signal });
-		return await this.parseResponse(response, callback);
+		let turn: StreamedTurn;
+
+		try {
+			turn = await this.thread.runStreamed(prompt, { signal });
+		} catch (error) {
+			throw classifyProviderFailure(error, 'Codex refused the request');
+		}
+
+		return await this.parseResponse(turn, callback);
 	}
 
 	private async parseResponse(
@@ -101,7 +131,10 @@ export class CodexAgent implements Agent {
 		const lines: string[] = [];
 		const start = Date.now();
 		let usage: Usage | undefined = undefined;
-		for await (const event of turn.events) {
+
+		const events = classifiedProviderStream(turn.events, 'Codex stream ended unexpectedly');
+
+		for await (const event of events) {
 			if (event.type === 'turn.completed') {
 				usage = event.usage;
 				continue;
@@ -111,8 +144,20 @@ export class CodexAgent implements Agent {
 
 			if (!item) continue;
 
-			const description = describeItem(item);
-			if (description) callback(description);
+			let description: ProgressEvent | undefined;
+			try {
+				description = describeItem(item, this.logger);
+			} catch (error) {
+				throw classifyLocalFailure(error, 'Codex failed while mapping progress');
+			}
+
+			if (description) {
+				try {
+					callback(description);
+				} catch (error) {
+					throw classifyHostFailure(error, 'Codex progress callback failed');
+				}
+			}
 			if (description?.type === 'agentMessage') lines.push(description.message);
 		}
 

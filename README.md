@@ -28,7 +28,7 @@ there is at least one real consumer.
 ## What it does today
 
 An interactive terminal chat, backed by one `Agent` — a single engine, or a full
-multi-agent workflow, chosen entirely by what gets wired up in `index.ts`; the
+multi-agent workflow, chosen entirely by what gets wired up in `cli/cli.ts`; the
 chat loop itself never knows the difference.
 
 - **A provider-agnostic `Agent` contract** (`run(prompt, signal, callback)`) with
@@ -77,14 +77,19 @@ file-based agent registries — each waits for a real need.
 
 A new provider only needs one thing to compose safely into everything above:
 **it must only ever reject with `RecoverableError` or `UnrecoverableError`**
-(`src/models/errors.ts`), never a raw SDK error. `RetryingAgent` and
+(`src/agent/domain/errors.ts`), never a raw SDK error. `RetryingAgent` and
 `OrchestratorAgent` both decide what to do next by `instanceof`-checking
-against those two types; anything else leaking through bypasses that decision
-entirely — it gets retried when it shouldn't be, or takes down a whole run
-that a retry would have recovered. Wrap every call into the underlying SDK,
+against those two types; anything else leaking through is treated as
+unrecoverable and ends the run, because nothing above the adapter can tell
+whether replaying it is safe. Wrap every call into the underlying SDK,
 including failures the SDK itself doesn't model as a domain error (network
-errors, malformed responses). See the doc comment on `Agent` in
-`src/models/agent.ts`.
+errors, malformed responses): `classifyProviderFailure` covers a single call,
+`classifiedProviderStream` covers an SDK stream. Both are deliberately narrow —
+the classification must not span your own item mapping, logging, or the
+consumer callback, or a failure in the host is reported as a provider failure
+and gets retried. Those host failures are instead classified as unrecoverable,
+because the provider turn may already have produced side effects. See the doc
+comment on `Agent` in `src/agent/domain/agent.ts`.
 
 ## Install
 
@@ -92,20 +97,69 @@ errors, malformed responses). See the doc comment on `Agent` in
 pnpm add @mikode13/harness
 ```
 
-## Usage
+An agent is composed, then driven; the package brings no I/O of its own:
 
-Run the chat from the repository (Node 24+, TypeScript executed natively):
+```ts
+import {
+	ClaudeAgent,
+	RetryingAgent,
+	UnrecoverableError,
+	type ProgressEvent,
+} from '@mikode13/harness';
 
-```sh
-node src/index.ts
+const agent = new RetryingAgent(new ClaudeAgent('sonnet'));
+const controller = new AbortController();
+
+const render = (event: ProgressEvent) => {
+	if (event.type === 'agentMessage') process.stdout.write(event.message);
+};
+
+try {
+	const result = await agent.run('Summarize this repository.', controller.signal, render);
+	console.log(result?.duration, result?.inputTokens, result?.outputTokens);
+} catch (error) {
+	if (error instanceof UnrecoverableError) console.error(error.message, error.cause);
+}
 ```
 
-Type your prompt at `>`; type `exit` or press Ctrl+C to leave (with confirmation).
+`ProgressEvent` is the public seam for live activity; rendering it is the
+consumer's decision, not the harness's. `cli/progressEventFormatter.ts` is one
+terminal-shaped implementation to copy from. Swapping `ClaudeAgent` for
+`CodexAgent`, or for an `OrchestratorAgent` wrapping all three roles, changes
+nothing else in the snippet above.
 
-`src/index.ts` currently enables `autoApprove` for its trusted backend agents. This
-maps to each provider's permission-bypass mode and grants those processes
+## Tests
+
+`pnpm test` runs the unit suite against deterministic fakes; it never contacts a
+real provider. Provider-boundary correctness (SDK auth, request shape, model
+availability) is not covered by an automated suite here — it surfaces through
+actual usage and monitoring, not by scheduling calls to a live SDK on a timer.
+
+## Local development smoke test
+
+`cli/` is a separate, unpublished workspace project — a development-only harness
+runner (own `package.json`, not part of the `@mikode13/harness` package) that
+exists solely to exercise the library manually while working in this repository:
+
+```sh
+pnpm run dev
+```
+
+Type your prompt at `>`. Press Ctrl+C while idle at the prompt to exit; pressing
+it while an agent is running cancels only that turn and returns to the prompt.
+
+`cli/cli.ts` currently enables `autoApprove` for its trusted backend agents.
+This maps to each provider's permission-bypass mode and grants those processes
 unrestricted command access. Keep it disabled when the host may receive untrusted
 prompts, or provide an approval workflow from the entry point.
+
+Real consumers (a future REST/WebSocket server, a chatbot UI) compose the
+exported `Agent`, `OrchestratorAgent`, and other harness building blocks with
+their own I/O and `ILogger` adapter. `ConversationLoop`/`IPromptEmitter` are not
+part of the published package — they encode one specific interactive,
+turn-by-turn consumption pattern (see `cli/`), not the harness seam itself; a
+consumer that wants that same loop can use `cli/`'s implementation as a
+reference rather than depend on it as a library.
 
 ## License
 

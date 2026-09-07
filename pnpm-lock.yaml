@@ -24,6 +24,9 @@ importers:
       '@mikode13/code-style':
         specifier: 0.1.0
         version: 0.1.0(prettier@3.9.6)
+      '@mikode13/cross-platform':
+        specifier: 0.1.0
+        version: 0.1.0
       '@mikode13/git-hooks':
         specifier: 0.1.0
         version: 0.1.0(@types/node@26.1.2)(typescript@6.0.3)
@@ -48,6 +51,12 @@ importers:
       vitest:
         specifier: ^4.1.11
         version: 4.1.11(@types/node@26.1.2)(@vitest/coverage-v8@4.1.11)(vite@8.2.2(@types/node@26.1.2)(jiti@2.6.1))
+
+  cli:
+    dependencies:
+      '@openai/codex-sdk':
+        specifier: ^0.146.0
+        version: 0.146.0
 
 packages:
 
@@ -393,6 +402,11 @@ packages:
     engines: {node: '>=20'}
     peerDependencies:
       prettier: ^3.5.0
+
+  '@mikode13/cross-platform@0.1.0':
+    resolution: {integrity: sha512-x7jfK3Ls8TJXDRXGQBeuzVijSX3lvjXUVEKf2saY1y1iwc4jJHYToitpNZ63ZJxBsqggR476t2MOLOvULJKZTg==}
+    engines: {node: ^22.13.0 || ^24.0.0}
+    hasBin: true
 
   '@mikode13/git-hooks@0.1.0':
     resolution: {integrity: sha512-uUFvtF1vv6Cb9ShYwH6Y9PTTKuMnz7thyMOt1dYk7ZrskRviwgDmdbuJI0LTPcagFMri10qNGMIHocbsMzbrJQ==}
@@ -2448,6 +2462,8 @@ snapshots:
   '@mikode13/code-style@0.1.0(prettier@3.9.6)':
     dependencies:
       prettier: 3.9.6
+
+  '@mikode13/cross-platform@0.1.0': {}
 
   '@mikode13/git-hooks@0.1.0(@types/node@26.1.2)(typescript@6.0.3)':
     dependencies:

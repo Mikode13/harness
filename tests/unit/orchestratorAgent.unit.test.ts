@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { OrchestratorAgent } from '../../src/orchestratorAgent.ts';
-import type { Agent, AgentResponse } from '../../src/models/agent.ts';
-import { UnrecoverableError } from '../../src/models/errors.ts';
+import { OrchestratorAgent } from '../../src/orchestration/domain/model/orchestratorAgent.ts';
+import type { Agent, AgentResponse } from '../../src/agent/domain/agent.ts';
+import { UnrecoverableError } from '../../src/agent/domain/errors.ts';
+import { ReviewerDecisionValidator } from '../../src/orchestration/infrastructure/model/reviewerDecisionValidator.ts';
 
 function createResponse(overrides: Partial<AgentResponse> = {}): AgentResponse {
 	return {
@@ -47,7 +48,12 @@ describe('OrchestratorAgent', () => {
 				duration: 7,
 			}),
 		);
-		const orchestrator = new OrchestratorAgent(planner.agent, executor.agent, reviewer.agent);
+		const orchestrator = new OrchestratorAgent(
+			planner.agent,
+			executor.agent,
+			reviewer.agent,
+			new ReviewerDecisionValidator(),
+		);
 		const signal = new AbortController().signal;
 		const callback = vi.fn();
 
@@ -64,12 +70,12 @@ describe('OrchestratorAgent', () => {
 			callback,
 		);
 		expect(planner.run).toHaveBeenCalledWith(
-			expect.stringContaining('mikode-skills:mikode-code-philosophy'),
+			expect.stringContaining('engineering-grade plan'),
 			signal,
 			callback,
 		);
 		expect(planner.run).toHaveBeenCalledWith(
-			expect.stringContaining('do not require an architecture skill yet'),
+			expect.stringContaining('do not require an architecture redesign yet'),
 			signal,
 			callback,
 		);
@@ -84,7 +90,7 @@ describe('OrchestratorAgent', () => {
 			callback,
 		);
 		expect(executor.run).toHaveBeenCalledWith(
-			expect.stringContaining('mikode-skills:mikode-code-philosophy'),
+			expect.stringContaining('Preserve contracts and boundaries'),
 			signal,
 			callback,
 		);
@@ -106,7 +112,7 @@ describe('OrchestratorAgent', () => {
 			callback,
 		);
 		expect(reviewer.run).toHaveBeenCalledWith(
-			expect.stringContaining('mikode-skills:mikode-code-philosophy-review'),
+			expect.stringContaining('Independently inspect the repository'),
 			signal,
 			callback,
 		);
@@ -137,7 +143,12 @@ describe('OrchestratorAgent', () => {
 			createResponse({ response: '{"decision":"rejected","feedback":"add coverage"}' }),
 			createResponse({ response: '{"decision":"approved"}' }),
 		);
-		const orchestrator = new OrchestratorAgent(planner.agent, executor.agent, reviewer.agent);
+		const orchestrator = new OrchestratorAgent(
+			planner.agent,
+			executor.agent,
+			reviewer.agent,
+			new ReviewerDecisionValidator(),
+		);
 		const signal = new AbortController().signal;
 		const callback = vi.fn();
 
@@ -207,7 +218,12 @@ describe('OrchestratorAgent', () => {
 			createResponse({ response: 'not json' }),
 			createResponse({ response: '{"decision":"approved"}' }),
 		);
-		const orchestrator = new OrchestratorAgent(planner.agent, executor.agent, reviewer.agent);
+		const orchestrator = new OrchestratorAgent(
+			planner.agent,
+			executor.agent,
+			reviewer.agent,
+			new ReviewerDecisionValidator(),
+		);
 		const signal = new AbortController().signal;
 		const callback = vi.fn();
 
@@ -230,7 +246,13 @@ describe('OrchestratorAgent', () => {
 		const planner = createFakeAgent(createResponse({ response: 'draft plan' }));
 		const executor = createFakeAgent(createResponse({ response: 'implementation' }));
 		const reviewer = createFakeAgent(undefined);
-		const orchestrator = new OrchestratorAgent(planner.agent, executor.agent, reviewer.agent, 1);
+		const orchestrator = new OrchestratorAgent(
+			planner.agent,
+			executor.agent,
+			reviewer.agent,
+			new ReviewerDecisionValidator(),
+			1,
+		);
 
 		await expect(
 			orchestrator.run('ship feature', new AbortController().signal, vi.fn()),
@@ -258,7 +280,13 @@ describe('OrchestratorAgent', () => {
 			const planner = createFakeAgent(createResponse({ response: 'draft plan' }));
 			const executor = createFakeAgent(createResponse({ response: 'implementation' }));
 			const reviewer = createFakeAgent(createResponse({ response }));
-			const orchestrator = new OrchestratorAgent(planner.agent, executor.agent, reviewer.agent, 1);
+			const orchestrator = new OrchestratorAgent(
+				planner.agent,
+				executor.agent,
+				reviewer.agent,
+				new ReviewerDecisionValidator(),
+				1,
+			);
 
 			await expect(
 				orchestrator.run('ship feature', new AbortController().signal, vi.fn()),
@@ -282,7 +310,13 @@ describe('OrchestratorAgent', () => {
 			createResponse({ response: '{"decision":"rejected","feedback":"first feedback"}' }),
 			createResponse({ response: '{"decision":"rejected","feedback":"latest feedback"}' }),
 		);
-		const orchestrator = new OrchestratorAgent(planner.agent, executor.agent, reviewer.agent, 2);
+		const orchestrator = new OrchestratorAgent(
+			planner.agent,
+			executor.agent,
+			reviewer.agent,
+			new ReviewerDecisionValidator(),
+			2,
+		);
 		const error = orchestrator.run('ship feature', new AbortController().signal, vi.fn());
 
 		await expect(error).rejects.toBeInstanceOf(UnrecoverableError);
@@ -304,7 +338,13 @@ describe('OrchestratorAgent', () => {
 			const planner = createFakeAgent(plannerResponse);
 			const executor = createFakeAgent();
 			const reviewer = createFakeAgent();
-			const orchestrator = new OrchestratorAgent(planner.agent, executor.agent, reviewer.agent, 1);
+			const orchestrator = new OrchestratorAgent(
+				planner.agent,
+				executor.agent,
+				reviewer.agent,
+				new ReviewerDecisionValidator(),
+				1,
+			);
 
 			const error = orchestrator.run('ship feature', new AbortController().signal, vi.fn());
 
@@ -327,7 +367,13 @@ describe('OrchestratorAgent', () => {
 			const planner = createFakeAgent(createResponse({ response: 'draft plan' }));
 			const executor = createFakeAgent(executorResponse);
 			const reviewer = createFakeAgent();
-			const orchestrator = new OrchestratorAgent(planner.agent, executor.agent, reviewer.agent, 1);
+			const orchestrator = new OrchestratorAgent(
+				planner.agent,
+				executor.agent,
+				reviewer.agent,
+				new ReviewerDecisionValidator(),
+				1,
+			);
 
 			const error = orchestrator.run('ship feature', new AbortController().signal, vi.fn());
 
@@ -345,8 +391,124 @@ describe('OrchestratorAgent', () => {
 		const executor = createFakeAgent();
 		const reviewer = createFakeAgent();
 
-		expect(() => new OrchestratorAgent(planner.agent, executor.agent, reviewer.agent, 0)).toThrow(
-			RangeError,
-		);
+		expect(
+			() =>
+				new OrchestratorAgent(
+					planner.agent,
+					executor.agent,
+					reviewer.agent,
+					new ReviewerDecisionValidator(),
+					0,
+				),
+		).toThrow(RangeError);
+	});
+
+	// Regression: usage accumulated on the instance, and the CLI keeps one orchestrator for
+	// a whole session — so every session after the first reported inflated totals.
+	describe('per-run accounting', () => {
+		function approvingRun() {
+			return [
+				createResponse({ response: 'draft plan', inputTokens: 10, outputTokens: 2, duration: 1 }),
+				createResponse({ response: 'implemented', inputTokens: 15, outputTokens: 3, duration: 1 }),
+				createResponse({
+					response: '{"decision":"approved"}',
+					inputTokens: 5,
+					outputTokens: 1,
+					duration: 1,
+				}),
+			];
+		}
+
+		it('reports only its own usage on a second call', async () => {
+			const [plan1, exec1, review1] = approvingRun();
+			const [plan2, exec2, review2] = approvingRun();
+			const planner = createFakeAgent(plan1, plan2);
+			const executor = createFakeAgent(exec1, exec2);
+			const reviewer = createFakeAgent(review1, review2);
+			const orchestrator = new OrchestratorAgent(
+				planner.agent,
+				executor.agent,
+				reviewer.agent,
+				new ReviewerDecisionValidator(),
+			);
+			const signal = new AbortController().signal;
+			const expected = {
+				response: 'All job has finished',
+				duration: 3,
+				inputTokens: 30,
+				outputTokens: 6,
+			};
+
+			await expect(orchestrator.run('first', signal, vi.fn())).resolves.toEqual(expected);
+			await expect(orchestrator.run('second', signal, vi.fn())).resolves.toEqual(expected);
+		});
+
+		it('keeps two concurrent runs from counting each other', async () => {
+			const [plan1, exec1, review1] = approvingRun();
+			const [plan2, exec2, review2] = approvingRun();
+			const planner = createFakeAgent(plan1, plan2);
+			const executor = createFakeAgent(exec1, exec2);
+			const reviewer = createFakeAgent(review1, review2);
+			const orchestrator = new OrchestratorAgent(
+				planner.agent,
+				executor.agent,
+				reviewer.agent,
+				new ReviewerDecisionValidator(),
+			);
+			const signal = new AbortController().signal;
+			const expected = {
+				response: 'All job has finished',
+				duration: 3,
+				inputTokens: 30,
+				outputTokens: 6,
+			};
+
+			const [first, second] = await Promise.all([
+				orchestrator.run('first', signal, vi.fn()),
+				orchestrator.run('second', signal, vi.fn()),
+			]);
+
+			expect(first).toEqual(expected);
+			expect(second).toEqual(expected);
+		});
+
+		// The failing run still counted a planner response before it gave up.
+		it('does not leak a failed run into the next one', async () => {
+			const planner = createFakeAgent(
+				createResponse({ response: 'draft plan', inputTokens: 99, outputTokens: 99, duration: 99 }),
+				createResponse({ response: 'draft plan', inputTokens: 10, outputTokens: 2, duration: 1 }),
+			);
+			const executor = createFakeAgent(
+				undefined,
+				createResponse({ response: 'implemented', inputTokens: 15, outputTokens: 3, duration: 1 }),
+			);
+			const reviewer = createFakeAgent(
+				createResponse({
+					response: '{"decision":"approved"}',
+					inputTokens: 5,
+					outputTokens: 1,
+					duration: 1,
+				}),
+			);
+			const orchestrator = new OrchestratorAgent(
+				planner.agent,
+				executor.agent,
+				reviewer.agent,
+				new ReviewerDecisionValidator(),
+				1,
+			);
+			const signal = new AbortController().signal;
+
+			await expect(orchestrator.run('first', signal, vi.fn())).rejects.toBeInstanceOf(
+				UnrecoverableError,
+			);
+
+			await expect(orchestrator.run('second', signal, vi.fn())).resolves.toEqual({
+				response: 'All job has finished',
+				duration: 3,
+				inputTokens: 30,
+				outputTokens: 6,
+			});
+		});
 	});
 });

@@ -299,3 +299,173 @@ tags: #mikode-harness #error-handling #observability
 **Consequences:** a bug that produces an unexpected error type is now visible immediately, at the cost of one extra `console.error` line.
 
 **Lesson:** a catch block's default branch should never be "do nothing" — even when every case you can think of is handled explicitly above it, the fallback is what protects you from the case you didn't think of; make it loud, not silent.
+
+---
+
+## Harness as a reusable core package, CLI as a separate consumer
+
+tags: #mikode-harness #architecture #package-design
+
+superseded by: "ConversationLoop is a consumption pattern, not the harness seam" (below) — the CLI entry point has since moved again, from `bin/cli.ts` to `scripts/cli.ts` to its own `cli/` workspace project; the package's export list has also grown well past `Loop`/`Agent`/interfaces/orchestrator classes. Reasoning and lesson below remain valid.
+
+**Decision:** separate the harness into a core npm package (`@mikode13/harness`, exports only `Loop`, `Agent`, interfaces, and orchestrator classes) and a separate executable consumer (`bin/cli.ts`, which imports from `src/` and instantiates the orchestrator for interactive terminal use).
+
+**Context:** the harness started as a single executable with hardcoded models and orchestrator setup in `index.ts`. The goal was to enable multiple consumers (CLI, chatbot UI, future integration in other projects) to use the harness core independently, each bringing their own configuration, orchestration strategy, and I/O layer.
+
+**Alternatives considered:** keep everything in one package and handle consumer-specific setup through build flags or runtime config. Rejected — the risk of CLI-specific dependencies leaking into the core package, and the core carrying unused configuration concerns for consumers that don't need them.
+
+**Consequences:** the harness package is now import-clean (no `index.ts` side effects or executable code), and consumers can depend on `@mikode13/harness` as a library without inheriting terminal or CLI concerns. The CLI still works locally, consuming from `src/` during development, and compiles to `dist/bin/cli.js` for installation.
+
+**Lesson:** a shared library should have zero opinions about how it's invoked or configured — the package itself should export only abstractions; every concrete choice (which model, which orchestrator, how to read input, where to print output) belongs to a consumer layer that imports the package, not inside it.
+
+---
+
+## LoopTerminal: abstractions for I/O instead of hardcoded readline
+
+tags: #mikode-harness #abstraction #testability
+
+superseded by: "Split LoopTerminal into two single-responsibility ports" (further below) — `LoopTerminal` itself no longer exists. Reasoning and lesson (decouple the loop from a hardcoded I/O mechanism) remain valid.
+
+**Decision:** `Loop` no longer imports `readline` directly. Instead, it depends on a `LoopTerminal` interface with methods like `question()`, `onInterrupt()`, `log()`, `write()`, `clearLine()`, etc. A factory function `createReadlineTerminal()` produces the default Node.js `readline` implementation; other transports can provide different implementations.
+
+**Context:** `Loop` was deeply coupled to Node's `readline` module and `process.stdout/stdin`, making it impossible to test without capturing stdout or inject a different transport (websocket, REST, etc.) in a future consumer like the chatbot UI.
+
+**Alternatives considered:** keep readline as-is but mock it in tests. Rejected — testing doesn't reveal the real blocker: the hardcoded i/o layer prevented the harness core from being useful in non-terminal contexts without forking and rewriting that code.
+
+**Consequences:** `Loop` is now transport-agnostic. It accepts a `LoopTerminal` in its constructor (defaulting to readline), so tests can inject a fake, and future consumers (web UI, REST API) can provide their own implementation without modifying the harness.
+
+**Lesson:** when a core component (agent loop) hard-couples to a specific I/O mechanism (terminal readline), it becomes unusable as a reusable library — the abstraction layer should be inside the core, not a wrapper around it.
+
+---
+
+## Generic orchestrator prompts, not hardcoded skill names
+
+tags: #mikode-harness #prompt-design #reusability
+
+**Decision:** the planner, executor, and reviewer prompts no longer mention specific skill names like `mikode-skills:mikode-code-philosophy`. Instead, prompts describe the engineering principles and judgment directly (e.g., "preserve contracts and boundaries" instead of "apply the mikode-code-philosophy skill").
+
+**Context:** the prompts referenced MiKode-specific skills, coupling the harness to MiKode's skill ecosystem. If the harness is published or used in a different context (e.g., internal tools at a company with its own skill catalog, or a project without skills at all), the hardcoded references would be misleading or wrong.
+
+**Alternatives considered:** make skills configurable via dependency injection into the prompts. Rejected for now — the agents already have access to the skills (via tools), and a well-written prompt doesn't need to name them explicitly to guide a capable agent toward using them. Deferring injection to a future phase keeps this simpler.
+
+**Consequences:** the prompts are now generic and reusable; they rely on the model's native judgment and the available tools, not on MiKode-specific conventions. If a consumer wants to surface specific methodologies, they can wrap the orchestrator with additional context or a different model.
+
+**Lesson:** when a core component references external conventions by name, it's declaring a hard dependency on those conventions existing and being recognized everywhere the component is used — omit the name, state the principle, and let tools and context carry the specifics instead.
+
+---
+
+## Split LoopTerminal into two single-responsibility ports, not one growing interface
+
+tags: #mikode-harness #architecture #interface-segregation
+
+partially superseded by: "ConversationLoop is a consumption pattern, not the harness seam" (below) — `IPromptEmitter` did not stay in the harness core as described here; it moved into `cli/` along with `ConversationLoop` itself. `ILogger` and the `ConversationLoop`/`scripts/cli.ts` renames described here remain accurate (`scripts/cli.ts` itself later moved again, to `cli/cli.ts`).
+
+**Decision:** `LoopTerminal` (one interface bundling `question`, `onInterrupt`, `log`, `write`, `clearLine`) is gone. `ConversationLoop` (renamed from `Loop`) now depends on two focused ports instead: `IPromptEmitter` (`emit`, `close`) and `ILogger` (`log`, `error`). Terminal presentation that isn't a core concern at all — the spinner, cursor control — moved out of any shared interface entirely and lives only in the CLI composition root (`scripts/cli.ts`, moved from `bin/cli.ts`), alongside the rest of `src/` reorganized into one folder per bounded module (`agent`, `conversationLoop`, `engines/{claude,codex}`, `orchestration`, `retry`, `shared`), each split into `domain`/`infrastructure`.
+
+**Context:** `LoopTerminal` was introduced to decouple the loop from a hardcoded `readline` import. As more was hung off it, it turned out to bundle two genuinely different responsibilities — turn-taking I/O and logging — plus terminal cursor control that no consumer actually needed as part of a _shared_ contract; it was CLI presentation detail, not something a future web consumer would ever implement.
+
+**Alternatives considered:** keep one `LoopTerminal` and just keep adding methods as new needs appeared. Rejected — every concrete implementation and every test fake was already only using part of it, the classic sign an interface has stopped tracking one responsibility.
+
+**Consequences:** `ConversationLoop`'s dependencies are two minimal, independently fakeable ports instead of one broad one; the spinner/cursor logic in `scripts/cli.ts` doesn't need an abstraction at all, since it has exactly one implementation and one caller. Also fixed in this same pass: `ConversationLoop.cancel()` now distinguishes "abort the in-flight turn" from "exit the idle loop" (verified by dedicated tests), and the package's public entry point exports `RecoverableError` and `AgentResponse` alongside what was already exported — both are required by `Agent`'s own documented contract, so a consumer implementing a custom engine could not previously comply with it.
+
+**Lesson:** an interface that started minimal can still accumulate more than one responsibility as consumers add methods to it one at a time — the useful check isn't "does everything still compile," it's "does every implementation and every consumer actually use all of it," and splitting along the boundary consumers already respect is cheaper the earlier it happens.
+
+---
+
+## ConversationLoop is a consumption pattern, not the harness seam — planned split into a separate CLI workspace project
+
+tags: #mikode-harness #architecture #scope-discipline
+
+status: implemented
+
+**Decision:** `ConversationLoop` and its `IPromptEmitter` port moved out of the harness package entirely, into `cli/`, a standalone workspace project (a pnpm workspace member — first use of workspaces in this repo — with its own `package.json`/`tsconfig`). `ILogger` stayed in the harness core, at `src/shared/domain/logger.ts` (not nested under the now-departed `conversationLoop` module). `CodexAgent` alone gained `ILogger` as a constructor dependency, removing the one stray `console.warn` in `codexAgent.ts`'s handling of an unrecognized SDK item type. That case is a genuine warning, not an error or routine log line, so `ILogger` gained a third method, `warn`, rather than force-fitting the call into `error` — a real, demonstrated severity distinction, unlike adding a method speculatively. `ClaudeAgent` was deliberately left unchanged: it has no current logging need, and adding an unused dependency "for symmetry" would be exactly the speculative flexibility this log's own principles argue against elsewhere; it can gain `ILogger` the moment it actually needs to log something. `IConversationLoop` (the interface, not the class) was dropped rather than moved — with `ConversationLoop` no longer part of a publicly embeddable package, nothing actually depended on the abstract type (unlike `IPromptEmitter`, which real tests fake against).
+
+**Context:** came up while asking whether `IPromptEmitter` belongs to the harness or to the CLI, using a hypothetical REST/WebSocket consumer to pressure-test it. A REST consumer would never implement `IPromptEmitter` — it would call `Agent.run()` directly per request and would never want `ConversationLoop`'s blocking "wait for the next turn" loop at all. That's the signal that the loop itself, not just its I/O port, encodes one specific interactive consumption pattern of the real minimal seam (`Agent`, see the first entry in this log) rather than being part of the seam itself. `ILogger` is different: `CodexAgent`'s existing `console.warn` fallback is core infrastructure already coupled to a logging destination, independent of which consumer's I/O model is in use.
+
+**Alternatives considered:** keep `ConversationLoop`/`IPromptEmitter` in `src/`, since a real second interactive consumer (a WebSocket server) is a stated goal from an earlier entry in this log. Rejected as the deciding factor — "a plausible future second consumer" is the right test for whether to _introduce_ a new abstraction, but the wrong test for whether an _already-written_ piece of code is misplaced today; that's answered by asking what capability the code represents (talking to/orchestrating agents) versus what consumption pattern it encodes (a blocking, turn-based loop), regardless of who might reuse it later. No ADR was raised for the workspace split — it affects only this repo; the engineering repo's own rule reserves ADRs for decisions affecting more than one MiKode project, revisit only if the same split needs replicating elsewhere.
+
+**Consequences:** the harness package's public surface shrinks to `Agent` and its implementations, `ILogger`, and the shared error types — genuinely consumer-agnostic; `cli/` now owns `ConversationLoop`, `IPromptEmitter`, the `Logger`/`PromptEmitter` adapters, and their tests. `cli/cli.ts` reaches the harness via a relative import (`../src/index.ts`), the same path it always used, not via `@mikode13/harness` as an installed dependency — the pragmatic choice, since importing the published package name would resolve through `dist/` and require building the harness before every CLI run, breaking today's zero-build dev loop; this also means `cli/package.json` has no formal dependency on the harness, since nothing in it is actually resolved through package resolution. Switching to a real package import (with the build-step cost) remains available later if simulating an external consumer exactly matters more than that workflow. Root `package.json` scripts (`typecheck`, `test`, `lint`, `format:check`) now cover `cli/` too, closing a gap this move surfaced: `scripts/cli.ts` had never actually been part of any tsconfig's `include`, so it was never typechecked at all before this. `eslint`'s shared config still has no `no-console` rule, so a future stray `console.*` in `src/` wouldn't be caught automatically — not fixed here, noted as a follow-up. Fixed as a directly adjacent, trivial issue found while verifying packaging: `dist/` had accumulated stale output from earlier layouts (`dist/src/models/`, `loopImpl.js`, `terminal.js` — files with no current source), because `tsc` never deletes output it no longer generates; `build` now runs `rm -rf dist` first.
+
+**Lesson:** "does a second implementation already exist" guards against premature abstraction, but it doesn't tell you whether code already in the core is actually core — that's a question about which capability the code represents, not about who else might reuse it.
+
+---
+
+## `build`'s dist cleanup is not cross-platform — left as known debt, candidate for a cross-project ADR
+
+tags: #mikode-harness #tooling #technical-debt
+
+**Decision:** `package.json`'s `build` script now runs `rm -rf dist && tsc -p tsconfig.build.json`. `rm -rf` is a Unix shell command; it fails on native Windows `cmd.exe` (works under Git Bash, WSL, or PowerShell with an alias, but that's not what `npm`/`pnpm` invoke by default there). Left as-is rather than fixed immediately.
+
+**Context:** found while fixing `dist/` accumulating stale output from earlier layouts (see the entry above). The fix itself (clean before build) is right; the specific shell command isn't portable. CI only runs on `ubuntu-latest`, so nothing catches this today, and no one has asked for native Windows support on this repo.
+
+**Alternatives considered:** fix it immediately, either with Node's own `fs.rmSync` via a `node -e` one-liner (no new dependency, less readable) or the `rimraf` package (standard, readable, one more dependency). Deferred — this isn't specific to this repo: any MiKode project with a `build` script that cleans an output directory hits the exact same choice, which makes it a candidate for a cross-project ADR (a standard way to handle cross-platform-unsafe shell commands in `package.json` scripts) rather than a one-off local fix that the next repo reinvents differently.
+
+**Consequences:** the harness build is not verified cross-platform right now; anyone building from native Windows hits a broken `build` script. Acceptable for now given no stated Windows requirement and Ubuntu-only CI, but worth revisiting the moment either changes.
+
+**Resolved.** The cross-project decision this entry anticipated was taken: [ADR 0016](https://github.com/Mikode13/engineering/blob/main/adr/0016-centralize-cross-platform-script-utilities.md) and the [cross-platform script utilities standard](https://github.com/Mikode13/engineering/blob/main/standards/cross-platform-script-utilities.md) established `@mikode13/cross-platform`, and `build` now runs `mikode-scripts clean dist`. The debt described above no longer exists; the entry is kept because the reasoning that deferred a local fix in favour of a cross-project one is what produced the package.
+
+---
+
+## Provider failures are classified at the adapter boundary, and cancellation is not
+
+tags: #mikode-harness #error-handling #contracts
+
+**Decision:** every call into a provider SDK — starting a turn _and_ iterating its event stream — goes through `classifyProviderFailure` (`src/agent/domain/providerFailure.ts`). Anything unclassified becomes a `RecoverableError`; an `AbortError` and an already-classified error pass through untouched.
+
+**Context:** the `Agent` docblock has always promised that implementers only ever reject with `RecoverableError` or `UnrecoverableError`, because every consumer branches on exactly that. Neither engine honoured it. `CodexAgent.run()` awaited `thread.runStreamed()` bare, and both engines iterated their stream bare, so a dropped connection or a rejected request escaped as a raw `Error`. `RetryingAgent` then retried it blindly — an unclassified error is not `UnrecoverableError`, so it looked retryable — and on exhaustion replaced it with a generic error that named no cause at all. A promise in a docblock that nothing enforces is not a contract.
+
+Recoverable is the default for the unclassified case because the failures that reach it are transport-shaped: a dropped connection, a rejected request, a malformed frame. Retrying is the response that helps, and `RetryingAgent` converts a persistent one into an `UnrecoverableError` on exhaustion anyway. Defaulting to unrecoverable would make every transient network blip fatal.
+
+Cancellation is deliberately _not_ classified. An `AbortError` is not a failure of the run, and `RetryingAgent` already checked for it before either error type — wrapping it would have turned a deliberate stop into a retried error. The `Agent` docblock now says so, rather than leaving the exception implicit in the code.
+
+**Consequences:** the classification is enforced by tests that fake a request-start rejection and a mid-stream iterator rejection for both engines, and by tests that assert cancellation and already-classified errors survive the boundary unchanged. Retry exhaustion now carries the last cause, so a run that failed three times says why. A new engine has one more obligation, documented in `AGENTS.md`: route its SDK boundaries through the same helper.
+
+**Lesson:** a contract stated only in a docblock is a wish. This one had been written down, precisely and persuasively, while both implementations violated it.
+
+---
+
+## Usage accounting belongs to a `run()`, not to the orchestrator instance
+
+tags: #mikode-harness #correctness #state
+
+**Decision:** `OrchestratorAgent` builds a `RunTotals` accumulator inside `run()` and threads it through the planner, executor, and reviewer calls, instead of accumulating into instance fields.
+
+**Context:** `duration`, `inputTokens`, and `outputTokens` were constructor-initialised instance state, incremented by every turn and returned on approval. Calling the same orchestrator twice returned the first run's usage added to the second's — a second call reporting three times the duration and tokens it actually used. The CLI keeps one orchestrator for a whole session, so this was every session after the first, not an edge case. Two concurrent runs would each have reported the other's usage as their own.
+
+**Alternatives considered:** keeping the instance counters and resetting them at the top of `run()`. Rejected: it fixes the sequential case and leaves the concurrent one broken, because two overlapping runs still share one set of fields. Per-invocation state is the only version that is correct for both, and it needs no reasoning about call ordering.
+
+**Consequences:** the orchestrator holds no mutable run state at all, which is what makes it safe to share. Session totals are deliberately not provided — no consumer has asked for them, and the right place to sum runs is the consumer that decides what a session is.
+
+**Lesson:** "does this instance get reused?" is worth asking of any counter that lives next to a method rather than inside it. The CLI's single long-lived orchestrator turned an invisible design choice into wrong numbers on every session.
+
+---
+
+## The provider boundary is the SDK call, not the loop that consumes it
+
+tags: #mikode-harness #correctness #boundaries #retry
+
+**Decision:** `classifiedProviderStream` wraps only the SDK iterator operations; item mapping, logging, and the consumer callback run outside that provider boundary. Failures from those local or host operations are classified separately as `UnrecoverableError`. `RetryingAgent` retries a `RecoverableError` and nothing else — an unclassified failure becomes an `UnrecoverableError` without a second call.
+
+**Context:** classifying failures at the adapter boundary (the entry above) was done with a `try/catch` around the whole `for await` loop. That is wider than the boundary it names: `describeItem`, `logger.warn`, and the consumer's callback execute inside it too, so a bug in the host was labelled a recoverable _provider_ failure. Combined with a retry loop that advanced on any non-fatal error, a callback that threw made `RetryingAgent` re-run the provider — replaying a turn whose commands and file writes had already happened. Reproduced with a throwing callback: `runStreamed` called twice before ending as exhaustion.
+
+**Alternatives considered:** letting consumer failures propagate unchanged after narrowing the provider boundary. Rejected because a bare `CodexAgent` or `ClaudeAgent`, without `RetryingAgent`, would then violate the public `Agent` error contract. Also considered leaving `RetryingAgent` permissive and relying on adapters to classify correctly — rejected, since it is public and can wrap a consumer-provided `Agent`, so "the adapter is compliant" is an assumption it cannot make.
+
+**Consequences:** side-effecting work is never replayed on a host failure, and the same typed contract holds whether an engine is used directly or behind `RetryingAgent`. A non-compliant custom adapter also ends a run instead of being retried three times. `classifiedProviderStream` closes the SDK iterator in a `finally`; a cleanup failure cannot replace the primary classified error. `CodexAgent`'s constructor also classifies `startThread`, as unrecoverable: a thread the SDK refused to open is rejected configuration, and constructing it again cannot fix it.
+
+**Lesson:** a `try` block is a boundary declaration. Every statement inside it is claimed to be the thing being classified, and the loop body is usually not.
+
+---
+
+## The progress formatter is presentation, so it left the published core
+
+tags: #mikode-harness #boundaries #api-surface
+
+**Decision:** `handleEvents` moved from `src/agent/domain/agent.ts` to `cli/progressEventFormatter.ts` as `formatProgressEvent`, and is no longer exported from the package.
+
+**Context:** it renders `ProgressEvent` into terminal-shaped strings — labels, `✔`/`X`, newline-joined lists — and its only consumer was `cli/cli.ts`. Keeping it in `agent/domain` put presentation logic in the public core of a package whose stated seam is the provider-agnostic event itself, which is the boundary the CLI split existed to draw.
+
+**Alternatives considered:** keeping it exported as a convenience for consumers. Rejected: it encodes one renderer's choices, and a web consumer that imported it would inherit terminal formatting it has to undo. The name also promised event _handling_ while the function only formats.
+
+**Consequences:** the published surface is `ProgressEvent` alone; consumers render it, and `cli/progressEventFormatter.ts` is a reference implementation rather than a dependency. Its tests moved to the `cli` project with it, so coverage did not change hands.
+
+**Lesson:** "only the CLI imports it" is usually the module telling you where it belongs.

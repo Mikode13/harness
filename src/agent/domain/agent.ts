@@ -16,7 +16,9 @@ export type ProgressEvent =
 	| { type: 'fileChange'; changes: { path: string; kind: 'add' | 'update' | 'delete' }[] }
 	| { type: 'mcpTool'; server: string; tool: string; status: string }
 	| { type: 'agentMessage'; message: string }
-	| { type: 'todoList'; items: { text: string; completed: boolean }[] };
+	| { type: 'todoList'; items: { text: string; completed: boolean }[] }
+	| { type: 'turnStarted' }
+	| { type: 'turnEnded' };
 
 /**
  * The contract every engine (CodexAgent, ClaudeAgent, future providers) and every
@@ -30,32 +32,11 @@ export type ProgressEvent =
  * entirely — it gets retried when it shouldn't be, or crashes a run that a retry
  * would have recovered. Wrap every call into the underlying SDK so nothing escapes
  * unclassified, including failures the SDK itself doesn't model as a domain error
- * (network errors, malformed responses, etc.).
+ * (network errors, malformed responses, etc.); `classifyProviderFailure` does this.
+ *
+ * Cancellation is the one exception: an `AbortError` must propagate unchanged, because
+ * consumers check for it before either error type.
  */
 export interface Agent {
 	run(prompt: string, signal: AbortSignal, callback: Callback): Promise<AgentResponse | undefined>;
-}
-
-export function handleEvents(item: ProgressEvent): string | undefined {
-	switch (item.type) {
-		case 'agentMessage':
-		case 'reasoning':
-			return item.message;
-		case 'command':
-			if (!item.command) return undefined;
-
-			return `command: ${item.command}, exit ${String(item.exitCode ?? '?')}`;
-		case 'mcpTool':
-			if (!item.server || !item.status) return undefined;
-			return `tool: ${item.tool}, server: ${item.server}, status: ${item.status}`;
-		case 'search':
-			if (!item.query) return undefined;
-			return `searching... query:${item.query}`;
-		case 'fileChange':
-			return item.changes.map(change => `${change.path} - ${change.kind}`).join('\n');
-		case 'todoList':
-			return item.items
-				.map(todoItem => `${todoItem.text} - status:${todoItem.completed ? '✔' : 'X'}`)
-				.join('\n');
-	}
 }

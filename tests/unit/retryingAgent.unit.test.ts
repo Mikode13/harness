@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Agent, AgentResponse } from '../../src/models/agent.ts';
-import { RecoverableError, UnrecoverableError } from '../../src/models/errors.ts';
-import { RetryingAgent } from '../../src/retryingAgent.ts';
+import type { Agent, AgentResponse } from '../../src/agent/domain/agent.ts';
+import { RecoverableError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
+import { RetryingAgent } from '../../src/retry/domain/model/retryingAgent.ts';
 
 const okResponse: AgentResponse = {
 	response: 'pong',
@@ -144,5 +144,57 @@ describe('RetryingAgent', () => {
 		await expect(retryingAgent.run('hi', signal, callback)).rejects.toThrow('broken');
 
 		expect(run).toHaveBeenNthCalledWith(1, 'hi', signal, callback);
+	});
+
+	// Regression: exhaustion reported "max attempts limit reached" and no cause at all.
+	describe('exhaustion causal chain', () => {
+		it('carries the last recoverable cause into the exhaustion error', async () => {
+			const { agent } = fakeAgent(
+				new RecoverableError('first', { cause: 'rate limited' }),
+				new RecoverableError('second', { cause: 'rate limited again' }),
+			);
+			const retrying = new RetryingAgent(agent, 2);
+
+			const failure = await retrying.run('ping', signal, callback).catch((error: unknown) => error);
+
+			expect(failure).toBeInstanceOf(UnrecoverableError);
+			expect((failure as UnrecoverableError).cause).toContain('rate limited again');
+			expect((failure as UnrecoverableError).cause).toContain('2 attempts');
+		});
+
+		// A compliant adapter never sends one of these; the decorator is the last defence.
+		it('describes an unclassified failure rather than dropping it', async () => {
+			const { agent } = fakeAgent(new Error('socket hang up'), okResponse);
+			const retrying = new RetryingAgent(agent, 2);
+
+			const failure = await retrying.run('ping', signal, callback).catch((error: unknown) => error);
+
+			expect(failure).toBeInstanceOf(UnrecoverableError);
+			expect((failure as UnrecoverableError).cause).toContain('socket hang up');
+		});
+	});
+
+	// Regression: any non-recoverable failure used to advance the loop, so a callback or a
+	// host bug escaping an adapter re-ran a turn whose side effects had already happened.
+	describe('unclassified failures', () => {
+		it('does not call the agent again when the failure was not classified', async () => {
+			const { agent, run } = fakeAgent(new Error('callback exploded'), okResponse);
+			const retrying = new RetryingAgent(agent, 3);
+
+			await expect(retrying.run('hi', signal, callback)).rejects.toThrow(
+				'The agent failed without classifying the failure',
+			);
+			expect(run).toHaveBeenCalledTimes(1);
+		});
+
+		it('reports an unclassified failure as unrecoverable, not as exhaustion', async () => {
+			const { agent } = fakeAgent(new Error('callback exploded'));
+			const retrying = new RetryingAgent(agent, 3);
+
+			const failure = await retrying.run('hi', signal, callback).catch((error: unknown) => error);
+
+			expect(failure).toBeInstanceOf(UnrecoverableError);
+			expect(failure).toMatchObject({ cause: 'callback exploded' });
+		});
 	});
 });

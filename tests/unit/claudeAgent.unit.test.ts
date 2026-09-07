@@ -1,8 +1,9 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query } from '@anthropic-ai/claude-agent-sdk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ClaudeAgent } from '../../src/claudeAgent.ts';
-import type { ProgressEvent } from '../../src/models/agent.ts';
+import { ClaudeAgent } from '../../src/engines/claude/infrastructure/model/claudeAgent.ts';
+import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
+import { RecoverableError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 
@@ -231,6 +232,69 @@ describe('ClaudeAgent', () => {
 		).rejects.toMatchObject({
 			message: 'Claude sdk error',
 			cause: 'error,temporary failure,rate limited',
+		});
+	});
+
+	// Regression: the same unclassified-failure hole the Codex adapter had.
+	describe('provider failures at the adapter boundary', () => {
+		it('classifies a query the SDK refuses to start', async () => {
+			vi.mocked(query).mockImplementation(() => {
+				throw new Error('invalid api key');
+			});
+			const agent = new ClaudeAgent('sonnet');
+
+			const failure = await agent
+				.run('prompt', new AbortController().signal, vi.fn())
+				.catch((error: unknown) => error);
+
+			expect(failure).toBeInstanceOf(RecoverableError);
+			expect((failure as RecoverableError).cause).toBe('invalid api key');
+		});
+
+		it('classifies a stream that fails part-way through a turn', async () => {
+			const failing = {
+				close: vi.fn(),
+				[Symbol.asyncIterator]() {
+					return {
+						next: () => Promise.reject(new Error('connection reset')),
+						[Symbol.asyncIterator]() {
+							return this;
+						},
+					};
+				},
+			} as unknown as Query;
+			vi.mocked(query).mockReturnValue(failing);
+			const agent = new ClaudeAgent('sonnet');
+
+			const failure = await agent
+				.run('prompt', new AbortController().signal, vi.fn())
+				.catch((error: unknown) => error);
+
+			expect(failure).toBeInstanceOf(RecoverableError);
+			expect((failure as RecoverableError).cause).toBe('connection reset');
+		});
+
+		// Regression: the stream `try/catch` used to span the loop body too, so a throw from
+		// the consumer callback came back as a RecoverableError and RetryingAgent replayed a
+		// turn that had already run its tools.
+		it('classifies a throwing consumer callback as unrecoverable', async () => {
+			const thrown = new Error('the renderer crashed');
+			vi.mocked(query).mockReturnValue(
+				stream([assistant([{ text: 'hello', type: 'text' }]), result()]),
+			);
+			const agent = new ClaudeAgent('sonnet');
+
+			const failure = await agent
+				.run('prompt', new AbortController().signal, () => {
+					throw thrown;
+				})
+				.catch((error: unknown) => error);
+
+			expect(failure).toBeInstanceOf(UnrecoverableError);
+			expect(failure).toMatchObject({
+				message: 'Claude progress callback failed',
+				cause: 'the renderer crashed',
+			});
 		});
 	});
 });
