@@ -101,7 +101,7 @@ export class CodexAgent implements Agent {
 		try {
 			turn = await this.thread.runStreamed(prompt, { signal });
 		} catch (error) {
-			classifyProviderFailure(error, 'Codex refused the request');
+			throw classifyProviderFailure(error, 'Codex refused the request');
 		}
 
 		return await this.parseResponse(turn, callback);
@@ -115,9 +115,6 @@ export class CodexAgent implements Agent {
 		const start = Date.now();
 		let usage: Usage | undefined = undefined;
 
-		// The iterator itself can reject part-way through a turn — a dropped connection, a
-		// malformed frame — long after the request was accepted. Classifying only the request
-		// would leave that failure escaping raw.
 		try {
 			for await (const event of turn.events) {
 				if (event.type === 'turn.completed') {
@@ -134,7 +131,7 @@ export class CodexAgent implements Agent {
 				if (description?.type === 'agentMessage') lines.push(description.message);
 			}
 		} catch (error) {
-			classifyProviderFailure(error, 'Codex stream ended unexpectedly');
+			throw classifyProviderFailure(error, 'Codex stream ended unexpectedly');
 		}
 
 		if (!lines.length || !usage) {

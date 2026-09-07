@@ -403,9 +403,8 @@ describe('OrchestratorAgent', () => {
 		).toThrow(RangeError);
 	});
 
-	// Regression: usage was accumulated on the instance rather than per invocation, so a
-	// second run on the same orchestrator reported its own usage plus every earlier run's.
-	// The CLI keeps one orchestrator for a whole session, so this was every real session.
+	// Regression: usage accumulated on the instance, and the CLI keeps one orchestrator for
+	// a whole session — so every session after the first reported inflated totals.
 	describe('per-run accounting', () => {
 		function approvingRun() {
 			return [
@@ -473,8 +472,7 @@ describe('OrchestratorAgent', () => {
 			expect(second).toEqual(expected);
 		});
 
-		// A run that throws must not leave its partial usage behind for the next one, on the
-		// same instance — the failing run still counted a planner response before it gave up.
+		// The failing run still counted a planner response before it gave up.
 		it('does not leak a failed run into the next one', async () => {
 			const planner = createFakeAgent(
 				createResponse({ response: 'draft plan', inputTokens: 99, outputTokens: 99, duration: 99 }),

@@ -167,7 +167,7 @@ export class ClaudeAgent implements Agent {
 				},
 			});
 		} catch (error) {
-			classifyProviderFailure(error, 'Claude refused the request');
+			throw classifyProviderFailure(error, 'Claude refused the request');
 		}
 
 		signal.addEventListener('abort', () => {
@@ -185,9 +185,6 @@ export class ClaudeAgent implements Agent {
 		let resultMessage: SDKResultSuccess | undefined;
 		const pendingTools = new Map<string, PendingTool>();
 
-		// The iterator itself can reject part-way through a turn — a dropped connection, a
-		// malformed frame — long after the query was accepted. Classifying only the request
-		// would leave that failure escaping raw.
 		try {
 			for await (const message of stream) {
 				this.sessionId ??= message.session_id;
@@ -212,7 +209,7 @@ export class ClaudeAgent implements Agent {
 				}
 			}
 		} catch (error) {
-			classifyProviderFailure(error, 'Claude stream ended unexpectedly');
+			throw classifyProviderFailure(error, 'Claude stream ended unexpectedly');
 		}
 
 		if (!lines.length || !resultMessage) {

@@ -146,8 +146,7 @@ describe('RetryingAgent', () => {
 		expect(run).toHaveBeenNthCalledWith(1, 'hi', signal, callback);
 	});
 
-	// Regression: exhaustion reported "max attempts limit reached" and nothing else, so the
-	// only thing that explained the run — why every attempt failed — was discarded.
+	// Regression: exhaustion reported "max attempts limit reached" and no cause at all.
 	describe('exhaustion causal chain', () => {
 		it('carries the last recoverable cause into the exhaustion error', async () => {
 			const { agent } = fakeAgent(
@@ -163,8 +162,7 @@ describe('RetryingAgent', () => {
 			expect((failure as UnrecoverableError).cause).toContain('2 attempts');
 		});
 
-		// An adapter that respects the Agent contract never sends one of these, but the
-		// decorator is the last line of defence and must not swallow the reason either.
+		// A compliant adapter never sends one of these; the decorator is the last defence.
 		it('describes an unclassified failure rather than dropping it', async () => {
 			const { agent } = fakeAgent(new Error('socket hang up'), new Error('socket hang up'));
 			const retrying = new RetryingAgent(agent, 2);

@@ -25,9 +25,6 @@ export class RetryingAgent implements Agent {
 			} catch (e) {
 				if (isAbortError(e) || e instanceof UnrecoverableError) throw e;
 
-				// Every attempt failed for some reason, and that reason is the only thing that
-				// explains the run. Reporting "max attempts limit reached" alone discards it, so
-				// the last cause travels with the exhaustion error.
 				const reason = e instanceof RecoverableError ? e.cause : describeProviderFailure(e);
 
 				if (attempt === this.maxAttempts)

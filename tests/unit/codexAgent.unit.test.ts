@@ -250,10 +250,8 @@ describe('CodexAgent', () => {
 		).rejects.toMatchObject({ message, cause });
 	});
 
-	// Regression: failures from runStreamed() and from the event iterator escaped as raw
-	// Error instances. The Agent contract promises only RecoverableError or
-	// UnrecoverableError, and RetryingAgent classifies on exactly that — an unclassified
-	// error was retried blindly and then replaced with a generic exhaustion error.
+	// Regression: both boundaries let raw Errors escape, so RetryingAgent retried failures
+	// it could not classify.
 	describe('provider failures at the adapter boundary', () => {
 		function failingStream(error: unknown) {
 			return {
@@ -308,8 +306,6 @@ describe('CodexAgent', () => {
 			expect(failure).toMatchObject({ cause: 'connection reset' });
 		});
 
-		// Cancellation is not a failure. Wrapping it would make RetryingAgent spend attempts
-		// on a deliberate stop instead of propagating it.
 		it('lets cancellation through unchanged', async () => {
 			const abort = new Error('The operation was aborted');
 			abort.name = 'AbortError';
@@ -321,8 +317,6 @@ describe('CodexAgent', () => {
 			expect(failure).toBe(abort);
 		});
 
-		// An error the adapter already classified from a stream event must not be downgraded
-		// to recoverable by the boundary that exists to classify unclassified ones.
 		it('does not reclassify an error the adapter already classified', async () => {
 			const { sdk, runStreamed } = createSdk();
 			runStreamed.mockResolvedValue(

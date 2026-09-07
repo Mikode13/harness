@@ -235,8 +235,7 @@ describe('ClaudeAgent', () => {
 		});
 	});
 
-	// Regression: the same unclassified-failure hole the Codex adapter had. Both engines
-	// route every SDK boundary through classifyProviderFailure now.
+	// Regression: the same unclassified-failure hole the Codex adapter had.
 	describe('provider failures at the adapter boundary', () => {
 		it('classifies a query the SDK refuses to start', async () => {
 			vi.mocked(query).mockImplementation(() => {

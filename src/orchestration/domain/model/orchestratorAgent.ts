@@ -57,7 +57,6 @@ ${executorResult}
 ---${retryNotice}`;
 };
 
-/** Usage accumulated by one `run()` call, and nothing else. */
 interface RunTotals {
 	duration: number;
 	inputTokens: number;
@@ -134,10 +133,7 @@ export class OrchestratorAgent implements Agent {
 		signal: AbortSignal,
 		callback: Callback,
 	): Promise<AgentResponse | undefined> {
-		// Owned by this invocation, not by the instance. A long-lived orchestrator — the CLI
-		// keeps one for the whole session — would otherwise report every previous run's tokens
-		// and duration again on each call, and two concurrent calls would each report the
-		// other's usage as their own.
+		// Per invocation, not per instance: the CLI keeps one orchestrator for a whole session.
 		const totals: RunTotals = { duration: 0, inputTokens: 0, outputTokens: 0 };
 		let lastFailureReason: string | undefined;
 
