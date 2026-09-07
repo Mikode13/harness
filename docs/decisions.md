@@ -401,3 +401,39 @@ tags: #mikode-harness #tooling #technical-debt
 **Alternatives considered:** fix it immediately, either with Node's own `fs.rmSync` via a `node -e` one-liner (no new dependency, less readable) or the `rimraf` package (standard, readable, one more dependency). Deferred — this isn't specific to this repo: any MiKode project with a `build` script that cleans an output directory hits the exact same choice, which makes it a candidate for a cross-project ADR (a standard way to handle cross-platform-unsafe shell commands in `package.json` scripts) rather than a one-off local fix that the next repo reinvents differently.
 
 **Consequences:** the harness build is not verified cross-platform right now; anyone building from native Windows hits a broken `build` script. Acceptable for now given no stated Windows requirement and Ubuntu-only CI, but worth revisiting the moment either changes.
+
+**Resolved.** The cross-project decision this entry anticipated was taken: [ADR 0016](https://github.com/Mikode13/engineering/blob/main/adr/0016-centralize-cross-platform-script-utilities.md) and the [cross-platform script utilities standard](https://github.com/Mikode13/engineering/blob/main/standards/cross-platform-script-utilities.md) established `@mikode13/cross-platform`, and `build` now runs `mikode-scripts clean dist`. The debt described above no longer exists; the entry is kept because the reasoning that deferred a local fix in favour of a cross-project one is what produced the package.
+
+---
+
+## Provider failures are classified at the adapter boundary, and cancellation is not
+
+tags: #mikode-harness #error-handling #contracts
+
+**Decision:** every call into a provider SDK — starting a turn _and_ iterating its event stream — goes through `classifyProviderFailure` (`src/agent/domain/providerFailure.ts`). Anything unclassified becomes a `RecoverableError`; an `AbortError` and an already-classified error pass through untouched.
+
+**Context:** the `Agent` docblock has always promised that implementers only ever reject with `RecoverableError` or `UnrecoverableError`, because every consumer branches on exactly that. Neither engine honoured it. `CodexAgent.run()` awaited `thread.runStreamed()` bare, and both engines iterated their stream bare, so a dropped connection or a rejected request escaped as a raw `Error`. `RetryingAgent` then retried it blindly — an unclassified error is not `UnrecoverableError`, so it looked retryable — and on exhaustion replaced it with a generic error that named no cause at all. A promise in a docblock that nothing enforces is not a contract.
+
+Recoverable is the default for the unclassified case because the failures that reach it are transport-shaped: a dropped connection, a rejected request, a malformed frame. Retrying is the response that helps, and `RetryingAgent` converts a persistent one into an `UnrecoverableError` on exhaustion anyway. Defaulting to unrecoverable would make every transient network blip fatal.
+
+Cancellation is deliberately _not_ classified. An `AbortError` is not a failure of the run, and `RetryingAgent` already checked for it before either error type — wrapping it would have turned a deliberate stop into a retried error. The `Agent` docblock now says so, rather than leaving the exception implicit in the code.
+
+**Consequences:** the classification is enforced by tests that fake a request-start rejection and a mid-stream iterator rejection for both engines, and by tests that assert cancellation and already-classified errors survive the boundary unchanged. Retry exhaustion now carries the last cause, so a run that failed three times says why. A new engine has one more obligation, documented in `AGENTS.md`: route its SDK boundaries through the same helper.
+
+**Lesson:** a contract stated only in a docblock is a wish. This one had been written down, precisely and persuasively, while both implementations violated it.
+
+---
+
+## Usage accounting belongs to a `run()`, not to the orchestrator instance
+
+tags: #mikode-harness #correctness #state
+
+**Decision:** `OrchestratorAgent` builds a `RunTotals` accumulator inside `run()` and threads it through the planner, executor, and reviewer calls, instead of accumulating into instance fields.
+
+**Context:** `duration`, `inputTokens`, and `outputTokens` were constructor-initialised instance state, incremented by every turn and returned on approval. Calling the same orchestrator twice returned the first run's usage added to the second's — a second call reporting three times the duration and tokens it actually used. The CLI keeps one orchestrator for a whole session, so this was every session after the first, not an edge case. Two concurrent runs would each have reported the other's usage as their own.
+
+**Alternatives considered:** keeping the instance counters and resetting them at the top of `run()`. Rejected: it fixes the sequential case and leaves the concurrent one broken, because two overlapping runs still share one set of fields. Per-invocation state is the only version that is correct for both, and it needs no reasoning about call ordering.
+
+**Consequences:** the orchestrator holds no mutable run state at all, which is what makes it safe to share. Session totals are deliberately not provided — no consumer has asked for them, and the right place to sum runs is the consumer that decides what a session is.
+
+**Lesson:** "does this instance get reused?" is worth asking of any counter that lives next to a method rather than inside it. The CLI's single long-lived orchestrator turned an invisible design choice into wrong numbers on every session.
