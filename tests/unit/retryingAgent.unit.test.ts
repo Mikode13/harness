@@ -145,4 +145,34 @@ describe('RetryingAgent', () => {
 
 		expect(run).toHaveBeenNthCalledWith(1, 'hi', signal, callback);
 	});
+
+	// Regression: exhaustion reported "max attempts limit reached" and nothing else, so the
+	// only thing that explained the run — why every attempt failed — was discarded.
+	describe('exhaustion causal chain', () => {
+		it('carries the last recoverable cause into the exhaustion error', async () => {
+			const { agent } = fakeAgent(
+				new RecoverableError('first', { cause: 'rate limited' }),
+				new RecoverableError('second', { cause: 'rate limited again' }),
+			);
+			const retrying = new RetryingAgent(agent, 2);
+
+			const failure = await retrying.run('ping', signal, callback).catch((error: unknown) => error);
+
+			expect(failure).toBeInstanceOf(UnrecoverableError);
+			expect((failure as UnrecoverableError).cause).toContain('rate limited again');
+			expect((failure as UnrecoverableError).cause).toContain('2 attempts');
+		});
+
+		// An adapter that respects the Agent contract never sends one of these, but the
+		// decorator is the last line of defence and must not swallow the reason either.
+		it('describes an unclassified failure rather than dropping it', async () => {
+			const { agent } = fakeAgent(new Error('socket hang up'), new Error('socket hang up'));
+			const retrying = new RetryingAgent(agent, 2);
+
+			const failure = await retrying.run('ping', signal, callback).catch((error: unknown) => error);
+
+			expect(failure).toBeInstanceOf(UnrecoverableError);
+			expect((failure as UnrecoverableError).cause).toContain('socket hang up');
+		});
+	});
 });

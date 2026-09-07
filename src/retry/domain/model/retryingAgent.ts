@@ -1,5 +1,6 @@
 import type { Agent, AgentResponse, Callback } from '../../../agent/domain/agent.ts';
 import { RecoverableError, UnrecoverableError } from '../../../agent/domain/errors.ts';
+import { describeProviderFailure } from '../../../agent/domain/providerFailure.ts';
 import { isAbortError } from '../../../shared/domain/isAbortError.ts';
 
 export class RetryingAgent implements Agent {
@@ -23,12 +24,18 @@ export class RetryingAgent implements Agent {
 				return await this.inner.run(promptToSend, signal, callback);
 			} catch (e) {
 				if (isAbortError(e) || e instanceof UnrecoverableError) throw e;
+
+				// Every attempt failed for some reason, and that reason is the only thing that
+				// explains the run. Reporting "max attempts limit reached" alone discards it, so
+				// the last cause travels with the exhaustion error.
+				const reason = e instanceof RecoverableError ? e.cause : describeProviderFailure(e);
+
 				if (attempt === this.maxAttempts)
 					throw new UnrecoverableError('Max attempts exhausted', {
-						cause: 'max attempts limit reached',
+						cause: `Gave up after ${String(this.maxAttempts)} attempts. Last failure: ${reason}`,
 					});
-				if (e instanceof RecoverableError)
-					lastPrompt = `The past prompt failed for the following reason: ${e.cause}`;
+
+				lastPrompt = `The past prompt failed for the following reason: ${reason}`;
 			}
 		}
 		return undefined;

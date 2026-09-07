@@ -57,6 +57,19 @@ ${executorResult}
 ---${retryNotice}`;
 };
 
+/** Usage accumulated by one `run()` call, and nothing else. */
+interface RunTotals {
+	duration: number;
+	inputTokens: number;
+	outputTokens: number;
+}
+
+function addToTotals(totals: RunTotals, response: AgentResponse): void {
+	totals.duration += response.duration;
+	totals.inputTokens += response.inputTokens;
+	totals.outputTokens += response.outputTokens;
+}
+
 function stripCodeFence(text: string): string {
 	const match = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(text.trim());
 	return match?.[1] ?? text;
@@ -98,10 +111,6 @@ export class OrchestratorAgent implements Agent {
 	private reviewerDecisionValidator: Validator<ReviewerDecision>;
 	private maxAttempts: number;
 
-	private duration: number;
-	private inputTokens: number;
-	private outputTokens: number;
-
 	constructor(
 		plannerAgent: Agent,
 		executorAgent: Agent,
@@ -118,28 +127,6 @@ export class OrchestratorAgent implements Agent {
 		this.reviewerAgent = reviewerAgent;
 		this.reviewerDecisionValidator = reviewerDecisionValidator;
 		this.maxAttempts = maxAttempts;
-
-		this.duration = 0;
-		this.inputTokens = 0;
-		this.outputTokens = 0;
-	}
-
-	private increaseDuration(newDuration: number) {
-		this.duration += newDuration;
-	}
-
-	private increaseInputTokens(newInputTokens: number) {
-		this.inputTokens += newInputTokens;
-	}
-
-	private increaseOutputTokens(newOutputTokens: number) {
-		this.outputTokens += newOutputTokens;
-	}
-
-	private updateValues(response: AgentResponse) {
-		this.increaseDuration(response.duration);
-		this.increaseInputTokens(response.inputTokens);
-		this.increaseOutputTokens(response.outputTokens);
 	}
 
 	async run(
@@ -147,6 +134,11 @@ export class OrchestratorAgent implements Agent {
 		signal: AbortSignal,
 		callback: Callback,
 	): Promise<AgentResponse | undefined> {
+		// Owned by this invocation, not by the instance. A long-lived orchestrator — the CLI
+		// keeps one for the whole session — would otherwise report every previous run's tokens
+		// and duration again on each call, and two concurrent calls would each report the
+		// other's usage as their own.
+		const totals: RunTotals = { duration: 0, inputTokens: 0, outputTokens: 0 };
 		let lastFailureReason: string | undefined;
 
 		for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
@@ -166,7 +158,7 @@ export class OrchestratorAgent implements Agent {
 				continue;
 			}
 
-			this.updateValues(plannerResponse);
+			addToTotals(totals, plannerResponse);
 
 			const executorResponse = await this.executorAgent.run(
 				getExecutorPrompt(prompt, plannerResponse.response),
@@ -182,7 +174,7 @@ export class OrchestratorAgent implements Agent {
 				continue;
 			}
 
-			this.updateValues(executorResponse);
+			addToTotals(totals, executorResponse);
 
 			const reviewerDecision = await this.getReviewerDecision(
 				prompt,
@@ -190,15 +182,11 @@ export class OrchestratorAgent implements Agent {
 				executorResponse.response,
 				signal,
 				callback,
+				totals,
 			);
 
 			if (reviewerDecision.decision === 'approved') {
-				return {
-					response: 'All job has finished',
-					duration: this.duration,
-					inputTokens: this.inputTokens,
-					outputTokens: this.outputTokens,
-				};
+				return { response: 'All job has finished', ...totals };
 			}
 
 			lastFailureReason = reviewerDecision.feedback;
@@ -221,6 +209,7 @@ export class OrchestratorAgent implements Agent {
 		executorResult: string,
 		signal: AbortSignal,
 		callback: Callback,
+		totals: RunTotals,
 	): Promise<ReviewerDecision> {
 		let parseFailureReason: string | undefined;
 
@@ -232,7 +221,7 @@ export class OrchestratorAgent implements Agent {
 			);
 
 			if (reviewerResponse) {
-				this.updateValues(reviewerResponse);
+				addToTotals(totals, reviewerResponse);
 			}
 
 			try {

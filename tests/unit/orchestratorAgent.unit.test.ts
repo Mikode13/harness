@@ -402,4 +402,115 @@ describe('OrchestratorAgent', () => {
 				),
 		).toThrow(RangeError);
 	});
+
+	// Regression: usage was accumulated on the instance rather than per invocation, so a
+	// second run on the same orchestrator reported its own usage plus every earlier run's.
+	// The CLI keeps one orchestrator for a whole session, so this was every real session.
+	describe('per-run accounting', () => {
+		function approvingRun() {
+			return [
+				createResponse({ response: 'draft plan', inputTokens: 10, outputTokens: 2, duration: 1 }),
+				createResponse({ response: 'implemented', inputTokens: 15, outputTokens: 3, duration: 1 }),
+				createResponse({
+					response: '{"decision":"approved"}',
+					inputTokens: 5,
+					outputTokens: 1,
+					duration: 1,
+				}),
+			];
+		}
+
+		it('reports only its own usage on a second call', async () => {
+			const [plan1, exec1, review1] = approvingRun();
+			const [plan2, exec2, review2] = approvingRun();
+			const planner = createFakeAgent(plan1, plan2);
+			const executor = createFakeAgent(exec1, exec2);
+			const reviewer = createFakeAgent(review1, review2);
+			const orchestrator = new OrchestratorAgent(
+				planner.agent,
+				executor.agent,
+				reviewer.agent,
+				new ReviewerDecisionValidator(),
+			);
+			const signal = new AbortController().signal;
+			const expected = {
+				response: 'All job has finished',
+				duration: 3,
+				inputTokens: 30,
+				outputTokens: 6,
+			};
+
+			await expect(orchestrator.run('first', signal, vi.fn())).resolves.toEqual(expected);
+			await expect(orchestrator.run('second', signal, vi.fn())).resolves.toEqual(expected);
+		});
+
+		it('keeps two concurrent runs from counting each other', async () => {
+			const [plan1, exec1, review1] = approvingRun();
+			const [plan2, exec2, review2] = approvingRun();
+			const planner = createFakeAgent(plan1, plan2);
+			const executor = createFakeAgent(exec1, exec2);
+			const reviewer = createFakeAgent(review1, review2);
+			const orchestrator = new OrchestratorAgent(
+				planner.agent,
+				executor.agent,
+				reviewer.agent,
+				new ReviewerDecisionValidator(),
+			);
+			const signal = new AbortController().signal;
+			const expected = {
+				response: 'All job has finished',
+				duration: 3,
+				inputTokens: 30,
+				outputTokens: 6,
+			};
+
+			const [first, second] = await Promise.all([
+				orchestrator.run('first', signal, vi.fn()),
+				orchestrator.run('second', signal, vi.fn()),
+			]);
+
+			expect(first).toEqual(expected);
+			expect(second).toEqual(expected);
+		});
+
+		// A run that throws must not leave its partial usage behind for the next one, on the
+		// same instance — the failing run still counted a planner response before it gave up.
+		it('does not leak a failed run into the next one', async () => {
+			const planner = createFakeAgent(
+				createResponse({ response: 'draft plan', inputTokens: 99, outputTokens: 99, duration: 99 }),
+				createResponse({ response: 'draft plan', inputTokens: 10, outputTokens: 2, duration: 1 }),
+			);
+			const executor = createFakeAgent(
+				undefined,
+				createResponse({ response: 'implemented', inputTokens: 15, outputTokens: 3, duration: 1 }),
+			);
+			const reviewer = createFakeAgent(
+				createResponse({
+					response: '{"decision":"approved"}',
+					inputTokens: 5,
+					outputTokens: 1,
+					duration: 1,
+				}),
+			);
+			const orchestrator = new OrchestratorAgent(
+				planner.agent,
+				executor.agent,
+				reviewer.agent,
+				new ReviewerDecisionValidator(),
+				1,
+			);
+			const signal = new AbortController().signal;
+
+			await expect(orchestrator.run('first', signal, vi.fn())).rejects.toBeInstanceOf(
+				UnrecoverableError,
+			);
+
+			await expect(orchestrator.run('second', signal, vi.fn())).resolves.toEqual({
+				response: 'All job has finished',
+				duration: 3,
+				inputTokens: 30,
+				outputTokens: 6,
+			});
+		});
+	});
 });

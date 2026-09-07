@@ -2,6 +2,7 @@ import type { Codex, Thread, ThreadEvent, ThreadItem, Usage } from '@openai/code
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CodexAgent } from '../../src/engines/codex/infrastructure/model/codexAgent.ts';
 import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
+import { RecoverableError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
 
 function streamedTurn(events: ThreadEvent[]): { events: AsyncGenerator<ThreadEvent> } {
 	return {
@@ -247,5 +248,91 @@ describe('CodexAgent', () => {
 				vi.fn(),
 			),
 		).rejects.toMatchObject({ message, cause });
+	});
+
+	// Regression: failures from runStreamed() and from the event iterator escaped as raw
+	// Error instances. The Agent contract promises only RecoverableError or
+	// UnrecoverableError, and RetryingAgent classifies on exactly that — an unclassified
+	// error was retried blindly and then replaced with a generic exhaustion error.
+	describe('provider failures at the adapter boundary', () => {
+		function failingStream(error: unknown) {
+			return {
+				events: (async function* (): AsyncGenerator<ThreadEvent> {
+					await Promise.resolve();
+					yield completed({ type: 'reasoning', text: 'thinking' } as ThreadItem);
+					throw error;
+				})(),
+			};
+		}
+
+		/** The rejection itself, so a test can assert on its type and its cause. */
+		async function rejectionOf(agent: CodexAgent): Promise<unknown> {
+			let captured: unknown;
+			let resolved = false;
+
+			await agent.run('prompt', new AbortController().signal, vi.fn()).then(
+				() => {
+					resolved = true;
+				},
+				(error: unknown) => {
+					captured = error;
+				},
+			);
+
+			expect(resolved, 'expected the run to reject').toBe(false);
+
+			return captured;
+		}
+
+		function agentFor(sdk: Codex) {
+			return new CodexAgent({ sdk, model: 'gpt-5.6-sol', logger: createLogger() });
+		}
+
+		it('classifies a request that the SDK rejects outright', async () => {
+			const { sdk, runStreamed } = createSdk();
+			runStreamed.mockRejectedValue(new Error('socket hang up'));
+
+			const failure = await rejectionOf(agentFor(sdk));
+
+			expect(failure).toBeInstanceOf(RecoverableError);
+			expect(failure).toMatchObject({ cause: 'socket hang up' });
+		});
+
+		it('classifies a stream that fails part-way through a turn', async () => {
+			const { sdk, runStreamed } = createSdk();
+			runStreamed.mockResolvedValue(failingStream(new Error('connection reset')));
+
+			const failure = await rejectionOf(agentFor(sdk));
+
+			expect(failure).toBeInstanceOf(RecoverableError);
+			expect(failure).toMatchObject({ cause: 'connection reset' });
+		});
+
+		// Cancellation is not a failure. Wrapping it would make RetryingAgent spend attempts
+		// on a deliberate stop instead of propagating it.
+		it('lets cancellation through unchanged', async () => {
+			const abort = new Error('The operation was aborted');
+			abort.name = 'AbortError';
+			const { sdk, runStreamed } = createSdk();
+			runStreamed.mockRejectedValue(abort);
+
+			const failure = await rejectionOf(agentFor(sdk));
+
+			expect(failure).toBe(abort);
+		});
+
+		// An error the adapter already classified from a stream event must not be downgraded
+		// to recoverable by the boundary that exists to classify unclassified ones.
+		it('does not reclassify an error the adapter already classified', async () => {
+			const { sdk, runStreamed } = createSdk();
+			runStreamed.mockResolvedValue(
+				streamedTurn([{ type: 'turn.failed', error: { message: 'quota exhausted' } }]),
+			);
+
+			const failure = await rejectionOf(agentFor(sdk));
+
+			expect(failure).toBeInstanceOf(UnrecoverableError);
+			expect(failure).toMatchObject({ cause: 'quota exhausted' });
+		});
 	});
 });

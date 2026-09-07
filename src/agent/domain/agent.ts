@@ -32,7 +32,15 @@ export type ProgressEvent =
  * entirely — it gets retried when it shouldn't be, or crashes a run that a retry
  * would have recovered. Wrap every call into the underlying SDK so nothing escapes
  * unclassified, including failures the SDK itself doesn't model as a domain error
- * (network errors, malformed responses, etc.).
+ * (network errors, malformed responses, etc.). `classifyProviderFailure` in
+ * ./providerFailure.ts exists for exactly that, and both shipped engines route every SDK
+ * boundary through it.
+ *
+ * Cancellation is the one deliberate exception. When the caller aborts the signal, the
+ * resulting `AbortError` propagates unchanged rather than being classified: it is not a
+ * failure of the run, and consumers check for it before they check for either error type
+ * (`RetryingAgent` rethrows it instead of spending an attempt on it). An implementer must
+ * let it through untouched.
  */
 export interface Agent {
 	run(prompt: string, signal: AbortSignal, callback: Callback): Promise<AgentResponse | undefined>;

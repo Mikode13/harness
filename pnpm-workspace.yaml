@@ -8,3 +8,4 @@ allowBuilds:
   # Explicitly deny inherited only-allow-pnpm guards; consumers do not need them.
   '@mikode13/code-quality': false
   '@mikode13/tsconfig': false
+  '@mikode13/cross-platform': false

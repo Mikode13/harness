@@ -27,7 +27,7 @@
 		"preinstall": "npx only-allow pnpm",
 		"prepare": "mikode-git-hooks install",
 		"prepack": "pnpm run build",
-		"build": "rm -rf dist && tsc -p tsconfig.build.json",
+		"build": "mikode-scripts clean dist && tsc -p tsconfig.build.json",
 		"typecheck": "tsc --noEmit && tsc --noEmit -p tests && tsc --noEmit -p cli",
 		"format": "prettier . --write",
 		"format:check": "prettier . --check",
@@ -43,6 +43,7 @@
 	},
 	"devDependencies": {
 		"@mikode13/code-quality": "0.1.0",
+		"@mikode13/cross-platform": "0.1.0",
 		"@mikode13/code-style": "0.1.0",
 		"@mikode13/git-hooks": "0.1.0",
 		"@mikode13/tsconfig": "0.1.0",

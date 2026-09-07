@@ -13,6 +13,7 @@ import type {
 	ProgressEvent,
 } from '../../../../agent/domain/agent.ts';
 import { RecoverableError } from '../../../../agent/domain/errors.ts';
+import { classifyProviderFailure } from '../../../../agent/domain/providerFailure.ts';
 
 type Model = 'sonnet' | 'opus' | 'haiku' | 'claude-fable-5';
 
@@ -146,22 +147,28 @@ export class ClaudeAgent implements Agent {
 		signal: AbortSignal,
 		callback: Callback,
 	): Promise<AgentResponse | undefined> {
-		const stream = query({
-			prompt,
-			options: {
-				effort: this.reasoningEffort,
-				model: this.model,
-				maxTurns: 3,
-				cwd: process.cwd(),
-				resume: this.sessionId,
-				...(this.autoApprove
-					? {
-							permissionMode: 'bypassPermissions' as const,
-							allowDangerouslySkipPermissions: true,
-						}
-					: {}),
-			},
-		});
+		let stream: Query;
+
+		try {
+			stream = query({
+				prompt,
+				options: {
+					effort: this.reasoningEffort,
+					model: this.model,
+					maxTurns: 3,
+					cwd: process.cwd(),
+					resume: this.sessionId,
+					...(this.autoApprove
+						? {
+								permissionMode: 'bypassPermissions' as const,
+								allowDangerouslySkipPermissions: true,
+							}
+						: {}),
+				},
+			});
+		} catch (error) {
+			classifyProviderFailure(error, 'Claude refused the request');
+		}
 
 		signal.addEventListener('abort', () => {
 			stream.close();
@@ -178,27 +185,34 @@ export class ClaudeAgent implements Agent {
 		let resultMessage: SDKResultSuccess | undefined;
 		const pendingTools = new Map<string, PendingTool>();
 
-		for await (const message of stream) {
-			this.sessionId ??= message.session_id;
+		// The iterator itself can reject part-way through a turn — a dropped connection, a
+		// malformed frame — long after the query was accepted. Classifying only the request
+		// would leave that failure escaping raw.
+		try {
+			for await (const message of stream) {
+				this.sessionId ??= message.session_id;
 
-			switch (message.type) {
-				case 'assistant':
-					this.handleAssistantMessage(message, pendingTools, callback);
-					break;
-				case 'user':
-					this.handleUserMessage(message, pendingTools, callback);
-					break;
-				case 'result':
-					if (message.subtype === 'success') {
-						lines.push(message.result);
-						resultMessage = message;
-					} else {
-						throw new RecoverableError('Claude sdk error', {
-							cause: [message.stop_reason, message.terminal_reason, ...message.errors].join(','),
-						});
-					}
-					break;
+				switch (message.type) {
+					case 'assistant':
+						this.handleAssistantMessage(message, pendingTools, callback);
+						break;
+					case 'user':
+						this.handleUserMessage(message, pendingTools, callback);
+						break;
+					case 'result':
+						if (message.subtype === 'success') {
+							lines.push(message.result);
+							resultMessage = message;
+						} else {
+							throw new RecoverableError('Claude sdk error', {
+								cause: [message.stop_reason, message.terminal_reason, ...message.errors].join(','),
+							});
+						}
+						break;
+				}
 			}
+		} catch (error) {
+			classifyProviderFailure(error, 'Claude stream ended unexpectedly');
 		}
 
 		if (!lines.length || !resultMessage) {

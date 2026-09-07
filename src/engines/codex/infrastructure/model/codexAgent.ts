@@ -13,6 +13,7 @@ import {
 	type ProgressEvent,
 } from '../../../../agent/domain/agent.ts';
 import { RecoverableError, UnrecoverableError } from '../../../../agent/domain/errors.ts';
+import { classifyProviderFailure } from '../../../../agent/domain/providerFailure.ts';
 import type { ILogger } from '../../../../shared/domain/logger.ts';
 
 type Model = 'gpt-5.6-sol' | 'gpt-5.6-luna';
@@ -95,8 +96,15 @@ export class CodexAgent implements Agent {
 		signal: AbortSignal,
 		callback: Callback,
 	): Promise<AgentResponse | undefined> {
-		const response = await this.thread.runStreamed(prompt, { signal });
-		return await this.parseResponse(response, callback);
+		let turn: StreamedTurn;
+
+		try {
+			turn = await this.thread.runStreamed(prompt, { signal });
+		} catch (error) {
+			classifyProviderFailure(error, 'Codex refused the request');
+		}
+
+		return await this.parseResponse(turn, callback);
 	}
 
 	private async parseResponse(
@@ -106,19 +114,27 @@ export class CodexAgent implements Agent {
 		const lines: string[] = [];
 		const start = Date.now();
 		let usage: Usage | undefined = undefined;
-		for await (const event of turn.events) {
-			if (event.type === 'turn.completed') {
-				usage = event.usage;
-				continue;
+
+		// The iterator itself can reject part-way through a turn — a dropped connection, a
+		// malformed frame — long after the request was accepted. Classifying only the request
+		// would leave that failure escaping raw.
+		try {
+			for await (const event of turn.events) {
+				if (event.type === 'turn.completed') {
+					usage = event.usage;
+					continue;
+				}
+
+				const item = convertEventToItem(event);
+
+				if (!item) continue;
+
+				const description = describeItem(item, this.logger);
+				if (description) callback(description);
+				if (description?.type === 'agentMessage') lines.push(description.message);
 			}
-
-			const item = convertEventToItem(event);
-
-			if (!item) continue;
-
-			const description = describeItem(item, this.logger);
-			if (description) callback(description);
-			if (description?.type === 'agentMessage') lines.push(description.message);
+		} catch (error) {
+			classifyProviderFailure(error, 'Codex stream ended unexpectedly');
 		}
 
 		if (!lines.length || !usage) {

@@ -3,6 +3,7 @@ import type { Query } from '@anthropic-ai/claude-agent-sdk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ClaudeAgent } from '../../src/engines/claude/infrastructure/model/claudeAgent.ts';
 import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
+import { RecoverableError } from '../../src/agent/domain/errors.ts';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 
@@ -231,6 +232,47 @@ describe('ClaudeAgent', () => {
 		).rejects.toMatchObject({
 			message: 'Claude sdk error',
 			cause: 'error,temporary failure,rate limited',
+		});
+	});
+
+	// Regression: the same unclassified-failure hole the Codex adapter had. Both engines
+	// route every SDK boundary through classifyProviderFailure now.
+	describe('provider failures at the adapter boundary', () => {
+		it('classifies a query the SDK refuses to start', async () => {
+			vi.mocked(query).mockImplementation(() => {
+				throw new Error('invalid api key');
+			});
+			const agent = new ClaudeAgent('sonnet');
+
+			const failure = await agent
+				.run('prompt', new AbortController().signal, vi.fn())
+				.catch((error: unknown) => error);
+
+			expect(failure).toBeInstanceOf(RecoverableError);
+			expect((failure as RecoverableError).cause).toBe('invalid api key');
+		});
+
+		it('classifies a stream that fails part-way through a turn', async () => {
+			const failing = {
+				close: vi.fn(),
+				[Symbol.asyncIterator]() {
+					return {
+						next: () => Promise.reject(new Error('connection reset')),
+						[Symbol.asyncIterator]() {
+							return this;
+						},
+					};
+				},
+			} as unknown as Query;
+			vi.mocked(query).mockReturnValue(failing);
+			const agent = new ClaudeAgent('sonnet');
+
+			const failure = await agent
+				.run('prompt', new AbortController().signal, vi.fn())
+				.catch((error: unknown) => error);
+
+			expect(failure).toBeInstanceOf(RecoverableError);
+			expect((failure as RecoverableError).cause).toBe('connection reset');
 		});
 	});
 });
