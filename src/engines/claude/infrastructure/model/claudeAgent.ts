@@ -13,7 +13,10 @@ import type {
 	ProgressEvent,
 } from '../../../../agent/domain/agent.ts';
 import { RecoverableError } from '../../../../agent/domain/errors.ts';
-import { classifyProviderFailure } from '../../../../agent/domain/providerFailure.ts';
+import {
+	classifiedProviderStream,
+	classifyProviderFailure,
+} from '../../../../agent/domain/providerFailure.ts';
 
 type Model = 'sonnet' | 'opus' | 'haiku' | 'claude-fable-5';
 
@@ -185,31 +188,29 @@ export class ClaudeAgent implements Agent {
 		let resultMessage: SDKResultSuccess | undefined;
 		const pendingTools = new Map<string, PendingTool>();
 
-		try {
-			for await (const message of stream) {
-				this.sessionId ??= message.session_id;
+		const messages = classifiedProviderStream(stream, 'Claude stream ended unexpectedly');
 
-				switch (message.type) {
-					case 'assistant':
-						this.handleAssistantMessage(message, pendingTools, callback);
-						break;
-					case 'user':
-						this.handleUserMessage(message, pendingTools, callback);
-						break;
-					case 'result':
-						if (message.subtype === 'success') {
-							lines.push(message.result);
-							resultMessage = message;
-						} else {
-							throw new RecoverableError('Claude sdk error', {
-								cause: [message.stop_reason, message.terminal_reason, ...message.errors].join(','),
-							});
-						}
-						break;
-				}
+		for await (const message of messages) {
+			this.sessionId ??= message.session_id;
+
+			switch (message.type) {
+				case 'assistant':
+					this.handleAssistantMessage(message, pendingTools, callback);
+					break;
+				case 'user':
+					this.handleUserMessage(message, pendingTools, callback);
+					break;
+				case 'result':
+					if (message.subtype === 'success') {
+						lines.push(message.result);
+						resultMessage = message;
+					} else {
+						throw new RecoverableError('Claude sdk error', {
+							cause: [message.stop_reason, message.terminal_reason, ...message.errors].join(','),
+						});
+					}
+					break;
 			}
-		} catch (error) {
-			throw classifyProviderFailure(error, 'Claude stream ended unexpectedly');
 		}
 
 		if (!lines.length || !resultMessage) {

@@ -273,5 +273,25 @@ describe('ClaudeAgent', () => {
 			expect(failure).toBeInstanceOf(RecoverableError);
 			expect((failure as RecoverableError).cause).toBe('connection reset');
 		});
+
+		// Regression: the stream `try/catch` used to span the loop body too, so a throw from
+		// the consumer callback came back as a RecoverableError and RetryingAgent replayed a
+		// turn that had already run its tools.
+		it('leaves a throwing consumer callback unclassified', async () => {
+			const thrown = new Error('the renderer crashed');
+			vi.mocked(query).mockReturnValue(
+				stream([assistant([{ text: 'hello', type: 'text' }]), result()]),
+			);
+			const agent = new ClaudeAgent('sonnet');
+
+			const failure = await agent
+				.run('prompt', new AbortController().signal, () => {
+					throw thrown;
+				})
+				.catch((error: unknown) => error);
+
+			expect(failure).toBe(thrown);
+			expect(failure).not.toBeInstanceOf(RecoverableError);
+		});
 	});
 });

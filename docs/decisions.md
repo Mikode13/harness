@@ -437,3 +437,35 @@ tags: #mikode-harness #correctness #state
 **Consequences:** the orchestrator holds no mutable run state at all, which is what makes it safe to share. Session totals are deliberately not provided — no consumer has asked for them, and the right place to sum runs is the consumer that decides what a session is.
 
 **Lesson:** "does this instance get reused?" is worth asking of any counter that lives next to a method rather than inside it. The CLI's single long-lived orchestrator turned an invisible design choice into wrong numbers on every session.
+
+---
+
+## The provider boundary is the SDK call, not the loop that consumes it
+
+tags: #mikode-harness #correctness #boundaries #retry
+
+**Decision:** `classifiedProviderStream` wraps only the SDK iterator's `next()`; item mapping, logging, and the consumer callback run outside it. `RetryingAgent` retries a `RecoverableError` and nothing else — an unclassified failure becomes an `UnrecoverableError` without a second call.
+
+**Context:** classifying failures at the adapter boundary (the entry above) was done with a `try/catch` around the whole `for await` loop. That is wider than the boundary it names: `describeItem`, `logger.warn`, and the consumer's callback execute inside it too, so a bug in the host was labelled a recoverable _provider_ failure. Combined with a retry loop that advanced on any non-fatal error, a callback that threw made `RetryingAgent` re-run the provider — replaying a turn whose commands and file writes had already happened. Reproduced with a throwing callback: `runStreamed` called twice before ending as exhaustion.
+
+**Alternatives considered:** catching consumer failures and classifying them explicitly as unrecoverable. Rejected as the primary fix: it keeps the wide boundary and adds a second rule to remember, where narrowing the `try` removes the class of mistake. Also considered leaving `RetryingAgent` permissive and relying on adapters to classify correctly — rejected, since it is public and can wrap a consumer-provided `Agent`, so "the adapter is compliant" is an assumption it cannot make.
+
+**Consequences:** side-effecting work is never replayed on a host failure. The cost is that a non-compliant adapter now ends a run instead of being retried three times, which is the intended reading of the `Agent` contract. `classifiedProviderStream` closes the SDK iterator in a `finally`, preserving the cleanup `for await` used to do on an early exit — asserted by a test. `CodexAgent`'s constructor also classifies `startThread`, as unrecoverable: a thread the SDK refused to open is rejected configuration, and constructing it again cannot fix it.
+
+**Lesson:** a `try` block is a boundary declaration. Every statement inside it is claimed to be the thing being classified, and the loop body is usually not.
+
+---
+
+## The progress formatter is presentation, so it left the published core
+
+tags: #mikode-harness #boundaries #api-surface
+
+**Decision:** `handleEvents` moved from `src/agent/domain/agent.ts` to `cli/progressEventFormatter.ts` as `formatProgressEvent`, and is no longer exported from the package.
+
+**Context:** it renders `ProgressEvent` into terminal-shaped strings — labels, `✔`/`X`, newline-joined lists — and its only consumer was `cli/cli.ts`. Keeping it in `agent/domain` put presentation logic in the public core of a package whose stated seam is the provider-agnostic event itself, which is the boundary the CLI split existed to draw.
+
+**Alternatives considered:** keeping it exported as a convenience for consumers. Rejected: it encodes one renderer's choices, and a web consumer that imported it would inherit terminal formatting it has to undo. The name also promised event _handling_ while the function only formats.
+
+**Consequences:** the published surface is `ProgressEvent` alone; consumers render it, and `cli/progressEventFormatter.ts` is a reference implementation rather than a dependency. Its tests moved to the `cli` project with it, so coverage did not change hands.
+
+**Lesson:** "only the CLI imports it" is usually the module telling you where it belongs.

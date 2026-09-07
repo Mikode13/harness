@@ -13,7 +13,11 @@ import {
 	type ProgressEvent,
 } from '../../../../agent/domain/agent.ts';
 import { RecoverableError, UnrecoverableError } from '../../../../agent/domain/errors.ts';
-import { classifyProviderFailure } from '../../../../agent/domain/providerFailure.ts';
+import {
+	classifiedProviderStream,
+	classifyProviderFailure,
+	describeProviderFailure,
+} from '../../../../agent/domain/providerFailure.ts';
 import type { ILogger } from '../../../../shared/domain/logger.ts';
 
 type Model = 'gpt-5.6-sol' | 'gpt-5.6-luna';
@@ -79,15 +83,22 @@ export class CodexAgent implements Agent {
 		autoApprove?: boolean;
 		reasoningEffort?: ModelReasoningEffort;
 	}) {
-		const thread = sdk.startThread({
-			model,
-			modelReasoningEffort: reasoningEffort,
-			...(autoApprove
-				? { approvalPolicy: 'never' as const, sandboxMode: 'danger-full-access' as const }
-				: {}),
-		});
+		try {
+			this.thread = sdk.startThread({
+				model,
+				modelReasoningEffort: reasoningEffort,
+				...(autoApprove
+					? { approvalPolicy: 'never' as const, sandboxMode: 'danger-full-access' as const }
+					: {}),
+			});
+		} catch (error) {
+			// Not recoverable, unlike a request: a thread the SDK refused to open at all is
+			// rejected configuration, and running the same constructor again cannot fix it.
+			throw new UnrecoverableError('Codex rejected the thread configuration', {
+				cause: describeProviderFailure(error),
+			});
+		}
 
-		this.thread = thread;
 		this.logger = logger;
 	}
 
@@ -115,23 +126,21 @@ export class CodexAgent implements Agent {
 		const start = Date.now();
 		let usage: Usage | undefined = undefined;
 
-		try {
-			for await (const event of turn.events) {
-				if (event.type === 'turn.completed') {
-					usage = event.usage;
-					continue;
-				}
+		const events = classifiedProviderStream(turn.events, 'Codex stream ended unexpectedly');
 
-				const item = convertEventToItem(event);
-
-				if (!item) continue;
-
-				const description = describeItem(item, this.logger);
-				if (description) callback(description);
-				if (description?.type === 'agentMessage') lines.push(description.message);
+		for await (const event of events) {
+			if (event.type === 'turn.completed') {
+				usage = event.usage;
+				continue;
 			}
-		} catch (error) {
-			throw classifyProviderFailure(error, 'Codex stream ended unexpectedly');
+
+			const item = convertEventToItem(event);
+
+			if (!item) continue;
+
+			const description = describeItem(item, this.logger);
+			if (description) callback(description);
+			if (description?.type === 'agentMessage') lines.push(description.message);
 		}
 
 		if (!lines.length || !usage) {

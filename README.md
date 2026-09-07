@@ -28,7 +28,7 @@ there is at least one real consumer.
 ## What it does today
 
 An interactive terminal chat, backed by one `Agent` — a single engine, or a full
-multi-agent workflow, chosen entirely by what gets wired up in `index.ts`; the
+multi-agent workflow, chosen entirely by what gets wired up in `cli/cli.ts`; the
 chat loop itself never knows the difference.
 
 - **A provider-agnostic `Agent` contract** (`run(prompt, signal, callback)`) with
@@ -77,20 +77,54 @@ file-based agent registries — each waits for a real need.
 
 A new provider only needs one thing to compose safely into everything above:
 **it must only ever reject with `RecoverableError` or `UnrecoverableError`**
-(`src/models/errors.ts`), never a raw SDK error. `RetryingAgent` and
+(`src/agent/domain/errors.ts`), never a raw SDK error. `RetryingAgent` and
 `OrchestratorAgent` both decide what to do next by `instanceof`-checking
-against those two types; anything else leaking through bypasses that decision
-entirely — it gets retried when it shouldn't be, or takes down a whole run
-that a retry would have recovered. Wrap every call into the underlying SDK,
+against those two types; anything else leaking through is treated as
+unrecoverable and ends the run, because nothing above the adapter can tell
+whether replaying it is safe. Wrap every call into the underlying SDK,
 including failures the SDK itself doesn't model as a domain error (network
-errors, malformed responses). See the doc comment on `Agent` in
-`src/models/agent.ts`.
+errors, malformed responses): `classifyProviderFailure` covers a single call,
+`classifiedProviderStream` covers an SDK stream. Both are deliberately narrow —
+the classification must not span your own item mapping, logging, or the
+consumer callback, or a failure in the host is reported as a provider failure
+and gets retried. See the doc comment on `Agent` in `src/agent/domain/agent.ts`.
 
 ## Install
 
 ```sh
 pnpm add @mikode13/harness
 ```
+
+An agent is composed, then driven; the package brings no I/O of its own:
+
+```ts
+import {
+	ClaudeAgent,
+	RetryingAgent,
+	UnrecoverableError,
+	type ProgressEvent,
+} from '@mikode13/harness';
+
+const agent = new RetryingAgent(new ClaudeAgent('sonnet'));
+const controller = new AbortController();
+
+const render = (event: ProgressEvent) => {
+	if (event.type === 'agentMessage') process.stdout.write(event.message);
+};
+
+try {
+	const result = await agent.run('Summarize this repository.', controller.signal, render);
+	console.log(result?.duration, result?.inputTokens, result?.outputTokens);
+} catch (error) {
+	if (error instanceof UnrecoverableError) console.error(error.message, error.cause);
+}
+```
+
+`ProgressEvent` is the public seam for live activity; rendering it is the
+consumer's decision, not the harness's. `cli/progressEventFormatter.ts` is one
+terminal-shaped implementation to copy from. Swapping `ClaudeAgent` for
+`CodexAgent`, or for an `OrchestratorAgent` wrapping all three roles, changes
+nothing else in the snippet above.
 
 ## Tests
 

@@ -264,11 +264,11 @@ describe('CodexAgent', () => {
 		}
 
 		/** The rejection itself, so a test can assert on its type and its cause. */
-		async function rejectionOf(agent: CodexAgent): Promise<unknown> {
+		async function rejectionOf(agent: CodexAgent, callback = vi.fn()): Promise<unknown> {
 			let captured: unknown;
 			let resolved = false;
 
-			await agent.run('prompt', new AbortController().signal, vi.fn()).then(
+			await agent.run('prompt', new AbortController().signal, callback).then(
 				() => {
 					resolved = true;
 				},
@@ -327,6 +327,87 @@ describe('CodexAgent', () => {
 
 			expect(failure).toBeInstanceOf(UnrecoverableError);
 			expect(failure).toMatchObject({ cause: 'quota exhausted' });
+		});
+
+		it('reports a thread the SDK refuses to open as unrecoverable', () => {
+			const { sdk, startThread } = createSdk();
+			startThread.mockImplementation(() => {
+				throw new Error('unknown model');
+			});
+
+			expect(() => agentFor(sdk)).toThrow(UnrecoverableError);
+			expect(() => agentFor(sdk)).toThrow('Codex rejected the thread configuration');
+		});
+	});
+
+	// Regression: the stream `try/catch` used to span the loop body too, so a throw from the
+	// consumer callback or the logger came back as a RecoverableError and RetryingAgent
+	// replayed a turn that had already run its commands and file writes.
+	describe('host failures outside the provider boundary', () => {
+		function agentWith(events: ThreadEvent[], logger = createLogger()) {
+			const { sdk } = createSdk(events);
+			return new CodexAgent({ sdk, model: 'gpt-5.6-sol', logger });
+		}
+
+		async function rejectionOfRun(agent: CodexAgent, callback = vi.fn()): Promise<unknown> {
+			return await agent
+				.run('prompt', new AbortController().signal, callback)
+				.then(() => undefined)
+				.catch((error: unknown) => error);
+		}
+
+		it('leaves a throwing consumer callback unclassified', async () => {
+			const thrown = new Error('the renderer crashed');
+			const callback = vi.fn(() => {
+				throw thrown;
+			});
+
+			const failure = await rejectionOfRun(
+				agentWith([completed({ id: 'message-1', text: 'hi', type: 'agent_message' })]),
+				callback,
+			);
+
+			expect(failure).toBe(thrown);
+			expect(failure).not.toBeInstanceOf(RecoverableError);
+		});
+
+		it('leaves a throwing logger unclassified', async () => {
+			const thrown = new Error('the log sink is gone');
+			const logger = createLogger();
+			logger.warn.mockImplementation(() => {
+				throw thrown;
+			});
+
+			const failure = await rejectionOfRun(
+				agentWith([completed({ type: 'unheard_of' } as unknown as ThreadItem)], logger),
+			);
+
+			expect(failure).toBe(thrown);
+		});
+
+		it('closes the provider stream when host code throws', async () => {
+			let closed = false;
+			const { sdk, runStreamed } = createSdk();
+			runStreamed.mockResolvedValue({
+				events: (async function* (): AsyncGenerator<ThreadEvent> {
+					try {
+						await Promise.resolve();
+						yield completed({ id: 'message-1', text: 'hi', type: 'agent_message' });
+					} finally {
+						closed = true;
+					}
+				})(),
+			});
+			const agent = new CodexAgent({ sdk, model: 'gpt-5.6-sol', logger: createLogger() });
+
+			await rejectionOfRun(
+				agent,
+				vi.fn(() => {
+					throw new Error('the renderer crashed');
+				}),
+			);
+
+			expect(closed).toBe(true);
 		});
 	});
 });

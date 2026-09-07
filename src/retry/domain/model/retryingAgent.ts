@@ -25,14 +25,20 @@ export class RetryingAgent implements Agent {
 			} catch (e) {
 				if (isAbortError(e) || e instanceof UnrecoverableError) throw e;
 
-				const reason = e instanceof RecoverableError ? e.cause : describeProviderFailure(e);
+				// Only a failure the agent classified as recoverable earns another call. An
+				// unclassified one breaks the `Agent` contract, so nothing here knows whether
+				// replaying it is safe — it may already have written files or run commands.
+				if (!(e instanceof RecoverableError))
+					throw new UnrecoverableError('The agent failed without classifying the failure', {
+						cause: describeProviderFailure(e),
+					});
 
 				if (attempt === this.maxAttempts)
 					throw new UnrecoverableError('Max attempts exhausted', {
-						cause: `Gave up after ${String(this.maxAttempts)} attempts. Last failure: ${reason}`,
+						cause: `Gave up after ${String(this.maxAttempts)} attempts. Last failure: ${e.cause}`,
 					});
 
-				lastPrompt = `The past prompt failed for the following reason: ${reason}`;
+				lastPrompt = `The past prompt failed for the following reason: ${e.cause}`;
 			}
 		}
 		return undefined;

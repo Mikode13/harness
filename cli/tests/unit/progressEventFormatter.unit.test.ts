@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { handleEvents, type ProgressEvent } from '../../src/agent/domain/agent.ts';
+import type { ProgressEvent } from '../../../src/index.ts';
+import { formatProgressEvent } from '../../progressEventFormatter.ts';
 
-describe('handleEvents', () => {
+describe('formatProgressEvent', () => {
 	it.each([
 		[{ type: 'agentMessage', message: 'hello' }, 'hello'],
 		[{ type: 'reasoning', message: 'thinking' }, 'thinking'],
@@ -33,7 +34,7 @@ describe('handleEvents', () => {
 			'Implement - status:X\nReview - status:✔',
 		],
 	] satisfies [ProgressEvent, string][])('formats %s', (event, expected) => {
-		expect(handleEvents(event)).toBe(expected);
+		expect(formatProgressEvent(event)).toBe(expected);
 	});
 
 	it.each([
@@ -48,7 +49,7 @@ describe('handleEvents', () => {
 	] satisfies [ProgressEvent, string | undefined][])(
 		'handles missing event data: %s',
 		(event, expected) => {
-			expect(handleEvents(event)).toBe(expected);
+			expect(formatProgressEvent(event)).toBe(expected);
 		},
 	);
 });

@@ -41,8 +41,11 @@ src/retry/          the retry decorator
 src/shared/         ports and helpers used across modules (ILogger, isAbortError)
 ```
 
-A new engine implements `Agent`, routes its SDK boundaries through
-`classifyProviderFailure`, and is exported from `src/index.ts`. It needs no other change.
+A new engine implements `Agent`, routes each SDK call through `classifyProviderFailure` and
+each SDK stream through `classifiedProviderStream`, and is exported from `src/index.ts`. It
+needs no other change. Keep both boundaries around the SDK operation alone: item mapping,
+logging, and the consumer callback belong outside, or a host failure is misreported as a
+retryable provider failure.
 
 ## Local validation
 

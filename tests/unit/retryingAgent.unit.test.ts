@@ -164,13 +164,37 @@ describe('RetryingAgent', () => {
 
 		// A compliant adapter never sends one of these; the decorator is the last defence.
 		it('describes an unclassified failure rather than dropping it', async () => {
-			const { agent } = fakeAgent(new Error('socket hang up'), new Error('socket hang up'));
+			const { agent } = fakeAgent(new Error('socket hang up'), okResponse);
 			const retrying = new RetryingAgent(agent, 2);
 
 			const failure = await retrying.run('ping', signal, callback).catch((error: unknown) => error);
 
 			expect(failure).toBeInstanceOf(UnrecoverableError);
 			expect((failure as UnrecoverableError).cause).toContain('socket hang up');
+		});
+	});
+
+	// Regression: any non-recoverable failure used to advance the loop, so a callback or a
+	// host bug escaping an adapter re-ran a turn whose side effects had already happened.
+	describe('unclassified failures', () => {
+		it('does not call the agent again when the failure was not classified', async () => {
+			const { agent, run } = fakeAgent(new Error('callback exploded'), okResponse);
+			const retrying = new RetryingAgent(agent, 3);
+
+			await expect(retrying.run('hi', signal, callback)).rejects.toThrow(
+				'The agent failed without classifying the failure',
+			);
+			expect(run).toHaveBeenCalledTimes(1);
+		});
+
+		it('reports an unclassified failure as unrecoverable, not as exhaustion', async () => {
+			const { agent } = fakeAgent(new Error('callback exploded'));
+			const retrying = new RetryingAgent(agent, 3);
+
+			const failure = await retrying.run('hi', signal, callback).catch((error: unknown) => error);
+
+			expect(failure).toBeInstanceOf(UnrecoverableError);
+			expect(failure).toMatchObject({ cause: 'callback exploded' });
 		});
 	});
 });

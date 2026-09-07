@@ -2,7 +2,7 @@
 
 Not executable, not part of the harness. These are notes on the raw shape of each
 agent SDK, kept from the investigation that led to the `Agent` interface
-(`src/models/agent.ts`) and its `CodexAgent`/`ClaudeAgent` implementations. Useful
+(`src/agent/domain/agent.ts`) and its `CodexAgent`/`ClaudeAgent` implementations. Useful
 context for anyone extending those wrappers or adding a third engine.
 
 ## Codex SDK (`@openai/codex-sdk`)
@@ -123,4 +123,4 @@ What this meant for `AgentResponse`:
   events...) has to be collected by hand while iterating the stream.
 - **usage**: Codex's is `Usage | null` (can be missing). Claude's is always present
   but a different shape, and Claude also gives `total_cost_usd`, which Codex doesn't
-  expose at all — this is why `AgentResponse` dropped cost (see `models/agent.ts`).
+  expose at all — this is why `AgentResponse` dropped cost (see `agent/domain/agent.ts`).

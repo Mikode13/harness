@@ -40,34 +40,3 @@ export type ProgressEvent =
 export interface Agent {
 	run(prompt: string, signal: AbortSignal, callback: Callback): Promise<AgentResponse | undefined>;
 }
-
-export function handleEvents(item: ProgressEvent): string | undefined {
-	switch (item.type) {
-		case 'agentMessage':
-		case 'reasoning':
-			return item.message;
-		case 'command':
-			if (!item.command) return undefined;
-
-			return `command: ${item.command}, exit ${String(item.exitCode ?? '?')}`;
-		case 'mcpTool':
-			if (!item.server || !item.status) return undefined;
-			return `tool: ${item.tool}, server: ${item.server}, status: ${item.status}`;
-		case 'search':
-			if (!item.query) return undefined;
-			return `searching... query:${item.query}`;
-		case 'fileChange':
-			if (!item.changes.length) return undefined;
-
-			return item.changes.map(change => `${change.path} - ${change.kind}`).join('\n');
-		case 'todoList':
-			if (!item.items.length) return undefined;
-
-			return item.items
-				.map(todoItem => `${todoItem.text} - status:${todoItem.completed ? '✔' : 'X'}`)
-				.join('\n');
-		case 'turnStarted':
-		case 'turnEnded':
-			return undefined;
-	}
-}

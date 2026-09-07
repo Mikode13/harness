@@ -6,10 +6,10 @@ import {
 	RetryingAgent,
 	OrchestratorAgent,
 	ReviewerDecisionValidator,
-	handleEvents,
 	type ProgressEvent,
 } from '../src/index.ts';
 import { ConversationLoop } from './conversationLoop.ts';
+import { formatProgressEvent } from './progressEventFormatter.ts';
 import { Codex } from '@openai/codex-sdk';
 import { clearLine, cursorTo } from 'node:readline';
 import { Logger } from './adapters/logger.ts';
@@ -83,7 +83,7 @@ const loop = new ConversationLoop(
 		}
 
 		stopSpinner();
-		const message = handleEvents(item);
+		const message = formatProgressEvent(item);
 		if (message) {
 			logger.log(message);
 		}

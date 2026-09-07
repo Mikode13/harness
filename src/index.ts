@@ -4,7 +4,6 @@ export { ClaudeAgent } from './engines/claude/infrastructure/model/claudeAgent.t
 export { RetryingAgent } from './retry/domain/model/retryingAgent.ts';
 export { OrchestratorAgent } from './orchestration/domain/model/orchestratorAgent.ts';
 export {
-	handleEvents,
 	type Agent,
 	type AgentResponse,
 	type Callback,
