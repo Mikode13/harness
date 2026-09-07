@@ -87,7 +87,9 @@ errors, malformed responses): `classifyProviderFailure` covers a single call,
 `classifiedProviderStream` covers an SDK stream. Both are deliberately narrow —
 the classification must not span your own item mapping, logging, or the
 consumer callback, or a failure in the host is reported as a provider failure
-and gets retried. See the doc comment on `Agent` in `src/agent/domain/agent.ts`.
+and gets retried. Those host failures are instead classified as unrecoverable,
+because the provider turn may already have produced side effects. See the doc
+comment on `Agent` in `src/agent/domain/agent.ts`.
 
 ## Install
 

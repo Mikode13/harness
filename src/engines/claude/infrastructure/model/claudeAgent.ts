@@ -15,6 +15,8 @@ import type {
 import { RecoverableError } from '../../../../agent/domain/errors.ts';
 import {
 	classifiedProviderStream,
+	classifyHostFailure,
+	classifyLocalFailure,
 	classifyProviderFailure,
 } from '../../../../agent/domain/providerFailure.ts';
 
@@ -31,6 +33,14 @@ interface ToolResultBlock {
 	tool_use_id: string;
 	is_error?: boolean;
 	content?: unknown;
+}
+
+function emitProgress(callback: Callback, event: ProgressEvent): void {
+	try {
+		callback(event);
+	} catch (error) {
+		throw classifyHostFailure(error, 'Claude progress callback failed');
+	}
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -193,23 +203,27 @@ export class ClaudeAgent implements Agent {
 		for await (const message of messages) {
 			this.sessionId ??= message.session_id;
 
-			switch (message.type) {
-				case 'assistant':
-					this.handleAssistantMessage(message, pendingTools, callback);
-					break;
-				case 'user':
-					this.handleUserMessage(message, pendingTools, callback);
-					break;
-				case 'result':
-					if (message.subtype === 'success') {
-						lines.push(message.result);
-						resultMessage = message;
-					} else {
-						throw new RecoverableError('Claude sdk error', {
-							cause: [message.stop_reason, message.terminal_reason, ...message.errors].join(','),
-						});
-					}
-					break;
+			try {
+				switch (message.type) {
+					case 'assistant':
+						this.handleAssistantMessage(message, pendingTools, callback);
+						break;
+					case 'user':
+						this.handleUserMessage(message, pendingTools, callback);
+						break;
+					case 'result':
+						if (message.subtype === 'success') {
+							lines.push(message.result);
+							resultMessage = message;
+						} else {
+							throw new RecoverableError('Claude sdk error', {
+								cause: [message.stop_reason, message.terminal_reason, ...message.errors].join(','),
+							});
+						}
+						break;
+				}
+			} catch (error) {
+				throw classifyLocalFailure(error, 'Claude failed while mapping progress');
 			}
 		}
 
@@ -232,12 +246,12 @@ export class ClaudeAgent implements Agent {
 	): void {
 		for (const block of message.message.content) {
 			if (block.type === 'text') {
-				callback({ type: 'agentMessage', message: block.text });
+				emitProgress(callback, { type: 'agentMessage', message: block.text });
 				continue;
 			}
 
 			if (block.type === 'thinking') {
-				callback({ type: 'reasoning', message: block.thinking });
+				emitProgress(callback, { type: 'reasoning', message: block.thinking });
 				continue;
 			}
 
@@ -292,7 +306,7 @@ export class ClaudeAgent implements Agent {
 		if (!result) return;
 
 		const description = describeCompletedTool(tool, result, output ?? result.content);
-		if (description) callback(description);
+		if (description) emitProgress(callback, description);
 	}
 }
 

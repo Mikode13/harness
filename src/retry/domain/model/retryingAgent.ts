@@ -1,6 +1,6 @@
 import type { Agent, AgentResponse, Callback } from '../../../agent/domain/agent.ts';
 import { RecoverableError, UnrecoverableError } from '../../../agent/domain/errors.ts';
-import { describeProviderFailure } from '../../../agent/domain/providerFailure.ts';
+import { describeFailure } from '../../../agent/domain/providerFailure.ts';
 import { isAbortError } from '../../../shared/domain/isAbortError.ts';
 
 export class RetryingAgent implements Agent {
@@ -30,7 +30,7 @@ export class RetryingAgent implements Agent {
 				// replaying it is safe — it may already have written files or run commands.
 				if (!(e instanceof RecoverableError))
 					throw new UnrecoverableError('The agent failed without classifying the failure', {
-						cause: describeProviderFailure(e),
+						cause: describeFailure(e),
 					});
 
 				if (attempt === this.maxAttempts)

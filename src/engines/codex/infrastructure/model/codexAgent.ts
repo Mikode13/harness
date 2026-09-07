@@ -15,8 +15,10 @@ import {
 import { RecoverableError, UnrecoverableError } from '../../../../agent/domain/errors.ts';
 import {
 	classifiedProviderStream,
+	classifyHostFailure,
+	classifyLocalFailure,
 	classifyProviderFailure,
-	describeProviderFailure,
+	describeFailure,
 } from '../../../../agent/domain/providerFailure.ts';
 import type { ILogger } from '../../../../shared/domain/logger.ts';
 
@@ -61,7 +63,11 @@ function describeItem(item: ThreadItem, logger: ILogger): ProgressEvent | undefi
 		case 'error':
 			throw new RecoverableError('error while using the codex tools', { cause: item.message });
 		default:
-			logger.warn(item, 'new type');
+			try {
+				logger.warn(item, 'new type');
+			} catch (error) {
+				throw classifyHostFailure(error, 'Codex logger failed while reporting progress');
+			}
 			return undefined;
 	}
 }
@@ -95,7 +101,7 @@ export class CodexAgent implements Agent {
 			// Not recoverable, unlike a request: a thread the SDK refused to open at all is
 			// rejected configuration, and running the same constructor again cannot fix it.
 			throw new UnrecoverableError('Codex rejected the thread configuration', {
-				cause: describeProviderFailure(error),
+				cause: describeFailure(error),
 			});
 		}
 
@@ -138,8 +144,20 @@ export class CodexAgent implements Agent {
 
 			if (!item) continue;
 
-			const description = describeItem(item, this.logger);
-			if (description) callback(description);
+			let description: ProgressEvent | undefined;
+			try {
+				description = describeItem(item, this.logger);
+			} catch (error) {
+				throw classifyLocalFailure(error, 'Codex failed while mapping progress');
+			}
+
+			if (description) {
+				try {
+					callback(description);
+				} catch (error) {
+					throw classifyHostFailure(error, 'Codex progress callback failed');
+				}
+			}
 			if (description?.type === 'agentMessage') lines.push(description.message);
 		}
 

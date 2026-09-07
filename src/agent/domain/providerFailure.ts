@@ -10,11 +10,28 @@ export function classifyProviderFailure(error: unknown, context: string): Error 
 	if (isAbortError(error)) return error;
 	if (error instanceof RecoverableError || error instanceof UnrecoverableError) return error;
 
-	return new RecoverableError(context, { cause: describeProviderFailure(error) });
+	return new RecoverableError(context, { cause: describeFailure(error) });
 }
 
-/** The message alone: a stack or a serialized SDK object would leak provider internals. */
-export function describeProviderFailure(error: unknown): string {
+/** A host failure cannot be retried safely because the provider turn may already have side effects. */
+export function classifyHostFailure(error: unknown, context: string): Error {
+	if (isAbortError(error)) return error;
+	if (error instanceof UnrecoverableError) return error;
+
+	return new UnrecoverableError(context, { cause: describeFailure(error) });
+}
+
+/** Preserves deliberate domain errors while making unexpected local failures fatal. */
+export function classifyLocalFailure(error: unknown, context: string): Error {
+	if (isAbortError(error)) return error;
+	if (error instanceof RecoverableError || error instanceof UnrecoverableError) return error;
+
+	return new UnrecoverableError(context, { cause: describeFailure(error) });
+}
+
+/** The message alone: a stack or serialized object could expose unstable implementation details. */
+export function describeFailure(error: unknown): string {
+	if (error instanceof RecoverableError || error instanceof UnrecoverableError) return error.cause;
 	if (error instanceof Error && error.message) return error.message;
 	if (typeof error === 'string' && error) return error;
 
@@ -31,7 +48,15 @@ export async function* classifiedProviderStream<T>(
 	stream: AsyncIterable<T>,
 	context: string,
 ): AsyncGenerator<T> {
-	const events = stream[Symbol.asyncIterator]();
+	let events: AsyncIterator<T>;
+
+	try {
+		events = stream[Symbol.asyncIterator]();
+	} catch (error) {
+		throw classifyProviderFailure(error, context);
+	}
+
+	let completed = false;
 
 	try {
 		for (;;) {
@@ -43,12 +68,21 @@ export async function* classifiedProviderStream<T>(
 				throw classifyProviderFailure(error, context);
 			}
 
-			if (next.done) return;
+			if (next.done) {
+				completed = true;
+				return;
+			}
 
 			yield next.value;
 		}
 	} finally {
-		// The consumer left the loop early — a `break`, or a throw from its own body.
-		await events.return?.();
+		if (!completed) {
+			try {
+				await events.return?.();
+			} catch {
+				// Cleanup is secondary to the failure that interrupted consumption. It must
+				// never replace a classified provider error or an unrecoverable host error.
+			}
+		}
 	}
 }

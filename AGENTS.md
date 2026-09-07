@@ -22,6 +22,9 @@ call into a provider SDK, including the async iteration of a stream, goes throug
 
 Cancellation is the one deliberate exception: an `AbortError` propagates unchanged,
 because a deliberate stop is not a failure and consumers check for it first.
+Failures from host-provided callbacks, loggers, or local event mapping are classified as
+`UnrecoverableError`: the provider turn may already have produced side effects, so replay
+is unsafe.
 
 **Usage accounting belongs to a `run()`, not to an instance.** The CLI keeps one
 orchestrator for a whole session, so instance-level counters report every previous run's

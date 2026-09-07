@@ -356,7 +356,7 @@ describe('CodexAgent', () => {
 				.catch((error: unknown) => error);
 		}
 
-		it('leaves a throwing consumer callback unclassified', async () => {
+		it('classifies a throwing consumer callback as unrecoverable', async () => {
 			const thrown = new Error('the renderer crashed');
 			const callback = vi.fn(() => {
 				throw thrown;
@@ -367,11 +367,14 @@ describe('CodexAgent', () => {
 				callback,
 			);
 
-			expect(failure).toBe(thrown);
-			expect(failure).not.toBeInstanceOf(RecoverableError);
+			expect(failure).toBeInstanceOf(UnrecoverableError);
+			expect(failure).toMatchObject({
+				message: 'Codex progress callback failed',
+				cause: 'the renderer crashed',
+			});
 		});
 
-		it('leaves a throwing logger unclassified', async () => {
+		it('classifies a throwing logger as unrecoverable', async () => {
 			const thrown = new Error('the log sink is gone');
 			const logger = createLogger();
 			logger.warn.mockImplementation(() => {
@@ -382,7 +385,50 @@ describe('CodexAgent', () => {
 				agentWith([completed({ type: 'unheard_of' } as unknown as ThreadItem)], logger),
 			);
 
-			expect(failure).toBe(thrown);
+			expect(failure).toBeInstanceOf(UnrecoverableError);
+			expect(failure).toMatchObject({
+				message: 'Codex logger failed while reporting progress',
+				cause: 'the log sink is gone',
+			});
+		});
+
+		it('classifies a stream that cannot create its iterator', async () => {
+			const { sdk, runStreamed } = createSdk();
+			runStreamed.mockResolvedValue({
+				events: {
+					[Symbol.asyncIterator]() {
+						throw new Error('iterator initialization failed');
+					},
+				},
+			});
+
+			const failure = await rejectionOfRun(
+				new CodexAgent({ sdk, model: 'gpt-5.6-sol', logger: createLogger() }),
+			);
+
+			expect(failure).toBeInstanceOf(RecoverableError);
+			expect(failure).toMatchObject({ cause: 'iterator initialization failed' });
+		});
+
+		it('preserves the classified stream failure when cleanup also fails', async () => {
+			const { sdk, runStreamed } = createSdk();
+			runStreamed.mockResolvedValue({
+				events: {
+					[Symbol.asyncIterator]() {
+						return {
+							next: () => Promise.reject(new Error('connection reset')),
+							return: () => Promise.reject(new Error('cleanup failed')),
+						};
+					},
+				},
+			});
+
+			const failure = await rejectionOfRun(
+				new CodexAgent({ sdk, model: 'gpt-5.6-sol', logger: createLogger() }),
+			);
+
+			expect(failure).toBeInstanceOf(RecoverableError);
+			expect(failure).toMatchObject({ cause: 'connection reset' });
 		});
 
 		it('closes the provider stream when host code throws', async () => {
