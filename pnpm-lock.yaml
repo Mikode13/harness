@@ -19,20 +19,20 @@ importers:
         version: 4.4.3
     devDependencies:
       '@mikode13/code-quality':
-        specifier: 0.1.0
-        version: 0.1.0(@typescript-eslint/utils@8.65.0(eslint@10.8.0(jiti@2.6.1)(supports-color@7.2.0))(supports-color@7.2.0)(typescript@6.0.3))(eslint@10.8.0(jiti@2.6.1)(supports-color@7.2.0))(supports-color@7.2.0)
+        specifier: 1.0.0
+        version: 1.0.0(@typescript-eslint/utils@8.65.0(eslint@10.8.0(jiti@2.6.1)(supports-color@7.2.0))(supports-color@7.2.0)(typescript@6.0.3))(eslint@10.8.0(jiti@2.6.1)(supports-color@7.2.0))(supports-color@7.2.0)
       '@mikode13/code-style':
-        specifier: 0.1.0
-        version: 0.1.0(prettier@3.9.6)
+        specifier: 1.0.0
+        version: 1.0.0(prettier@3.9.6)
       '@mikode13/cross-platform':
-        specifier: 0.1.0
-        version: 0.1.0
+        specifier: 1.0.0
+        version: 1.0.0
       '@mikode13/git-hooks':
-        specifier: 0.1.0
-        version: 0.1.0(@types/node@26.1.2)(typescript@6.0.3)
+        specifier: 1.0.0
+        version: 1.0.0(@types/node@26.1.2)(typescript@6.0.3)
       '@mikode13/tsconfig':
-        specifier: 0.1.0
-        version: 0.1.0
+        specifier: 1.0.0
+        version: 1.0.0
       '@types/node':
         specifier: ^26.1.2
         version: 26.1.2
@@ -391,30 +391,30 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@mikode13/code-quality@0.1.0':
-    resolution: {integrity: sha512-Wx0gMVRO4IdwqcctcsHtjSk6pBDrCl0a45cjw002ikiWeJ+uPSsFjVNyXnKIevsA2E6TLLw1TTR7PgRQ0EY2wA==}
+  '@mikode13/code-quality@1.0.0':
+    resolution: {integrity: sha512-oVs/28SILwrAg/4hSCf897yfoi3EChELXNZoFSTGL7+IjWpRDOtEl5l/wI3Vv/391tamUbjotDiG4FzwSVMmxg==}
     engines: {node: ^22.13.0 || ^24.0.0}
     peerDependencies:
       eslint: ^10.8.0
 
-  '@mikode13/code-style@0.1.0':
-    resolution: {integrity: sha512-YxaezqA4UeAFH1UyBryAj9lPce7xk6Cl8z2J9rPgBBBCZk5LtP9yxqr2tvs1swB9b2syyT1gBz3ApJdlyyUCDQ==}
-    engines: {node: '>=20'}
+  '@mikode13/code-style@1.0.0':
+    resolution: {integrity: sha512-6p4LIIP8D4hj25lrwE51aq+mngupVd46LvmFwVPflAGuHf7DXoTP/RTtLb66Vv9wclzO45H6aDBLxpA4DjP+Qg==}
+    engines: {node: ^22.13.0 || ^24.0.0}
     peerDependencies:
       prettier: ^3.5.0
 
-  '@mikode13/cross-platform@0.1.0':
-    resolution: {integrity: sha512-x7jfK3Ls8TJXDRXGQBeuzVijSX3lvjXUVEKf2saY1y1iwc4jJHYToitpNZ63ZJxBsqggR476t2MOLOvULJKZTg==}
+  '@mikode13/cross-platform@1.0.0':
+    resolution: {integrity: sha512-6auHGwuG621vX3xi6ZAsFl3wOh3zbf+OND24bSN7AwqS0kjjrLciQWA4/Tphbv8dGaJ+qZV2NEefeCasZNLo9Q==}
     engines: {node: ^22.13.0 || ^24.0.0}
     hasBin: true
 
-  '@mikode13/git-hooks@0.1.0':
-    resolution: {integrity: sha512-uUFvtF1vv6Cb9ShYwH6Y9PTTKuMnz7thyMOt1dYk7ZrskRviwgDmdbuJI0LTPcagFMri10qNGMIHocbsMzbrJQ==}
+  '@mikode13/git-hooks@1.0.0':
+    resolution: {integrity: sha512-2NX7pfsUEhjcOB7hJ2dUzSK0C261DGKva32L7YvaAuPQIzb7kBohJNcIcUndH7zTWEbs2RjECWfw3s7tPcfAMQ==}
     engines: {node: ^22.13.0 || ^24.0.0}
     hasBin: true
 
-  '@mikode13/tsconfig@0.1.0':
-    resolution: {integrity: sha512-JJNmjGRjSnrzcWioJ8nYiOtpZBo6UxwSslqiejNLzqRo1bnYcvx96JbMTo9i875iVKiHciT/bBxiffccB4m6Tw==}
+  '@mikode13/tsconfig@1.0.0':
+    resolution: {integrity: sha512-gaDIcrGkbzfQD7Wl8mOqaTBaWRNkt7lVcZ0ljlN5D3QYmoS5yvK4mhr9b6CqinuboukaZEd/lzHueTJc1xDLxA==}
     engines: {node: ^22.13.0 || ^24.0.0}
 
   '@modelcontextprotocol/sdk@1.30.0':
@@ -2441,7 +2441,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@mikode13/code-quality@0.1.0(@typescript-eslint/utils@8.65.0(eslint@10.8.0(jiti@2.6.1)(supports-color@7.2.0))(supports-color@7.2.0)(typescript@6.0.3))(eslint@10.8.0(jiti@2.6.1)(supports-color@7.2.0))(supports-color@7.2.0)':
+  '@mikode13/code-quality@1.0.0(@typescript-eslint/utils@8.65.0(eslint@10.8.0(jiti@2.6.1)(supports-color@7.2.0))(supports-color@7.2.0)(typescript@6.0.3))(eslint@10.8.0(jiti@2.6.1)(supports-color@7.2.0))(supports-color@7.2.0)':
     dependencies:
       '@eslint-react/eslint-plugin': 5.18.0(eslint@10.8.0(jiti@2.6.1)(supports-color@7.2.0))(supports-color@7.2.0)(typescript@6.0.3)
       '@eslint/js': 10.0.1(eslint@10.8.0(jiti@2.6.1)(supports-color@7.2.0))
@@ -2459,13 +2459,13 @@ snapshots:
       - eslint-plugin-import
       - supports-color
 
-  '@mikode13/code-style@0.1.0(prettier@3.9.6)':
+  '@mikode13/code-style@1.0.0(prettier@3.9.6)':
     dependencies:
       prettier: 3.9.6
 
-  '@mikode13/cross-platform@0.1.0': {}
+  '@mikode13/cross-platform@1.0.0': {}
 
-  '@mikode13/git-hooks@0.1.0(@types/node@26.1.2)(typescript@6.0.3)':
+  '@mikode13/git-hooks@1.0.0(@types/node@26.1.2)(typescript@6.0.3)':
     dependencies:
       '@commitlint/config-conventional': 21.2.0
       '@commitlint/lint': 21.2.0
@@ -2475,7 +2475,7 @@ snapshots:
       - '@types/node'
       - typescript
 
-  '@mikode13/tsconfig@0.1.0': {}
+  '@mikode13/tsconfig@1.0.0': {}
 
   '@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.4.3)':
     dependencies:

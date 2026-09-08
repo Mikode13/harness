@@ -5,7 +5,3 @@ packages:
 allowBuilds:
   # Native binary resolution for eslint-import-resolver-typescript (via eslint-plugin-import-x).
   unrs-resolver: true
-  # Explicitly deny inherited only-allow-pnpm guards; consumers do not need them.
-  '@mikode13/code-quality': false
-  '@mikode13/tsconfig': false
-  '@mikode13/cross-platform': false

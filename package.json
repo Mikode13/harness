@@ -41,11 +41,11 @@
 		"check": "pnpm run format:check && pnpm run lint && pnpm run typecheck"
 	},
 	"devDependencies": {
-		"@mikode13/code-quality": "0.1.0",
-		"@mikode13/cross-platform": "0.1.0",
-		"@mikode13/code-style": "0.1.0",
-		"@mikode13/git-hooks": "0.1.0",
-		"@mikode13/tsconfig": "0.1.0",
+		"@mikode13/code-quality": "1.0.0",
+		"@mikode13/cross-platform": "1.0.0",
+		"@mikode13/code-style": "1.0.0",
+		"@mikode13/git-hooks": "1.0.0",
+		"@mikode13/tsconfig": "1.0.0",
 		"@types/node": "^26.1.2",
 		"@vitest/coverage-v8": "^4.1.11",
 		"eslint": "^10.8.0",
