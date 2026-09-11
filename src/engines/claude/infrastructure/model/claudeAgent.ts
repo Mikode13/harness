@@ -3,6 +3,7 @@ import type {
 	EffortLevel,
 	Query,
 	SDKAssistantMessage,
+	SDKMessage,
 	SDKResultSuccess,
 	SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
@@ -12,15 +13,31 @@ import type {
 	Callback,
 	ProgressEvent,
 } from '../../../../agent/domain/agent.ts';
-import { RecoverableError } from '../../../../agent/domain/errors.ts';
+import { InvalidAgentConfigError, RecoverableError } from '../../../../agent/domain/errors.ts';
 import {
 	classifiedProviderStream,
 	classifyHostFailure,
 	classifyLocalFailure,
 	classifyProviderFailure,
+	treatErrors,
 } from '../../../../agent/domain/providerFailure.ts';
+import type { ILogger } from '../../../../shared/domain/logger.ts';
+import { isOneOf } from '../../../../shared/domain/isOneOf.ts';
 
-type Model = 'sonnet' | 'opus' | 'haiku' | 'claude-fable-5';
+// The SDK types `model` as a plain string, so this list is maintained by hand.
+export const claudeModels = ['haiku', 'sonnet', 'opus', 'fable'] as const;
+export type ClaudeModel = (typeof claudeModels)[number];
+
+export const claudeReasoningEfforts = [
+	'low',
+	'medium',
+	'high',
+	'xhigh',
+	'max',
+] as const satisfies readonly EffortLevel[];
+export type ClaudeReasoningEffort = (typeof claudeReasoningEfforts)[number];
+
+type SDKSystemMessage = Extract<SDKMessage, { type: 'system' }>;
 
 interface PendingTool {
 	name: string;
@@ -109,6 +126,8 @@ function mcpTool(tool: PendingTool, result: ToolResultBlock): ProgressEvent | un
 	};
 }
 
+// Tools without narration (Read, Grep, Task, ...) are a presentation choice, not an unknown:
+// the tool set is open-ended, so warning here would only produce noise.
 function describeCompletedTool(
 	tool: PendingTool,
 	result: ToolResultBlock,
@@ -144,15 +163,40 @@ function describeCompletedTool(
 }
 
 export class ClaudeAgent implements Agent {
-	private model: Model;
+	private model: ClaudeModel;
 	private autoApprove: boolean;
-	private reasoningEffort: EffortLevel;
+	private reasoningEffort: ClaudeReasoningEffort;
 	private sessionId?: string;
+	private logger: ILogger;
 
-	constructor(model: Model, autoApprove = false, reasoningEffort: EffortLevel = 'high') {
+	// `model` and `reasoningEffort` are untyped on purpose: this adapter is the one that knows
+	// what Claude supports, so it validates them instead of trusting the caller.
+	constructor({
+		model,
+		autoApprove = false,
+		reasoningEffort = 'high',
+		logger,
+	}: {
+		model: string;
+		autoApprove?: boolean;
+		reasoningEffort?: string;
+		logger: ILogger;
+	}) {
+		if (!isOneOf(claudeModels, model)) {
+			throw new InvalidAgentConfigError(
+				`"${model}" is not a Claude model; expected one of: ${claudeModels.join(', ')}`,
+			);
+		}
+		if (!isOneOf(claudeReasoningEfforts, reasoningEffort)) {
+			throw new InvalidAgentConfigError(
+				`"${reasoningEffort}" is not a Claude reasoning effort; expected one of: ${claudeReasoningEfforts.join(', ')}`,
+			);
+		}
+
 		this.model = model;
 		this.autoApprove = autoApprove;
 		this.reasoningEffort = reasoningEffort;
+		this.logger = logger;
 	}
 
 	async run(
@@ -221,6 +265,24 @@ export class ClaudeAgent implements Agent {
 							});
 						}
 						break;
+					case 'system':
+						this.handleSystemMessage(message);
+						break;
+					// Known messages with nothing to narrate or report.
+					case 'stream_event':
+					case 'tool_progress':
+					case 'tool_use_summary':
+					case 'auth_status':
+					case 'rate_limit_event':
+					case 'prompt_suggestion':
+					case 'conversation_reset':
+						break;
+					default: {
+						// `never` breaks the build when an SDK upgrade adds a message type; the
+						// warning covers a CLI binary that is newer than the types.
+						const unknownMessage: never = message;
+						this.warn(unknownMessage, 'Unknown Claude message type');
+					}
 				}
 			} catch (error) {
 				throw classifyLocalFailure(error, 'Claude failed while mapping progress');
@@ -239,41 +301,97 @@ export class ClaudeAgent implements Agent {
 		};
 	}
 
+	private handleSystemMessage(message: SDKSystemMessage): void {
+		switch (message.subtype) {
+			// Failures the SDK handled without failing the turn: only a warning makes them visible.
+			case 'api_retry':
+			case 'model_refusal_fallback':
+			case 'model_refusal_no_fallback':
+			case 'permission_denied':
+			case 'mirror_error':
+				this.warn(message, 'Claude reported a failure without failing the turn');
+				return;
+			// Known messages with nothing to narrate or report.
+			case 'init':
+			case 'compact_boundary':
+			case 'status':
+			case 'control_request_progress':
+			case 'local_command_output':
+			case 'hook_started':
+			case 'hook_progress':
+			case 'hook_response':
+			case 'plugin_install':
+			case 'task_notification':
+			case 'task_started':
+			case 'task_updated':
+			case 'task_progress':
+			case 'background_tasks_changed':
+			case 'thinking_tokens':
+			case 'session_state_changed':
+			case 'worker_shutting_down':
+			case 'commands_changed':
+			case 'notification':
+			case 'files_persisted':
+			case 'memory_recall':
+			case 'elicitation_complete':
+			case 'informational':
+				return;
+			default: {
+				const unknownMessage: never = message;
+				this.warn(unknownMessage, 'Unknown Claude system message');
+			}
+		}
+	}
+
 	private handleAssistantMessage(
 		message: SDKAssistantMessage,
 		pendingTools: Map<string, PendingTool>,
 		callback: Callback,
 	): void {
 		for (const block of message.message.content) {
-			if (block.type === 'text') {
-				emitProgress(callback, { type: 'agentMessage', message: block.text });
-				continue;
-			}
-
-			if (block.type === 'thinking') {
-				emitProgress(callback, { type: 'reasoning', message: block.thinking });
-				continue;
-			}
-
-			if (
-				block.type === 'tool_use' ||
-				block.type === 'server_tool_use' ||
-				block.type === 'mcp_tool_use'
-			) {
-				const input = asRecord(block.input);
-				if (input) {
-					pendingTools.set(block.id, {
-						name: block.name === 'web_search' ? 'WebSearch' : block.name,
-						input,
-						...('server_name' in block && typeof block.server_name === 'string'
-							? { server: block.server_name }
-							: parseMcpServer(block.name)),
-					});
+			switch (block.type) {
+				case 'text':
+					emitProgress(callback, { type: 'agentMessage', message: block.text });
+					break;
+				case 'thinking':
+					emitProgress(callback, { type: 'reasoning', message: block.thinking });
+					break;
+				case 'tool_use':
+				case 'server_tool_use':
+				case 'mcp_tool_use': {
+					const input = asRecord(block.input);
+					if (input) {
+						pendingTools.set(block.id, {
+							name: block.name === 'web_search' ? 'WebSearch' : block.name,
+							input,
+							...('server_name' in block && typeof block.server_name === 'string'
+								? { server: block.server_name }
+								: parseMcpServer(block.name)),
+						});
+					}
+					break;
 				}
-				continue;
+				case 'web_search_tool_result':
+				case 'web_fetch_tool_result':
+				case 'advisor_tool_result':
+				case 'code_execution_tool_result':
+				case 'bash_code_execution_tool_result':
+				case 'text_editor_code_execution_tool_result':
+				case 'tool_search_tool_result':
+				case 'mcp_tool_result':
+					this.handleCompletedTool(block, pendingTools, callback);
+					break;
+				// Known blocks with nothing to narrate.
+				case 'redacted_thinking':
+				case 'container_upload':
+				case 'compaction':
+				case 'fallback':
+					break;
+				default: {
+					const unknownBlock: never = block;
+					this.warn(unknownBlock, 'Unknown Claude content block');
+				}
 			}
-
-			this.handleCompletedTool(block, pendingTools, callback);
 		}
 	}
 
@@ -307,6 +425,16 @@ export class ClaudeAgent implements Agent {
 
 		const description = describeCompletedTool(tool, result, output ?? result.content);
 		if (description) emitProgress(callback, description);
+	}
+
+	private warn(...args: unknown[]): void {
+		treatErrors(
+			() => {
+				this.logger.warn(...args);
+			},
+			classifyHostFailure,
+			'Claude logger failed while reporting progress',
+		);
 	}
 }
 

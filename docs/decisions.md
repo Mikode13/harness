@@ -5,7 +5,8 @@ were considered, and what the transferable lesson is — independent of this
 specific codebase. Written to survive outside this repo (Obsidian, an
 interview, a future project).
 
-Chronological. Entries roughly through Step 3 of `tasks.txt` (the `Agent`
+Chronological. Entries roughly through Step 3 of the former `tasks.txt`
+roadmap, now only in Git history (the `Agent`
 seam, Codex/Claude engines, `RetryingAgent`) are reconstructed from a
 compacted summary of an earlier session, not a full transcript — the
 technical facts are solid, but double-check these few against your own
@@ -358,7 +359,7 @@ tags: #mikode-harness #prompt-design #reusability
 
 tags: #mikode-harness #architecture #interface-segregation
 
-partially superseded by: "ConversationLoop is a consumption pattern, not the harness seam" (below) — `IPromptEmitter` did not stay in the harness core as described here; it moved into `cli/` along with `ConversationLoop` itself. `ILogger` and the `ConversationLoop`/`scripts/cli.ts` renames described here remain accurate (`scripts/cli.ts` itself later moved again, to `cli/cli.ts`).
+partially superseded by: "ConversationLoop is a consumption pattern, not the harness seam" (below) — `IPromptEmitter` did not stay in the harness core as described here; it moved into `cli/` along with `ConversationLoop` itself. `ILogger` and the `ConversationLoop`/`scripts/cli.ts` renames described here remain accurate (`scripts/cli.ts` itself later moved again, to `cli/cli.ts`), except that `ILogger` later lost `log` — see "The harness logs the failures it absorbs and throws the rest" (below).
 
 **Decision:** `LoopTerminal` (one interface bundling `question`, `onInterrupt`, `log`, `write`, `clearLine`) is gone. `ConversationLoop` (renamed from `Loop`) now depends on two focused ports instead: `IPromptEmitter` (`emit`, `close`) and `ILogger` (`log`, `error`). Terminal presentation that isn't a core concern at all — the spinner, cursor control — moved out of any shared interface entirely and lives only in the CLI composition root (`scripts/cli.ts`, moved from `bin/cli.ts`), alongside the rest of `src/` reorganized into one folder per bounded module (`agent`, `conversationLoop`, `engines/{claude,codex}`, `orchestration`, `retry`, `shared`), each split into `domain`/`infrastructure`.
 
@@ -377,6 +378,8 @@ partially superseded by: "ConversationLoop is a consumption pattern, not the har
 tags: #mikode-harness #architecture #scope-discipline
 
 status: implemented
+
+partially superseded by: "The harness logs the failures it absorbs and throws the rest" (below) — `ClaudeAgent` now takes an `ILogger`, because it now has failures to report, and `ILogger` no longer has `log`.
 
 **Decision:** `ConversationLoop` and its `IPromptEmitter` port moved out of the harness package entirely, into `cli/`, a standalone workspace project (a pnpm workspace member — first use of workspaces in this repo — with its own `package.json`/`tsconfig`). `ILogger` stayed in the harness core, at `src/shared/domain/logger.ts` (not nested under the now-departed `conversationLoop` module). `CodexAgent` alone gained `ILogger` as a constructor dependency, removing the one stray `console.warn` in `codexAgent.ts`'s handling of an unrecognized SDK item type. That case is a genuine warning, not an error or routine log line, so `ILogger` gained a third method, `warn`, rather than force-fitting the call into `error` — a real, demonstrated severity distinction, unlike adding a method speculatively. `ClaudeAgent` was deliberately left unchanged: it has no current logging need, and adding an unused dependency "for symmetry" would be exactly the speculative flexibility this log's own principles argue against elsewhere; it can gain `ILogger` the moment it actually needs to log something. `IConversationLoop` (the interface, not the class) was dropped rather than moved — with `ConversationLoop` no longer part of a publicly embeddable package, nothing actually depended on the abstract type (unlike `IPromptEmitter`, which real tests fake against).
 
@@ -469,3 +472,75 @@ tags: #mikode-harness #boundaries #api-surface
 **Consequences:** the published surface is `ProgressEvent` alone; consumers render it, and `cli/progressEventFormatter.ts` is a reference implementation rather than a dependency. Its tests moved to the `cli` project with it, so coverage did not change hands.
 
 **Lesson:** "only the CLI imports it" is usually the module telling you where it belongs.
+
+---
+
+## The harness logs the failures it absorbs and throws the rest
+
+tags: #mikode-harness #observability #error-handling #api-surface
+
+**Decision:** a harness component logs a failure only when it handles it and carries on — provider output it does not recognize, an attempt that a later retry recovers, a round the orchestrator discards. A failure that ends the `run()` is thrown and not logged. `ILogger` shrinks to `warn` and `error`. Every component that logs receives a `logger`; the factories default it to `Logger` in `src/shared/infrastructure/logger.ts`, which writes to stderr.
+
+**Context:** once `ConversationLoop` left the package, nothing inside the harness observed failures any more: `run()` throws to whichever consumer called it. That separated two concerns that had looked like one. Reporting a failure to the consumer already worked, through the typed errors. What had no owner was the failure the consumer never sees: `RetryingAgent` swallowed every attempt a later one recovered, and `ClaudeAgent` dropped SDK output it did not understand without a trace. A provider that failed every first attempt looked healthy from outside.
+
+**Alternatives considered:** a `ProgressEvent` variant for unknown provider output. Rejected: progress events are narration for the end user, while an unknown SDK item is a diagnostic for the harness maintainer, and every consumer that switches exhaustively over `ProgressEvent` would have to handle a variant that means nothing to its users — a public API cost that would outlive `1.0.0`. Also logging the errors that are thrown was rejected: the harness cannot know whether the consumer expects, retries, or logs them itself, so it would only report them twice. Sending failures to a hosted error tracker was deferred: a library runs inside the consumer's process, and shipping data elsewhere needs infrastructure, consent, and an opt-out that do not exist yet. An injected `ILogger` adapter can provide it later without a redesign.
+
+**Consequences:** `ClaudeAgent` now takes a logger, which the "ConversationLoop is a consumption pattern" entry had deferred until it had something to log. The package is no longer free of I/O: without an injected logger it writes warnings to stderr, which keeps stdout for the consumer — the CI reviewer driven through `harness single-turn` reads its answer from stdout. `log` left `ILogger` because nothing in the harness called it; the CLI had been borrowing it for its own terminal output. Applied in both engines, `RetryingAgent`, and every round or reviewer call the orchestrator retries. Each wraps the call in `treatErrors` with `classifyHostFailure`: the logger only logs, and the caller decides how its failure is classified, so a logger that throws cannot escape the `Agent` unclassified.
+
+**Lesson:** log what you absorb, throw what you don't. A failure that is both logged and thrown is reported twice; one that is absorbed without a log disappears.
+
+---
+
+## Claude SDK output is classified exhaustively, so an SDK upgrade cannot add a silent case
+
+tags: #mikode-harness #provider-adapters #type-safety
+
+**Decision:** `ClaudeAgent` switches over every `SDKMessage` type, every `system` subtype, and every assistant content-block type, each `switch` ending in a `default` that assigns the value to `never`. Every case is narrated, handled as a tool result, deliberately ignored, or logged. The logged cases are failures the SDK absorbed without failing the turn (`api_retry`, `model_refusal_fallback`, `model_refusal_no_fallback`, `permission_denied`, `mirror_error`) and, at runtime, anything reaching a `default`.
+
+**Context:** `CodexAgent` already warned about an unrecognized `ThreadItem` type. `ClaudeAgent` handled three of the SDK's 39 message types and dropped the rest silently, SDK-reported failures included. Codex's check sits on the SDK's structural types, not on tool names, and so does Claude's: the tool set is open-ended (MCP servers, custom tools), and a tool without narration, such as `Read` or `Grep`, is a presentation choice rather than something unknown.
+
+**Alternatives considered:** a `Set` of ignored types with a runtime-only warning — shorter, but a new SDK type would first surface in production logs. Warning about unnarrated tool names — rejected as noise.
+
+**Consequences:** an `@anthropic-ai/claude-agent-sdk` upgrade that adds a message type, subtype, or block fails typechecking until someone decides what the new case means. The runtime warning still covers a bundled `claude` binary that is newer than the SDK's types. The ignore lists are long; that is the price of the compile-time signal.
+
+**Lesson:** a `never` check turns "remember to read the changelog" into a build failure at the moment a dependency changes shape.
+
+---
+
+## Engines build their own SDK, and every constructor takes one options object
+
+tags: #mikode-harness #api-surface #consistency
+
+**Decision:** `CodexAgent` creates its `Codex` instance internally instead of receiving one, as `ClaudeAgent` already did with `query()`. `ClaudeAgent`, `CodexAgent`, `RetryingAgent`, and `OrchestratorAgent` each take a single options object, with their defaults (`autoApprove`, `reasoningEffort`, `maxAttempts`, `logger`) declared in the destructuring.
+
+**Context:** issue #15 needs a factory that turns a provider name into an `Agent`. The engines disagreed on how they were built — positional arguments on one side, an options object with an injected SDK on the other — and the injected `Codex` made harness-cli depend on `@openai/codex-sdk` itself, leaking provider construction into consumers. One `Codex` per agent behaves the same as a shared one: the instance holds only configuration and the resolved binary path, and every `startThread()` returns an independent thread.
+
+**Consequences:** a breaking change to every public constructor, made while the package is still `0.x`. Consumers no longer import a provider SDK to build an engine. Tests replace `Codex` through `vi.mock` instead of passing a fake instance. The engine classes later became internal, and the `logger` default moved to the factory — see "A factory is the public way to build agents" (below).
+
+---
+
+## A factory is the public way to build agents; engines, retry, and the orchestrator class are internal
+
+tags: #mikode-harness #api-surface #boundaries
+
+**Decision:** consumers build agents only through `createAgent(provider, options)` and `createOrchestrator(options)` in `src/factory/`. `ClaudeAgent`, `CodexAgent`, `RetryingAgent`, and `OrchestratorAgent` are no longer exported. `createAgent` wraps every engine in `RetryingAgent`: retry is how the harness makes an agent work, not something a consumer composes. Each engine's constructor validates the model and reasoning effort it receives against its own `as const` lists and throws `InvalidAgentConfigError` for anything its provider does not support; the factory only picks the engine and fills in defaults. The options take a union across providers (`AgentModel`, `ReasoningEffort`).
+
+**Context:** issue #15. Every consumer that selects an agent by name — harness-cli's `single-turn --agent`, the router planned in #17 — would otherwise repeat the same name-to-engine mapping and the same retry wrapping. The two SDKs expose neither their models nor a shared effort scale: `'max'` exists only for Claude and `'minimal'` only for Codex, so a model or effort from the wrong provider has to be rejected at runtime whatever the static types say.
+
+**Alternatives considered:** validating in the factory — rejected, because what a provider supports is knowledge its engine owns, and a second list in the factory would drift from it. Options discriminated by provider, which catch a mismatch at compile time — not adopted: runtime validation is needed anyway for untyped input such as a CLI flag, and a single union keeps the options simple. Keeping the engine classes exported — rejected: after `1.0.0`, their constructors and the retry composition could no longer change.
+
+**Consequences:** a breaking change to the public API, made before `1.0.0`. Defaults — the model per provider and the stderr `Logger` — live in the factory, so `RetryingAgent` and `OrchestratorAgent` now require a logger and no longer import infrastructure from the domain layer. A new model is added to its engine's list; a new engine is registered in the factory. Consumers narrow provider names from untyped input with `isAgentProvider`; an unknown one that still reaches a factory throws `InvalidAgentConfigError`. `OrchestratorAgent` became internal along with the rest, since `createOrchestrator` covers its only current use; exporting it again is possible if a consumer needs a composition the presets do not offer.
+
+---
+
+## The harness owns the orchestrator's composition, with a manual provider flag
+
+tags: #mikode-harness #orchestration #scope
+
+**Decision:** `createOrchestrator` decides which provider, model, and reasoning effort play each role. By default Codex plans (`gpt-5.6-sol`, `high`) and executes (`gpt-5.6-luna`, `xhigh`), and Claude reviews (`opus`, `high`). `provider: 'claude'` or `provider: 'codex'` runs every role on one provider, keeping a stronger model for planning and reviewing and pairing a cheaper model with a higher effort for executing.
+
+**Context:** issue #15 had left this composition to the consumer. More than one consumer needs the same one — the CLI, and the router planned in #17 — and the practical reason to change it is running out of quota on one provider. Which model suits which role is knowledge about providers, which the harness already owns.
+
+**Alternatives considered:** leaving the composition to the consumer, as #15 proposed — rejected for the duplication above, knowingly reversing that issue's ownership table. Switching providers automatically when one reports a rate limit — deferred: a flag covers the need, and automatic fallback is a resilience feature with its own failure policy to design.
+
+**Consequences:** the "which agent plays planner, executor, and reviewer" row of #15's ownership table no longer holds. The provider is fixed per orchestrator, not chosen per request.

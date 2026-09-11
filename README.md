@@ -58,17 +58,16 @@ chat loop itself never knows the difference.
 
 ## Where it is going
 
-Remaining work (see `tasks.txt` for the actionable, dated list):
+Open work is tracked in GitHub issues:
 
-- Live streaming already ships; still open: type-while-thinking (respond to
-  new input without blocking on the current agent call), session persistence
-  across process restarts, and structured per-turn usage/duration logging.
-- Terminal UX polish (bordered chat box, markdown rendering, user-friendly
-  error messages) — explicitly deferred until the above is solid.
-- Dynamic routing (deciding which flow/agent a request needs, instead of
-  always running the fixed plan → execute → review workflow) — deliberately
-  built _after_ that fixed flow, not alongside it, so the routing decision
-  reuses a technique already proven on a simpler problem.
+- [#15](https://github.com/Mikode13/harness/issues/15): an agent factory, so
+  consumers select a provider by name instead of constructing engines.
+- [#16](https://github.com/Mikode13/harness/issues/16): declare the public API
+  stable and publish `1.0.0` through automated publication.
+- [#17](https://github.com/Mikode13/harness/issues/17): dynamic routing —
+  deciding which flow or agent a request needs, instead of always running the
+  fixed plan → execute → review workflow. It comes after `1.0.0` and reuses the
+  structured-decision technique already proven on the reviewer.
 
 Deliberately out of scope for now: MCP, long-term memory, graph execution, and
 file-based agent registries — each waits for a real need.
@@ -97,17 +96,14 @@ comment on `Agent` in `src/agent/domain/agent.ts`.
 pnpm add @mikode13/harness
 ```
 
-An agent is composed, then driven; the package brings no I/O of its own:
+An agent is built by a factory, then driven. The only output the package produces
+on its own is diagnostic warnings on stderr, from a default logger that both
+factories let you replace through their `logger` option:
 
 ```ts
-import {
-	ClaudeAgent,
-	RetryingAgent,
-	UnrecoverableError,
-	type ProgressEvent,
-} from '@mikode13/harness';
+import { createAgent, UnrecoverableError, type ProgressEvent } from '@mikode13/harness';
 
-const agent = new RetryingAgent(new ClaudeAgent('sonnet'));
+const agent = createAgent('claude', { model: 'sonnet' });
 const controller = new AbortController();
 
 const render = (event: ProgressEvent) => {
@@ -124,9 +120,15 @@ try {
 
 `ProgressEvent` is the public seam for live activity; rendering it is the
 consumer's decision, not the harness's. `cli/progressEventFormatter.ts` is one
-terminal-shaped implementation to copy from. Swapping `ClaudeAgent` for
-`CodexAgent`, or for an `OrchestratorAgent` wrapping all three roles, changes
-nothing else in the snippet above.
+terminal-shaped implementation to copy from. Swapping the agent for
+`createAgent('codex')`, or for `createOrchestrator()` and its planner → executor →
+reviewer workflow, changes nothing else in the snippet above.
+`createOrchestrator({ provider: 'claude' })` runs every role on one provider, for
+example when the other one is out of quota.
+
+Every agent a factory returns already retries recoverable failures. A model or
+reasoning effort the chosen provider does not support throws
+`InvalidAgentConfigError` when the agent is built.
 
 ## Tests
 
@@ -153,9 +155,9 @@ This maps to each provider's permission-bypass mode and grants those processes
 unrestricted command access. Keep it disabled when the host may receive untrusted
 prompts, or provide an approval workflow from the entry point.
 
-Real consumers (a future REST/WebSocket server, a chatbot UI) compose the
-exported `Agent`, `OrchestratorAgent`, and other harness building blocks with
-their own I/O and `ILogger` adapter. `ConversationLoop`/`IPromptEmitter` are not
+Real consumers (a future REST/WebSocket server, a chatbot UI) build agents
+through `createAgent` and `createOrchestrator` and bring their own I/O, and
+optionally their own `ILogger` adapter. `ConversationLoop`/`IPromptEmitter` are not
 part of the published package — they encode one specific interactive,
 turn-by-turn consumption pattern (see `cli/`), not the harness seam itself; a
 consumer that wants that same loop can use `cli/`'s implementation as a

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Agent, AgentResponse } from '../../src/agent/domain/agent.ts';
 import { RecoverableError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
 import { RetryingAgent } from '../../src/retry/domain/model/retryingAgent.ts';
@@ -12,6 +12,7 @@ const okResponse: AgentResponse = {
 
 const signal = new AbortController().signal;
 const callback = vi.fn();
+const logger = { warn: vi.fn(), error: vi.fn() };
 
 // A fake Agent — RetryingAgent only depends on the Agent interface, so we can
 // script its behavior directly instead of hitting a real SDK. Returns the
@@ -29,9 +30,63 @@ function fakeAgent(...behaviors: (Error | AgentResponse)[]) {
 }
 
 describe('RetryingAgent', () => {
+	afterEach(() => {
+		vi.clearAllMocks();
+	});
+
+	// The consumer never sees a failure that a later attempt recovered, so the warning is
+	// the only trace of it; the final failure is thrown instead, and logging it too would
+	// report it twice.
+	it('warns about each absorbed failure but not about the one it throws', async () => {
+		const absorbed = new RecoverableError('flaky', { cause: 'network blip' });
+		const { agent } = fakeAgent(
+			absorbed,
+			new RecoverableError('flaky again', { cause: 'timeout' }),
+		);
+		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 2, logger });
+
+		await expect(retryingAgent.run('hi', signal, callback)).rejects.toThrow(
+			'Max attempts exhausted',
+		);
+
+		expect(logger.warn).toHaveBeenCalledOnce();
+		expect(logger.warn).toHaveBeenCalledWith('Attempt 1/2 failed; retrying', absorbed);
+	});
+
+	it('classifies a throwing logger as unrecoverable instead of retrying', async () => {
+		const { agent, run } = fakeAgent(
+			new RecoverableError('flaky', { cause: 'network blip' }),
+			okResponse,
+		);
+		const throwingLogger = {
+			warn: vi.fn(() => {
+				throw new Error('the log sink is gone');
+			}),
+			error: vi.fn(),
+		};
+		const retryingAgent = new RetryingAgent({ inner: agent, logger: throwingLogger });
+
+		const failure = await retryingAgent
+			.run('hi', signal, callback)
+			.catch((error: unknown) => error);
+
+		expect(failure).toBeInstanceOf(UnrecoverableError);
+		expect(failure).toMatchObject({
+			message: 'RetryingAgent logger failed while reporting a retry',
+			cause: 'the log sink is gone',
+		});
+		expect(run).toHaveBeenCalledOnce();
+	});
+
+	it('rejects a non-positive-integer maxAttempts', () => {
+		const { agent } = fakeAgent();
+
+		expect(() => new RetryingAgent({ inner: agent, maxAttempts: 0, logger })).toThrow(RangeError);
+	});
+
 	it('returns the result on the first successful attempt', async () => {
 		const { agent, run } = fakeAgent(okResponse);
-		const retryingAgent = new RetryingAgent(agent);
+		const retryingAgent = new RetryingAgent({ inner: agent, logger });
 
 		const result = await retryingAgent.run('hi', signal, callback);
 
@@ -45,7 +100,7 @@ describe('RetryingAgent', () => {
 			new RecoverableError('flaky again', { cause: 'timeout' }),
 			okResponse,
 		);
-		const retryingAgent = new RetryingAgent(agent, 3);
+		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
 		const result = await retryingAgent.run('hi', signal, callback);
 
@@ -59,7 +114,7 @@ describe('RetryingAgent', () => {
 			new RecoverableError('2', { cause: 'second failure' }),
 			new RecoverableError('3', { cause: 'third failure' }),
 		);
-		const retryingAgent = new RetryingAgent(agent, 3);
+		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
 		await expect(retryingAgent.run('hi', signal, callback)).rejects.toThrow(
 			'Max attempts exhausted',
@@ -72,7 +127,7 @@ describe('RetryingAgent', () => {
 			new UnrecoverableError('broken', { cause: 'fatal' }),
 			okResponse,
 		);
-		const retryingAgent = new RetryingAgent(agent, 3);
+		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
 		await expect(retryingAgent.run('hi', signal, callback)).rejects.toThrow('broken');
 		expect(run).toHaveBeenCalledTimes(1);
@@ -81,7 +136,7 @@ describe('RetryingAgent', () => {
 	it('does not retry when the call was aborted', async () => {
 		const abortError = new DOMException('The operation was aborted', 'AbortError');
 		const { agent, run } = fakeAgent(abortError, okResponse);
-		const retryingAgent = new RetryingAgent(agent, 3);
+		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
 		await expect(retryingAgent.run('hi', signal, callback)).rejects.toThrow('aborted');
 		expect(run).toHaveBeenCalledTimes(1);
@@ -89,7 +144,7 @@ describe('RetryingAgent', () => {
 
 	it('sends the original prompt unchanged on the first attempt', async () => {
 		const { agent, run } = fakeAgent(okResponse);
-		const retryingAgent = new RetryingAgent(agent);
+		const retryingAgent = new RetryingAgent({ inner: agent, logger });
 
 		await retryingAgent.run('hi', signal, callback);
 
@@ -101,7 +156,7 @@ describe('RetryingAgent', () => {
 			new RecoverableError('flaky', { cause: 'network blip' }),
 			okResponse,
 		);
-		const retryingAgent = new RetryingAgent(agent, 3);
+		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
 		await retryingAgent.run('hi', signal, callback);
 
@@ -119,7 +174,7 @@ describe('RetryingAgent', () => {
 			new RecoverableError('flaky again', { cause: 'second failure' }),
 			okResponse,
 		);
-		const retryingAgent = new RetryingAgent(agent, 3);
+		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
 		await retryingAgent.run('hi', signal, callback);
 
@@ -139,7 +194,7 @@ describe('RetryingAgent', () => {
 
 	it('does not rewrite the prompt when the failure is unrecoverable', async () => {
 		const { agent, run } = fakeAgent(new UnrecoverableError('broken', { cause: 'fatal' }));
-		const retryingAgent = new RetryingAgent(agent, 3);
+		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
 		await expect(retryingAgent.run('hi', signal, callback)).rejects.toThrow('broken');
 
@@ -153,7 +208,7 @@ describe('RetryingAgent', () => {
 				new RecoverableError('first', { cause: 'rate limited' }),
 				new RecoverableError('second', { cause: 'rate limited again' }),
 			);
-			const retrying = new RetryingAgent(agent, 2);
+			const retrying = new RetryingAgent({ inner: agent, maxAttempts: 2, logger });
 
 			const failure = await retrying.run('ping', signal, callback).catch((error: unknown) => error);
 
@@ -165,7 +220,7 @@ describe('RetryingAgent', () => {
 		// A compliant adapter never sends one of these; the decorator is the last defence.
 		it('describes an unclassified failure rather than dropping it', async () => {
 			const { agent } = fakeAgent(new Error('socket hang up'), okResponse);
-			const retrying = new RetryingAgent(agent, 2);
+			const retrying = new RetryingAgent({ inner: agent, maxAttempts: 2, logger });
 
 			const failure = await retrying.run('ping', signal, callback).catch((error: unknown) => error);
 
@@ -179,7 +234,7 @@ describe('RetryingAgent', () => {
 	describe('unclassified failures', () => {
 		it('does not call the agent again when the failure was not classified', async () => {
 			const { agent, run } = fakeAgent(new Error('callback exploded'), okResponse);
-			const retrying = new RetryingAgent(agent, 3);
+			const retrying = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
 			await expect(retrying.run('hi', signal, callback)).rejects.toThrow(
 				'The agent failed without classifying the failure',
@@ -189,7 +244,7 @@ describe('RetryingAgent', () => {
 
 		it('reports an unclassified failure as unrecoverable, not as exhaustion', async () => {
 			const { agent } = fakeAgent(new Error('callback exploded'));
-			const retrying = new RetryingAgent(agent, 3);
+			const retrying = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
 			const failure = await retrying.run('hi', signal, callback).catch((error: unknown) => error);
 
