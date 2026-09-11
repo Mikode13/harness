@@ -2,6 +2,8 @@ import type { Agent, AgentResponse, Callback } from '../../../agent/domain/agent
 import { RecoverableError, UnrecoverableError } from '../../../agent/domain/errors.ts';
 import type { ReviewerDecision } from './reviewerDecision.ts';
 import type { Validator } from '../interface/validator.ts';
+import type { ILogger } from '../../../shared/domain/logger.ts';
+import { classifyHostFailure, treatErrors } from '../../../agent/domain/providerFailure.ts';
 
 const getPlannerPrompt = (userPrompt: string, previousFailureReason?: string) => {
 	const feedback = previousFailureReason
@@ -109,14 +111,23 @@ export class OrchestratorAgent implements Agent {
 	private reviewerAgent: Agent;
 	private reviewerDecisionValidator: Validator<ReviewerDecision>;
 	private maxAttempts: number;
+	private logger: ILogger;
 
-	constructor(
-		plannerAgent: Agent,
-		executorAgent: Agent,
-		reviewerAgent: Agent,
-		reviewerDecisionValidator: Validator<ReviewerDecision>,
+	constructor({
+		plannerAgent,
+		executorAgent,
+		reviewerAgent,
+		reviewerDecisionValidator,
 		maxAttempts = 3,
-	) {
+		logger,
+	}: {
+		plannerAgent: Agent;
+		executorAgent: Agent;
+		reviewerAgent: Agent;
+		reviewerDecisionValidator: Validator<ReviewerDecision>;
+		maxAttempts?: number;
+		logger: ILogger;
+	}) {
 		if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
 			throw new RangeError('maxAttempts must be a positive integer');
 		}
@@ -126,6 +137,7 @@ export class OrchestratorAgent implements Agent {
 		this.reviewerAgent = reviewerAgent;
 		this.reviewerDecisionValidator = reviewerDecisionValidator;
 		this.maxAttempts = maxAttempts;
+		this.logger = logger;
 	}
 
 	async run(
@@ -151,6 +163,9 @@ export class OrchestratorAgent implements Agent {
 				if (isLastAttempt) {
 					throw new UnrecoverableError('Max attempts exhausted', { cause: lastFailureReason });
 				}
+				this.warn(
+					`Attempt ${String(attempt)}/${String(this.maxAttempts)}: the planner produced no response; starting another round`,
+				);
 				continue;
 			}
 
@@ -167,6 +182,10 @@ export class OrchestratorAgent implements Agent {
 				if (isLastAttempt) {
 					throw new UnrecoverableError('Max attempts exhausted', { cause: lastFailureReason });
 				}
+
+				this.warn(
+					`Attempt ${String(attempt)}/${String(this.maxAttempts)}: the executor produced no response; starting another round`,
+				);
 				continue;
 			}
 
@@ -189,6 +208,11 @@ export class OrchestratorAgent implements Agent {
 			if (isLastAttempt) {
 				throw new UnrecoverableError('Max attempts exhausted', { cause: lastFailureReason });
 			}
+
+			this.warn(
+				`Attempt ${String(attempt)}/${String(this.maxAttempts)}: the reviewer rejected the round; starting another with its feedback`,
+				lastFailureReason,
+			);
 		}
 
 		throw new UnrecoverableError('Max attempts exhausted', {
@@ -229,11 +253,26 @@ export class OrchestratorAgent implements Agent {
 				if (attempt === this.maxAttempts) {
 					throw new UnrecoverableError('Max attempts exhausted', { cause: parseFailureReason });
 				}
+
+				this.warn(
+					`Reviewer decision ${String(attempt)}/${String(this.maxAttempts)} was unusable; asking the reviewer again`,
+					parseFailureReason,
+				);
 			}
 		}
 
 		throw new UnrecoverableError('Max attempts exhausted', {
 			cause: parseFailureReason ?? 'Unknown failure.',
 		});
+	}
+
+	private warn(...args: unknown[]): void {
+		treatErrors(
+			() => {
+				this.logger.warn(...args);
+			},
+			classifyHostFailure,
+			'Orchestrator logger failed while reporting a retry',
+		);
 	}
 }

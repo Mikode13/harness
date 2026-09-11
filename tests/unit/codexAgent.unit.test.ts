@@ -1,8 +1,15 @@
-import type { Codex, Thread, ThreadEvent, ThreadItem, Usage } from '@openai/codex-sdk';
+import { Codex } from '@openai/codex-sdk';
+import type { Thread, ThreadEvent, ThreadItem, Usage } from '@openai/codex-sdk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CodexAgent } from '../../src/engines/codex/infrastructure/model/codexAgent.ts';
 import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
-import { RecoverableError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
+import {
+	InvalidAgentConfigError,
+	RecoverableError,
+	UnrecoverableError,
+} from '../../src/agent/domain/errors.ts';
+
+vi.mock('@openai/codex-sdk', () => ({ Codex: vi.fn() }));
 
 function streamedTurn(events: ThreadEvent[]): { events: AsyncGenerator<ThreadEvent> } {
 	return {
@@ -30,25 +37,27 @@ function usage(overrides: Partial<Usage> = {}): Usage {
 	};
 }
 
+/** Makes the next `new Codex()` inside the agent return a fake SDK. */
 function createSdk(events: ThreadEvent[] = []) {
 	const runStreamed = vi.fn().mockImplementation(() => Promise.resolve(streamedTurn(events)));
 	const thread = {
 		runStreamed,
 	} as unknown as Thread;
 	const startThread = vi.fn().mockReturnValue(thread);
-	const sdk = {
-		startThread,
-	} as unknown as Codex;
+	vi.mocked(Codex).mockImplementation(function () {
+		return { startThread } as unknown as Codex;
+	});
 
-	return { runStreamed, sdk, startThread };
+	return { runStreamed, startThread };
 }
 
 function createLogger() {
-	return { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
+	return { warn: vi.fn(), error: vi.fn() };
 }
 
 describe('CodexAgent', () => {
 	afterEach(() => {
+		vi.clearAllMocks();
 		vi.restoreAllMocks();
 	});
 
@@ -56,12 +65,11 @@ describe('CodexAgent', () => {
 		const firstCallback = vi.fn();
 		const secondCallback = vi.fn();
 		const signal = new AbortController().signal;
-		const { runStreamed, sdk, startThread } = createSdk([
+		const { runStreamed, startThread } = createSdk([
 			completed({ id: 'message-1', text: 'first', type: 'agent_message' }),
 			{ type: 'turn.completed', usage: usage() },
 		]);
 		const agent = new CodexAgent({
-			sdk,
 			model: 'gpt-5.6-luna',
 			logger: createLogger(),
 			autoApprove: true,
@@ -71,6 +79,7 @@ describe('CodexAgent', () => {
 		await agent.run('first prompt', signal, firstCallback);
 		await agent.run('second prompt', signal, secondCallback);
 
+		expect(Codex).toHaveBeenCalledOnce();
 		expect(startThread).toHaveBeenCalledOnce();
 		expect(startThread).toHaveBeenCalledWith({
 			approvalPolicy: 'never',
@@ -85,9 +94,9 @@ describe('CodexAgent', () => {
 	});
 
 	it('keeps command execution restrictions enabled by default', () => {
-		const { sdk, startThread } = createSdk();
+		const { startThread } = createSdk();
 
-		new CodexAgent({ sdk, model: 'gpt-5.6-sol', logger: createLogger() });
+		new CodexAgent({ model: 'gpt-5.6-sol', logger: createLogger() });
 
 		expect(startThread).toHaveBeenCalledWith({
 			model: 'gpt-5.6-sol',
@@ -97,7 +106,7 @@ describe('CodexAgent', () => {
 
 	it('maps supported completed items in stream order and aggregates agent messages', async () => {
 		const events: ProgressEvent[] = [];
-		const { sdk } = createSdk([
+		createSdk([
 			completed({ id: 'message-1', text: 'hello', type: 'agent_message' }),
 			completed({ id: 'reasoning-1', text: 'thinking', type: 'reasoning' }),
 			completed({
@@ -134,7 +143,6 @@ describe('CodexAgent', () => {
 		const start = vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValueOnce(3_250);
 
 		const response = await new CodexAgent({
-			sdk,
 			model: 'gpt-5.6-sol',
 			logger: createLogger(),
 		}).run('prompt', new AbortController().signal, event => events.push(event));
@@ -160,11 +168,11 @@ describe('CodexAgent', () => {
 
 	it('logs and ignores a completed item of an unrecognized type', async () => {
 		const unknownItem = { id: 'unknown-1', type: 'reasoning_summary' } as unknown as ThreadItem;
-		const { sdk } = createSdk([completed(unknownItem), { type: 'turn.completed', usage: usage() }]);
+		createSdk([completed(unknownItem), { type: 'turn.completed', usage: usage() }]);
 		const logger = createLogger();
 		const events: ProgressEvent[] = [];
 
-		await new CodexAgent({ sdk, model: 'gpt-5.6-sol', logger }).run(
+		await new CodexAgent({ model: 'gpt-5.6-sol', logger }).run(
 			'prompt',
 			new AbortController().signal,
 			event => events.push(event),
@@ -175,16 +183,36 @@ describe('CodexAgent', () => {
 	});
 
 	it.each([
+		['a model from another provider', { model: 'opus' }, '"opus" is not a Codex model'],
+		[
+			'a reasoning effort no Codex model supports',
+			{ model: 'gpt-5.6-sol', reasoningEffort: 'minimal' },
+			'"minimal" is not a Codex reasoning effort',
+		],
+		[
+			'a reasoning effort the model does not support',
+			{ model: 'gpt-5.6-luna', reasoningEffort: 'ultra' },
+			'"gpt-5.6-luna" does not support the "ultra" reasoning effort',
+		],
+	])('rejects %s before creating the SDK', (_case, options, message) => {
+		const create = () => new CodexAgent({ ...options, logger: createLogger() });
+
+		expect(create).toThrow(InvalidAgentConfigError);
+		expect(create).toThrow(message);
+		expect(Codex).not.toHaveBeenCalled();
+	});
+
+	it.each([
 		['without an agent message', [{ type: 'turn.completed', usage: usage() }] as ThreadEvent[]],
 		[
 			'without completed usage',
 			[completed({ id: 'message-1', text: 'partial', type: 'agent_message' })] as ThreadEvent[],
 		],
 	])('returns no response for an incomplete stream %s', async (_case, events) => {
-		const { sdk } = createSdk(events);
+		createSdk(events);
 
 		await expect(
-			new CodexAgent({ sdk, model: 'gpt-5.6-sol', logger: createLogger() }).run(
+			new CodexAgent({ model: 'gpt-5.6-sol', logger: createLogger() }).run(
 				'prompt',
 				new AbortController().signal,
 				vi.fn(),
@@ -214,10 +242,10 @@ describe('CodexAgent', () => {
 			'tool crashed',
 		],
 	] as const)('raises a recoverable error for %s', async (_case, event, message, cause) => {
-		const { sdk } = createSdk([event]);
+		createSdk([event]);
 
 		await expect(
-			new CodexAgent({ sdk, model: 'gpt-5.6-sol', logger: createLogger() }).run(
+			new CodexAgent({ model: 'gpt-5.6-sol', logger: createLogger() }).run(
 				'prompt',
 				new AbortController().signal,
 				vi.fn(),
@@ -239,10 +267,10 @@ describe('CodexAgent', () => {
 			'model failed',
 		],
 	] as const)('raises an unrecoverable error for %s', async (_case, event, message, cause) => {
-		const { sdk } = createSdk([event]);
+		createSdk([event]);
 
 		await expect(
-			new CodexAgent({ sdk, model: 'gpt-5.6-sol', logger: createLogger() }).run(
+			new CodexAgent({ model: 'gpt-5.6-sol', logger: createLogger() }).run(
 				'prompt',
 				new AbortController().signal,
 				vi.fn(),
@@ -282,25 +310,25 @@ describe('CodexAgent', () => {
 			return captured;
 		}
 
-		function agentFor(sdk: Codex) {
-			return new CodexAgent({ sdk, model: 'gpt-5.6-sol', logger: createLogger() });
+		function createAgent() {
+			return new CodexAgent({ model: 'gpt-5.6-sol', logger: createLogger() });
 		}
 
 		it('classifies a request that the SDK rejects outright', async () => {
-			const { sdk, runStreamed } = createSdk();
+			const { runStreamed } = createSdk();
 			runStreamed.mockRejectedValue(new Error('socket hang up'));
 
-			const failure = await rejectionOf(agentFor(sdk));
+			const failure = await rejectionOf(createAgent());
 
 			expect(failure).toBeInstanceOf(RecoverableError);
 			expect(failure).toMatchObject({ cause: 'socket hang up' });
 		});
 
 		it('classifies a stream that fails part-way through a turn', async () => {
-			const { sdk, runStreamed } = createSdk();
+			const { runStreamed } = createSdk();
 			runStreamed.mockResolvedValue(failingStream(new Error('connection reset')));
 
-			const failure = await rejectionOf(agentFor(sdk));
+			const failure = await rejectionOf(createAgent());
 
 			expect(failure).toBeInstanceOf(RecoverableError);
 			expect(failure).toMatchObject({ cause: 'connection reset' });
@@ -309,34 +337,42 @@ describe('CodexAgent', () => {
 		it('lets cancellation through unchanged', async () => {
 			const abort = new Error('The operation was aborted');
 			abort.name = 'AbortError';
-			const { sdk, runStreamed } = createSdk();
+			const { runStreamed } = createSdk();
 			runStreamed.mockRejectedValue(abort);
 
-			const failure = await rejectionOf(agentFor(sdk));
+			const failure = await rejectionOf(createAgent());
 
 			expect(failure).toBe(abort);
 		});
 
 		it('does not reclassify an error the adapter already classified', async () => {
-			const { sdk, runStreamed } = createSdk();
+			const { runStreamed } = createSdk();
 			runStreamed.mockResolvedValue(
 				streamedTurn([{ type: 'turn.failed', error: { message: 'quota exhausted' } }]),
 			);
 
-			const failure = await rejectionOf(agentFor(sdk));
+			const failure = await rejectionOf(createAgent());
 
 			expect(failure).toBeInstanceOf(UnrecoverableError);
 			expect(failure).toMatchObject({ cause: 'quota exhausted' });
 		});
 
 		it('reports a thread the SDK refuses to open as unrecoverable', () => {
-			const { sdk, startThread } = createSdk();
+			const { startThread } = createSdk();
 			startThread.mockImplementation(() => {
 				throw new Error('unknown model');
 			});
 
-			expect(() => agentFor(sdk)).toThrow(UnrecoverableError);
-			expect(() => agentFor(sdk)).toThrow('Codex rejected the thread configuration');
+			expect(() => createAgent()).toThrow(UnrecoverableError);
+			expect(() => createAgent()).toThrow('Codex rejected the thread configuration');
+		});
+
+		it('reports an SDK that cannot be created as unrecoverable', () => {
+			vi.mocked(Codex).mockImplementation(function () {
+				throw new Error('codex binary not found');
+			});
+
+			expect(() => createAgent()).toThrow(UnrecoverableError);
 		});
 	});
 
@@ -345,8 +381,8 @@ describe('CodexAgent', () => {
 	// replayed a turn that had already run its commands and file writes.
 	describe('host failures outside the provider boundary', () => {
 		function agentWith(events: ThreadEvent[], logger = createLogger()) {
-			const { sdk } = createSdk(events);
-			return new CodexAgent({ sdk, model: 'gpt-5.6-sol', logger });
+			createSdk(events);
+			return new CodexAgent({ model: 'gpt-5.6-sol', logger });
 		}
 
 		async function rejectionOfRun(agent: CodexAgent, callback = vi.fn()): Promise<unknown> {
@@ -393,7 +429,7 @@ describe('CodexAgent', () => {
 		});
 
 		it('classifies a stream that cannot create its iterator', async () => {
-			const { sdk, runStreamed } = createSdk();
+			const { runStreamed } = createSdk();
 			runStreamed.mockResolvedValue({
 				events: {
 					[Symbol.asyncIterator]() {
@@ -403,7 +439,7 @@ describe('CodexAgent', () => {
 			});
 
 			const failure = await rejectionOfRun(
-				new CodexAgent({ sdk, model: 'gpt-5.6-sol', logger: createLogger() }),
+				new CodexAgent({ model: 'gpt-5.6-sol', logger: createLogger() }),
 			);
 
 			expect(failure).toBeInstanceOf(RecoverableError);
@@ -411,7 +447,7 @@ describe('CodexAgent', () => {
 		});
 
 		it('preserves the classified stream failure when cleanup also fails', async () => {
-			const { sdk, runStreamed } = createSdk();
+			const { runStreamed } = createSdk();
 			runStreamed.mockResolvedValue({
 				events: {
 					[Symbol.asyncIterator]() {
@@ -424,7 +460,7 @@ describe('CodexAgent', () => {
 			});
 
 			const failure = await rejectionOfRun(
-				new CodexAgent({ sdk, model: 'gpt-5.6-sol', logger: createLogger() }),
+				new CodexAgent({ model: 'gpt-5.6-sol', logger: createLogger() }),
 			);
 
 			expect(failure).toBeInstanceOf(RecoverableError);
@@ -433,7 +469,7 @@ describe('CodexAgent', () => {
 
 		it('closes the provider stream when host code throws', async () => {
 			let closed = false;
-			const { sdk, runStreamed } = createSdk();
+			const { runStreamed } = createSdk();
 			runStreamed.mockResolvedValue({
 				events: (async function* (): AsyncGenerator<ThreadEvent> {
 					try {
@@ -444,7 +480,7 @@ describe('CodexAgent', () => {
 					}
 				})(),
 			});
-			const agent = new CodexAgent({ sdk, model: 'gpt-5.6-sol', logger: createLogger() });
+			const agent = new CodexAgent({ model: 'gpt-5.6-sol', logger: createLogger() });
 
 			await rejectionOfRun(
 				agent,

@@ -1,19 +1,28 @@
 import type { Agent, Callback, ILogger } from '../src/index.ts';
 import { UnrecoverableError, isAbortError } from '../src/index.ts';
+import type { IOutput } from './output.ts';
 import type { IPromptEmitter } from './promptEmitter.ts';
 
 export class ConversationLoop {
 	private readonly promptEmitter: IPromptEmitter;
 	private readonly logger: ILogger;
+	private readonly output: IOutput;
 	private abortController?: AbortController;
 	private agent: Agent;
 	private callback: Callback;
 
-	constructor(agent: Agent, callback: Callback, promptEmitter: IPromptEmitter, logger: ILogger) {
+	constructor(
+		agent: Agent,
+		callback: Callback,
+		promptEmitter: IPromptEmitter,
+		logger: ILogger,
+		output: IOutput,
+	) {
 		this.agent = agent;
 		this.callback = callback;
 		this.promptEmitter = promptEmitter;
 		this.logger = logger;
+		this.output = output;
 	}
 
 	async start(): Promise<void> {
@@ -39,16 +48,16 @@ export class ConversationLoop {
 				);
 
 				if (agentResponse) {
-					this.logger.log('usage:');
-					this.logger.log(`duration: ${String(agentResponse.duration)}s`);
-					this.logger.log(`inputTokens: ${String(agentResponse.inputTokens)}`);
-					this.logger.log(`outputTokens: ${String(agentResponse.outputTokens)}`);
+					this.output.print('usage:');
+					this.output.print(`duration: ${String(agentResponse.duration)}s`);
+					this.output.print(`inputTokens: ${String(agentResponse.inputTokens)}`);
+					this.output.print(`outputTokens: ${String(agentResponse.outputTokens)}`);
 				}
 			} catch (e) {
 				if (isAbortError(e)) continue;
 
 				if (e instanceof UnrecoverableError) {
-					this.logger.log(e);
+					this.logger.error(e);
 					break;
 				}
 
@@ -65,6 +74,6 @@ export class ConversationLoop {
 
 	close(): void {
 		this.promptEmitter.close();
-		this.logger.log('thanks, bye!');
+		this.output.print('thanks, bye!');
 	}
 }

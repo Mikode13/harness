@@ -1,15 +1,34 @@
 import type { Agent, AgentResponse, Callback } from '../../../agent/domain/agent.ts';
 import { RecoverableError, UnrecoverableError } from '../../../agent/domain/errors.ts';
-import { describeFailure } from '../../../agent/domain/providerFailure.ts';
+import {
+	classifyHostFailure,
+	describeFailure,
+	treatErrors,
+} from '../../../agent/domain/providerFailure.ts';
 import { isAbortError } from '../../../shared/domain/isAbortError.ts';
+import type { ILogger } from '../../../shared/domain/logger.ts';
 
 export class RetryingAgent implements Agent {
 	private inner: Agent;
 	private maxAttempts: number;
+	private logger: ILogger;
 
-	constructor(inner: Agent, maxAttempts = 3) {
+	constructor({
+		inner,
+		maxAttempts = 3,
+		logger,
+	}: {
+		inner: Agent;
+		maxAttempts?: number;
+		logger: ILogger;
+	}) {
+		if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
+			throw new RangeError('maxAttempts must be a positive integer');
+		}
+
 		this.inner = inner;
 		this.maxAttempts = maxAttempts;
+		this.logger = logger;
 	}
 
 	async run(
@@ -38,7 +57,19 @@ export class RetryingAgent implements Agent {
 						cause: `Gave up after ${String(this.maxAttempts)} attempts. Last failure: ${e.cause}`,
 					});
 
-				lastPrompt = `The past prompt failed for the following reason: ${e.cause}`;
+				// Keeps the original request: an attempt that failed before the provider registered
+				// the turn left no session that remembers it.
+				lastPrompt = `${prompt}\n\nThe previous attempt failed for the following reason: ${e.cause}`;
+				treatErrors(
+					() => {
+						this.logger.warn(
+							`Attempt ${String(attempt)}/${String(this.maxAttempts)} failed; retrying`,
+							e,
+						);
+					},
+					classifyHostFailure,
+					'RetryingAgent logger failed while reporting a retry',
+				);
 			}
 		}
 		return undefined;

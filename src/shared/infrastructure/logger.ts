@@ -1,4 +1,4 @@
-import type { ILogger } from '../../src/index.ts';
+import type { ILogger } from '../domain/logger.ts';
 
 export class Logger implements ILogger {
 	warn(...args: unknown[]): void {

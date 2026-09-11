@@ -10,8 +10,5 @@
 	},
 	"scripts": {
 		"dev": "node cli.ts"
-	},
-	"dependencies": {
-		"@openai/codex-sdk": "^0.146.0"
 	}
 }

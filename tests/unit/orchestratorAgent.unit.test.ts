@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OrchestratorAgent } from '../../src/orchestration/domain/model/orchestratorAgent.ts';
 import type { Agent, AgentResponse } from '../../src/agent/domain/agent.ts';
+import type { ILogger } from '../../src/shared/domain/logger.ts';
 import { UnrecoverableError } from '../../src/agent/domain/errors.ts';
 import { ReviewerDecisionValidator } from '../../src/orchestration/infrastructure/model/reviewerDecisionValidator.ts';
 
@@ -27,7 +28,13 @@ function createFakeAgent(...responses: (AgentResponse | undefined)[]) {
 	return { agent, run };
 }
 
+const logger = { warn: vi.fn(), error: vi.fn() };
+
 describe('OrchestratorAgent', () => {
+	afterEach(() => {
+		vi.clearAllMocks();
+	});
+
 	it('completes the planner, executor, and reviewer flow with forwarded inputs and summed usage', async () => {
 		const planner = createFakeAgent(
 			createResponse({ response: 'draft plan', inputTokens: 2, outputTokens: 3, duration: 1 }),
@@ -48,12 +55,13 @@ describe('OrchestratorAgent', () => {
 				duration: 7,
 			}),
 		);
-		const orchestrator = new OrchestratorAgent(
-			planner.agent,
-			executor.agent,
-			reviewer.agent,
-			new ReviewerDecisionValidator(),
-		);
+		const orchestrator = new OrchestratorAgent({
+			plannerAgent: planner.agent,
+			executorAgent: executor.agent,
+			reviewerAgent: reviewer.agent,
+			reviewerDecisionValidator: new ReviewerDecisionValidator(),
+			logger,
+		});
 		const signal = new AbortController().signal;
 		const callback = vi.fn();
 
@@ -143,12 +151,13 @@ describe('OrchestratorAgent', () => {
 			createResponse({ response: '{"decision":"rejected","feedback":"add coverage"}' }),
 			createResponse({ response: '{"decision":"approved"}' }),
 		);
-		const orchestrator = new OrchestratorAgent(
-			planner.agent,
-			executor.agent,
-			reviewer.agent,
-			new ReviewerDecisionValidator(),
-		);
+		const orchestrator = new OrchestratorAgent({
+			plannerAgent: planner.agent,
+			executorAgent: executor.agent,
+			reviewerAgent: reviewer.agent,
+			reviewerDecisionValidator: new ReviewerDecisionValidator(),
+			logger,
+		});
 		const signal = new AbortController().signal;
 		const callback = vi.fn();
 
@@ -218,12 +227,13 @@ describe('OrchestratorAgent', () => {
 			createResponse({ response: 'not json' }),
 			createResponse({ response: '{"decision":"approved"}' }),
 		);
-		const orchestrator = new OrchestratorAgent(
-			planner.agent,
-			executor.agent,
-			reviewer.agent,
-			new ReviewerDecisionValidator(),
-		);
+		const orchestrator = new OrchestratorAgent({
+			plannerAgent: planner.agent,
+			executorAgent: executor.agent,
+			reviewerAgent: reviewer.agent,
+			reviewerDecisionValidator: new ReviewerDecisionValidator(),
+			logger,
+		});
 		const signal = new AbortController().signal;
 		const callback = vi.fn();
 
@@ -246,13 +256,14 @@ describe('OrchestratorAgent', () => {
 		const planner = createFakeAgent(createResponse({ response: 'draft plan' }));
 		const executor = createFakeAgent(createResponse({ response: 'implementation' }));
 		const reviewer = createFakeAgent(undefined);
-		const orchestrator = new OrchestratorAgent(
-			planner.agent,
-			executor.agent,
-			reviewer.agent,
-			new ReviewerDecisionValidator(),
-			1,
-		);
+		const orchestrator = new OrchestratorAgent({
+			plannerAgent: planner.agent,
+			executorAgent: executor.agent,
+			reviewerAgent: reviewer.agent,
+			reviewerDecisionValidator: new ReviewerDecisionValidator(),
+			logger,
+			maxAttempts: 1,
+		});
 
 		await expect(
 			orchestrator.run('ship feature', new AbortController().signal, vi.fn()),
@@ -280,13 +291,14 @@ describe('OrchestratorAgent', () => {
 			const planner = createFakeAgent(createResponse({ response: 'draft plan' }));
 			const executor = createFakeAgent(createResponse({ response: 'implementation' }));
 			const reviewer = createFakeAgent(createResponse({ response }));
-			const orchestrator = new OrchestratorAgent(
-				planner.agent,
-				executor.agent,
-				reviewer.agent,
-				new ReviewerDecisionValidator(),
-				1,
-			);
+			const orchestrator = new OrchestratorAgent({
+				plannerAgent: planner.agent,
+				executorAgent: executor.agent,
+				reviewerAgent: reviewer.agent,
+				reviewerDecisionValidator: new ReviewerDecisionValidator(),
+				logger,
+				maxAttempts: 1,
+			});
 
 			await expect(
 				orchestrator.run('ship feature', new AbortController().signal, vi.fn()),
@@ -310,13 +322,14 @@ describe('OrchestratorAgent', () => {
 			createResponse({ response: '{"decision":"rejected","feedback":"first feedback"}' }),
 			createResponse({ response: '{"decision":"rejected","feedback":"latest feedback"}' }),
 		);
-		const orchestrator = new OrchestratorAgent(
-			planner.agent,
-			executor.agent,
-			reviewer.agent,
-			new ReviewerDecisionValidator(),
-			2,
-		);
+		const orchestrator = new OrchestratorAgent({
+			plannerAgent: planner.agent,
+			executorAgent: executor.agent,
+			reviewerAgent: reviewer.agent,
+			reviewerDecisionValidator: new ReviewerDecisionValidator(),
+			logger,
+			maxAttempts: 2,
+		});
 		const error = orchestrator.run('ship feature', new AbortController().signal, vi.fn());
 
 		await expect(error).rejects.toBeInstanceOf(UnrecoverableError);
@@ -338,13 +351,14 @@ describe('OrchestratorAgent', () => {
 			const planner = createFakeAgent(plannerResponse);
 			const executor = createFakeAgent();
 			const reviewer = createFakeAgent();
-			const orchestrator = new OrchestratorAgent(
-				planner.agent,
-				executor.agent,
-				reviewer.agent,
-				new ReviewerDecisionValidator(),
-				1,
-			);
+			const orchestrator = new OrchestratorAgent({
+				plannerAgent: planner.agent,
+				executorAgent: executor.agent,
+				reviewerAgent: reviewer.agent,
+				reviewerDecisionValidator: new ReviewerDecisionValidator(),
+				logger,
+				maxAttempts: 1,
+			});
 
 			const error = orchestrator.run('ship feature', new AbortController().signal, vi.fn());
 
@@ -367,13 +381,14 @@ describe('OrchestratorAgent', () => {
 			const planner = createFakeAgent(createResponse({ response: 'draft plan' }));
 			const executor = createFakeAgent(executorResponse);
 			const reviewer = createFakeAgent();
-			const orchestrator = new OrchestratorAgent(
-				planner.agent,
-				executor.agent,
-				reviewer.agent,
-				new ReviewerDecisionValidator(),
-				1,
-			);
+			const orchestrator = new OrchestratorAgent({
+				plannerAgent: planner.agent,
+				executorAgent: executor.agent,
+				reviewerAgent: reviewer.agent,
+				reviewerDecisionValidator: new ReviewerDecisionValidator(),
+				logger,
+				maxAttempts: 1,
+			});
 
 			const error = orchestrator.run('ship feature', new AbortController().signal, vi.fn());
 
@@ -393,13 +408,14 @@ describe('OrchestratorAgent', () => {
 
 		expect(
 			() =>
-				new OrchestratorAgent(
-					planner.agent,
-					executor.agent,
-					reviewer.agent,
-					new ReviewerDecisionValidator(),
-					0,
-				),
+				new OrchestratorAgent({
+					plannerAgent: planner.agent,
+					executorAgent: executor.agent,
+					reviewerAgent: reviewer.agent,
+					reviewerDecisionValidator: new ReviewerDecisionValidator(),
+					logger,
+					maxAttempts: 0,
+				}),
 		).toThrow(RangeError);
 	});
 
@@ -425,12 +441,13 @@ describe('OrchestratorAgent', () => {
 			const planner = createFakeAgent(plan1, plan2);
 			const executor = createFakeAgent(exec1, exec2);
 			const reviewer = createFakeAgent(review1, review2);
-			const orchestrator = new OrchestratorAgent(
-				planner.agent,
-				executor.agent,
-				reviewer.agent,
-				new ReviewerDecisionValidator(),
-			);
+			const orchestrator = new OrchestratorAgent({
+				plannerAgent: planner.agent,
+				executorAgent: executor.agent,
+				reviewerAgent: reviewer.agent,
+				reviewerDecisionValidator: new ReviewerDecisionValidator(),
+				logger,
+			});
 			const signal = new AbortController().signal;
 			const expected = {
 				response: 'All job has finished',
@@ -449,12 +466,13 @@ describe('OrchestratorAgent', () => {
 			const planner = createFakeAgent(plan1, plan2);
 			const executor = createFakeAgent(exec1, exec2);
 			const reviewer = createFakeAgent(review1, review2);
-			const orchestrator = new OrchestratorAgent(
-				planner.agent,
-				executor.agent,
-				reviewer.agent,
-				new ReviewerDecisionValidator(),
-			);
+			const orchestrator = new OrchestratorAgent({
+				plannerAgent: planner.agent,
+				executorAgent: executor.agent,
+				reviewerAgent: reviewer.agent,
+				reviewerDecisionValidator: new ReviewerDecisionValidator(),
+				logger,
+			});
 			const signal = new AbortController().signal;
 			const expected = {
 				response: 'All job has finished',
@@ -490,13 +508,14 @@ describe('OrchestratorAgent', () => {
 					duration: 1,
 				}),
 			);
-			const orchestrator = new OrchestratorAgent(
-				planner.agent,
-				executor.agent,
-				reviewer.agent,
-				new ReviewerDecisionValidator(),
-				1,
-			);
+			const orchestrator = new OrchestratorAgent({
+				plannerAgent: planner.agent,
+				executorAgent: executor.agent,
+				reviewerAgent: reviewer.agent,
+				reviewerDecisionValidator: new ReviewerDecisionValidator(),
+				logger,
+				maxAttempts: 1,
+			});
 			const signal = new AbortController().signal;
 
 			await expect(orchestrator.run('first', signal, vi.fn())).rejects.toBeInstanceOf(
@@ -509,6 +528,144 @@ describe('OrchestratorAgent', () => {
 				inputTokens: 30,
 				outputTokens: 6,
 			});
+		});
+	});
+
+	// The consumer never sees a round or a reviewer call that a later one replaced, so the
+	// warning is the only trace of it; the failure that ends the run is thrown instead.
+	describe('absorbed failures', () => {
+		type FakeAgent = ReturnType<typeof createFakeAgent>;
+
+		function orchestratorWith(
+			planner: FakeAgent,
+			executor: FakeAgent,
+			reviewer: FakeAgent,
+			options: { maxAttempts?: number; logger?: ILogger } = {},
+		) {
+			return new OrchestratorAgent({
+				plannerAgent: planner.agent,
+				executorAgent: executor.agent,
+				reviewerAgent: reviewer.agent,
+				logger,
+				...options,
+				reviewerDecisionValidator: new ReviewerDecisionValidator(),
+			});
+		}
+
+		const approved = () => createResponse({ response: '{"decision":"approved"}' });
+
+		it('warns about a malformed reviewer decision it asks for again', async () => {
+			const orchestrator = orchestratorWith(
+				createFakeAgent(createResponse({ response: 'draft plan' })),
+				createFakeAgent(createResponse({ response: 'implementation' })),
+				createFakeAgent(createResponse({ response: 'not json' }), approved()),
+			);
+
+			await orchestrator.run('ship feature', new AbortController().signal, vi.fn());
+
+			expect(logger.warn).toHaveBeenCalledOnce();
+			expect(logger.warn).toHaveBeenCalledWith(
+				'Reviewer decision 1/3 was unusable; asking the reviewer again',
+				'Reviewer response must be valid JSON.',
+			);
+		});
+
+		it('warns about a rejected round before starting another', async () => {
+			const orchestrator = orchestratorWith(
+				createFakeAgent(
+					createResponse({ response: 'first plan' }),
+					createResponse({ response: 'revised plan' }),
+				),
+				createFakeAgent(
+					createResponse({ response: 'first implementation' }),
+					createResponse({ response: 'revised implementation' }),
+				),
+				createFakeAgent(
+					createResponse({ response: '{"decision":"rejected","feedback":"add coverage"}' }),
+					approved(),
+				),
+			);
+
+			await orchestrator.run('ship feature', new AbortController().signal, vi.fn());
+
+			expect(logger.warn).toHaveBeenCalledOnce();
+			expect(logger.warn).toHaveBeenCalledWith(
+				'Attempt 1/3: the reviewer rejected the round; starting another with its feedback',
+				'add coverage',
+			);
+		});
+
+		it('warns about an empty planner response before starting another round', async () => {
+			const orchestrator = orchestratorWith(
+				createFakeAgent(undefined, createResponse({ response: 'draft plan' })),
+				createFakeAgent(createResponse({ response: 'implementation' })),
+				createFakeAgent(approved()),
+			);
+
+			await orchestrator.run('ship feature', new AbortController().signal, vi.fn());
+
+			expect(logger.warn).toHaveBeenCalledWith(
+				'Attempt 1/3: the planner produced no response; starting another round',
+			);
+		});
+
+		it('warns about an empty executor response before starting another round', async () => {
+			const orchestrator = orchestratorWith(
+				createFakeAgent(
+					createResponse({ response: 'first plan' }),
+					createResponse({ response: 'second plan' }),
+				),
+				createFakeAgent(undefined, createResponse({ response: 'implementation' })),
+				createFakeAgent(approved()),
+			);
+
+			await orchestrator.run('ship feature', new AbortController().signal, vi.fn());
+
+			expect(logger.warn).toHaveBeenCalledWith(
+				'Attempt 1/3: the executor produced no response; starting another round',
+			);
+		});
+
+		it('does not warn about the failure it throws', async () => {
+			const orchestrator = orchestratorWith(
+				createFakeAgent(undefined),
+				createFakeAgent(),
+				createFakeAgent(),
+				{ maxAttempts: 1 },
+			);
+
+			await expect(
+				orchestrator.run('ship feature', new AbortController().signal, vi.fn()),
+			).rejects.toBeInstanceOf(UnrecoverableError);
+
+			expect(logger.warn).not.toHaveBeenCalled();
+		});
+
+		it('classifies a throwing logger as unrecoverable', async () => {
+			const reviewer = createFakeAgent(createResponse({ response: 'not json' }), approved());
+			const throwingLogger = {
+				warn: vi.fn(() => {
+					throw new Error('the log sink is gone');
+				}),
+				error: vi.fn(),
+			};
+			const orchestrator = orchestratorWith(
+				createFakeAgent(createResponse({ response: 'draft plan' })),
+				createFakeAgent(createResponse({ response: 'implementation' })),
+				reviewer,
+				{ logger: throwingLogger },
+			);
+
+			const failure = await orchestrator
+				.run('ship feature', new AbortController().signal, vi.fn())
+				.catch((error: unknown) => error);
+
+			expect(failure).toBeInstanceOf(UnrecoverableError);
+			expect(failure).toMatchObject({
+				message: 'Orchestrator logger failed while reporting a retry',
+				cause: 'the log sink is gone',
+			});
+			expect(reviewer.run).toHaveBeenCalledOnce();
 		});
 	});
 });

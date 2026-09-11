@@ -3,7 +3,11 @@ import type { Query } from '@anthropic-ai/claude-agent-sdk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ClaudeAgent } from '../../src/engines/claude/infrastructure/model/claudeAgent.ts';
 import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
-import { RecoverableError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
+import {
+	InvalidAgentConfigError,
+	RecoverableError,
+	UnrecoverableError,
+} from '../../src/agent/domain/errors.ts';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 
@@ -66,6 +70,10 @@ function result(resultText = 'final answer'): Record<string, unknown> {
 	};
 }
 
+function createLogger() {
+	return { warn: vi.fn(), error: vi.fn() };
+}
+
 describe('ClaudeAgent', () => {
 	afterEach(() => {
 		vi.clearAllMocks();
@@ -118,7 +126,7 @@ describe('ClaudeAgent', () => {
 		);
 		const events: ProgressEvent[] = [];
 
-		const response = await new ClaudeAgent('sonnet').run(
+		const response = await new ClaudeAgent({ model: 'sonnet', logger: createLogger() }).run(
 			'prompt',
 			new AbortController().signal,
 			event => events.push(event),
@@ -149,17 +157,24 @@ describe('ClaudeAgent', () => {
 		});
 	});
 
-	it('ignores unsupported SDK messages without duplicating the final result', async () => {
+	it('ignores known SDK messages without narrating or warning', async () => {
 		vi.mocked(query).mockReturnValue(
 			stream([
 				{ type: 'rate_limit_event', session_id: sessionId },
-				assistant([{ text: 'visible progress', type: 'text' }]),
+				{ type: 'system', subtype: 'status', session_id: sessionId },
+				assistant([
+					{ data: 'hidden', type: 'redacted_thinking' },
+					{ text: 'visible progress', type: 'text' },
+					toolUse('read', 'Read', { file_path: '/tmp/example.ts' }),
+				]),
+				toolResult('read'),
 				result('visible progress'),
 			]),
 		);
 		const callback = vi.fn();
+		const logger = createLogger();
 
-		const response = await new ClaudeAgent('sonnet').run(
+		const response = await new ClaudeAgent({ model: 'sonnet', logger }).run(
 			'prompt',
 			new AbortController().signal,
 			callback,
@@ -168,6 +183,73 @@ describe('ClaudeAgent', () => {
 		expect(callback).toHaveBeenCalledTimes(1);
 		expect(callback).toHaveBeenCalledWith({ type: 'agentMessage', message: 'visible progress' });
 		expect(response?.response).toBe('visible progress');
+		expect(logger.warn).not.toHaveBeenCalled();
+	});
+
+	describe('warnings for what the SDK sends but the adapter does not understand', () => {
+		it.each([
+			[
+				'an unknown message type',
+				{ type: 'brand_new_message', session_id: sessionId },
+				'Unknown Claude message type',
+			],
+			[
+				'an unknown system message',
+				{ type: 'system', subtype: 'brand_new_subtype', session_id: sessionId },
+				'Unknown Claude system message',
+			],
+		])('warns about %s and keeps the turn going', async (_case, message, warning) => {
+			vi.mocked(query).mockReturnValue(stream([message, result()]));
+			const logger = createLogger();
+
+			const response = await new ClaudeAgent({ model: 'sonnet', logger }).run(
+				'prompt',
+				new AbortController().signal,
+				vi.fn(),
+			);
+
+			expect(logger.warn).toHaveBeenCalledWith(message, warning);
+			expect(response?.response).toBe('final answer');
+		});
+
+		it('warns about an unknown content block and keeps narrating the rest', async () => {
+			const unknownBlock = { type: 'brand_new_block' };
+			vi.mocked(query).mockReturnValue(
+				stream([assistant([unknownBlock, { text: 'hello', type: 'text' }]), result()]),
+			);
+			const logger = createLogger();
+			const callback = vi.fn();
+
+			await new ClaudeAgent({ model: 'sonnet', logger }).run(
+				'prompt',
+				new AbortController().signal,
+				callback,
+			);
+
+			expect(logger.warn).toHaveBeenCalledWith(unknownBlock, 'Unknown Claude content block');
+			expect(callback).toHaveBeenCalledWith({ type: 'agentMessage', message: 'hello' });
+		});
+
+		it.each(['api_retry', 'model_refusal_fallback', 'permission_denied', 'mirror_error'])(
+			'warns about a %s failure the SDK absorbed',
+			async subtype => {
+				const message = { type: 'system', subtype, session_id: sessionId };
+				vi.mocked(query).mockReturnValue(stream([message, result()]));
+				const logger = createLogger();
+
+				const response = await new ClaudeAgent({ model: 'sonnet', logger }).run(
+					'prompt',
+					new AbortController().signal,
+					vi.fn(),
+				);
+
+				expect(logger.warn).toHaveBeenCalledWith(
+					message,
+					'Claude reported a failure without failing the turn',
+				);
+				expect(response?.response).toBe('final answer');
+			},
+		);
 	});
 
 	it('preserves session continuity and result metadata', async () => {
@@ -175,7 +257,12 @@ describe('ClaudeAgent', () => {
 		vi.mocked(query)
 			.mockReturnValueOnce(stream([result('first')]))
 			.mockReturnValueOnce(stream([{ ...result('second'), session_id: secondSessionId }]));
-		const agent = new ClaudeAgent('sonnet', true, 'low');
+		const agent = new ClaudeAgent({
+			model: 'sonnet',
+			autoApprove: true,
+			reasoningEffort: 'low',
+			logger: createLogger(),
+		});
 		const signal = new AbortController().signal;
 		const callback = vi.fn();
 
@@ -199,7 +286,11 @@ describe('ClaudeAgent', () => {
 	it('keeps permission checks enabled by default', async () => {
 		vi.mocked(query).mockReturnValue(stream([result()]));
 
-		await new ClaudeAgent('sonnet').run('prompt', new AbortController().signal, vi.fn());
+		await new ClaudeAgent({ model: 'sonnet', logger: createLogger() }).run(
+			'prompt',
+			new AbortController().signal,
+			vi.fn(),
+		);
 
 		expect(query).toHaveBeenCalledWith({
 			prompt: 'prompt',
@@ -228,11 +319,33 @@ describe('ClaudeAgent', () => {
 		);
 
 		await expect(
-			new ClaudeAgent('sonnet').run('prompt', new AbortController().signal, vi.fn()),
+			new ClaudeAgent({ model: 'sonnet', logger: createLogger() }).run(
+				'prompt',
+				new AbortController().signal,
+				vi.fn(),
+			),
 		).rejects.toMatchObject({
 			message: 'Claude sdk error',
 			cause: 'error,temporary failure,rate limited',
 		});
+	});
+
+	it.each([
+		[
+			'a model from another provider',
+			{ model: 'gpt-5.6-sol' },
+			'"gpt-5.6-sol" is not a Claude model',
+		],
+		[
+			'a reasoning effort Claude does not support',
+			{ model: 'sonnet', reasoningEffort: 'minimal' },
+			'"minimal" is not a Claude reasoning effort',
+		],
+	])('rejects %s as invalid configuration', (_case, options, message) => {
+		const create = () => new ClaudeAgent({ ...options, logger: createLogger() });
+
+		expect(create).toThrow(InvalidAgentConfigError);
+		expect(create).toThrow(message);
 	});
 
 	// Regression: the same unclassified-failure hole the Codex adapter had.
@@ -241,7 +354,7 @@ describe('ClaudeAgent', () => {
 			vi.mocked(query).mockImplementation(() => {
 				throw new Error('invalid api key');
 			});
-			const agent = new ClaudeAgent('sonnet');
+			const agent = new ClaudeAgent({ model: 'sonnet', logger: createLogger() });
 
 			const failure = await agent
 				.run('prompt', new AbortController().signal, vi.fn())
@@ -264,7 +377,7 @@ describe('ClaudeAgent', () => {
 				},
 			} as unknown as Query;
 			vi.mocked(query).mockReturnValue(failing);
-			const agent = new ClaudeAgent('sonnet');
+			const agent = new ClaudeAgent({ model: 'sonnet', logger: createLogger() });
 
 			const failure = await agent
 				.run('prompt', new AbortController().signal, vi.fn())
@@ -282,7 +395,7 @@ describe('ClaudeAgent', () => {
 			vi.mocked(query).mockReturnValue(
 				stream([assistant([{ text: 'hello', type: 'text' }]), result()]),
 			);
-			const agent = new ClaudeAgent('sonnet');
+			const agent = new ClaudeAgent({ model: 'sonnet', logger: createLogger() });
 
 			const failure = await agent
 				.run('prompt', new AbortController().signal, () => {
@@ -294,6 +407,27 @@ describe('ClaudeAgent', () => {
 			expect(failure).toMatchObject({
 				message: 'Claude progress callback failed',
 				cause: 'the renderer crashed',
+			});
+		});
+
+		it('classifies a throwing logger as unrecoverable', async () => {
+			vi.mocked(query).mockReturnValue(
+				stream([{ type: 'brand_new_message', session_id: sessionId }, result()]),
+			);
+			const logger = createLogger();
+			logger.warn.mockImplementation(() => {
+				throw new Error('the log sink is gone');
+			});
+			const agent = new ClaudeAgent({ model: 'sonnet', logger });
+
+			const failure = await agent
+				.run('prompt', new AbortController().signal, vi.fn())
+				.catch((error: unknown) => error);
+
+			expect(failure).toBeInstanceOf(UnrecoverableError);
+			expect(failure).toMatchObject({
+				message: 'Claude logger failed while reporting progress',
+				cause: 'the log sink is gone',
 			});
 		});
 	});

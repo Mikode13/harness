@@ -21,6 +21,23 @@ export function classifyHostFailure(error: unknown, context: string): Error {
 	return new UnrecoverableError(context, { cause: describeFailure(error) });
 }
 
+/**
+ * Runs host code — a logger, for example — and classifies whatever it throws with the
+ * classifier the caller chooses. The host code stays unaware of classification, and the
+ * failure cannot escape the `Agent` unclassified.
+ */
+export function treatErrors<T>(
+	operation: () => T,
+	classify: (error: unknown, context: string) => Error,
+	context: string,
+): T {
+	try {
+		return operation();
+	} catch (error) {
+		throw classify(error, context);
+	}
+}
+
 /** Preserves deliberate domain errors while making unexpected local failures fatal. */
 export function classifyLocalFailure(error: unknown, context: string): Error {
 	if (isAbortError(error)) return error;

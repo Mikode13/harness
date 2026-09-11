@@ -3,8 +3,10 @@
 ## What this repository is
 
 `@mikode13/harness` is a provider-agnostic seam for driving coding agents. It publishes
-`Agent` and its implementations — `ClaudeAgent`, `CodexAgent`, `RetryingAgent`,
-`OrchestratorAgent` — plus the error types and the `ILogger` port those depend on.
+the `Agent` contract and two factories — `createAgent` for one provider and
+`createOrchestrator` for the planner → executor → reviewer workflow — plus the error
+types and the `ILogger` port. The engines, `RetryingAgent`, and `OrchestratorAgent` are
+internal: the factories apply retry and defaults so consumers never compose them.
 
 `cli/` is a separate workspace project, not part of the published package. It is one
 interactive consumer of the seam, kept out of `src/` deliberately: a REST or WebSocket
@@ -26,6 +28,14 @@ Failures from host-provided callbacks, loggers, or local event mapping are class
 `UnrecoverableError`: the provider turn may already have produced side effects, so replay
 is unsafe.
 
+**Log what you absorb, throw what you don't.** A component logs a failure through
+`ILogger.warn` only when it handles it and carries on — provider output it does not
+recognize, an attempt a later retry recovered. A failure that ends the run is thrown and
+not logged, or the consumer sees it twice. Components receive a `logger`; the factories default it
+to the stderr `Logger` in `src/shared/infrastructure/`, and nothing in `src/` writes to
+stdout, which belongs to the consumer. Wrap each log call in `treatErrors` with
+`classifyHostFailure`, so a throwing logger is classified like any other host failure.
+
 **Usage accounting belongs to a `run()`, not to an instance.** The CLI keeps one
 orchestrator for a whole session, so instance-level counters report every previous run's
 tokens again — and two concurrent runs report each other's. Anything that accumulates
@@ -39,14 +49,16 @@ Screaming architecture: one folder per bounded module under `src/`, each split i
 ```
 src/agent/          the seam: Agent, ProgressEvent, errors, provider-failure classification
 src/engines/*/      one provider adapter each, infrastructure only
+src/factory/        createAgent and createOrchestrator, the only public way to build agents
 src/orchestration/  planner -> executor -> reviewer, with a validated reviewer decision
 src/retry/          the retry decorator
-src/shared/         ports and helpers used across modules (ILogger, isAbortError)
+src/shared/         ports and helpers used across modules (ILogger and its default Logger, isAbortError)
 ```
 
 A new engine implements `Agent`, routes each SDK call through `classifyProviderFailure` and
-each SDK stream through `classifiedProviderStream`, and is exported from `src/index.ts`. It
-needs no other change. Keep both boundaries around the SDK operation alone: item mapping,
+each SDK stream through `classifiedProviderStream`, and is registered in `src/factory/`. Its
+constructor rejects any model or reasoning effort its provider does not support with
+`InvalidAgentConfigError`; the factory does not validate them. Keep both boundaries around the SDK operation alone: item mapping,
 logging, and the consumer callback belong outside, or a host failure is misreported as a
 retryable provider failure.
 

@@ -1,10 +1,10 @@
-import type {
+import {
 	Codex,
-	ModelReasoningEffort,
-	Thread,
-	ThreadEvent,
-	ThreadItem,
-	Usage,
+	type ModelReasoningEffort,
+	type Thread,
+	type ThreadEvent,
+	type ThreadItem,
+	type Usage,
 } from '@openai/codex-sdk';
 import {
 	type Agent,
@@ -12,17 +12,38 @@ import {
 	type Callback,
 	type ProgressEvent,
 } from '../../../../agent/domain/agent.ts';
-import { RecoverableError, UnrecoverableError } from '../../../../agent/domain/errors.ts';
+import {
+	InvalidAgentConfigError,
+	RecoverableError,
+	UnrecoverableError,
+} from '../../../../agent/domain/errors.ts';
 import {
 	classifiedProviderStream,
 	classifyHostFailure,
 	classifyLocalFailure,
 	classifyProviderFailure,
 	describeFailure,
+	treatErrors,
 } from '../../../../agent/domain/providerFailure.ts';
 import type { ILogger } from '../../../../shared/domain/logger.ts';
+import { isOneOf } from '../../../../shared/domain/isOneOf.ts';
 
-type Model = 'gpt-5.6-sol' | 'gpt-5.6-luna';
+// The SDK types `model` as a plain string, so this list is maintained by hand.
+export const codexModels = ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.6-terra'] as const;
+export type CodexModel = (typeof codexModels)[number];
+
+// The efforts Codex's model catalog lists; the SDK also types 'minimal' and 'persistent', which
+// none of the models above supports. `satisfies` only proves this is a subset of the SDK's type,
+// so an SDK upgrade that adds an effort has to be reconciled here by hand.
+export const codexReasoningEfforts = [
+	'low',
+	'medium',
+	'high',
+	'xhigh',
+	'max',
+	'ultra',
+] as const satisfies readonly ModelReasoningEffort[];
+export type CodexReasoningEffort = (typeof codexReasoningEfforts)[number];
 
 interface StreamedTurn {
 	events: AsyncGenerator<ThreadEvent>;
@@ -63,11 +84,13 @@ function describeItem(item: ThreadItem, logger: ILogger): ProgressEvent | undefi
 		case 'error':
 			throw new RecoverableError('error while using the codex tools', { cause: item.message });
 		default:
-			try {
-				logger.warn(item, 'new type');
-			} catch (error) {
-				throw classifyHostFailure(error, 'Codex logger failed while reporting progress');
-			}
+			treatErrors(
+				() => {
+					logger.warn(item, 'new type');
+				},
+				classifyHostFailure,
+				'Codex logger failed while reporting progress',
+			);
 			return undefined;
 	}
 }
@@ -76,20 +99,40 @@ export class CodexAgent implements Agent {
 	private thread: Thread;
 	private logger: ILogger;
 
+	// `model` and `reasoningEffort` are untyped on purpose: this adapter is the one that knows
+	// what Codex supports, so it validates them instead of trusting the caller.
 	constructor({
-		sdk,
 		model,
-		logger,
 		autoApprove = false,
 		reasoningEffort = 'high',
+		logger,
 	}: {
-		sdk: Codex;
-		model: Model;
-		logger: ILogger;
+		model: string;
 		autoApprove?: boolean;
-		reasoningEffort?: ModelReasoningEffort;
+		reasoningEffort?: string;
+		logger: ILogger;
 	}) {
+		// Checked before the SDK is involved: an unsupported value is the caller's mistake, not
+		// a configuration Codex rejected.
+		if (!isOneOf(codexModels, model)) {
+			throw new InvalidAgentConfigError(
+				`"${model}" is not a Codex model; expected one of: ${codexModels.join(', ')}`,
+			);
+		}
+		if (!isOneOf(codexReasoningEfforts, reasoningEffort)) {
+			throw new InvalidAgentConfigError(
+				`"${reasoningEffort}" is not a Codex reasoning effort; expected one of: ${codexReasoningEfforts.join(', ')}`,
+			);
+		}
+		// The one per-model gap in Codex's catalog.
+		if (model === 'gpt-5.6-luna' && reasoningEffort === 'ultra') {
+			throw new InvalidAgentConfigError(
+				'"gpt-5.6-luna" does not support the "ultra" reasoning effort',
+			);
+		}
+
 		try {
+			const sdk = new Codex();
 			this.thread = sdk.startThread({
 				model,
 				modelReasoningEffort: reasoningEffort,

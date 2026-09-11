@@ -1,18 +1,11 @@
 #!/usr/bin/env node
 
-import {
-	CodexAgent,
-	ClaudeAgent,
-	RetryingAgent,
-	OrchestratorAgent,
-	ReviewerDecisionValidator,
-	type ProgressEvent,
-} from '../src/index.ts';
+import { createOrchestrator, type ProgressEvent } from '../src/index.ts';
 import { ConversationLoop } from './conversationLoop.ts';
 import { formatProgressEvent } from './progressEventFormatter.ts';
-import { Codex } from '@openai/codex-sdk';
 import { clearLine, cursorTo } from 'node:readline';
 import { Logger } from './adapters/logger.ts';
+import { Output } from './adapters/output.ts';
 import { PromptEmitter } from './adapters/promptEmitter.ts';
 
 const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -33,38 +26,13 @@ function stopSpinner(): void {
 	cursorTo(process.stdout, 0);
 	clearLine(process.stdout, 0);
 }
-
-const codex = new Codex();
 const autoApprove = true;
-const plannerReasoningEffort = 'high';
-const executorReasoningEffort = 'high';
-const reviewerReasoningEffort = 'high';
 
 const logger = new Logger();
+const output = new Output();
 const promptEmitter = new PromptEmitter();
 
-const orchestratorAgent = new OrchestratorAgent(
-	new RetryingAgent(
-		new CodexAgent({
-			sdk: codex,
-			model: 'gpt-5.6-sol',
-			logger,
-			autoApprove,
-			reasoningEffort: plannerReasoningEffort,
-		}),
-	),
-	new RetryingAgent(
-		new CodexAgent({
-			sdk: codex,
-			model: 'gpt-5.6-luna',
-			logger,
-			autoApprove,
-			reasoningEffort: executorReasoningEffort,
-		}),
-	),
-	new RetryingAgent(new ClaudeAgent('opus', true, reviewerReasoningEffort)),
-	new ReviewerDecisionValidator(),
-);
+const orchestratorAgent = createOrchestrator({ autoApprove });
 
 let turnActive = false;
 
@@ -85,12 +53,13 @@ const loop = new ConversationLoop(
 		stopSpinner();
 		const message = formatProgressEvent(item);
 		if (message) {
-			logger.log(message);
+			output.print(message);
 		}
 		startSpinner();
 	},
 	promptEmitter,
 	logger,
+	output,
 );
 
 const exitConfirmationWindowMs = 3000;
@@ -110,7 +79,7 @@ function onCancel(): void {
 	}
 
 	cancelRequestedAt = now;
-	logger.log('Press Ctrl+C again to exit.');
+	output.print('Press Ctrl+C again to exit.');
 }
 
 promptEmitter.onInterrupt(onCancel);
