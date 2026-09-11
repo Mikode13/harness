@@ -60,8 +60,6 @@ chat loop itself never knows the difference.
 
 Open work is tracked in GitHub issues:
 
-- [#15](https://github.com/Mikode13/harness/issues/15): an agent factory, so
-  consumers select a provider by name instead of constructing engines.
 - [#16](https://github.com/Mikode13/harness/issues/16): declare the public API
   stable and publish `1.0.0` through automated publication.
 - [#17](https://github.com/Mikode13/harness/issues/17): dynamic routing —
@@ -128,7 +126,9 @@ example when the other one is out of quota.
 
 Every agent a factory returns already retries recoverable failures. A model or
 reasoning effort the chosen provider does not support throws
-`InvalidAgentConfigError` when the agent is built.
+`InvalidAgentConfigError` when the agent is built. Building a Codex agent throws
+`UnrecoverableError` if the Codex CLI binary cannot be found, which happens when
+optional dependencies were skipped at install time.
 
 ## Tests
 

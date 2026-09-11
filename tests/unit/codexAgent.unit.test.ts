@@ -185,9 +185,14 @@ describe('CodexAgent', () => {
 	it.each([
 		['a model from another provider', { model: 'opus' }, '"opus" is not a Codex model'],
 		[
-			'a reasoning effort Codex does not support',
-			{ model: 'gpt-5.6-sol', reasoningEffort: 'max' },
-			'"max" is not a Codex reasoning effort',
+			'a reasoning effort no Codex model supports',
+			{ model: 'gpt-5.6-sol', reasoningEffort: 'minimal' },
+			'"minimal" is not a Codex reasoning effort',
+		],
+		[
+			'a reasoning effort the model does not support',
+			{ model: 'gpt-5.6-luna', reasoningEffort: 'ultra' },
+			'"gpt-5.6-luna" does not support the "ultra" reasoning effort',
 		],
 	])('rejects %s before creating the SDK', (_case, options, message) => {
 		const create = () => new CodexAgent({ ...options, logger: createLogger() });

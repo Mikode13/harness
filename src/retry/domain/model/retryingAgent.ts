@@ -57,7 +57,9 @@ export class RetryingAgent implements Agent {
 						cause: `Gave up after ${String(this.maxAttempts)} attempts. Last failure: ${e.cause}`,
 					});
 
-				lastPrompt = `The past prompt failed for the following reason: ${e.cause}`;
+				// Keeps the original request: an attempt that failed before the provider registered
+				// the turn left no session that remembers it.
+				lastPrompt = `${prompt}\n\nThe previous attempt failed for the following reason: ${e.cause}`;
 				treatErrors(
 					() => {
 						this.logger.warn(

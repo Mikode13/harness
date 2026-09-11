@@ -133,14 +133,25 @@ describe('createAgent', () => {
 
 		createAgent('codex', {
 			model: 'gpt-6-astra',
-			reasoningEffort: 'minimal',
+			reasoningEffort: 'ultra',
 			logger: createLogger(),
 		});
 
 		expect(startThread).toHaveBeenCalledWith({
 			model: 'gpt-6-astra',
-			modelReasoningEffort: 'minimal',
+			modelReasoningEffort: 'ultra',
 		});
+	});
+
+	it('keeps permission checks enabled unless autoApprove is requested', async () => {
+		const startThread = codexReplying('hi');
+		vi.mocked(query).mockReturnValue(claudeStream([claudeResult('hi')]));
+
+		createAgent('codex', { logger: createLogger() });
+		await createAgent('claude', { logger: createLogger() }).run('prompt', signal, vi.fn());
+
+		expect(startThread.mock.calls[0]?.[0]).not.toHaveProperty('approvalPolicy');
+		expect(vi.mocked(query).mock.calls[0]?.[0].options).not.toHaveProperty('permissionMode');
 	});
 
 	it('rejects a model the provider does not support', () => {
@@ -223,6 +234,25 @@ describe('createOrchestrator', () => {
 		expect(codexModels(startThread)).toEqual(['gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.6-sol']);
 		expect(codexEfforts(startThread)).toEqual(['high', 'xhigh', 'high']);
 		expect(query).not.toHaveBeenCalled();
+	});
+
+	it('passes autoApprove to every role', async () => {
+		const startThread = codexReplying('done');
+		vi.mocked(query).mockReturnValue(claudeStream([claudeResult('{"decision":"approved"}')]));
+
+		await createOrchestrator({ autoApprove: true, logger: createLogger() }).run(
+			'ship it',
+			signal,
+			vi.fn(),
+		);
+
+		expect(startThread.mock.calls).toEqual([
+			[expect.objectContaining({ approvalPolicy: 'never', sandboxMode: 'danger-full-access' })],
+			[expect.objectContaining({ approvalPolicy: 'never', sandboxMode: 'danger-full-access' })],
+		]);
+		expect(vi.mocked(query).mock.calls[0]?.[0].options).toMatchObject({
+			permissionMode: 'bypassPermissions',
+		});
 	});
 
 	it('rejects an unknown provider coming from untyped input', () => {

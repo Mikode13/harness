@@ -50,6 +50,8 @@ const defaultModels = {
  *
  * @throws {InvalidAgentConfigError} for an unknown provider, or a model or reasoning effort
  * the provider does not support.
+ * @throws {UnrecoverableError} when Codex cannot be set up, for example because its CLI binary
+ * is missing.
  */
 export function createAgent(
 	provider: AgentProvider,
@@ -130,6 +132,8 @@ const orchestratorRoles = {
  * Builds the planner → executor → reviewer workflow, each role an agent from `createAgent`.
  *
  * @throws {InvalidAgentConfigError} for an unknown provider.
+ * @throws {UnrecoverableError} when a Codex role cannot be set up, for example because its CLI
+ * binary is missing.
  */
 export function createOrchestrator({
 	provider,

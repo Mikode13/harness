@@ -151,18 +151,20 @@ describe('RetryingAgent', () => {
 		expect(run).toHaveBeenNthCalledWith(1, 'hi', signal, callback);
 	});
 
-	it('includes the previous failure reason in the retried prompt', async () => {
+	// Regression: the retry sent only the failure reason, so an attempt that failed before the
+	// provider registered the turn was retried without the task.
+	it('retries with the original request and the previous failure reason', async () => {
 		const { agent, run } = fakeAgent(
 			new RecoverableError('flaky', { cause: 'network blip' }),
 			okResponse,
 		);
 		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
-		await retryingAgent.run('hi', signal, callback);
+		await retryingAgent.run('ship the feature', signal, callback);
 
 		expect(run).toHaveBeenNthCalledWith(
 			2,
-			expect.stringContaining('network blip'),
+			'ship the feature\n\nThe previous attempt failed for the following reason: network blip',
 			signal,
 			callback,
 		);

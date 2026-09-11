@@ -83,13 +83,13 @@ tags: #mikode-harness #error-handling #retry-design
 
 tags: #mikode-harness #retry-design #llm-agents
 
-**Decision:** on a `RecoverableError`, `RetryingAgent` rewrites the retried prompt to include why the previous attempt failed, instead of silently resending the identical prompt.
+**Decision:** on a `RecoverableError`, `RetryingAgent` resends the original prompt followed by why the previous attempt failed, instead of silently resending the identical prompt.
 
 **Context:** a naive retry re-runs the whole turn from scratch — for an agent with real tool access, that risks redoing a side effect (a command, a file write) that already succeeded before the failure occurred elsewhere in the same turn.
 
 **Alternatives considered:** truncate/resume from the exact point of failure. Rejected as impractical — there's no clean "resume point" in an LLM agent's turn, and the SDK doesn't expose one.
 
-**Consequences:** verified against the real Codex SDK that a `Thread`'s server-side session memory already recognizes what happened in a prior turn — a retried turn has both the injected failure reason and its own session history to avoid blindly repeating an action. Accepted as sufficient without proof it's airtight; a mitigation via context, not a structural guarantee.
+**Consequences:** verified against the real Codex SDK that a `Thread`'s server-side session memory already recognizes what happened in a prior turn — a retried turn has both the injected failure reason and its own session history to avoid blindly repeating an action. Accepted as sufficient without proof it's airtight; a mitigation via context, not a structural guarantee. The retried prompt keeps the original request, because an attempt that failed before the provider registered the turn leaves no session that remembers it: Codex keeps a thread id only after `thread.started`, and Claude a session id only after the first streamed message.
 
 **Lesson:** "retry the same input" is rarely actually safe for a stateful, side-effecting system — if you can't cleanly resume, the next best thing is telling the same actor what already happened and leaning on it to reason about that context.
 
@@ -525,7 +525,7 @@ tags: #mikode-harness #api-surface #boundaries
 
 **Decision:** consumers build agents only through `createAgent(provider, options)` and `createOrchestrator(options)` in `src/factory/`. `ClaudeAgent`, `CodexAgent`, `RetryingAgent`, and `OrchestratorAgent` are no longer exported. `createAgent` wraps every engine in `RetryingAgent`: retry is how the harness makes an agent work, not something a consumer composes. Each engine's constructor validates the model and reasoning effort it receives against its own `as const` lists and throws `InvalidAgentConfigError` for anything its provider does not support; the factory only picks the engine and fills in defaults. The options take a union across providers (`AgentModel`, `ReasoningEffort`).
 
-**Context:** issue #15. Every consumer that selects an agent by name — harness-cli's `single-turn --agent`, the router planned in #17 — would otherwise repeat the same name-to-engine mapping and the same retry wrapping. The two SDKs expose neither their models nor a shared effort scale: `'max'` exists only for Claude and `'minimal'` only for Codex, so a model or effort from the wrong provider has to be rejected at runtime whatever the static types say.
+**Context:** issue #15. Every consumer that selects an agent by name — harness-cli's `single-turn --agent`, the router planned in #17 — would otherwise repeat the same name-to-engine mapping and the same retry wrapping. The two SDKs expose neither their models nor a shared effort scale: `'ultra'` exists only for Codex, and support can differ per model — `gpt-5.6-luna` is the one Codex model without `'ultra'`. So an unsupported model or effort has to be rejected at runtime whatever the static types say.
 
 **Alternatives considered:** validating in the factory — rejected, because what a provider supports is knowledge its engine owns, and a second list in the factory would drift from it. Options discriminated by provider, which catch a mismatch at compile time — not adopted: runtime validation is needed anyway for untyped input such as a CLI flag, and a single union keeps the options simple. Keeping the engine classes exported — rejected: after `1.0.0`, their constructors and the retry composition could no longer change.
 

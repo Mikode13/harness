@@ -32,12 +32,16 @@ import { isOneOf } from '../../../../shared/domain/isOneOf.ts';
 export const codexModels = ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.6-terra'] as const;
 export type CodexModel = (typeof codexModels)[number];
 
+// The efforts Codex's model catalog lists; the SDK also types 'minimal' and 'persistent', which
+// none of the models above supports. `satisfies` only proves this is a subset of the SDK's type,
+// so an SDK upgrade that adds an effort has to be reconciled here by hand.
 export const codexReasoningEfforts = [
-	'minimal',
 	'low',
 	'medium',
 	'high',
 	'xhigh',
+	'max',
+	'ultra',
 ] as const satisfies readonly ModelReasoningEffort[];
 export type CodexReasoningEffort = (typeof codexReasoningEfforts)[number];
 
@@ -118,6 +122,12 @@ export class CodexAgent implements Agent {
 		if (!isOneOf(codexReasoningEfforts, reasoningEffort)) {
 			throw new InvalidAgentConfigError(
 				`"${reasoningEffort}" is not a Codex reasoning effort; expected one of: ${codexReasoningEfforts.join(', ')}`,
+			);
+		}
+		// The one per-model gap in Codex's catalog.
+		if (model === 'gpt-5.6-luna' && reasoningEffort === 'ultra') {
+			throw new InvalidAgentConfigError(
+				'"gpt-5.6-luna" does not support the "ultra" reasoning effort',
 			);
 		}
 
