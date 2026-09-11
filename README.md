@@ -60,12 +60,10 @@ chat loop itself never knows the difference.
 
 Open work is tracked in GitHub issues:
 
-- [#16](https://github.com/Mikode13/harness/issues/16): declare the public API
-  stable and publish `1.0.0` through automated publication.
 - [#17](https://github.com/Mikode13/harness/issues/17): dynamic routing —
   deciding which flow or agent a request needs, instead of always running the
-  fixed plan → execute → review workflow. It comes after `1.0.0` and reuses the
-  structured-decision technique already proven on the reviewer.
+  fixed plan → execute → review workflow. It reuses the structured-decision
+  technique already proven on the reviewer.
 
 Deliberately out of scope for now: MCP, long-term memory, graph execution, and
 file-based agent registries — each waits for a real need.
@@ -118,7 +116,8 @@ try {
 
 `ProgressEvent` is the public seam for live activity; rendering it is the
 consumer's decision, not the harness's. `cli/progressEventFormatter.ts` is one
-terminal-shaped implementation to copy from. Swapping the agent for
+terminal-shaped implementation to copy from. New event types can arrive in minor
+releases, so render the ones you know and ignore the rest. Swapping the agent for
 `createAgent('codex')`, or for `createOrchestrator()` and its planner → executor →
 reviewer workflow, changes nothing else in the snippet above.
 `createOrchestrator({ provider: 'claude' })` runs every role on one provider, for
@@ -162,6 +161,14 @@ part of the published package — they encode one specific interactive,
 turn-by-turn consumption pattern (see `cli/`), not the harness seam itself; a
 consumer that wants that same loop can use `cli/`'s implementation as a
 reference rather than depend on it as a library.
+
+## Releases
+
+Versions follow Semantic Versioning and are published to npm automatically from
+`main`. npm, the `v<version>` Git tags, and GitHub Releases are the release
+history; the `version` in this repository stays at `0.0.0-development`. New
+`ProgressEvent` types, models, and reasoning efforts ship in minor releases;
+removing any of them is a major release.
 
 ## License
 

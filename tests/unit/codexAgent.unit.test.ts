@@ -52,7 +52,7 @@ function createSdk(events: ThreadEvent[] = []) {
 }
 
 function createLogger() {
-	return { warn: vi.fn(), error: vi.fn() };
+	return { warn: vi.fn() };
 }
 
 describe('CodexAgent', () => {

@@ -28,7 +28,7 @@ function createFakeAgent(...responses: (AgentResponse | undefined)[]) {
 	return { agent, run };
 }
 
-const logger = { warn: vi.fn(), error: vi.fn() };
+const logger = { warn: vi.fn() };
 
 describe('OrchestratorAgent', () => {
 	afterEach(() => {
@@ -647,7 +647,6 @@ describe('OrchestratorAgent', () => {
 				warn: vi.fn(() => {
 					throw new Error('the log sink is gone');
 				}),
-				error: vi.fn(),
 			};
 			const orchestrator = orchestratorWith(
 				createFakeAgent(createResponse({ response: 'draft plan' })),

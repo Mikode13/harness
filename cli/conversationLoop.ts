@@ -1,27 +1,19 @@
-import type { Agent, Callback, ILogger } from '../src/index.ts';
+import type { Agent, Callback } from '../src/index.ts';
 import { UnrecoverableError, isAbortError } from '../src/index.ts';
 import type { IOutput } from './output.ts';
 import type { IPromptEmitter } from './promptEmitter.ts';
 
 export class ConversationLoop {
 	private readonly promptEmitter: IPromptEmitter;
-	private readonly logger: ILogger;
 	private readonly output: IOutput;
 	private abortController?: AbortController;
 	private agent: Agent;
 	private callback: Callback;
 
-	constructor(
-		agent: Agent,
-		callback: Callback,
-		promptEmitter: IPromptEmitter,
-		logger: ILogger,
-		output: IOutput,
-	) {
+	constructor(agent: Agent, callback: Callback, promptEmitter: IPromptEmitter, output: IOutput) {
 		this.agent = agent;
 		this.callback = callback;
 		this.promptEmitter = promptEmitter;
-		this.logger = logger;
 		this.output = output;
 	}
 
@@ -34,7 +26,7 @@ export class ConversationLoop {
 				prompt = await this.promptEmitter.emit('> ', this.abortController.signal);
 			} catch (e) {
 				if (isAbortError(e)) break;
-				this.logger.error(e);
+				this.output.printError(e);
 				continue;
 			}
 
@@ -57,11 +49,11 @@ export class ConversationLoop {
 				if (isAbortError(e)) continue;
 
 				if (e instanceof UnrecoverableError) {
-					this.logger.error(e);
+					this.output.printError(e);
 					break;
 				}
 
-				this.logger.error(e);
+				this.output.printError(e);
 			} finally {
 				this.callback({ type: 'turnEnded' });
 			}

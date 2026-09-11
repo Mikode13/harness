@@ -52,4 +52,11 @@ describe('formatProgressEvent', () => {
 			expect(formatProgressEvent(event)).toBe(expected);
 		},
 	);
+
+	// The harness can add event types in a minor release.
+	it('skips an event type it does not know', () => {
+		const future = { type: 'routingDecision', flow: 'single-agent' } as unknown as ProgressEvent;
+
+		expect(formatProgressEvent(future)).toBeUndefined();
+	});
 });

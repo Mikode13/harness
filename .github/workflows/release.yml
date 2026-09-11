@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: >-
+          Exact commit SHA on main to release. Before retrying a failed run, check npm
+          for the calculated version, the matching v<version> Git tag, and the GitHub
+          Release: these are not created atomically, and a published npm version can
+          never be reused or overwritten.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: release
+    # workflow_run fires for every CI completion, including pull request runs and
+    # failures. Only a successful push run on main may reach the privileged reusable
+    # workflow, which independently re-verifies all of this through the GitHub API
+    # regardless of what this condition allows through.
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch'
+        || (github.event.workflow_run.conclusion == 'success'
+        && github.event.workflow_run.event == 'push'
+        && github.event.workflow_run.head_branch == 'main') }}
+    # A reusable workflow's jobs can only maintain or reduce the caller's permissions,
+    # never elevate them, so this grants the union of what the called workflow's two jobs
+    # need: actions/checks read for the authorization gate that verifies CI / required,
+    # and contents/id-token write for the tag, the GitHub Release, and npm Trusted
+    # Publishing. Each called job narrows this further to only its own subset.
+    permissions:
+      actions: read
+      checks: read
+      contents: write
+      id-token: write
+    uses: Mikode13/.github/.github/workflows/release.yml@b9403230cf37a5ecdfc6a4d7b829f1c815e7e9ff
+    with:
+      sha: ${{ github.event_name == 'workflow_dispatch' && inputs.sha || github.event.workflow_run.head_sha }}
