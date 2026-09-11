@@ -41,6 +41,11 @@ orchestrator for a whole session, so instance-level counters report every previo
 tokens again — and two concurrent runs report each other's. Anything that accumulates
 per turn is created inside `run()` and passed down.
 
+**`ProgressEvent` grows in minor releases.** A new event type is a `feat`; removing a type
+or changing an existing type's fields is breaking. Consumers are told to ignore types they
+do not know, so a new type must never carry information a consumer needs to be correct:
+the result of a run travels in `AgentResponse`, and progress stays optional narration.
+
 ## Architecture
 
 Screaming architecture: one folder per bounded module under `src/`, each split into
@@ -86,6 +91,16 @@ pnpm run dev         # the interactive CLI, against real providers
   output from a renamed or deleted source file survives and ships.
 - Never add a package-manager guard to a lifecycle script. `preinstall` ran for every
   consumer, and `prepare` would break `npm pack` and `npm publish`.
+
+## Releases
+
+Publication is automated. `package.json` stays at `0.0.0-development` in source control;
+semantic-release calculates the real version from the squash commit, whose title is the
+pull request title, and publishes it through npm Trusted Publishing after the required CI
+result passes on `main`. Never hand-edit the version or publish manually. Everything
+`src/index.ts` exports is public API: a pull request that removes or changes any of it
+needs a breaking marker in its title (`feat!:`) and a `BREAKING CHANGE:` explanation in its
+body.
 
 ## Engineering standards
 

@@ -9,6 +9,11 @@ export interface AgentResponse {
 
 export type Callback = (item: ProgressEvent) => void;
 
+/**
+ * Live activity during a run, for narration only: the result travels in `AgentResponse`.
+ * New event types can arrive in a minor release, so render the types you know and ignore
+ * the rest instead of switching over them exhaustively with a `never` check.
+ */
 export type ProgressEvent =
 	| { type: 'command'; command: string; exitCode?: number }
 	| { type: 'reasoning'; message: string }

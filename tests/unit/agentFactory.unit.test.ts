@@ -17,7 +17,7 @@ vi.mock('@openai/codex-sdk', () => ({ Codex: vi.fn() }));
 const signal = new AbortController().signal;
 
 function createLogger() {
-	return { warn: vi.fn(), error: vi.fn() };
+	return { warn: vi.fn() };
 }
 
 function claudeStream(messages: unknown[]): Query {

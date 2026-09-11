@@ -71,7 +71,7 @@ function result(resultText = 'final answer'): Record<string, unknown> {
 }
 
 function createLogger() {
-	return { warn: vi.fn(), error: vi.fn() };
+	return { warn: vi.fn() };
 }
 
 describe('ClaudeAgent', () => {

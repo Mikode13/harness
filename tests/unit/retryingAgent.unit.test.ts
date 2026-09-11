@@ -12,7 +12,7 @@ const okResponse: AgentResponse = {
 
 const signal = new AbortController().signal;
 const callback = vi.fn();
-const logger = { warn: vi.fn(), error: vi.fn() };
+const logger = { warn: vi.fn() };
 
 // A fake Agent — RetryingAgent only depends on the Agent interface, so we can
 // script its behavior directly instead of hitting a real SDK. Returns the
@@ -62,7 +62,6 @@ describe('RetryingAgent', () => {
 			warn: vi.fn(() => {
 				throw new Error('the log sink is gone');
 			}),
-			error: vi.fn(),
 		};
 		const retryingAgent = new RetryingAgent({ inner: agent, logger: throwingLogger });
 

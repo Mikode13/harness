@@ -29,5 +29,9 @@ export function formatProgressEvent(item: ProgressEvent): string | undefined {
 		case 'turnStarted':
 		case 'turnEnded':
 			return undefined;
+		default:
+			// The harness can add event types in a minor release; skip the ones this
+			// formatter does not know yet.
+			return undefined;
 	}
 }

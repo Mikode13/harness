@@ -479,6 +479,8 @@ tags: #mikode-harness #boundaries #api-surface
 
 tags: #mikode-harness #observability #error-handling #api-surface
 
+partially superseded by: "`ILogger` keeps only `warn`" (below) — `ILogger` later lost `error` as well.
+
 **Decision:** a harness component logs a failure only when it handles it and carries on — provider output it does not recognize, an attempt that a later retry recovers, a round the orchestrator discards. A failure that ends the `run()` is thrown and not logged. `ILogger` shrinks to `warn` and `error`. Every component that logs receives a `logger`; the factories default it to `Logger` in `src/shared/infrastructure/logger.ts`, which writes to stderr.
 
 **Context:** once `ConversationLoop` left the package, nothing inside the harness observed failures any more: `run()` throws to whichever consumer called it. That separated two concerns that had looked like one. Reporting a failure to the consumer already worked, through the typed errors. What had no owner was the failure the consumer never sees: `RetryingAgent` swallowed every attempt a later one recovered, and `ClaudeAgent` dropped SDK output it did not understand without a trace. A provider that failed every first attempt looked healthy from outside.
@@ -544,3 +546,41 @@ tags: #mikode-harness #orchestration #scope
 **Alternatives considered:** leaving the composition to the consumer, as #15 proposed — rejected for the duplication above, knowingly reversing that issue's ownership table. Switching providers automatically when one reports a rate limit — deferred: a flag covers the need, and automatic fallback is a resilience feature with its own failure policy to design.
 
 **Consequences:** the "which agent plays planner, executor, and reviewer" row of #15's ownership table no longer holds. The provider is fixed per orchestrator, not chosen per request.
+
+---
+
+## `ProgressEvent` can gain new types in a minor release
+
+tags: #mikode-harness #api-surface #versioning
+
+**Decision:** after `1.0.0`, a new `ProgressEvent` type ships as a minor release. Removing a type or changing an existing type's fields stays a breaking change. `ProgressEvent`'s own documentation tells consumers to render the types they know and ignore the rest, and `cli/progressEventFormatter.ts`, the reference renderer, does that with a `default` branch.
+
+**Context:** issue #16. `ProgressEvent` is a closed union, and harness-cli's formatter switches over it exhaustively, so any new type fails that consumer's compilation. Dynamic routing (#17) will want to narrate its decision, and #16 already plans #17 as a minor release.
+
+**Alternatives considered:** a closed union where every new type is a major release — rejected: narration would wait for major versions, and the first routing event would force `2.0.0`. A generic variant such as `{ type: 'custom'; name: string; data: unknown }` — rejected: it never breaks anyone, but every future event would lose its type, and each consumer would parse `data` by hand.
+
+**Consequences:** a consumer that keeps a `never` check over `ProgressEvent` gets a compile error on a minor upgrade; that is the documented cost of opting into exhaustiveness. A new type must never carry information a consumer needs to be correct: the result of a run travels in `AgentResponse`, and progress stays optional narration. harness-cli has to add a fallback branch to its formatter.
+
+---
+
+## `ILogger` keeps only `warn`
+
+tags: #mikode-harness #api-surface #observability
+
+**Decision:** `ILogger.error` is removed before `1.0.0`, leaving `warn` as the port's only method. The CLI prints its own failures through `IOutput.printError`, and `ConversationLoop` no longer takes a logger.
+
+**Context:** issue #16, and the reasoning that already removed `log` (see "The harness logs the failures it absorbs and throws the rest"): nothing in `src/` calls `error`, because a failure that ends a run is thrown, not logged. Only the CLI called it, for its own terminal output. After `1.0.0`, removing a method that consumers may call through the exported type is a breaking change, so the decision could not wait.
+
+**Consequences:** a consumer's logger implements a single method. `cli/adapters/logger.ts` is gone, and the CLI uses the factories' default stderr `Logger`. harness-cli has to stop calling `error` through the harness's `ILogger` type.
+
+---
+
+## Stable publication starts at `1.0.0`
+
+tags: #mikode-harness #release #versioning
+
+**Decision:** `@mikode13/harness` is published through the automated path of the [automated npm publication standard](https://github.com/Mikode13/engineering/blob/main/standards/automated-npm-publication.md). `.github/workflows/release.yml` calls `Mikode13/.github`'s reusable release workflow, pinned to `b9403230`, the same revision `@mikode13/tsconfig`'s release caller pins. The source version stays at `0.0.0-development`, and the manually published `0.1.0` is reconciled with a `v0.1.0` tag on `d6771de`.
+
+**Context:** issue #16. npm held `0.1.0` without a `gitHead`, and the repository had no tags. Packing a clean build of `d6771de`, committed four minutes before that publication, reproduces the published tarball byte for byte; the next commit came a day later.
+
+**Consequences:** each pull request's title sets the next version: `fix` is a patch, `feat` a minor, and a breaking marker a major. The stability pull request carries one, so semantic-release advances from `v0.1.0` to `1.0.0`. Everything `src/index.ts` exports is now a public contract. Additions can wait for a consumer: a model narrower such as `isAgentModel` was deferred, because adding it later is a minor release, while removing `ILogger.error` could not wait.

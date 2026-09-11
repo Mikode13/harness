@@ -4,4 +4,7 @@ export class Output implements IOutput {
 	print(message: string): void {
 		process.stdout.write(`${message}\n`);
 	}
+	printError(error: unknown): void {
+		console.error(error);
+	}
 }

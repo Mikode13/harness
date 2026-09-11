@@ -4,7 +4,6 @@ import { createOrchestrator, type ProgressEvent } from '../src/index.ts';
 import { ConversationLoop } from './conversationLoop.ts';
 import { formatProgressEvent } from './progressEventFormatter.ts';
 import { clearLine, cursorTo } from 'node:readline';
-import { Logger } from './adapters/logger.ts';
 import { Output } from './adapters/output.ts';
 import { PromptEmitter } from './adapters/promptEmitter.ts';
 
@@ -28,7 +27,6 @@ function stopSpinner(): void {
 }
 const autoApprove = true;
 
-const logger = new Logger();
 const output = new Output();
 const promptEmitter = new PromptEmitter();
 
@@ -58,7 +56,6 @@ const loop = new ConversationLoop(
 		startSpinner();
 	},
 	promptEmitter,
-	logger,
 	output,
 );
 
