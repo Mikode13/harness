@@ -42,8 +42,8 @@
 	},
 	"devDependencies": {
 		"@mikode13/code-quality": "1.0.0",
-		"@mikode13/cross-platform": "1.0.0",
 		"@mikode13/code-style": "1.0.0",
+		"@mikode13/cross-platform": "1.1.0",
 		"@mikode13/git-hooks": "1.0.0",
 		"@mikode13/tsconfig": "1.0.0",
 		"@types/node": "^26.1.2",

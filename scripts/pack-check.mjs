@@ -1,10 +1,7 @@
-import { execFile } from 'node:child_process';
+import { runPackageManager } from '@mikode13/cross-platform';
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
-
-const execFileAsync = promisify(execFile);
 
 const repositoryRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -40,7 +37,9 @@ const emitted = (await sourceFiles(path.join(repositoryRoot, 'src'))).flatMap(so
 // not part of the published package, so nothing from it should ever appear here.
 const expected = new Set([...emitted, 'LICENSE', 'package.json', 'README.md']);
 
-const { stdout } = await execFileAsync('pnpm', ['pack', '--dry-run', '--json'], {
+// `runPackageManager` spawns the package manager through its own entry point, so the check
+// also runs on Windows, where `pnpm` is a `.cmd` shim that `execFile` refuses to execute.
+const { stdout } = await runPackageManager(['pack', '--dry-run', '--json'], {
 	cwd: repositoryRoot,
 });
 
