@@ -66,7 +66,12 @@ function result(resultText = 'final answer'): Record<string, unknown> {
 		session_id: sessionId,
 		subtype: 'success',
 		type: 'result',
-		usage: { input_tokens: 11, output_tokens: 7 },
+		usage: {
+			input_tokens: 11,
+			output_tokens: 7,
+			cache_creation_input_tokens: 0,
+			cache_read_input_tokens: 0,
+		},
 	};
 }
 
@@ -281,6 +286,32 @@ describe('ClaudeAgent', () => {
 				resume: sessionId,
 			},
 		});
+	});
+
+	it('counts input read from and written to the prompt cache in the input tokens', async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			stream([
+				{
+					...result(),
+					usage: {
+						input_tokens: 2,
+						output_tokens: 7,
+						cache_creation_input_tokens: 40_000,
+						cache_read_input_tokens: 17_000,
+					},
+				},
+			]),
+		);
+		const agent = new ClaudeAgent({
+			model: 'sonnet',
+			autoApprove: true,
+			reasoningEffort: 'low',
+			logger: createLogger(),
+		});
+
+		const response = await agent.run('prompt', new AbortController().signal, vi.fn());
+
+		expect(response).toMatchObject({ inputTokens: 57_002, outputTokens: 7 });
 	});
 
 	it('keeps permission checks enabled by default', async () => {

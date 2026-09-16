@@ -49,7 +49,12 @@ function claudeResult(text: string): unknown {
 		session_id: 'session-1',
 		subtype: 'success',
 		type: 'result',
-		usage: { input_tokens: 1, output_tokens: 1 },
+		usage: {
+			input_tokens: 1,
+			output_tokens: 1,
+			cache_creation_input_tokens: 0,
+			cache_read_input_tokens: 0,
+		},
 	};
 }
 

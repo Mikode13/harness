@@ -293,10 +293,15 @@ export class ClaudeAgent implements Agent {
 			return undefined;
 		}
 
+		const { usage } = resultMessage;
 		return {
 			response: lines.join('\n'),
-			inputTokens: resultMessage.usage.input_tokens,
-			outputTokens: resultMessage.usage.output_tokens,
+			// Anthropic reports input read from or written to the prompt cache apart from
+			// `input_tokens`, and a long prompt is almost entirely cached, so leaving them out
+			// reports a handful of tokens for a prompt of any size.
+			inputTokens:
+				usage.input_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens,
+			outputTokens: usage.output_tokens,
 			duration: resultMessage.duration_ms / 1000,
 		};
 	}
