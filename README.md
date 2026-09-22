@@ -56,6 +56,13 @@ chat loop itself never knows the difference.
 - Cancellation with `AbortController`/`AbortSignal`, shared between the prompt
   and every agent call, all the way down through the orchestrator.
 
+## Architecture
+
+[`docs/architecture.md`](docs/architecture.md) is the current source for the module
+boundaries, the dependency direction, the public contract, and the failure classification
+every engine goes through. [`docs/decisions.md`](docs/decisions.md) keeps why each of them
+was chosen.
+
 ## Where it is going
 
 Open work is tracked in GitHub issues:
