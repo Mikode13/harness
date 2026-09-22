@@ -377,6 +377,22 @@ describe('ClaudeAgent', () => {
 			expect(closingStream.close).toHaveBeenCalledOnce();
 		});
 
+		it('does not close a completed stream when its signal is later cancelled', async () => {
+			const completedStream = stream([result()]);
+			const close = vi.spyOn(completedStream, 'close');
+			vi.mocked(query).mockReturnValue(completedStream);
+			const controller = new AbortController();
+
+			await new ClaudeAgent({ model: 'sonnet', logger: createLogger() }).run(
+				'prompt',
+				controller.signal,
+				vi.fn(),
+			);
+			controller.abort();
+
+			expect(close).not.toHaveBeenCalled();
+		});
+
 		it('stops an orchestrator when its Claude reviewer is cancelled mid-turn', async () => {
 			const closingStream = quietlyClosingStream();
 			vi.mocked(query)
