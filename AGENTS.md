@@ -48,18 +48,9 @@ the result of a run travels in `AgentResponse`, and progress stays optional narr
 
 ## Architecture
 
-[`docs/architecture.md`](docs/architecture.md) is the authoritative description; this section
-is only the map an agent needs to place a change. Screaming architecture: one folder per
-bounded module under `src/`, each split into `domain` and `infrastructure`.
-
-```text
-src/agent/          the seam: Agent, ProgressEvent, errors, provider-failure classification
-src/engines/*/      one provider adapter each, infrastructure only
-src/factory/        createAgent and createOrchestrator, the only public way to build agents
-src/orchestration/  planner -> executor -> reviewer, with a validated reviewer decision
-src/retry/          the retry decorator
-src/shared/         ports and helpers used across modules (ILogger and its default Logger, isAbortError)
-```
+[`docs/architecture.md`](docs/architecture.md) owns the module map, the dependency direction
+and the public contract. Read it before placing a change, and update it in the same pull
+request when a change moves a boundary, a contract or an important flow.
 
 A new engine implements `Agent`, routes each SDK call through `classifyProviderFailure` and
 each SDK stream through `classifiedProviderStream`, and is registered in `src/factory/`. Its
