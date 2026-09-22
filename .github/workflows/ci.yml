@@ -18,8 +18,27 @@ concurrency:
 jobs:
   ci:
     name: CI
-    # MiKode CI v1.0.0
-    uses: Mikode13/.github/.github/workflows/ci.yml@78523ec52c5a598be22e8682cee47409bbe9b4a5
+    # MiKode CI v2.0.0 (capability-composed), at the revision that makes the Documentation
+    # capability reuse the locked shared formatter. The table of known-good releases in
+    # Mikode13/.github still names the revision before that fix, which the Documentation
+    # capability enabled below depends on.
+    uses: Mikode13/.github/.github/workflows/ci.yml@04cbe17051083ce1d74fe71dbb2bb126885a08d6
     with:
-      profile: package
-      run_build: true
+      # Source: `src/` and the `cli/` workspace are TypeScript in scope for the shared
+      # code-quality rules, and `pnpm run check` formats, lints and type-checks them with
+      # `tests/` in one command.
+      source: true
+      # Tests: the offline Vitest suite covers both workspace projects and never contacts a
+      # provider, so it is the mandatory gate.
+      tests: true
+      # Build: the published package is `tsc` output under `dist/`.
+      build: true
+      # Package: this repository publishes `@mikode13/harness`, so `pnpm run pack:check`
+      # verifies the tarball's file set before a release can use it.
+      package: true
+      # Documentation: `docs/` owns the decision log, the architecture document and the SDK
+      # notes, so Markdown formatting, structure and internal links are real invariants here
+      # rather than a README alone.
+      documentation: true
+      # End-to-end stays off: this is a library with no application entry point to drive, and
+      # a placeholder suite that always succeeds is what the CI standard forbids.

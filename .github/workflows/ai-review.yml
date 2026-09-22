@@ -1,0 +1,64 @@
+name: AI Review
+
+# Caller of the reviewer actions in Mikode13/.github. Both actions run at the same reviewed
+# commit SHA; rolling back is moving both pins to the previous revision.
+#
+# pull_request_target runs this file as it is on main, never as the pull request defines it,
+# and only a run from main can read the ai-review environment that holds the provider token.
+# The analysis job spends that token and can write nothing; the publication job writes the
+# review and the commit status and never sees the token.
+on:
+  pull_request_target:
+    branches:
+      - main
+    types:
+      - opened
+      - reopened
+      - ready_for_review
+      - synchronize
+
+permissions: {}
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    environment: ai-review
+    permissions:
+      checks: read
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      report: ${{ steps.review.outputs.report }}
+    steps:
+      - name: Analyze the pull request
+        id: review
+        uses: Mikode13/.github/ai-review/analyze@c38eadb8b977d298229e249668487222f48c8fff
+        with:
+          provider_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  publish:
+    name: Publish
+    needs: analyze
+    if: always() && github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+    steps:
+      - name: Publish the result
+        uses: Mikode13/.github/ai-review/publish@c38eadb8b977d298229e249668487222f48c8fff
+        with:
+          analyze_result: ${{ needs.analyze.result }}
+          report: ${{ needs.analyze.outputs.report }}

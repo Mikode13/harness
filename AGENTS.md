@@ -48,10 +48,11 @@ the result of a run travels in `AgentResponse`, and progress stays optional narr
 
 ## Architecture
 
-Screaming architecture: one folder per bounded module under `src/`, each split into
-`domain` and `infrastructure`.
+[`docs/architecture.md`](docs/architecture.md) is the authoritative description; this section
+is only the map an agent needs to place a change. Screaming architecture: one folder per
+bounded module under `src/`, each split into `domain` and `infrastructure`.
 
-```
+```text
 src/agent/          the seam: Agent, ProgressEvent, errors, provider-failure classification
 src/engines/*/      one provider adapter each, infrastructure only
 src/factory/        createAgent and createOrchestrator, the only public way to build agents
