@@ -345,6 +345,18 @@ describe('CodexAgent', () => {
 			expect(failure).toBe(abort);
 		});
 
+		// The SDK spawns its process with the signal, so a cancellation mid-turn surfaces as
+		// an AbortError thrown by the event stream rather than by `runStreamed`.
+		it('lets a cancellation raised part-way through a turn through unchanged', async () => {
+			const abort = new DOMException('The operation was aborted', 'AbortError');
+			const { runStreamed } = createSdk();
+			runStreamed.mockResolvedValue(failingStream(abort));
+
+			const failure = await rejectionOf(createAgent());
+
+			expect(failure).toBe(abort);
+		});
+
 		it('does not reclassify an error the adapter already classified', async () => {
 			const { runStreamed } = createSdk();
 			runStreamed.mockResolvedValue(
