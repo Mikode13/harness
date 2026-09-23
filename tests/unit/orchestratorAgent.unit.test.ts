@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OrchestratorAgent } from '../../src/orchestration/domain/model/orchestratorAgent.ts';
 import type { Agent, AgentResponse } from '../../src/agent/domain/agent.ts';
 import type { ILogger } from '../../src/shared/domain/logger.ts';
-import { UnrecoverableError } from '../../src/agent/domain/errors.ts';
+import { RecoverableError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
 import { ReviewerDecisionValidator } from '../../src/orchestration/infrastructure/model/reviewerDecisionValidator.ts';
 
 function createResponse(overrides: Partial<AgentResponse> = {}): AgentResponse {
@@ -417,6 +417,100 @@ describe('OrchestratorAgent', () => {
 					maxAttempts: 0,
 				}),
 		).toThrow(RangeError);
+	});
+
+	// A leaf failure is not a rejected round: the leaf already applied its own retry policy,
+	// and a cancellation is a deliberate stop. Either way the workflow ends where it failed.
+	describe('leaf failures', () => {
+		function createFailingAgent(error: Error) {
+			const run = vi.fn(() => Promise.reject(error));
+			const agent: Agent = { run };
+
+			return { agent, run };
+		}
+
+		function orchestratorWith(planner: Agent, executor: Agent, reviewer: Agent) {
+			return new OrchestratorAgent({
+				plannerAgent: planner,
+				executorAgent: executor,
+				reviewerAgent: reviewer,
+				reviewerDecisionValidator: new ReviewerDecisionValidator(),
+				logger,
+			});
+		}
+
+		function abortError() {
+			return new DOMException('The operation was aborted', 'AbortError');
+		}
+
+		it('stops the workflow when the planner is cancelled', async () => {
+			const abort = abortError();
+			const planner = createFailingAgent(abort);
+			const executor = createFakeAgent();
+			const reviewer = createFakeAgent();
+
+			const failure = await orchestratorWith(planner.agent, executor.agent, reviewer.agent)
+				.run('ship feature', new AbortController().signal, vi.fn())
+				.catch((error: unknown) => error);
+
+			expect(failure).toBe(abort);
+			expect(planner.run).toHaveBeenCalledOnce();
+			expect(executor.run).not.toHaveBeenCalled();
+			expect(reviewer.run).not.toHaveBeenCalled();
+			expect(logger.warn).not.toHaveBeenCalled();
+		});
+
+		it('does not call the reviewer when the executor is cancelled', async () => {
+			const abort = abortError();
+			const planner = createFakeAgent(createResponse({ response: 'draft plan' }));
+			const executor = createFailingAgent(abort);
+			const reviewer = createFakeAgent();
+
+			const failure = await orchestratorWith(planner.agent, executor.agent, reviewer.agent)
+				.run('ship feature', new AbortController().signal, vi.fn())
+				.catch((error: unknown) => error);
+
+			expect(failure).toBe(abort);
+			expect(reviewer.run).not.toHaveBeenCalled();
+			expect(logger.warn).not.toHaveBeenCalled();
+		});
+
+		it('does not ask a cancelled reviewer again as if its decision were malformed', async () => {
+			const abort = abortError();
+			const planner = createFakeAgent(createResponse({ response: 'draft plan' }));
+			const executor = createFakeAgent(createResponse({ response: 'implementation' }));
+			const reviewer = createFailingAgent(abort);
+
+			const failure = await orchestratorWith(planner.agent, executor.agent, reviewer.agent)
+				.run('ship feature', new AbortController().signal, vi.fn())
+				.catch((error: unknown) => error);
+
+			expect(failure).toBe(abort);
+			expect(reviewer.run).toHaveBeenCalledOnce();
+			expect(logger.warn).not.toHaveBeenCalled();
+		});
+
+		it.each([
+			['unrecoverable', new UnrecoverableError('Max attempts exhausted', { cause: 'quota' })],
+			['recoverable', new RecoverableError('Codex refused the request', { cause: 'timeout' })],
+		])(
+			'propagates an %s leaf failure unchanged without starting another round',
+			async (_kind, leafFailure) => {
+				const planner = createFakeAgent(createResponse({ response: 'draft plan' }));
+				const executor = createFailingAgent(leafFailure);
+				const reviewer = createFakeAgent();
+
+				const failure = await orchestratorWith(planner.agent, executor.agent, reviewer.agent)
+					.run('ship feature', new AbortController().signal, vi.fn())
+					.catch((error: unknown) => error);
+
+				expect(failure).toBe(leafFailure);
+				expect(planner.run).toHaveBeenCalledOnce();
+				expect(executor.run).toHaveBeenCalledOnce();
+				expect(reviewer.run).not.toHaveBeenCalled();
+				expect(logger.warn).not.toHaveBeenCalled();
+			},
+		);
 	});
 
 	// Regression: usage accumulated on the instance, and the CLI keeps one orchestrator for

@@ -141,6 +141,22 @@ describe('RetryingAgent', () => {
 		expect(run).toHaveBeenCalledTimes(1);
 	});
 
+	it('stops retrying when a later attempt is cancelled', async () => {
+		const absorbed = new RecoverableError('flaky', { cause: 'network blip' });
+		const abortError = new DOMException('The operation was aborted', 'AbortError');
+		const { agent, run } = fakeAgent(absorbed, abortError, okResponse);
+		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
+
+		const failure = await retryingAgent
+			.run('hi', signal, callback)
+			.catch((error: unknown) => error);
+
+		expect(failure).toBe(abortError);
+		expect(run).toHaveBeenCalledTimes(2);
+		expect(logger.warn).toHaveBeenCalledOnce();
+		expect(logger.warn).toHaveBeenCalledWith('Attempt 1/3 failed; retrying', absorbed);
+	});
+
 	it('sends the original prompt unchanged on the first attempt', async () => {
 		const { agent, run } = fakeAgent(okResponse);
 		const retryingAgent = new RetryingAgent({ inner: agent, logger });
