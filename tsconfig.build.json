@@ -5,7 +5,8 @@
 		"rootDir": "src",
 		"types": ["node"],
 		"rewriteRelativeImportExtensions": true,
-		"inlineSources": true
+		"inlineSources": true,
+		"declarationMap": false
 	},
 	"include": ["src"]
 }

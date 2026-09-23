@@ -46,11 +46,12 @@ async function sourceMapProblems(files) {
 
 const manifest = JSON.parse(await readFile(path.join(repositoryRoot, 'package.json'), 'utf8'));
 
-// The shared Node configuration enables `declaration`, `declarationMap`, and `sourceMap`,
-// so every source file emits exactly these four artifacts.
+// The shared Node configuration enables `declaration` and `sourceMap`; the build disables
+// `declarationMap` because source files are not part of the published package, so every source
+// file emits exactly these three artifacts.
 const emitted = (await sourceFiles(path.join(repositoryRoot, 'src'))).flatMap(source => {
 	const base = `dist/${source.replace(/\.ts$/, '')}`;
-	return [`${base}.js`, `${base}.js.map`, `${base}.d.ts`, `${base}.d.ts.map`];
+	return [`${base}.js`, `${base}.js.map`, `${base}.d.ts`];
 });
 
 // npm always includes these three regardless of the `files` field. LICENSE is required in
