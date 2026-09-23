@@ -28,7 +28,16 @@ async function sourceMapProblems(files) {
 	const problems = [];
 
 	for (const file of files.filter(file => file.endsWith('.map'))) {
-		const map = JSON.parse(await readFile(path.join(repositoryRoot, file), 'utf8'));
+		let map;
+
+		try {
+			map = JSON.parse(await readFile(path.join(repositoryRoot, file), 'utf8'));
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			problems.push(`Unable to read source map: ${file} (${reason})`);
+			continue;
+		}
+
 		const sources = Array.isArray(map.sources) ? map.sources : [];
 		const sourcesContent = Array.isArray(map.sourcesContent) ? map.sourcesContent : [];
 
@@ -74,7 +83,8 @@ const unexpected = [...actual].filter(file => !expected.has(file)).sort();
 
 const problems = [];
 
-problems.push(...(await sourceMapProblems(emitted)));
+const packedMaps = emitted.filter(file => file.endsWith('.map') && actual.has(file));
+problems.push(...(await sourceMapProblems(packedMaps)));
 
 if (missing.length > 0) {
 	problems.push(`Missing from the tarball:\n${missing.map(file => `  - ${file}`).join('\n')}`);
