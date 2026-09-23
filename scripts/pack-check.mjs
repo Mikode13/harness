@@ -23,13 +23,44 @@ async function sourceFiles(directory, prefix = '') {
 	return files;
 }
 
+/** Every emitted source map must carry the source it references into the published package. */
+async function sourceMapProblems(files) {
+	const problems = [];
+
+	for (const file of files.filter(file => file.endsWith('.map'))) {
+		let map;
+
+		try {
+			map = JSON.parse(await readFile(path.join(repositoryRoot, file), 'utf8'));
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			problems.push(`Unable to read source map: ${file} (${reason})`);
+			continue;
+		}
+
+		const sources = Array.isArray(map.sources) ? map.sources : [];
+		const sourcesContent = Array.isArray(map.sourcesContent) ? map.sourcesContent : [];
+
+		if (
+			sources.length === 0 ||
+			sourcesContent.length !== sources.length ||
+			sourcesContent.some(content => typeof content !== 'string')
+		) {
+			problems.push(`Source map is not self-contained: ${file}`);
+		}
+	}
+
+	return problems;
+}
+
 const manifest = JSON.parse(await readFile(path.join(repositoryRoot, 'package.json'), 'utf8'));
 
-// The shared Node configuration enables `declaration`, `declarationMap`, and `sourceMap`,
-// so every source file emits exactly these four artifacts.
+// The shared Node configuration enables `declaration` and `sourceMap`; the build disables
+// `declarationMap` because source files are not part of the published package, so every source
+// file emits exactly these three artifacts.
 const emitted = (await sourceFiles(path.join(repositoryRoot, 'src'))).flatMap(source => {
 	const base = `dist/${source.replace(/\.ts$/, '')}`;
-	return [`${base}.js`, `${base}.js.map`, `${base}.d.ts`, `${base}.d.ts.map`];
+	return [`${base}.js`, `${base}.js.map`, `${base}.d.ts`];
 });
 
 // npm always includes these three regardless of the `files` field. LICENSE is required in
@@ -51,6 +82,9 @@ const missing = [...expected].filter(file => !actual.has(file)).sort();
 const unexpected = [...actual].filter(file => !expected.has(file)).sort();
 
 const problems = [];
+
+const packedMaps = emitted.filter(file => file.endsWith('.map') && actual.has(file));
+problems.push(...(await sourceMapProblems(packedMaps)));
 
 if (missing.length > 0) {
 	problems.push(`Missing from the tarball:\n${missing.map(file => `  - ${file}`).join('\n')}`);

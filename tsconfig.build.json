@@ -4,7 +4,9 @@
 		"outDir": "dist",
 		"rootDir": "src",
 		"types": ["node"],
-		"rewriteRelativeImportExtensions": true
+		"rewriteRelativeImportExtensions": true,
+		"inlineSources": true,
+		"declarationMap": false
 	},
 	"include": ["src"]
 }

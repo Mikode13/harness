@@ -204,6 +204,8 @@ export class ClaudeAgent implements Agent {
 		signal: AbortSignal,
 		callback: Callback,
 	): Promise<AgentResponse | undefined> {
+		signal.throwIfAborted();
+
 		let stream: Query;
 
 		try {
@@ -227,15 +229,21 @@ export class ClaudeAgent implements Agent {
 			throw classifyProviderFailure(error, 'Claude refused the request');
 		}
 
-		signal.addEventListener('abort', () => {
+		const closeStream = () => {
 			stream.close();
-		});
+		};
+		signal.addEventListener('abort', closeStream, { once: true });
 
-		return await this.parseResponse(stream, callback);
+		try {
+			return await this.parseResponse(stream, signal, callback);
+		} finally {
+			signal.removeEventListener('abort', closeStream);
+		}
 	}
 
 	private async parseResponse(
 		stream: Query,
+		signal: AbortSignal,
 		callback: Callback,
 	): Promise<AgentResponse | undefined> {
 		const lines: string[] = [];
@@ -288,6 +296,8 @@ export class ClaudeAgent implements Agent {
 				throw classifyLocalFailure(error, 'Claude failed while mapping progress');
 			}
 		}
+
+		signal.throwIfAborted();
 
 		if (!lines.length || !resultMessage) {
 			return undefined;
