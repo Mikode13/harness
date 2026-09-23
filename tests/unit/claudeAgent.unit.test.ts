@@ -2,12 +2,14 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query } from '@anthropic-ai/claude-agent-sdk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ClaudeAgent } from '../../src/engines/claude/infrastructure/model/claudeAgent.ts';
-import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
+import type { Agent, ProgressEvent } from '../../src/agent/domain/agent.ts';
 import {
 	InvalidAgentConfigError,
 	RecoverableError,
 	UnrecoverableError,
 } from '../../src/agent/domain/errors.ts';
+import { OrchestratorAgent } from '../../src/orchestration/domain/model/orchestratorAgent.ts';
+import { ReviewerDecisionValidator } from '../../src/orchestration/infrastructure/model/reviewerDecisionValidator.ts';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 
@@ -33,6 +35,44 @@ function stream(messages: unknown[]): Query {
 			return iterator;
 		},
 	} as unknown as Query;
+}
+
+function quietlyClosingStream(): {
+	query: Query;
+	readStarted: Promise<void>;
+	close: ReturnType<typeof vi.fn>;
+} {
+	let finishRead: (() => void) | undefined;
+	let markReadStarted: () => void;
+	const readStarted = new Promise<void>(resolve => {
+		markReadStarted = resolve;
+	});
+	const iterator = {
+		next: () =>
+			new Promise<IteratorResult<unknown>>(resolve => {
+				finishRead = () => {
+					resolve({ done: true, value: undefined });
+				};
+				markReadStarted();
+			}),
+		[Symbol.asyncIterator]() {
+			return this;
+		},
+	};
+	const close = vi.fn(() => {
+		finishRead?.();
+	});
+
+	return {
+		query: {
+			close,
+			[Symbol.asyncIterator]() {
+				return iterator;
+			},
+		} as unknown as Query,
+		readStarted,
+		close,
+	};
 }
 
 function assistant(content: unknown[]): unknown {
@@ -301,6 +341,88 @@ describe('ClaudeAgent', () => {
 				model: 'sonnet',
 				resume: undefined,
 			},
+		});
+	});
+
+	describe('cancellation', () => {
+		it('rejects an already-cancelled run without starting a query', async () => {
+			vi.mocked(query).mockReturnValue(stream([]));
+			const controller = new AbortController();
+			controller.abort();
+
+			const run = new ClaudeAgent({ model: 'sonnet', logger: createLogger() }).run(
+				'prompt',
+				controller.signal,
+				vi.fn(),
+			);
+
+			await expect(run).rejects.toBe(controller.signal.reason);
+			expect(query).not.toHaveBeenCalled();
+		});
+
+		it('rejects when cancellation closes the stream without an SDK error', async () => {
+			const closingStream = quietlyClosingStream();
+			vi.mocked(query).mockReturnValue(closingStream.query);
+			const controller = new AbortController();
+			const run = new ClaudeAgent({ model: 'sonnet', logger: createLogger() }).run(
+				'prompt',
+				controller.signal,
+				vi.fn(),
+			);
+
+			await closingStream.readStarted;
+			controller.abort();
+
+			await expect(run).rejects.toBe(controller.signal.reason);
+			expect(closingStream.close).toHaveBeenCalledOnce();
+		});
+
+		it('does not close a completed stream when its signal is later cancelled', async () => {
+			const completedStream = stream([result()]);
+			const close = vi.spyOn(completedStream, 'close');
+			vi.mocked(query).mockReturnValue(completedStream);
+			const controller = new AbortController();
+
+			await new ClaudeAgent({ model: 'sonnet', logger: createLogger() }).run(
+				'prompt',
+				controller.signal,
+				vi.fn(),
+			);
+			controller.abort();
+
+			expect(close).not.toHaveBeenCalled();
+		});
+
+		it('stops an orchestrator when its Claude reviewer is cancelled mid-turn', async () => {
+			const closingStream = quietlyClosingStream();
+			vi.mocked(query)
+				.mockReturnValueOnce(closingStream.query)
+				.mockReturnValue(stream([result('{"decision":"approved"}')]));
+			const completedAgent: Agent = {
+				run: vi.fn().mockResolvedValue({
+					response: 'completed',
+					inputTokens: 1,
+					outputTokens: 1,
+					duration: 1,
+				}),
+			};
+			const logger = createLogger();
+			const orchestrator = new OrchestratorAgent({
+				plannerAgent: completedAgent,
+				executorAgent: completedAgent,
+				reviewerAgent: new ClaudeAgent({ model: 'sonnet', logger }),
+				reviewerDecisionValidator: new ReviewerDecisionValidator(),
+				logger,
+			});
+			const controller = new AbortController();
+			const run = orchestrator.run('prompt', controller.signal, vi.fn());
+
+			await closingStream.readStarted;
+			controller.abort();
+
+			await expect(run).rejects.toBe(controller.signal.reason);
+			expect(query).toHaveBeenCalledOnce();
+			expect(logger.warn).not.toHaveBeenCalled();
 		});
 	});
 
