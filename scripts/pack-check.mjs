@@ -23,12 +23,33 @@ async function sourceFiles(directory, prefix = '') {
 	return files;
 }
 
+/** Every emitted source map must carry the source it references into the published package. */
+async function sourceMapProblems(files) {
+	const problems = [];
+
+	for (const file of files.filter(file => file.endsWith('.map'))) {
+		const map = JSON.parse(await readFile(path.join(repositoryRoot, file), 'utf8'));
+		const sources = Array.isArray(map.sources) ? map.sources : [];
+		const sourcesContent = Array.isArray(map.sourcesContent) ? map.sourcesContent : [];
+
+		if (
+			sources.length === 0 ||
+			sourcesContent.length !== sources.length ||
+			sourcesContent.some(content => typeof content !== 'string')
+		) {
+			problems.push(`Source map is not self-contained: ${file}`);
+		}
+	}
+
+	return problems;
+}
+
 const manifest = JSON.parse(await readFile(path.join(repositoryRoot, 'package.json'), 'utf8'));
 
 // The shared Node configuration enables `declaration`, `declarationMap`, and `sourceMap`,
 // so every source file emits exactly these four artifacts.
 const emitted = (await sourceFiles(path.join(repositoryRoot, 'src'))).flatMap(source => {
-	const base = `dist/${source.replace(/\.ts$/, '')}`;
+	const base = `dist/${source.replace(/\\.ts$/, '')}`;
 	return [`${base}.js`, `${base}.js.map`, `${base}.d.ts`, `${base}.d.ts.map`];
 });
 
@@ -51,6 +72,8 @@ const missing = [...expected].filter(file => !actual.has(file)).sort();
 const unexpected = [...actual].filter(file => !expected.has(file)).sort();
 
 const problems = [];
+
+problems.push(...(await sourceMapProblems(emitted)));
 
 if (missing.length > 0) {
 	problems.push(`Missing from the tarball:\n${missing.map(file => `  - ${file}`).join('\n')}`);
