@@ -49,7 +49,7 @@ const manifest = JSON.parse(await readFile(path.join(repositoryRoot, 'package.js
 // The shared Node configuration enables `declaration`, `declarationMap`, and `sourceMap`,
 // so every source file emits exactly these four artifacts.
 const emitted = (await sourceFiles(path.join(repositoryRoot, 'src'))).flatMap(source => {
-	const base = `dist/${source.replace(/\\.ts$/, '')}`;
+	const base = `dist/${source.replace(/\.ts$/, '')}`;
 	return [`${base}.js`, `${base}.js.map`, `${base}.d.ts`, `${base}.d.ts.map`];
 });
 
