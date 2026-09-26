@@ -210,8 +210,14 @@ export class CodexAgent implements Agent {
 
 		return {
 			response: lines.join('\n'),
-			inputTokens: usage.input_tokens,
-			outputTokens: usage.output_tokens,
+			tokens: {
+				// Codex counts cached tokens inside input_tokens; Tokens keeps them apart.
+				inputTokens:
+					usage.input_tokens - usage.cached_input_tokens - usage.cache_write_input_tokens,
+				outputTokens: usage.output_tokens,
+				writtenCacheTokens: usage.cache_write_input_tokens,
+				readCacheTokens: usage.cached_input_tokens,
+			},
 			duration: (Date.now() - start) / 1000,
 		};
 	}

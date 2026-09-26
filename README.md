@@ -115,7 +115,7 @@ const render = (event: ProgressEvent) => {
 
 try {
 	const result = await agent.run('Summarize this repository.', controller.signal, render);
-	console.log(result?.duration, result?.inputTokens, result?.outputTokens);
+	console.log(result?.duration, result?.tokens);
 } catch (error) {
 	if (error instanceof UnrecoverableError) console.error(error.message, error.cause);
 }

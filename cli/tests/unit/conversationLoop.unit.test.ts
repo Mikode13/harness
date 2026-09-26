@@ -25,8 +25,7 @@ function createOutput() {
 function response(overrides: Partial<AgentResponse> = {}): AgentResponse {
 	return {
 		response: 'answer',
-		inputTokens: 3,
-		outputTokens: 5,
+		tokens: { inputTokens: 3, readCacheTokens: 7, writtenCacheTokens: 11, outputTokens: 5 },
 		duration: 2,
 		...overrides,
 	};
@@ -56,6 +55,8 @@ describe('ConversationLoop', () => {
 		expect(output.print).toHaveBeenCalledWith('usage:');
 		expect(output.print).toHaveBeenCalledWith('duration: 2s');
 		expect(output.print).toHaveBeenCalledWith('inputTokens: 3');
+		expect(output.print).toHaveBeenCalledWith('readCacheTokens: 7');
+		expect(output.print).toHaveBeenCalledWith('writtenCacheTokens: 11');
 		expect(output.print).toHaveBeenCalledWith('outputTokens: 5');
 	});
 

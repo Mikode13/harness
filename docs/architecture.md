@@ -8,7 +8,7 @@ yet is named as such below.
 ## Purpose and scope
 
 The package is a provider-agnostic seam for driving coding agents. It owns one contract,
-`Agent`, two provider adapters behind it, a retry policy, a planner → executor → reviewer
+`Agent`, two provider adapters behind it, a model-backed agent that owns its conversation, a retry policy, a planner → executor → reviewer
 workflow, and the classification that keeps every failure crossing the seam legible to its
 consumers. It does not own terminal or network I/O, prompt composition for a consumer's own
 use case, tool definitions, memory, or scheduling.
@@ -23,6 +23,8 @@ same repository is a development-only consumer and is not part of the published 
 ```text
 src/agent/          the seam: Agent, ProgressEvent, errors, provider-failure classification
 src/engines/*/      one provider adapter each, infrastructure only
+src/engines/domain/ LLMAgent, the agent that owns its conversation and calls an LLMClient
+src/llm/            the stateless model boundary: LLMClient, Message, Conversation
 src/factory/        createAgent and createOrchestrator, the only public way to build agents
 src/orchestration/  planner -> executor -> reviewer, with a validated reviewer decision
 src/retry/          the retry decorator
@@ -33,22 +35,25 @@ The split is deliberately shallow. `domain` holds what does not know a provider 
 the `Agent` contract, the error types, the classification helpers, the orchestrator and the
 retry decorator. `infrastructure` holds what binds to something concrete: a provider SDK, a
 Zod schema, `process.stderr`. A module has only the halves it needs, which is why
-`src/engines/` is infrastructure only and `src/retry/` is domain only.
+each provider engine is infrastructure only, `src/llm/` has no provider adapter yet, and
+`src/retry/` is domain only. `LLMAgent` sits in `src/engines/domain/` because it knows no
+provider: it drives whatever `LLMClient` it is given.
 
 ## Responsibilities and boundaries
 
-| Module               | Owns                                                                                                           |
-| -------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `src/agent/`         | `Agent`, `AgentResponse`, `ProgressEvent`, the error types, and the functions that classify a failure          |
-| `src/engines/`       | One adapter per provider: SDK calls, session or thread continuity, and SDK events mapped to `ProgressEvent`    |
-| `src/factory/`       | Provider selection, default model and reasoning effort per role, and composition with the retry decorator      |
-| `src/orchestration/` | The three role prompts, the attempt loop, per-run usage totals, and the validated reviewer decision            |
-| `src/retry/`         | The decision to call an inner agent again, and the prompt that carries the previous failure into the next call |
-| `src/shared/`        | `ILogger` and its stderr implementation, `isAbortError`, `isOneOf`                                             |
+| Module               | Owns                                                                                                                                                 |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/agent/`         | `Agent`, `AgentResponse`, `ProgressEvent`, the error types, and the functions that classify a failure                                                |
+| `src/engines/`       | One adapter per provider: SDK calls, session or thread continuity, and SDK events mapped to `ProgressEvent`; `LLMAgent`, which drives an `LLMClient` |
+| `src/llm/`           | `LLMClient`, the stateless model port; `Message` and its parts; `Conversation`; `MaxContextError`                                                    |
+| `src/factory/`       | Provider selection, default model and reasoning effort per role, and composition with the retry decorator                                            |
+| `src/orchestration/` | The three role prompts, the attempt loop, per-run usage totals, and the validated reviewer decision                                                  |
+| `src/retry/`         | The decision to call an inner agent again, and the prompt that carries the previous failure into the next call                                       |
+| `src/shared/`        | `ILogger` and its stderr implementation, `isAbortError`, `isOneOf`, `Tokens`                                                                         |
 
 Two boundaries carry most of the design:
 
-**Everything is an `Agent`.** `ClaudeAgent`, `CodexAgent`, `RetryingAgent` and
+**Everything is an `Agent`.** `ClaudeAgent`, `CodexAgent`, `LLMAgent`, `RetryingAgent` and
 `OrchestratorAgent` all implement `run(prompt, signal, callback)`. A decorator and a whole
 multi-agent workflow are therefore substitutable for a bare engine anywhere, and a consumer's
 loop cannot tell which it is driving.
@@ -84,17 +89,25 @@ before either error type.
 ## Dependencies and contracts
 
 Dependencies point inward. `src/engines/` and `src/factory/` depend on `src/agent/`;
-`src/agent/` depends on nothing but `src/shared/`. No module imports `src/factory/`, which is
+`src/agent/` depends on nothing but `src/shared/`. `src/llm/` depends on `src/agent/` for
+the error types and on `src/shared/` for `Tokens`, and imports no SDK; `LLMAgent` depends on
+`src/llm/`, and `src/llm/` knows nothing about agents. No module imports `src/factory/`, which is
 why it is the only place that knows every provider.
 
 `src/index.ts` is the public API: `createAgent`, `createOrchestrator`, the `Agent`,
-`AgentResponse`, `Callback` and `ProgressEvent` types, the three error types, `isAbortError`,
+`AgentResponse`, `Callback`, `ProgressEvent` and `Tokens` types, the three error types, `isAbortError`,
 `isAgentProvider`, `agentProviders`, and the option and model types. `RetryingAgent`,
-`OrchestratorAgent` and both engines are internal — the factories apply retry and the role
+`OrchestratorAgent`, `LLMAgent` and both engines are internal — the factories apply retry and the role
 defaults so a consumer never composes them, and a class that is not exported can change shape
 without a major release.
 
-Two contracts have version rules of their own:
+Three contracts have rules of their own:
+
+- **`Tokens` is split by billing rate.** `inputTokens`, `readCacheTokens`,
+  `writtenCacheTokens` and `outputTokens` never overlap, so a consumer can price a run by
+  multiplying each by its own rate. Providers disagree on whether cached tokens are part of
+  their input count, so each engine converts to this meaning: Codex subtracts both cache
+  counters from its `input_tokens`, while Claude already reports them apart.
 
 - **`ProgressEvent` grows in minor releases.** Consumers are told to render the types they
   know and ignore the rest, so a new type must never carry information a consumer needs to be
@@ -109,9 +122,12 @@ reached only from its own adapter, and `zod`, used only by
 port: the factories default it to a stderr logger, and nothing in `src/` writes to stdout,
 which belongs to the consumer.
 
-Conversation continuity is the engines' own responsibility and is not modelled at the seam.
-`CodexAgent` keeps one SDK `Thread` across turns; `ClaudeAgent` captures a `session_id` from
-the first turn and resumes with it. Either way the provider keeps the context server-side.
+Conversation continuity is each agent's own responsibility and is not modelled at the
+`Agent` seam. `CodexAgent` keeps one SDK `Thread` across turns; `ClaudeAgent` captures a
+`session_id` from the first turn and resumes with it. Either way the provider keeps the
+context server-side. `LLMAgent` is the exception being built for #23: it keeps its own
+`Conversation` in process and sends the whole context on every call, so the model behind it
+holds no state. It has no provider adapter and is not registered in the factory yet.
 
 ## Important flows
 
@@ -132,6 +148,15 @@ that the plan or the implementation were wrong. A rejection starts another round
 feedback carried into the planner prompt. All three roles receive the same `AbortSignal` and
 the same callback, so one cancellation stops the whole workflow and progress from every role
 reaches the consumer through one stream.
+
+**A model-backed turn.** `LLMAgent.run` sends the stored context plus the new prompt to its
+`LLMClient`, inside `classifyProviderFailure`. A `refused` or `truncated` stop ends the run
+with `UnrecoverableError`. Only a completed answer is recorded, together with its prompt, so
+a failed call leaves the conversation untouched and a retry of the same prompt cannot appear
+twice. Each part of the answer is then narrated as `reasoning` or `agentMessage` through
+`classifyHostFailure`; the response carries the text parts alone. The agent emits no
+`turnStarted` or `turnEnded`: like the other engines, it leaves turn boundaries to the
+consumer.
 
 **Usage accounting belongs to a `run()`, not to an instance.** The totals are created inside
 `run()` and passed down. A consumer that keeps one orchestrator for a whole session would
@@ -159,3 +184,9 @@ each other's.
   else reaching it.
 - **The seam has no tool, memory or routing model.** MCP, long-term memory, graph execution
   and file-based agent registries are deliberately absent; each waits for a real consumer.
+  `LLMAgent`'s `Conversation` lives only as long as the agent: persisting it waits for the
+  session manager (#29).
+- **`LLMClient` does not stream.** A call returns the whole answer, so an `LLMAgent`
+  narrates it only once it is complete. The CLI shows a spinner and then the message, which
+  is all it needs; streaming would be a separate method when a consumer needs text as it is
+  generated.

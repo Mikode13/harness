@@ -106,7 +106,12 @@ function result(resultText = 'final answer'): Record<string, unknown> {
 		session_id: sessionId,
 		subtype: 'success',
 		type: 'result',
-		usage: { input_tokens: 11, output_tokens: 7 },
+		usage: {
+			input_tokens: 11,
+			output_tokens: 7,
+			cache_read_input_tokens: 5,
+			cache_creation_input_tokens: 3,
+		},
 	};
 }
 
@@ -191,8 +196,7 @@ describe('ClaudeAgent', () => {
 		]);
 		expect(response).toEqual({
 			response: 'final answer',
-			inputTokens: 11,
-			outputTokens: 7,
+			tokens: { inputTokens: 11, outputTokens: 7, readCacheTokens: 5, writtenCacheTokens: 3 },
 			duration: 1.25,
 		});
 	});
@@ -401,8 +405,7 @@ describe('ClaudeAgent', () => {
 			const completedAgent: Agent = {
 				run: vi.fn().mockResolvedValue({
 					response: 'completed',
-					inputTokens: 1,
-					outputTokens: 1,
+					tokens: { inputTokens: 1, outputTokens: 1, readCacheTokens: 0, writtenCacheTokens: 0 },
 					duration: 1,
 				}),
 			};
