@@ -305,8 +305,12 @@ export class ClaudeAgent implements Agent {
 
 		return {
 			response: lines.join('\n'),
-			inputTokens: resultMessage.usage.input_tokens,
-			outputTokens: resultMessage.usage.output_tokens,
+			tokens: {
+				inputTokens: resultMessage.usage.input_tokens,
+				outputTokens: resultMessage.usage.output_tokens,
+				writtenCacheTokens: resultMessage.usage.cache_creation_input_tokens,
+				readCacheTokens: resultMessage.usage.cache_read_input_tokens,
+			},
 			duration: resultMessage.duration_ms / 1000,
 		};
 	}

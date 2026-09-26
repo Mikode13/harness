@@ -1,8 +1,9 @@
+import type { Tokens } from '../../shared/domain/tokens.ts';
+
 // We tried to add cost, but that would imply to manage it manually for some agents.
 export interface AgentResponse {
 	response: string;
-	inputTokens: number;
-	outputTokens: number;
+	tokens: Tokens;
 	// time in seconds
 	duration: number;
 }

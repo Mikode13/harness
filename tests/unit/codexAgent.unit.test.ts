@@ -138,7 +138,16 @@ describe('CodexAgent', () => {
 				type: 'todo_list',
 			}),
 			completed({ id: 'message-2', text: 'goodbye', type: 'agent_message' }),
-			{ type: 'turn.completed', usage: usage({ input_tokens: 21, output_tokens: 34 }) },
+			// Codex's input_tokens already contains both cache counters.
+			{
+				type: 'turn.completed',
+				usage: usage({
+					input_tokens: 100,
+					cached_input_tokens: 80,
+					cache_write_input_tokens: 5,
+					output_tokens: 34,
+				}),
+			},
 		]);
 		const start = vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValueOnce(3_250);
 
@@ -159,8 +168,7 @@ describe('CodexAgent', () => {
 		]);
 		expect(response).toEqual({
 			response: 'hello\ngoodbye',
-			inputTokens: 21,
-			outputTokens: 34,
+			tokens: { inputTokens: 15, outputTokens: 34, readCacheTokens: 80, writtenCacheTokens: 5 },
 			duration: 2.25,
 		});
 		expect(start).toHaveBeenCalledTimes(2);

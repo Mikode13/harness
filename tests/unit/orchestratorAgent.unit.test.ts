@@ -1,18 +1,22 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OrchestratorAgent } from '../../src/orchestration/domain/model/orchestratorAgent.ts';
 import type { Agent, AgentResponse } from '../../src/agent/domain/agent.ts';
+import type { Tokens } from '../../src/shared/domain/tokens.ts';
 import type { ILogger } from '../../src/shared/domain/logger.ts';
 import { RecoverableError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
 import { ReviewerDecisionValidator } from '../../src/orchestration/infrastructure/model/reviewerDecisionValidator.ts';
 
-function createResponse(overrides: Partial<AgentResponse> = {}): AgentResponse {
-	return {
-		response: 'response',
-		inputTokens: 1,
-		outputTokens: 1,
-		duration: 1,
-		...overrides,
-	};
+/** Token counts go in flat so the scripted responses stay one line each. */
+function createResponse({
+	response = 'response',
+	duration = 1,
+	...tokens
+}: Partial<Omit<AgentResponse, 'tokens'> & Tokens> = {}): AgentResponse {
+	return { response, duration, tokens: usage(tokens) };
+}
+
+function usage(tokens: Partial<Tokens> = {}): Tokens {
+	return { inputTokens: 1, outputTokens: 1, readCacheTokens: 0, writtenCacheTokens: 0, ...tokens };
 }
 
 function createFakeAgent(...responses: (AgentResponse | undefined)[]) {
@@ -37,13 +41,21 @@ describe('OrchestratorAgent', () => {
 
 	it('completes the planner, executor, and reviewer flow with forwarded inputs and summed usage', async () => {
 		const planner = createFakeAgent(
-			createResponse({ response: 'draft plan', inputTokens: 2, outputTokens: 3, duration: 1 }),
+			createResponse({
+				response: 'draft plan',
+				inputTokens: 2,
+				outputTokens: 3,
+				readCacheTokens: 1,
+				writtenCacheTokens: 4,
+				duration: 1,
+			}),
 		);
 		const executor = createFakeAgent(
 			createResponse({
 				response: 'implemented changes',
 				inputTokens: 5,
 				outputTokens: 6,
+				readCacheTokens: 2,
 				duration: 4,
 			}),
 		);
@@ -52,6 +64,8 @@ describe('OrchestratorAgent', () => {
 				response: '{"decision":"approved"}',
 				inputTokens: 8,
 				outputTokens: 9,
+				readCacheTokens: 4,
+				writtenCacheTokens: 1,
 				duration: 7,
 			}),
 		);
@@ -68,8 +82,12 @@ describe('OrchestratorAgent', () => {
 		await expect(orchestrator.run('ship feature', signal, callback)).resolves.toEqual({
 			response: 'All job has finished',
 			duration: 12,
-			inputTokens: 15,
-			outputTokens: 18,
+			tokens: usage({
+				inputTokens: 15,
+				outputTokens: 18,
+				readCacheTokens: 7,
+				writtenCacheTokens: 5,
+			}),
 		});
 
 		expect(planner.run).toHaveBeenCalledWith(
@@ -164,8 +182,7 @@ describe('OrchestratorAgent', () => {
 		await expect(orchestrator.run('ship feature', signal, callback)).resolves.toEqual({
 			response: 'All job has finished',
 			duration: 6,
-			inputTokens: 6,
-			outputTokens: 6,
+			tokens: usage({ inputTokens: 6, outputTokens: 6 }),
 		});
 
 		expect(planner.run).toHaveBeenNthCalledWith(
@@ -546,8 +563,7 @@ describe('OrchestratorAgent', () => {
 			const expected = {
 				response: 'All job has finished',
 				duration: 3,
-				inputTokens: 30,
-				outputTokens: 6,
+				tokens: usage({ inputTokens: 30, outputTokens: 6 }),
 			};
 
 			await expect(orchestrator.run('first', signal, vi.fn())).resolves.toEqual(expected);
@@ -571,8 +587,7 @@ describe('OrchestratorAgent', () => {
 			const expected = {
 				response: 'All job has finished',
 				duration: 3,
-				inputTokens: 30,
-				outputTokens: 6,
+				tokens: usage({ inputTokens: 30, outputTokens: 6 }),
 			};
 
 			const [first, second] = await Promise.all([
@@ -619,8 +634,7 @@ describe('OrchestratorAgent', () => {
 			await expect(orchestrator.run('second', signal, vi.fn())).resolves.toEqual({
 				response: 'All job has finished',
 				duration: 3,
-				inputTokens: 30,
-				outputTokens: 6,
+				tokens: usage({ inputTokens: 30, outputTokens: 6 }),
 			});
 		});
 	});

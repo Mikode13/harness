@@ -5,8 +5,7 @@ import { RetryingAgent } from '../../src/retry/domain/model/retryingAgent.ts';
 
 const okResponse: AgentResponse = {
 	response: 'pong',
-	inputTokens: 1,
-	outputTokens: 1,
+	tokens: { inputTokens: 1, outputTokens: 1, readCacheTokens: 0, writtenCacheTokens: 0 },
 	duration: 1,
 };
 

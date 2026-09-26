@@ -584,3 +584,150 @@ tags: #mikode-harness #release #versioning
 **Context:** issue #16. npm held `0.1.0` without a `gitHead`, and the repository had no tags. Packing a clean build of `d6771de`, committed four minutes before that publication, reproduces the published tarball byte for byte; the next commit came a day later.
 
 **Consequences:** each pull request's title sets the next version: `fix` is a patch, `feat` a minor, and a breaking marker a major. The stability pull request carries one, so semantic-release advances from `v0.1.0` to `1.0.0`. Everything `src/index.ts` exports is now a public contract. Additions can wait for a consumer: a model narrower such as `isAgentModel` was deferred, because adding it later is a minor release, while removing `ILogger.error` could not wait.
+
+---
+
+## Read the provider APIs through runnable examples before designing the model types
+
+tags: #mikode-harness #api-design #learning
+
+**Decision:** before writing any `src/llm/` type, write reference scripts against the two low-level APIs the adapters will use, one for the OpenAI Responses API and one for the Anthropic Messages API. Each runs a stateless two-turn exchange, one tool round trip, a cancellation and an error chain. A third file sets their request and response shapes side by side, as type aliases re-exported from the SDKs, so the compiler breaks when an SDK changes them. The scripts are a working tool for designing the types and writing the adapters, not part of the harness: they live in a git-ignored `examples/` folder.
+
+**Context:** issue #23 replaces the agent SDKs (Codex's `Thread`, Claude's session) with MiKode-owned calls to the model APIs. The `Agent` seam had been designed against two real engines, and the new `LLMClient` needed the same footing. Without the real shapes, the first questions had no answer: what goes into a call, what an answer is made of, and what "stopped" means.
+
+**Consequences:** several design facts came from the examples, not from guesses:
+
+- **History.** OpenAI's is a flat list of items; Anthropic's alternates messages made of content blocks.
+- **Tool arguments.** OpenAI's are a JSON string; Anthropic's arrive already parsed.
+- **Usage.** Cached tokens are inside OpenAI's `input_tokens` and outside Anthropic's.
+- **Private reasoning.** Both providers return reasoning that can be replayed but not read.
+- **Cancellation.** Both SDKs raise `APIUserAbortError` on cancellation, whose `name` is `"Error"`, not `"AbortError"`. `isAbortError` does not recognise it, so an adapter that let it through would turn a cancelled run into a retried one. Each adapter must rethrow the signal's own reason when it is aborted.
+
+`openai` and `@anthropic-ai/sdk` are development dependencies until an adapter imports them, so consumers do not install SDKs the published code never loads.
+
+**Lesson:** design an abstraction over two concrete things by looking at both, side by side, in code that compiles against them. A type alias re-exported from an SDK keeps that reference honest; a hand-copied shape goes stale silently.
+
+---
+
+## The model boundary is stateless; the agent owns the conversation
+
+tags: #mikode-harness #agent-loops #api-design
+
+**Decision:** `LLMClient` has one method, `send(context, signal)`, and keeps nothing between calls. It receives every message it needs each time and returns `{ message, usage, stopReason }`. The model and the system prompt are fixed when a client is built, not passed per call. `LLMAgent` owns a `Conversation` and is the only piece that knows both it and the client. Implementations are named after what distinguishes them — `FakeLLMClient`, and later `OpenAILLMClient` and `AnthropicLLMClient` — rather than `LLMClientImpl`, because there will be several.
+
+**Context:** issue #23. Codex's `Thread` and Claude's `sessionId` were the only memory of a conversation, so it could not be persisted (#29), handed to another provider, or shaped by MiKode. The first draft let the agent push onto a raw `history` array that it then passed to the client. That looked like the agent doing the client's job, and the first instinct was to move the history into the client. What settled it was asking whether the client needs the state to do its job. It does not: both provider APIs accept the full context on every call.
+
+**Alternatives considered:**
+
+- **The client owns the context and appends to it, like a chat session.** Rejected: that recreates the provider session inside MiKode. It also breaks as soon as tools arrive, because between two calls only the agent can decide which tool runs and what its result is.
+- **A callback on the client that streams events.** Rejected: mapping the answer to `ProgressEvent` is the agent's job.
+- **A read/write permission flag on the model, for agents such as the reviewer that must not touch code.** Rejected: what an agent may do is the set of tools it is given (#25), not a property of the model.
+
+**Consequences:** the loop that turns a stateless model into an agent lives in `LLMAgent`, where the tool loop (slice 4) and compaction will go. `Conversation` is a class, not an interface: it is a domain object with one implementation and no infrastructure to swap, and tests use the real one. `LLMAgent` has no provider adapter and is not registered in the factory yet.
+
+**Lesson:** the component that consumes some state is not necessarily its owner, just as an HTTP client reads a request body without owning it. Keep the component that calls the network a function of its inputs, and give the state to whoever makes decisions between calls.
+
+---
+
+## Context, conversation and workflow artifacts are three different things
+
+tags: #mikode-harness #agent-loops #multi-agent
+
+**Decision:** three concepts, three owners:
+
+- **The context** is what one call sends, built fresh for that call.
+- **The conversation** is everything one agent remembers across its runs. `Conversation` owns it and derives the context with `getContext()`.
+- **Workflow artifacts** — the plan, the executor's result, the verdict — cross from one role to the next as prompts. The orchestrator owns them.
+
+`Message` belongs to `src/llm/`. `Conversation` and `LLMClient` both depend on it, and neither knows the other.
+
+**Context:** the question was whether the planner's history should reach the executor, and the executor's the reviewer. It should not. A role that received another agent's conversation would inherit its reasoning, its abandoned attempts and its system prompt. Encrypted reasoning items are also useless to a different provider. The orchestrator already passes each role's result as the next role's prompt; that is the right channel. A separate confusion came from a type named `ConversationMessage`: it made the client look as if it knew about the conversation, when it only knew the message type.
+
+**Alternatives considered:** one conversation shared by every role — rejected for the reasons above. An `info` role in the history for harness notes — rejected: the provider APIs know only user and assistant turns, and a harness note that the model must see is a user message.
+
+**Consequences:** today the context equals the conversation, which is why the two looked like one thing. They diverge with compaction. When `MaxContextError` is handled, the conversation will keep every message plus compaction marks (`{ upTo, summary }`), and `getContext()` will return the latest summary as a user message followed by the messages after it. A compaction cut must not separate a tool call from its result, or both APIs reject the context. Neither the agent nor the client changes when that lands.
+
+**Lesson:** a type two objects share is not a dependency between them — name a type for what it is, not for who uses it. And keep "what this call sends" apart from "what this agent remembers" even while they are equal: the moment they diverge is the moment the design is tested.
+
+---
+
+## A message is a role and a list of parts, and the whole context is sent on every call
+
+tags: #mikode-harness #api-design #data-modelling
+
+**Decision:** `Message` is `{ role: 'user' | 'assistant', content: MessagePart[] }`, and `MessagePart` is a discriminated union, `text` or `reasoning` today. The response's message is typed `Message & { role: 'assistant' }`, so the compiler checks the role instead of a comment. Every call sends the whole context, and `Conversation` stores it as a plain array.
+
+**Context:** a user prompt is always one text part today, which made the array look like overhead. It is not. An assistant turn routinely holds several parts: reasoning, then text, then two parallel tool calls. Tool results arrive as parts of a user message in Anthropic's API, one per parallel call. Resending everything looked expensive and hard to maintain. Two things answer that. Both providers cache the unchanged prefix of the context, billed as `readCacheTokens`. And compaction bounds the size once it no longer fits.
+
+**Alternatives considered:**
+
+- **A single string as the user's content.** Rejected: the type would change when tools arrive.
+- **A linked list or a queue for the conversation, since it only grows at the end.** Rejected. `push` on an array is already O(1) amortised. Every call serialises the whole context to JSON anyway, which is O(n) whatever the structure. A linked list is slower to walk and cannot be serialised for persistence. The cost of a call is tokens and network time, not the data structure.
+- **Letting the provider keep the history (`previous_response_id`).** Rejected: that is the provider session #23 moves away from.
+
+**Consequences:** slice 4 adds tool-call and tool-result parts to the union without changing `Message`. The conversation is append-only, so nothing in it is ever edited.
+
+**Lesson:** model the data for the second case you already know is coming, when the cost is one pair of brackets. Before optimising a data structure, find where the time actually goes.
+
+---
+
+## Record an exchange only after the call completed, and keep copies at the boundary
+
+tags: #mikode-harness #agent-loops #failure-handling
+
+**Decision:** `LLMAgent` sends the stored context plus the new prompt without touching the conversation. Only after a completed answer does it call `Conversation.addExchange(prompt, answer)`, which stores both together. `Conversation` deep-copies every message it takes in and every context it hands out. The agent sends the prompt as a copy, so the prompt it records is the one it built.
+
+**Context:** the first version appended the prompt before calling the model. When `send` fails with a `RecoverableError`, `RetryingAgent` runs the same prompt again, so the conversation would hold it twice. The same happened after a refusal, a truncation or a cancellation. A review of PR #38 then found that `getContext()` copied only the array: a client that edited the messages it was sent would silently rewrite the stored history. A test with such a client also found that the prompt reached the client as the same object the agent recorded afterwards.
+
+**Consequences:** a failed call leaves no trace in the conversation, which is what makes `RetryingAgent` safe around `LLMAgent`. Copies cost microseconds per call, against a model call measured in seconds. `FakeLLMClient` also records copies, so a test cannot be fooled by later mutation.
+
+**Lesson:** commit state after the operation succeeds, not before: a retry decorator turns every half-recorded failure into a duplicate. A shallow copy protects nothing when the elements are mutable objects.
+
+---
+
+## Stop reasons belong to the model; what they mean for the run belongs to the agent
+
+tags: #mikode-harness #failure-handling #api-design
+
+**Decision:** `StopReason` is `'completed' | 'truncated' | 'refused'`. `truncated` means the output limit only. The client reports why the model stopped, and the agent decides what that means: today both `truncated` and `refused` end the run with an `UnrecoverableError` whose cause names the reason. A context that no longer fits is not a stop reason but a domain error, `MaxContextError`, which extends `UnrecoverableError` so the classifiers keep it as it is. The agent will catch it to compact. Callback failures are classified with `classifyHostFailure`, because the model has already answered and a replay could repeat side effects.
+
+**Context:** the first list had five outcomes: completed, truncated, refused, unrecoverable error and aborted. An error and a cancellation are not ways a model stops. They already have their channels, a rejected promise and an `AbortError`, so they left the type. A context overflow looked like a truncation at first. It is a different problem with a different fix: truncation needs more output room, overflow needs a shorter context.
+
+**Consequences:** the adapters inherit these rules. Quota exhaustion (OpenAI's `insufficient_quota`) will be an `UnrecoverableError`, because retrying cannot add credit; a 429 rate limit stays recoverable. `MaxContextError` is defined but not thrown yet. Each adapter must also rethrow the signal's reason on cancellation, as the examples showed.
+
+**Lesson:** let the layer that observes something report it, and the layer that has the context decide what it means. A result type that mixes outcomes with failures makes every caller handle both twice.
+
+---
+
+## Turn boundaries belong to the consumer, and the model does not stream yet
+
+tags: #mikode-harness #progress-events #agent-loops
+
+**Decision:** `LLMAgent` emits no `turnStarted` or `turnEnded`. It narrates each part of the answer as `reasoning` or `agentMessage`, and answers with the text parts alone. `LLMClient.send` returns the whole answer at once; there is no streaming method.
+
+**Context:** the agent first emitted turn events around its call. Codex and Claude never did: `ConversationLoop` emits them around `run()`, and the CLI starts and stops its spinner on them. An agent emitting its own would stop the spinner halfway through an orchestrator run, once per role. Without streaming, a run makes one call and narrates everything when the answer arrives, which felt like the synchronous design #23 was meant to leave. It is only synchronous because there are no tools yet.
+
+**Consequences:** with tools, a run becomes a loop of calls with tool execution in between, and the callback narrates each step as it happens. The CLI shows a spinner and then the message, which is all it needs today. A `stream()` method can be added when a consumer needs text as it is generated.
+
+**Lesson:** before adding an event, check who already emits it. A progress channel shared by nested agents needs one owner for each boundary.
+
+---
+
+## `Tokens` counts usage by billing category; pricing is out of scope
+
+tags: #mikode-harness #api-surface #observability
+
+**Decision:** `AgentResponse` carries `tokens: Tokens` instead of `inputTokens` and `outputTokens`. `Tokens` has four fields that never overlap: `inputTokens`, `readCacheTokens`, `writtenCacheTokens` and `outputTokens`. `inputTokens` counts prompt tokens neither read from nor written to the cache. `Tokens` lives in `src/shared/` because the agent and the model boundary speak it alike, and it is exported. They are counts, not a cost: the harness does not promise that a run can be priced from them.
+
+**Context:** the old pair was never defined precisely, and cached input is billed separately from fresh input. The fields are defined by billing category rather than by where the tokens come from. The same `AGENTS.md` or skill text is written to the cache on one call and read from it on the next. Providers also disagree on their own counter: Claude's `input_tokens` excludes the cache counters, while Codex's already contains `cached_input_tokens` and `cache_write_input_tokens`. Copying each as-is would have counted Codex's cached tokens twice.
+
+**Alternatives considered:** a pricing guarantee, which the first version of this entry promised. A review of PR #38 showed why it could not hold:
+
+- **Mixed cache lifetimes.** Anthropic bills 5-minute and 1-hour cache writes at different rates, and both can appear in one response.
+- **Mixed models.** The default orchestrator mixes `gpt-5.6-sol`, `gpt-5.6-luna` and `opus`, and summing their counts loses which model spent what.
+
+Keeping the promise would mean per-model usage records, split cache lifetimes, and price tables kept current against every provider. That is worth doing only once there is somewhere to store and use the data. It was dropped rather than half-built.
+
+**Consequences:** a breaking change to `AgentResponse`, so it ships with a breaking marker. `CodexAgent` subtracts both cache counters from `input_tokens`, `OrchestratorAgent` sums all four per run, and the CLI prints all four. Every future adapter converts to the same meaning, including the OpenAI Responses API, which also reports cached tokens inside `input_tokens`.
+
+**Lesson:** when two providers use the same field name, check that they mean the same thing before mapping them. And document what a contract guarantees, not what it might enable: an unkept promise in a public type is a bug report waiting to happen.

@@ -41,6 +41,7 @@
 		"check": "pnpm run format:check && pnpm run lint && pnpm run typecheck"
 	},
 	"devDependencies": {
+		"@anthropic-ai/sdk": "^0.115.0",
 		"@mikode13/code-quality": "1.0.0",
 		"@mikode13/code-style": "1.0.0",
 		"@mikode13/cross-platform": "1.1.0",
@@ -49,6 +50,7 @@
 		"@types/node": "^26.1.2",
 		"@vitest/coverage-v8": "^4.1.11",
 		"eslint": "^10.8.0",
+		"openai": "^7.23.0",
 		"prettier": "^3.9.6",
 		"typescript": "^6.0.3",
 		"vitest": "^4.1.11"
