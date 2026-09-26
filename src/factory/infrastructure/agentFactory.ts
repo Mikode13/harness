@@ -10,6 +10,8 @@ import {
 	type CodexModel,
 	type CodexReasoningEffort,
 } from '../../engines/codex/infrastructure/model/codexAgent.ts';
+import { LLMAgent } from '../../engines/domain/model/llmAgent.ts';
+import { OpenAILLMClient, type OpenAIModel } from '../../llm/infrastructure/openAILLMClient.ts';
 import { OrchestratorAgent } from '../../orchestration/domain/model/orchestratorAgent.ts';
 import { ReviewerDecisionValidator } from '../../orchestration/infrastructure/model/reviewerDecisionValidator.ts';
 import { RetryingAgent } from '../../retry/domain/model/retryingAgent.ts';
@@ -157,4 +159,37 @@ export function createOrchestrator({
 		reviewerDecisionValidator: new ReviewerDecisionValidator(),
 		logger,
 	});
+}
+
+export interface CreateLLMAgentOptions {
+	/** Defaults to `'gpt-5.6-luna'`. The OpenAI client rejects a model it does not support. */
+	model?: string;
+	/** Sent as the model's instructions on every call. */
+	systemPrompt: string;
+	/** Defaults to warnings on stderr. */
+	logger?: ILogger;
+}
+
+const defaultLLMAgentModel = 'gpt-5.6-luna' satisfies OpenAIModel;
+
+/**
+ * Builds an agent whose conversation MiKode owns, on the OpenAI Responses API, already wrapped
+ * in the harness's retry policy. Internal while #23 reaches parity with the Agent SDK engines:
+ * it is not exported from `src/index.ts`, and it takes no provider because OpenAI is the only
+ * `LLMClient` so far. It runs no tools, so it has no `autoApprove`.
+ *
+ * @throws {InvalidAgentConfigError} for a model the OpenAI client does not support.
+ * @throws {UnrecoverableError} when the OpenAI client cannot be set up, for example because
+ * `OPENAI_API_KEY` is missing.
+ */
+export function createLLMAgent({
+	model = defaultLLMAgentModel,
+	systemPrompt,
+	logger = new Logger(),
+}: CreateLLMAgentOptions): Agent {
+	const engine = new LLMAgent({
+		llmClient: new OpenAILLMClient({ model, systemPrompt, logger }),
+	});
+
+	return new RetryingAgent({ inner: engine, logger });
 }

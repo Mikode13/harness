@@ -12,3 +12,6 @@ coverage/
 
 # Local reference scripts for the provider APIs, kept out of the repository
 examples/
+
+# Local secrets such as OPENAI_API_KEY
+.env

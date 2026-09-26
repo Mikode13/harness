@@ -14,6 +14,9 @@ importers:
       '@openai/codex-sdk':
         specifier: ^0.154.0
         version: 0.154.0
+      openai:
+        specifier: ^7.23.0
+        version: 7.23.0(zod@4.4.3)
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -45,9 +48,6 @@ importers:
       eslint:
         specifier: ^10.8.0
         version: 10.8.0(jiti@2.6.1)(supports-color@7.2.0)
-      openai:
-        specifier: ^7.23.0
-        version: 7.23.0(zod@4.4.3)
       prettier:
         specifier: ^3.9.6
         version: 3.9.6
