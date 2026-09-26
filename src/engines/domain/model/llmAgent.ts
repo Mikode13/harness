@@ -39,8 +39,9 @@ export class LLMAgent implements Agent {
 
 		let response: LLMResponse;
 		try {
+			// The prompt is sent as a copy so the one recorded below is the one the agent built.
 			response = await this.llmClient.send(
-				[...this.conversation.getContext(), userMessage],
+				[...this.conversation.getContext(), structuredClone(userMessage)],
 				signal,
 			);
 		} catch (error) {

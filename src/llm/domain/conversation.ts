@@ -9,7 +9,7 @@ export class Conversation {
 	private readonly messages: Message[];
 
 	constructor(messages: Message[] = []) {
-		this.messages = [...messages];
+		this.messages = structuredClone(messages);
 	}
 
 	/**
@@ -17,11 +17,14 @@ export class Conversation {
 	 * records nothing, so a retry of the same prompt cannot appear twice.
 	 */
 	addExchange(prompt: Message, answer: Message): void {
-		this.messages.push(prompt, answer);
+		this.messages.push(structuredClone(prompt), structuredClone(answer));
 	}
 
-	/** A copy: whoever sends it cannot rewrite what the conversation remembers. */
+	/**
+	 * A deep copy, like everything the conversation takes in: a client that rewrites the
+	 * messages it was sent cannot change what the next turn sends.
+	 */
 	getContext(): Message[] {
-		return [...this.messages];
+		return structuredClone(this.messages);
 	}
 }

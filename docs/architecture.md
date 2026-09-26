@@ -103,9 +103,10 @@ without a major release.
 
 Three contracts have rules of their own:
 
-- **`Tokens` is split by billing rate.** `inputTokens`, `readCacheTokens`,
-  `writtenCacheTokens` and `outputTokens` never overlap, so a consumer can price a run by
-  multiplying each by its own rate. Providers disagree on whether cached tokens are part of
+- **`Tokens` is split into the categories providers bill separately.** `inputTokens`,
+  `readCacheTokens`, `writtenCacheTokens` and `outputTokens` never overlap. They are counts,
+  not a cost: pricing is out of scope, because a run's tokens are not attributed to the
+  model that spent them. Providers disagree on whether cached tokens are part of
   their input count, so each engine converts to this meaning: Codex subtracts both cache
   counters from its `input_tokens`, while Claude already reports them apart.
 

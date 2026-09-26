@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
 import { RecoverableError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
-import type { LLMResponse } from '../../src/llm/domain/llm.ts';
+import type { LLMClient, LLMResponse } from '../../src/llm/domain/llm.ts';
+import type { Message } from '../../src/llm/domain/message.ts';
 import { FakeLLMClient, textResponse, userMessage } from '../support/fakeLlmClient.ts';
 
 const signal = new AbortController().signal;
@@ -45,6 +46,31 @@ describe('LLMAgent', () => {
 		expect(llmClient.contexts[1]).toEqual([
 			userMessage('first'),
 			textResponse('first answer').message,
+			userMessage('second'),
+		]);
+	});
+
+	it('keeps a client that rewrites its context from changing the next turn', async () => {
+		const answer = textResponse('answer');
+		const contexts: Message[][] = [];
+		const llmClient: LLMClient = {
+			send: context => {
+				contexts.push(structuredClone(context));
+				for (const message of context) {
+					for (const part of message.content) part.text = 'rewritten';
+				}
+				return Promise.resolve(answer);
+			},
+		};
+		const agent = new LLMAgent({ llmClient });
+
+		await agent.run('first', signal, vi.fn());
+		answer.message.content = [{ type: 'text', text: 'rewritten' }];
+		await agent.run('second', signal, vi.fn());
+
+		expect(contexts[1]).toEqual([
+			userMessage('first'),
+			textResponse('answer').message,
 			userMessage('second'),
 		]);
 	});
