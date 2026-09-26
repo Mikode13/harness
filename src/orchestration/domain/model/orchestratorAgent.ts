@@ -1,4 +1,5 @@
 import type { Agent, AgentResponse, Callback } from '../../../agent/domain/agent.ts';
+import type { Tokens } from '../../../shared/domain/tokens.ts';
 import { RecoverableError, UnrecoverableError } from '../../../agent/domain/errors.ts';
 import type { ReviewerDecision } from './reviewerDecision.ts';
 import type { Validator } from '../interface/validator.ts';
@@ -61,14 +62,15 @@ ${executorResult}
 
 interface RunTotals {
 	duration: number;
-	inputTokens: number;
-	outputTokens: number;
+	tokens: Tokens;
 }
 
 function addToTotals(totals: RunTotals, response: AgentResponse): void {
 	totals.duration += response.duration;
-	totals.inputTokens += response.inputTokens;
-	totals.outputTokens += response.outputTokens;
+	totals.tokens.inputTokens += response.tokens.inputTokens;
+	totals.tokens.outputTokens += response.tokens.outputTokens;
+	totals.tokens.readCacheTokens += response.tokens.readCacheTokens;
+	totals.tokens.writtenCacheTokens += response.tokens.writtenCacheTokens;
 }
 
 function stripCodeFence(text: string): string {
@@ -146,7 +148,10 @@ export class OrchestratorAgent implements Agent {
 		callback: Callback,
 	): Promise<AgentResponse | undefined> {
 		// Per invocation, not per instance: the CLI keeps one orchestrator for a whole session.
-		const totals: RunTotals = { duration: 0, inputTokens: 0, outputTokens: 0 };
+		const totals: RunTotals = {
+			duration: 0,
+			tokens: { inputTokens: 0, outputTokens: 0, readCacheTokens: 0, writtenCacheTokens: 0 },
+		};
 		let lastFailureReason: string | undefined;
 
 		for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {

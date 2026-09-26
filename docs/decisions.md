@@ -584,3 +584,33 @@ tags: #mikode-harness #release #versioning
 **Context:** issue #16. npm held `0.1.0` without a `gitHead`, and the repository had no tags. Packing a clean build of `d6771de`, committed four minutes before that publication, reproduces the published tarball byte for byte; the next commit came a day later.
 
 **Consequences:** each pull request's title sets the next version: `fix` is a patch, `feat` a minor, and a breaking marker a major. The stability pull request carries one, so semantic-release advances from `v0.1.0` to `1.0.0`. Everything `src/index.ts` exports is now a public contract. Additions can wait for a consumer: a model narrower such as `isAgentModel` was deferred, because adding it later is a minor release, while removing `ILogger.error` could not wait.
+
+---
+
+## A model-backed agent owns its conversation; the model behind it is stateless
+
+tags: #mikode-harness #agent-loops #api-design
+
+**Decision:** `LLMAgent` keeps a `Conversation` and calls an `LLMClient` whose only method is `send(context, signal)`. The client holds no state: it receives every message it needs on each call and returns `{ message, usage, stopReason }`. `Message` belongs to `src/llm/`, and both `Conversation` and `LLMClient` depend on it without knowing each other. The agent is the only piece that knows both, and it records a prompt and its answer together, only after the call completed. It narrates the answer's parts through the callback, and it emits no turn boundaries.
+
+**Context:** issue #23. Codex's `Thread` and Claude's `sessionId` were the only memory of a conversation, so it could not be persisted, handed to another provider, or shaped by MiKode. The first draft let the agent push onto a raw `history` array that it then passed to the client, which blurred who owned the history. Two questions settled it. Does the client need the state to do its job? No: both provider APIs accept the full context on every call. What happens when `send` fails after the prompt was appended? `RetryingAgent` runs the same prompt again, and the conversation would hold it twice.
+
+**Alternatives considered:** the client owns the context and appends to it, like a chat session. Rejected: that recreates the provider session inside MiKode, and it breaks as soon as tools arrive, because between two calls only the agent can decide which tool runs and what its result is. Sharing one conversation between planner, executor and reviewer was also rejected. What crosses roles is an artifact (the plan, the verdict) passed as a prompt, not another agent's reasoning. Streaming from the client was deferred: the CLI shows a spinner and then the message, and a `stream()` method can be added when a consumer needs text as it is generated.
+
+**Consequences:** the context is derived from the conversation by `getContext()`, which is where compaction will live once `MaxContextError` is handled; neither the agent nor the client changes then. Turn boundaries stay with the consumer, as with the other engines. The CLI starts and stops its spinner on them, so an agent emitting its own would stop the spinner in the middle of an orchestrator run. `LLMAgent` has no provider adapter and is not registered in the factory yet.
+
+**Lesson:** a type two objects share is not a dependency between them. The client knowing `Message` does not make it aware of `Conversation`; a name like `ConversationMessage` is what made it look that way. And commit state after the operation succeeds, not before: a retry decorator turns every half-recorded failure into a duplicate.
+
+---
+
+## `Tokens` splits usage by billing rate, and each engine converts to it
+
+tags: #mikode-harness #api-surface #observability
+
+**Decision:** `AgentResponse` carries `tokens: Tokens` instead of `inputTokens` and `outputTokens`. `Tokens` has four fields that never overlap: `inputTokens` (full input rate), `readCacheTokens`, `writtenCacheTokens` and `outputTokens`. `Tokens` lives in `src/shared/` because the agent and the LLM boundary speak it alike, and it is exported publicly.
+
+**Context:** the old pair was never defined precisely, and a consumer could not price a run: cached input is billed at its own rate. The fields had to be defined by how they are billed rather than by where the tokens come from, because the same `AGENTS.md` or skill text is written to the cache on one call and read from it on the next. Providers also disagree on what their own counter means. Claude's `input_tokens` excludes the cache counters; Codex's `input_tokens` already contains `cached_input_tokens` and `cache_write_input_tokens`. Copying each provider's counter as-is would have counted Codex's cached tokens twice once a consumer multiplied each field by its rate.
+
+**Consequences:** a breaking change to `AgentResponse`, so it ships with a breaking marker. `CodexAgent` subtracts both cache counters from `input_tokens`, `OrchestratorAgent` sums all four fields per run, and the CLI prints all four. Every future adapter converts to the same meaning, including the OpenAI Responses API, which reports cached tokens inside `input_tokens` as well.
+
+**Lesson:** when two providers use the same field name, check whether they mean the same thing before mapping them. Define a shared unit by what a consumer does with it, here billing, and make every adapter translate into it.

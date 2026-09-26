@@ -22,3 +22,4 @@ export {
 	UnrecoverableError,
 } from './agent/domain/errors.ts';
 export { isAbortError } from './shared/domain/isAbortError.ts';
+export type { Tokens } from './shared/domain/tokens.ts';

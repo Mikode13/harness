@@ -42,8 +42,11 @@ export class ConversationLoop {
 				if (agentResponse) {
 					this.output.print('usage:');
 					this.output.print(`duration: ${String(agentResponse.duration)}s`);
-					this.output.print(`inputTokens: ${String(agentResponse.inputTokens)}`);
-					this.output.print(`outputTokens: ${String(agentResponse.outputTokens)}`);
+					const { tokens } = agentResponse;
+					this.output.print(`inputTokens: ${String(tokens.inputTokens)}`);
+					this.output.print(`readCacheTokens: ${String(tokens.readCacheTokens)}`);
+					this.output.print(`writtenCacheTokens: ${String(tokens.writtenCacheTokens)}`);
+					this.output.print(`outputTokens: ${String(tokens.outputTokens)}`);
 				}
 			} catch (e) {
 				if (isAbortError(e)) continue;

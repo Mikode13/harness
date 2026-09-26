@@ -4,5 +4,5 @@
 		"types": ["node"],
 		"rewriteRelativeImportExtensions": true
 	},
-	"include": ["src", "vitest.config.ts"]
+	"include": ["src", "examples", "vitest.config.ts"]
 }
