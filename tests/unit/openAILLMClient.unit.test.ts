@@ -6,6 +6,7 @@ import {
 	RecoverableError,
 	UnrecoverableError,
 } from '../../src/agent/domain/errors.ts';
+import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import { MaxContextError } from '../../src/llm/domain/errors.ts';
 import { OpenAILLMClient } from '../../src/llm/infrastructure/openAILLMClient.ts';
 import { textResponse, userMessage } from '../support/fakeLlmClient.ts';
@@ -97,6 +98,34 @@ describe('OpenAILLMClient', () => {
 		});
 
 		expect(() => createClient()).toThrow(UnrecoverableError);
+	});
+
+	// #23: a conversation must survive its adapter, because the state that carries it is MiKode's.
+	it('continues a conversation on a new client from the messages an earlier one returned', async () => {
+		const { create } = createSdk(
+			response({ output: [reasoning('greeting them'), message({ text: 'Hi Miki' })] }),
+			response({ output: [message({ text: 'Your name is Miki.' })] }),
+		);
+		const first = await createClient().send([userMessage('My name is Miki.')], signal);
+
+		// What a session manager would persist, handed to a new SDK instance and a new agent.
+		const persisted = [userMessage('My name is Miki.'), first.message];
+		const answer = await new LLMAgent({ llmClient: createClient(), messages: persisted }).run(
+			'What is my name?',
+			signal,
+			vi.fn(),
+		);
+
+		expect(OpenAI).toHaveBeenCalledTimes(2);
+		expect(create.mock.calls[1]?.[0]).toMatchObject({
+			store: false,
+			input: [
+				{ role: 'user', content: 'My name is Miki.' },
+				{ role: 'assistant', content: 'Hi Miki' },
+				{ role: 'user', content: 'What is my name?' },
+			],
+		});
+		expect(answer?.response).toBe('Your name is Miki.');
 	});
 
 	it('sends the whole context statelessly, with text alone and no empty messages', async () => {
