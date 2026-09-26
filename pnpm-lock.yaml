@@ -11,19 +11,16 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.3.220
         version: 0.3.220(@anthropic-ai/sdk@0.115.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.4.3))(zod@4.4.3)
-      '@anthropic-ai/sdk':
-        specifier: ^0.115.0
-        version: 0.115.0(zod@4.4.3)
       '@openai/codex-sdk':
         specifier: ^0.154.0
         version: 0.154.0
-      openai:
-        specifier: ^7.22.0
-        version: 7.23.0(zod@4.4.3)
       zod:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@anthropic-ai/sdk':
+        specifier: ^0.115.0
+        version: 0.115.0(zod@4.4.3)
       '@mikode13/code-quality':
         specifier: 1.0.0
         version: 1.0.0(@typescript-eslint/utils@8.65.0(eslint@10.8.0(jiti@2.6.1)(supports-color@7.2.0))(supports-color@7.2.0)(typescript@6.0.3))(eslint@10.8.0(jiti@2.6.1)(supports-color@7.2.0))(supports-color@7.2.0)
@@ -48,6 +45,9 @@ importers:
       eslint:
         specifier: ^10.8.0
         version: 10.8.0(jiti@2.6.1)(supports-color@7.2.0)
+      openai:
+        specifier: ^7.23.0
+        version: 7.23.0(zod@4.4.3)
       prettier:
         specifier: ^3.9.6
         version: 3.9.6

@@ -9,3 +9,6 @@ coverage/
 
 # OS
 .DS_Store
+
+# Local reference scripts for the provider APIs, kept out of the repository
+examples/

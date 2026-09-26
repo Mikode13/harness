@@ -591,7 +591,7 @@ tags: #mikode-harness #release #versioning
 
 tags: #mikode-harness #api-design #learning
 
-**Decision:** before writing any `src/llm/` type, write reference scripts against the two low-level APIs the adapters will use: `examples/openai-responses-example.ts` and `examples/anthropic-messages-example.ts`. Each runs a stateless two-turn exchange, one tool round trip, a cancellation and an error chain. `examples/model-response-shapes.ts` sets their request and response shapes side by side, as type aliases re-exported from the SDKs, so `tsc` breaks when an SDK changes them.
+**Decision:** before writing any `src/llm/` type, write reference scripts against the two low-level APIs the adapters will use, one for the OpenAI Responses API and one for the Anthropic Messages API. Each runs a stateless two-turn exchange, one tool round trip, a cancellation and an error chain. A third file sets their request and response shapes side by side, as type aliases re-exported from the SDKs, so the compiler breaks when an SDK changes them. The scripts are a working tool for designing the types and writing the adapters, not part of the harness: they live in a git-ignored `examples/` folder.
 
 **Context:** issue #23 replaces the agent SDKs (Codex's `Thread`, Claude's session) with MiKode-owned calls to the model APIs. The `Agent` seam had been designed against two real engines, and the new `LLMClient` needed the same footing. Without the real shapes, the first questions had no answer: what goes into a call, what an answer is made of, and what "stopped" means.
 
@@ -603,7 +603,7 @@ tags: #mikode-harness #api-design #learning
 - **Private reasoning.** Both providers return reasoning that can be replayed but not read.
 - **Cancellation.** Both SDKs raise `APIUserAbortError` on cancellation, whose `name` is `"Error"`, not `"AbortError"`. `isAbortError` does not recognise it, so an adapter that let it through would turn a cancelled run into a retried one. Each adapter must rethrow the signal's own reason when it is aborted.
 
-The examples add `openai` and `@anthropic-ai/sdk` as dependencies before any adapter uses them.
+`openai` and `@anthropic-ai/sdk` are development dependencies until an adapter imports them, so consumers do not install SDKs the published code never loads.
 
 **Lesson:** design an abstraction over two concrete things by looking at both, side by side, in code that compiles against them. A type alias re-exported from an SDK keeps that reference honest; a hand-copied shape goes stale silently.
 
