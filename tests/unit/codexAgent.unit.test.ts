@@ -405,7 +405,8 @@ describe('CodexAgent', () => {
 			const failure = await rejectionOf(createAgent());
 
 			expect(failure).toBeInstanceOf(UnrecoverableError);
-			expect(failure).toMatchObject({ cause: 'quota exhausted' });
+			// No item came first, so it may be a quota or authentication failure with no model work.
+			expect(failure).toMatchObject({ cause: 'quota exhausted', usageUnreported: false });
 		});
 
 		it('reports a thread the SDK refuses to open as unrecoverable', () => {

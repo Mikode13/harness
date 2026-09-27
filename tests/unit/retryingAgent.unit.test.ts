@@ -303,6 +303,19 @@ describe('RetryingAgent', () => {
 
 	// Regression: the retry sent only the failure reason, so an attempt that failed before the
 	// provider registered the turn was retried without the task.
+	// For an agent whose conversation records the prompt, the note would stay there for good.
+	it('retries with the original prompt alone when failures are not noted', async () => {
+		const { agent, run } = fakeAgent(
+			new RecoverableError('flaky', { cause: 'network blip' }),
+			okResponse,
+		);
+		const retryingAgent = new RetryingAgent({ inner: agent, logger, noteFailures: false });
+
+		await retryingAgent.run('ship the feature', signal, callback);
+
+		expect(run).toHaveBeenNthCalledWith(2, 'ship the feature', signal, callback);
+	});
+
 	it('retries with the original request and the previous failure reason', async () => {
 		const { agent, run } = fakeAgent(
 			new RecoverableError('flaky', { cause: 'network blip' }),

@@ -270,6 +270,12 @@ describe('createLLMAgent', () => {
 		expect(response.response).toBe('recovered');
 		expect(create).toHaveBeenCalledTimes(2);
 		expect(logger.warn).toHaveBeenCalledOnce();
+		// The retry resends the prompt alone: a note would stay in the conversation for good.
+		expect(create).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({ input: [{ role: 'user', content: 'prompt' }] }),
+			{ signal },
+		);
 	});
 
 	it('fails to build when the OpenAI client cannot be set up', () => {

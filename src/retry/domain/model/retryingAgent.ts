@@ -17,15 +17,24 @@ export class RetryingAgent implements Agent {
 	private inner: Agent;
 	private maxAttempts: number;
 	private logger: ILogger;
+	private noteFailures: boolean;
 
 	constructor({
 		inner,
 		maxAttempts = 3,
 		logger,
+		noteFailures = true,
 	}: {
 		inner: Agent;
 		maxAttempts?: number;
 		logger: ILogger;
+		/**
+		 * Appends the previous failure to the retried prompt, so a provider session that may
+		 * remember the failed turn is told what happened. Off for an agent that records nothing
+		 * from a failed call, such as `LLMAgent`: there the note would become a permanent user
+		 * message resent on every later turn.
+		 */
+		noteFailures?: boolean;
 	}) {
 		if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
 			throw new RangeError('maxAttempts must be a positive integer');
@@ -34,6 +43,7 @@ export class RetryingAgent implements Agent {
 		this.inner = inner;
 		this.maxAttempts = maxAttempts;
 		this.logger = logger;
+		this.noteFailures = noteFailures;
 	}
 
 	async run(prompt: string, signal: AbortSignal, callback: Callback): Promise<AgentResponse> {
@@ -81,7 +91,9 @@ export class RetryingAgent implements Agent {
 
 				// Keeps the original request: an attempt that failed before the provider registered
 				// the turn left no session that remembers it.
-				lastPrompt = `${prompt}\n\nThe previous attempt failed for the following reason: ${e.cause}`;
+				if (this.noteFailures) {
+					lastPrompt = `${prompt}\n\nThe previous attempt failed for the following reason: ${e.cause}`;
+				}
 				try {
 					treatErrors(
 						() => {

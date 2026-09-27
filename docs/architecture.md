@@ -100,7 +100,7 @@ why it is the only place that knows every provider.
 defaults so a consumer never composes them, and a class that is not exported can change shape
 without a major release.
 
-Three contracts have rules of their own:
+Four contracts have rules of their own:
 
 - **`Tokens` is split into the categories providers bill separately.** `inputTokens`,
   `readCacheTokens`, `writtenCacheTokens` and `outputTokens` never overlap. They are counts,
@@ -186,8 +186,8 @@ each other's.
   `src/orchestration/domain/model/orchestratorAgent.ts` and are not configurable. Nothing has
   needed to vary them yet, and a configuration seam added before a second caller would be an
   abstraction without a consumer.
-- **The mandatory test suite never contacts a provider.** Both engines are exercised through
-  offline fakes of their SDK surfaces. Provider-boundary correctness — authentication, request
+- **The mandatory test suite never contacts a provider.** Both engines and `LLMAgent` with
+  `OpenAILLMClient` are exercised through offline fakes of their SDK surfaces. Provider-boundary correctness — authentication, request
   shape, model availability — is not covered by an automated suite and surfaces through real
   usage instead. `pnpm run dev` is how that boundary gets exercised before a release.
 - **`cli/` is the repository's own consumer, not a published one.** It exists so a change to

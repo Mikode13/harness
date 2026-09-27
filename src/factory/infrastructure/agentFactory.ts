@@ -191,5 +191,6 @@ export function createLLMAgent({
 		llmClient: new OpenAILLMClient({ model, systemPrompt, logger }),
 	});
 
-	return new RetryingAgent({ inner: engine, logger });
+	// LLMAgent records nothing from a failed call, so the original prompt is the whole story.
+	return new RetryingAgent({ inner: engine, logger, noteFailures: false });
 }

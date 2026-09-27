@@ -299,6 +299,23 @@ describe('ClaudeAgent', () => {
 		);
 	});
 
+	// The turn's work stands; only its accounting is unknown, and the warning says so.
+	it('keeps a turn that ended without a result message, without tokens', async () => {
+		vi.mocked(query).mockReturnValue(stream([assistant([{ text: 'partial', type: 'text' }])]));
+		const logger = createLogger();
+
+		const response = await new ClaudeAgent({ model: 'sonnet', logger }).run(
+			'prompt',
+			new AbortController().signal,
+			vi.fn(),
+		);
+
+		expect(response.tokens).toBeUndefined();
+		expect(logger.warn).toHaveBeenCalledWith(
+			'Claude ended a turn without a result message; its usage is unknown',
+		);
+	});
+
 	it('preserves session continuity and result metadata', async () => {
 		const secondSessionId = 'session-2';
 		vi.mocked(query)

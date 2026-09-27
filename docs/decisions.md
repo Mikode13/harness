@@ -679,7 +679,7 @@ tags: #mikode-harness #agent-loops #failure-handling
 
 **Context:** the first version appended the prompt before calling the model. When `send` fails with a `RecoverableError`, `RetryingAgent` runs the same prompt again, so the conversation would hold it twice. The same happened after a refusal, a truncation or a cancellation. A review of PR #38 then found that `getContext()` copied only the array: a client that edited the messages it was sent would silently rewrite the stored history. A test with such a client also found that the prompt reached the client as the same object the agent recorded afterwards.
 
-**Consequences:** a failed call leaves no trace in the conversation, which is what makes `RetryingAgent` safe around `LLMAgent`. Copies cost microseconds per call, against a model call measured in seconds. `FakeLLMClient` also records copies, so a test cannot be fooled by later mutation.
+**Consequences:** a failed call leaves no trace in the conversation, which is what makes `RetryingAgent` safe around `LLMAgent`. For the same reason `createLLMAgent` retries with the original prompt alone (`noteFailures: false`): the note `RetryingAgent` adds for provider sessions would be recorded as the user's message and resent on every later turn, about a failure the model never saw. Copies cost microseconds per call, against a model call measured in seconds. `FakeLLMClient` also records copies, so a test cannot be fooled by later mutation.
 
 **Lesson:** commit state after the operation succeeds, not before: a retry decorator turns every half-recorded failure into a duplicate. A shallow copy protects nothing when the elements are mutable objects.
 

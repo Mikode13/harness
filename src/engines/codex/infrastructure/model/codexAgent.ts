@@ -192,7 +192,8 @@ export class CodexAgent implements Agent {
 			const events = classifiedProviderStream(turn.events, 'Codex stream ended unexpectedly');
 
 			for await (const event of events) {
-				if (event.type.startsWith('item.') || event.type === 'turn.failed') answered = true;
+				// A `turn.failed` alone may be a quota or authentication failure with no model work.
+				if (event.type.startsWith('item.')) answered = true;
 				if (event.type === 'turn.completed') {
 					usage = event.usage;
 					continue;
