@@ -11,6 +11,8 @@ import {
 	type CodexReasoningEffort,
 } from '#src/engines/codex/infrastructure/model/codexAgent';
 import { LLMAgent } from '#src/engines/domain/model/llmAgent';
+import type { LLMClient } from '#src/llm/domain/llm';
+import { ClaudeLLMClient, type ClaudeLLMModel } from '#src/llm/infrastructure/claudeLLMClient';
 import { OpenAILLMClient, type OpenAIModel } from '#src/llm/infrastructure/openAILLMClient';
 import { OrchestratorAgent } from '#src/orchestration/domain/model/orchestratorAgent';
 import { ReviewerDecisionValidator } from '#src/orchestration/infrastructure/model/reviewerDecisionValidator';
@@ -161,8 +163,14 @@ export function createOrchestrator({
 	});
 }
 
+export const llmProviders = ['claude', 'openai'] as const;
+export type LLMProvider = (typeof llmProviders)[number];
+
 export interface CreateLLMAgentOptions {
-	/** Defaults to `'gpt-5.6-luna'`. The OpenAI client rejects a model it does not support. */
+	/**
+	 * Defaults to `'claude-sonnet-5'` on Claude and `'gpt-5.6-luna'` on OpenAI. The provider's
+	 * client rejects a model it does not support.
+	 */
 	model?: string;
 	/** Sent as the model's instructions on every call. */
 	systemPrompt: string;
@@ -170,27 +178,51 @@ export interface CreateLLMAgentOptions {
 	logger?: ILogger;
 }
 
-const defaultLLMAgentModel = 'gpt-5.6-luna' satisfies OpenAIModel;
+const defaultLLMAgentModels = {
+	claude: 'claude-sonnet-5' satisfies ClaudeLLMModel,
+	openai: 'gpt-5.6-luna' satisfies OpenAIModel,
+} as const satisfies Record<LLMProvider, string>;
 
 /**
- * Builds an agent whose conversation MiKode owns, on the OpenAI Responses API, already wrapped
- * in the harness's retry policy. Internal while #23 reaches parity with the Agent SDK engines:
- * it is not exported from `src/index.ts`, and it takes no provider because OpenAI is the only
- * `LLMClient` so far. It runs no tools, so it has no `autoApprove`.
+ * Builds an agent whose conversation MiKode owns, on a provider's model API, already wrapped in
+ * the harness's retry policy. Internal while #23 reaches parity with the Agent SDK engines: it
+ * is not exported from `src/index.ts`. It runs no tools, so it has no `autoApprove`.
  *
- * @throws {InvalidAgentConfigError} for a model the OpenAI client does not support.
- * @throws {UnrecoverableError} when the OpenAI client cannot be set up, for example because
- * `OPENAI_API_KEY` is missing.
+ * @throws {InvalidAgentConfigError} for an unknown provider, or a model its client does not
+ * support.
+ * @throws {UnrecoverableError} when the client cannot be set up, for example because
+ * `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is missing.
  */
-export function createLLMAgent({
-	model = defaultLLMAgentModel,
-	systemPrompt,
-	logger = new Logger(),
-}: CreateLLMAgentOptions): Agent {
-	const engine = new LLMAgent({
-		llmClient: new OpenAILLMClient({ model, systemPrompt, logger }),
-	});
+export function createLLMAgent(
+	provider: LLMProvider,
+	{ model, systemPrompt, logger = new Logger() }: CreateLLMAgentOptions,
+): Agent {
+	let llmClient: LLMClient;
+
+	switch (provider) {
+		case 'claude':
+			llmClient = new ClaudeLLMClient({
+				model: model ?? defaultLLMAgentModels.claude,
+				systemPrompt,
+				logger,
+			});
+			break;
+		case 'openai':
+			llmClient = new OpenAILLMClient({
+				model: model ?? defaultLLMAgentModels.openai,
+				systemPrompt,
+				logger,
+			});
+			break;
+		default: {
+			// Reachable from untyped input.
+			const unknownProvider: never = provider;
+			throw new InvalidAgentConfigError(
+				`"${String(unknownProvider)}" is not an LLM provider; expected one of: ${llmProviders.join(', ')}`,
+			);
+		}
+	}
 
 	// LLMAgent records nothing from a failed call, so the original prompt is the whole story.
-	return new RetryingAgent({ inner: engine, logger, noteFailures: false });
+	return new RetryingAgent({ inner: new LLMAgent({ llmClient }), logger, noteFailures: false });
 }

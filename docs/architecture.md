@@ -44,7 +44,7 @@ provider: it drives whatever `LLMClient` it is given.
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `src/agent/`         | `Agent`, `AgentResponse`, `ProgressEvent`, the error types, and the functions that classify a failure                                                |
 | `src/engines/`       | One adapter per provider: SDK calls, session or thread continuity, and SDK events mapped to `ProgressEvent`; `LLMAgent`, which drives an `LLMClient` |
-| `src/llm/`           | `LLMClient`, the stateless model port; `Message` and its parts; `Conversation`; `MaxContextError`; `OpenAILLMClient`                                 |
+| `src/llm/`           | `LLMClient`, the stateless model port; `Message` and its parts; `Conversation`; `MaxContextError`; `OpenAILLMClient`; `ClaudeLLMClient`              |
 | `src/factory/`       | Provider selection, default model and reasoning effort per role, and composition with the retry decorator                                            |
 | `src/orchestration/` | The three role prompts, the attempt loop, per-run usage totals, and the validated reviewer decision                                                  |
 | `src/retry/`         | The decision to call an inner agent again, and the prompt that carries the previous failure into the next call                                       |
@@ -128,7 +128,7 @@ Four contracts have rules of their own:
   built. The factory does not validate them, so adding a model is a change in one file.
 
 External integrations are `@anthropic-ai/claude-agent-sdk` and `@openai/codex-sdk`, each
-reached only from its own engine, `openai`, reached only from `OpenAILLMClient`, and `zod`, used only by
+reached only from its own engine, `openai` and `@anthropic-ai/sdk`, each reached only from its own `LLMClient`, and `zod`, used only by
 `ReviewerDecisionValidator` behind the `Validator<T>` interface. `ILogger` is the one outbound
 port: the factories default it to a stderr logger, and nothing in `src/` writes to stdout,
 which belongs to the consumer.
@@ -138,9 +138,10 @@ Conversation continuity is each agent's own responsibility and is not modelled a
 `session_id` from the first turn and resumes with it. Either way the provider keeps the
 context server-side. `LLMAgent` is the exception being built for #23: it keeps its own
 `Conversation` in process and sends the whole context on every call, so the model behind it
-holds no state. `OpenAILLMClient` is its first adapter, on the OpenAI Responses API with
-`store: false`. The internal `createLLMAgent` builds the two together, wrapped in retry like
-every other agent; it is not exported from `src/index.ts` until #23 reaches parity.
+holds no state. Its adapters are `OpenAILLMClient`, on the OpenAI Responses API with
+`store: false`, and `ClaudeLLMClient`, on the Anthropic Messages API. The internal
+`createLLMAgent` builds one of them and the agent together for a provider, wrapped in retry
+like every other agent; it is not exported from `src/index.ts` until #23 reaches parity.
 
 ## Important flows
 
@@ -187,7 +188,7 @@ each other's.
   needed to vary them yet, and a configuration seam added before a second caller would be an
   abstraction without a consumer.
 - **The mandatory test suite never contacts a provider.** Both engines and `LLMAgent` with
-  `OpenAILLMClient` are exercised through offline fakes of their SDK surfaces. Provider-boundary correctness — authentication, request
+  both `LLMClient`s are exercised through offline fakes of their SDK surfaces. Provider-boundary correctness — authentication, request
   shape, model availability — is not covered by an automated suite and surfaces through real
   usage instead. `pnpm run dev` is how that boundary gets exercised before a release.
 - **`cli/` is the repository's own consumer, not a published one.** It exists so a change to
@@ -200,8 +201,8 @@ each other's.
   and file-based agent registries are deliberately absent; each waits for a real consumer.
   `LLMAgent`'s `Conversation` lives only as long as the agent: persisting it waits for the
   session manager (#29).
-- **OpenAI reasoning is not replayed.** `OpenAILLMClient` sends text only, so a reasoning
-  model starts each turn without its earlier reasoning until #23 adds provider state.
+- **Reasoning is not replayed.** Both `LLMClient`s send text only, so a reasoning model
+  starts each turn without its earlier reasoning until #23 adds provider state.
 - **`LLMClient` does not stream.** A call returns the whole answer, so an `LLMAgent`
   narrates it only once it is complete. The CLI shows a spinner and then the message, which
   is all it needs; streaming would be a separate method when a consumer needs text as it is

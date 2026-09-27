@@ -613,7 +613,7 @@ tags: #mikode-harness #api-design #learning
 
 tags: #mikode-harness #agent-loops #api-design
 
-**Decision:** `LLMClient` has one method, `send(context, signal)`, and keeps nothing between calls. It receives every message it needs each time and returns `{ message, usage, stopReason }`. The model and the system prompt are fixed when a client is built, not passed per call. `LLMAgent` owns a `Conversation` and is the only piece that knows both it and the client. Implementations are named after what distinguishes them — `FakeLLMClient`, and later `OpenAILLMClient` and `AnthropicLLMClient` — rather than `LLMClientImpl`, because there will be several.
+**Decision:** `LLMClient` has one method, `send(context, signal)`, and keeps nothing between calls. It receives every message it needs each time and returns `{ message, usage, stopReason }`. The model and the system prompt are fixed when a client is built, not passed per call. `LLMAgent` owns a `Conversation` and is the only piece that knows both it and the client. Implementations are named after what distinguishes them — `FakeLLMClient`, and later `OpenAILLMClient` and `ClaudeLLMClient` — rather than `LLMClientImpl`, because there will be several.
 
 **Context:** issue #23. Codex's `Thread` and Claude's `sessionId` were the only memory of a conversation, so it could not be persisted (#29), handed to another provider, or shaped by MiKode. The first draft let the agent push onto a raw `history` array that it then passed to the client. That looked like the agent doing the client's job, and the first instinct was to move the history into the client. What settled it was asking whether the client needs the state to do its job. It does not: both provider APIs accept the full context on every call.
 
@@ -750,6 +750,27 @@ A response without usage is reported as missing, not as zero: zeros would presen
 
 ---
 
+## The Claude client follows the OpenAI client's rules, and the model contract held
+
+tags: #mikode-harness #provider-integration #error-handling #agent-loops
+
+**Decision:** `ClaudeLLMClient` is the second `LLMClient`, on the Anthropic Messages API, and `createLLMAgent` takes a provider, `'claude'` or `'openai'`, like `createAgent`. It follows the rules the OpenAI client set:
+
+- **Text only is replayed.** Summarized thinking becomes a `reasoning` part and never goes back; redacted thinking is dropped silently. The system prompt goes in the API's `system` field.
+- **Its own model list.** It accepts the Messages API's model IDs (`claude-opus-5-5`, `claude-fable-5-1`, `claude-sonnet-5`), not the Agent SDK's aliases such as `opus`, which the API answers with a 404. The list lives in the client, so `src/llm` does not depend on the engine it is meant to replace.
+- **Stop reasons.** `end_turn` is `completed`, `max_tokens` is `truncated` and `refusal` is `refused`. `model_context_window_exceeded` becomes `MaxContextError`, because the agent must compact. `tool_use`, `pause_turn` and `stop_sequence` need tools, server tools or stop sequences that the client never sends, so they are an `UnrecoverableError` carrying the call's tokens.
+- **Usage.** Anthropic counts cache reads and writes apart from `input_tokens`, the reverse of OpenAI, so the fields map one to one. A missing cache count is zero, and zero output is still a reported count.
+- **Failures.** A 400 whose message says the prompt is too long becomes `MaxContextError`, because Anthropic gives it no code of its own. A `billing_error`, `authentication_error` or `permission_error`, or a 400, 401, 403, 404, 413 or 422, is an `UnrecoverableError`. A rate limit, an overload (529), a 5xx or a network failure stays recoverable.
+- **A fixed `max_tokens` of 16,000.** The API requires it and adaptive thinking spends from it. Above roughly 21,000 the SDK refuses a request that is not streamed.
+
+**Context:** a second provider was the test of whether `LLMClient`, `Message`, `StopReason` and `Tokens` were shaped after OpenAI. None of them changed: every Anthropic difference — the separate system prompt, the stop reasons, the cache accounting — fitted inside the adapter. Not replaying thinking is safe for the same reason as on OpenAI: Anthropic requires earlier thinking blocks only to continue a turn that called a tool, and no tools are sent yet. A two-turn call against the real API kept the conversation across turns, and a harder prompt returned its thinking as a `reasoning` part.
+
+**Alternatives considered:** reusing `claudeModels` from the Agent SDK engine and translating aliases to IDs — rejected: it couples the new path to the engine it replaces, and an alias names a different model whenever Anthropic moves it. `max_tokens` as a constructor option — deferred until a caller needs to vary it. Treating a rate limit as unrecoverable — rejected: a 429 is transient, and on Anthropic an empty balance arrives as `billing_error`, not as a rate limit.
+
+**Consequences:** `@anthropic-ai/sdk` moves from `devDependencies` to `dependencies`, because the published package now imports it. Tools will need thinking blocks with their `signature` replayed within a tool-using turn, which is part of the provider-state slice of #23. `createLLMAgent` changes signature, which is internal and not exported.
+
+---
+
 ## Every token a run spends travels with its end
 
 tags: #mikode-harness #api-surface #observability #error-handling
@@ -772,20 +793,20 @@ tags: #mikode-harness #api-surface #observability #error-handling
 
 ---
 
-## The OpenAI SDK keeps its transport retries under `RetryingAgent`
+## The provider SDKs keep their transport retries under `RetryingAgent`
 
 tags: #mikode-harness #provider-integration #error-handling
 
-**Decision:** `OpenAILLMClient` builds its SDK client with the default retry policy, and `createLLMAgent` still wraps the agent in `RetryingAgent`. Each layer does a different job:
+**Decision:** `OpenAILLMClient` and `ClaudeLLMClient` build their SDK clients with the default retry policy, and `createLLMAgent` still wraps the agent in `RetryingAgent`. Each layer does a different job:
 
 - **The SDK** retries transport failures: dropped connections, 429s and 5xx responses. It backs off exponentially and honours `Retry-After`.
-- **`RetryingAgent`** retries what the SDK cannot see: a response that arrives as HTTP 200 with `status: 'failed'` and a transient code, and any other failure the client classified as recoverable.
+- **`RetryingAgent`** retries what the SDK cannot see: an OpenAI response that arrives as HTTP 200 with `status: 'failed'` and a transient code, and any other failure the client classified as recoverable.
 
 **Context:** an AI review of #36 pointed out that the two layers stack. A persistent transient failure can make up to nine requests: three agent attempts, each with the SDK's own retries. The retries the SDK absorbs are not logged, contrary to "log what you absorb". The SDK logs them at `info`, the same level it uses for every successful response, so they could only be picked out by matching the message text.
 
 **Alternatives considered:** turning the SDK's retries off (`maxRetries: 0`), so `RetryingAgent` owns every retry and logs it. Rejected for now: `RetryingAgent` retries immediately, without backoff or `Retry-After`, so a rate limit would use up its three attempts at once and end the run as `UnrecoverableError`.
 
-**Consequences:** a stateless call has no side effects and a failed HTTP request is not billed, so nine requests cost time but no tokens. The SDK's retries stay invisible to the logger. The follow-up is to give `RetryingAgent` a backoff that honours a provider's retry hint, and then turn the SDK's retries off so one layer owns and logs them all.
+**Consequences:** a stateless call has no side effects and a failed HTTP request is not billed, so nine requests cost time but no tokens. The Anthropic SDK retries the same way, two retries with backoff and `Retry-After` by default, so `ClaudeLLMClient` stacks exactly as the OpenAI client does. The SDK's retries stay invisible to the logger. The follow-up is to give `RetryingAgent` a backoff that honours a provider's retry hint, and then turn the SDK's retries off so one layer owns and logs them all.
 
 ---
 
