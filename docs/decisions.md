@@ -731,3 +731,19 @@ Keeping the promise would mean per-model usage records, split cache lifetimes, a
 **Consequences:** a breaking change to `AgentResponse`, so it ships with a breaking marker. `CodexAgent` subtracts both cache counters from `input_tokens`, `OrchestratorAgent` sums all four per run, and the CLI prints all four. Every future adapter converts to the same meaning, including the OpenAI Responses API, which also reports cached tokens inside `input_tokens`.
 
 **Lesson:** when two providers use the same field name, check that they mean the same thing before mapping them. And document what a contract guarantees, not what it might enable: an unkept promise in a public type is a bug report waiting to happen.
+
+---
+
+## The OpenAI client replays text only, and classifies OpenAI's failures itself
+
+tags: #mikode-harness #provider-integration #error-handling
+
+**Decision:** `OpenAILLMClient` sends each message as its text parts joined into one string and leaves reasoning parts out of the request. It asks for reasoning summaries and turns them into `reasoning` parts, but does not request `encrypted_content`. Before the shared classifier sees a failure, it maps OpenAI's own: `context_length_exceeded` becomes `MaxContextError`, and an exhausted quota or spend limit (`insufficient_quota`, `credit_balance_exhausted`, `project_spend_limit_exceeded`) or a 400, 401, 403, 404 or 422 becomes `UnrecoverableError`. A rate limit, a 5xx or a network failure stays recoverable. A response that comes back `failed` is classified by its own code the same way: `server_error` and `rate_limit_exceeded` are recoverable, anything else is not.
+
+**Context:** with `store: false`, OpenAI can replay reasoning only from the encrypted item it returned, and a `Message` has nowhere to keep it. A summary sent back as text would be a different input, not the model's reasoning. `classifyProviderFailure` treats any unclassified failure as recoverable, so without the adapter's mapping a wrong API key or an exhausted quota would be retried to exhaustion. The SDK's abort error is named `Error`, so the client rethrows the signal's reason instead.
+
+**Alternatives considered:** keeping `encrypted_content` in the message — deferred to the provider-state slice of #23, which must decide where state one provider can read and another cannot lives. Making `Message` a class that renders itself for a provider — rejected: the domain would learn every provider's format, and `structuredClone`, which the conversation relies on, drops a class's prototype.
+
+A response without usage is reported as missing, not as zero: zeros would present a call that may have been billed as free, so `LLMAgent` returns `undefined` for it, as `CodexAgent` already does for a turn without usage.
+
+**Consequences:** a reasoning model starts each turn without its earlier reasoning, which costs some quality on multi-turn work until provider state exists. Unknown output items are logged and left out, which is correct while no tools are sent. `openai` moves to `dependencies`.

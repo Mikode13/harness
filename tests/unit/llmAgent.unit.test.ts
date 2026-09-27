@@ -126,6 +126,21 @@ describe('LLMAgent', () => {
 		},
 	);
 
+	it('returns undefined without narrating or remembering an answer with no usage', async () => {
+		const llmClient = new FakeLLMClient(
+			textResponse('unaccounted', { usage: null }),
+			textResponse('answer'),
+		);
+		const agent = new LLMAgent({ llmClient });
+		const callback = vi.fn();
+
+		await expect(agent.run('first', signal, callback)).resolves.toBe(undefined);
+		await agent.run('second', signal, vi.fn());
+
+		expect(callback).not.toHaveBeenCalled();
+		expect(llmClient.contexts[1]).toEqual([userMessage('second')]);
+	});
+
 	// RetryingAgent runs the same prompt again after a recoverable failure; the prompt of the
 	// failed attempt must not still be in the conversation when it does.
 	it('makes a provider failure recoverable and lets a retry send the prompt once', async () => {

@@ -54,6 +54,10 @@ export class LLMAgent implements Agent {
 			});
 		}
 
+		// Like a Codex turn without usage: the call was made but cannot be accounted for, so the
+		// run produced nothing usable, and an answer that is not valid stays out of the conversation.
+		if (!response.usage) return undefined;
+
 		this.conversation.addExchange(userMessage, response.message);
 
 		for (const part of response.message.content) {

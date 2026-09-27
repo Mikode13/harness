@@ -35,8 +35,7 @@ The split is deliberately shallow. `domain` holds what does not know a provider 
 the `Agent` contract, the error types, the classification helpers, the orchestrator and the
 retry decorator. `infrastructure` holds what binds to something concrete: a provider SDK, a
 Zod schema, `process.stderr`. A module has only the halves it needs, which is why
-each provider engine is infrastructure only, `src/llm/` has no provider adapter yet, and
-`src/retry/` is domain only. `LLMAgent` sits in `src/engines/domain/` because it knows no
+each provider engine is infrastructure only and `src/retry/` is domain only. `LLMAgent` sits in `src/engines/domain/` because it knows no
 provider: it drives whatever `LLMClient` it is given.
 
 ## Responsibilities and boundaries
@@ -45,7 +44,7 @@ provider: it drives whatever `LLMClient` it is given.
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `src/agent/`         | `Agent`, `AgentResponse`, `ProgressEvent`, the error types, and the functions that classify a failure                                                |
 | `src/engines/`       | One adapter per provider: SDK calls, session or thread continuity, and SDK events mapped to `ProgressEvent`; `LLMAgent`, which drives an `LLMClient` |
-| `src/llm/`           | `LLMClient`, the stateless model port; `Message` and its parts; `Conversation`; `MaxContextError`                                                    |
+| `src/llm/`           | `LLMClient`, the stateless model port; `Message` and its parts; `Conversation`; `MaxContextError`; `OpenAILLMClient`                                 |
 | `src/factory/`       | Provider selection, default model and reasoning effort per role, and composition with the retry decorator                                            |
 | `src/orchestration/` | The three role prompts, the attempt loop, per-run usage totals, and the validated reviewer decision                                                  |
 | `src/retry/`         | The decision to call an inner agent again, and the prompt that carries the previous failure into the next call                                       |
@@ -90,7 +89,7 @@ before either error type.
 
 Dependencies point inward. `src/engines/` and `src/factory/` depend on `src/agent/`;
 `src/agent/` depends on nothing but `src/shared/`. `src/llm/` depends on `src/agent/` for
-the error types and on `src/shared/` for `Tokens`, and imports no SDK; `LLMAgent` depends on
+the error types and on `src/shared/` for `Tokens`; only its `infrastructure` imports an SDK. `LLMAgent` depends on
 `src/llm/`, and `src/llm/` knows nothing about agents. No module imports `src/factory/`, which is
 why it is the only place that knows every provider.
 
@@ -128,7 +127,9 @@ Conversation continuity is each agent's own responsibility and is not modelled a
 `session_id` from the first turn and resumes with it. Either way the provider keeps the
 context server-side. `LLMAgent` is the exception being built for #23: it keeps its own
 `Conversation` in process and sends the whole context on every call, so the model behind it
-holds no state. It has no provider adapter and is not registered in the factory yet.
+holds no state. `OpenAILLMClient` is its first adapter, on the OpenAI Responses API with
+`store: false`. The internal `createLLMAgent` builds the two together, wrapped in retry like
+every other agent; it is not exported from `src/index.ts` until #23 reaches parity.
 
 ## Important flows
 
@@ -152,7 +153,9 @@ reaches the consumer through one stream.
 
 **A model-backed turn.** `LLMAgent.run` sends the stored context plus the new prompt to its
 `LLMClient`, inside `classifyProviderFailure`. A `refused` or `truncated` stop ends the run
-with `UnrecoverableError`. Only a completed answer is recorded, together with its prompt, so
+with `UnrecoverableError`. An answer whose client reported no usage cannot be accounted for,
+so the run returns `undefined` without recording or narrating it, as a Codex turn without
+usage does. Only a completed answer is recorded, together with its prompt, so
 a failed call leaves the conversation untouched and a retry of the same prompt cannot appear
 twice. Each part of the answer is then narrated as `reasoning` or `agentMessage` through
 `classifyHostFailure`; the response carries the text parts alone. The agent emits no
@@ -187,6 +190,8 @@ each other's.
   and file-based agent registries are deliberately absent; each waits for a real consumer.
   `LLMAgent`'s `Conversation` lives only as long as the agent: persisting it waits for the
   session manager (#29).
+- **OpenAI reasoning is not replayed.** `OpenAILLMClient` sends text only, so a reasoning
+  model starts each turn without its earlier reasoning until #23 adds provider state.
 - **`LLMClient` does not stream.** A call returns the whole answer, so an `LLMAgent`
   narrates it only once it is complete. The CLI shows a spinner and then the message, which
   is all it needs; streaming would be a separate method when a consumer needs text as it is
