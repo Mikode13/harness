@@ -35,7 +35,8 @@ const maxOutputTokens = 16_000;
 // The request itself is wrong or not allowed, so sending it again cannot succeed.
 const unrecoverableStatuses = [400, 401, 403, 404, 413, 422];
 
-// Out of credit. The account stays blocked however often the request is sent.
+// The account is out of credit, or its key cannot make the request. Resending cannot fix
+// either, whatever status the error arrives with.
 const unrecoverableErrorTypes = ['billing_error', 'authentication_error', 'permission_error'];
 
 /**
