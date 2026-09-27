@@ -1,5 +1,5 @@
-import type { Agent, Callback } from '../src/index.ts';
-import { UnrecoverableError, isAbortError } from '../src/index.ts';
+import type { Agent, Callback, Tokens } from '../src/index.ts';
+import { RecoverableError, UnrecoverableError, isAbortError } from '../src/index.ts';
 import type { IOutput } from './output.ts';
 import type { IPromptEmitter } from './promptEmitter.ts';
 
@@ -39,17 +39,20 @@ export class ConversationLoop {
 					this.callback,
 				);
 
-				if (agentResponse) {
-					this.output.print('usage:');
-					this.output.print(`duration: ${String(agentResponse.duration)}s`);
-					const { tokens } = agentResponse;
-					this.output.print(`inputTokens: ${String(tokens.inputTokens)}`);
-					this.output.print(`readCacheTokens: ${String(tokens.readCacheTokens)}`);
-					this.output.print(`writtenCacheTokens: ${String(tokens.writtenCacheTokens)}`);
-					this.output.print(`outputTokens: ${String(tokens.outputTokens)}`);
-				}
+				this.output.print('usage:');
+				this.output.print(`duration: ${String(agentResponse.duration)}s`);
+				this.printTokens(agentResponse.tokens);
 			} catch (e) {
 				if (isAbortError(e)) continue;
+
+				// A failed run was billed for whatever it spent before failing.
+				if (
+					(e instanceof RecoverableError || e instanceof UnrecoverableError) &&
+					(e.tokens || e.usageUnreported)
+				) {
+					this.output.print('usage before the failure:');
+					this.printTokens(e.tokens);
+				}
 
 				if (e instanceof UnrecoverableError) {
 					this.output.printError(e);
@@ -61,6 +64,18 @@ export class ConversationLoop {
 				this.callback({ type: 'turnEnded' });
 			}
 		}
+	}
+
+	private printTokens(tokens: Tokens | undefined): void {
+		if (!tokens) {
+			this.output.print('tokens: unknown, a call did not report its usage');
+			return;
+		}
+
+		this.output.print(`inputTokens: ${String(tokens.inputTokens)}`);
+		this.output.print(`readCacheTokens: ${String(tokens.readCacheTokens)}`);
+		this.output.print(`writtenCacheTokens: ${String(tokens.writtenCacheTokens)}`);
+		this.output.print(`outputTokens: ${String(tokens.outputTokens)}`);
 	}
 
 	cancel(): void {

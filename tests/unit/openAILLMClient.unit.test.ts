@@ -125,7 +125,7 @@ describe('OpenAILLMClient', () => {
 				{ role: 'user', content: 'What is my name?' },
 			],
 		});
-		expect(answer?.response).toBe('Your name is Miki.');
+		expect(answer.response).toBe('Your name is Miki.');
 	});
 
 	it('sends the whole context statelessly, with text alone and no empty messages', async () => {
@@ -211,6 +211,8 @@ describe('OpenAILLMClient', () => {
 		await expect(createClient(logger).send([userMessage('prompt')], signal)).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			cause: 'log sink closed',
+			// The call was billed whatever the logger did.
+			tokens: { inputTokens: 10, readCacheTokens: 60, writtenCacheTokens: 30, outputTokens: 20 },
 		});
 	});
 
@@ -257,6 +259,48 @@ describe('OpenAILLMClient', () => {
 		expect(result.stopReason).toBe(stopReason);
 	});
 
+	// OpenAI answered, so the call may have been billed: the run's count is unknown.
+	it('marks a failed response without usage as unreported', async () => {
+		createSdk(
+			response({
+				status: 'failed',
+				error: { code: 'invalid_prompt', message: 'The prompt was rejected' },
+				usage: undefined,
+			}),
+		);
+
+		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			tokens: undefined,
+			usageUnreported: true,
+		});
+	});
+
+	it('marks an answer without usage as unreported when warning about it fails', async () => {
+		const logger = {
+			warn: vi.fn(() => {
+				throw new Error('log sink closed');
+			}),
+		};
+		createSdk(response({ usage: undefined }));
+
+		await expect(createClient(logger).send([userMessage('prompt')], signal)).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			cause: 'log sink closed',
+			usageUnreported: true,
+		});
+	});
+
+	// No answer arrived, so nothing can be missing from the count.
+	it('does not mark a connection failure as unreported', async () => {
+		createSdk(new Error('socket hang up'));
+
+		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+			constructor: RecoverableError,
+			usageUnreported: false,
+		});
+	});
+
 	it('makes a failed response unrecoverable with its error', async () => {
 		createSdk(
 			response({
@@ -268,6 +312,8 @@ describe('OpenAILLMClient', () => {
 		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			cause: 'The prompt was rejected',
+			// A failed response may still have been billed.
+			tokens: { inputTokens: 10, readCacheTokens: 60, writtenCacheTokens: 30, outputTokens: 20 },
 		});
 	});
 

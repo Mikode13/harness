@@ -1,10 +1,18 @@
 import type { Tokens } from '../../shared/domain/tokens.ts';
 
-// We tried to add cost, but that would imply to manage it manually for some agents.
+/**
+ * How a run ended when it did not fail. Every token a run spends travels with its end: here
+ * when it finishes, in `RecoverableError.tokens` or `UnrecoverableError.tokens` when it fails.
+ */
 export interface AgentResponse {
+	/** The final text. Empty when the run produced none, for example a turn that only edited files. */
 	response: string;
-	tokens: Tokens;
-	// time in seconds
+	/**
+	 * Missing when any call in the run completed without reporting usage, which is not the same
+	 * as zero: a partial sum would look complete.
+	 */
+	tokens?: Tokens;
+	/** Wall-clock seconds the consumer waited for the run, retries and every role included. */
 	duration: number;
 }
 
@@ -44,5 +52,5 @@ export type ProgressEvent =
  * consumers check for it before either error type.
  */
 export interface Agent {
-	run(prompt: string, signal: AbortSignal, callback: Callback): Promise<AgentResponse | undefined>;
+	run(prompt: string, signal: AbortSignal, callback: Callback): Promise<AgentResponse>;
 }

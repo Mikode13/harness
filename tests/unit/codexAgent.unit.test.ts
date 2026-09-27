@@ -210,22 +210,36 @@ describe('CodexAgent', () => {
 		expect(Codex).not.toHaveBeenCalled();
 	});
 
-	it.each([
-		['without an agent message', [{ type: 'turn.completed', usage: usage() }] as ThreadEvent[]],
-		[
-			'without completed usage',
-			[completed({ id: 'message-1', text: 'partial', type: 'agent_message' })] as ThreadEvent[],
-		],
-	])('returns no response for an incomplete stream %s', async (_case, events) => {
-		createSdk(events);
+	// A turn that only ran commands or edited files was still billed.
+	it('answers with empty text and the usage for a turn without an agent message', async () => {
+		createSdk([{ type: 'turn.completed', usage: usage() }]);
 
-		await expect(
-			new CodexAgent({ model: 'gpt-5.6-sol', logger: createLogger() }).run(
-				'prompt',
-				new AbortController().signal,
-				vi.fn(),
-			),
-		).resolves.toBeUndefined();
+		const response = await new CodexAgent({ model: 'gpt-5.6-sol', logger: createLogger() }).run(
+			'prompt',
+			new AbortController().signal,
+			vi.fn(),
+		);
+
+		expect(response).toMatchObject({
+			response: '',
+			tokens: { inputTokens: 10, readCacheTokens: 2, writtenCacheTokens: 1, outputTokens: 8 },
+		});
+	});
+
+	// The turn's work stands; only its accounting is unknown, and the warning says so.
+	it('keeps a turn that reported no usage, without tokens', async () => {
+		createSdk([completed({ id: 'message-1', text: 'partial', type: 'agent_message' })]);
+		const logger = createLogger();
+
+		const response = await new CodexAgent({ model: 'gpt-5.6-sol', logger }).run(
+			'prompt',
+			new AbortController().signal,
+			vi.fn(),
+		);
+
+		expect(response.response).toBe('partial');
+		expect(response.tokens).toBeUndefined();
+		expect(logger.warn).toHaveBeenCalledWith('Codex ended a turn without reporting usage');
 	});
 
 	it.each([
@@ -329,7 +343,24 @@ describe('CodexAgent', () => {
 			const failure = await rejectionOf(createAgent());
 
 			expect(failure).toBeInstanceOf(RecoverableError);
-			expect(failure).toMatchObject({ cause: 'socket hang up' });
+			// Codex never answered, so nothing can be missing from the count.
+			expect(failure).toMatchObject({ cause: 'socket hang up', usageUnreported: false });
+		});
+
+		// Codex already produced an item, so the turn was billed without a count.
+		it('marks a turn that failed after answering as unreported', async () => {
+			const { runStreamed } = createSdk();
+			runStreamed.mockResolvedValue(
+				streamedTurn([
+					completed({ id: 'message-1', text: 'working', type: 'agent_message' }),
+					{ type: 'turn.failed', error: { message: 'model failed' } },
+				]),
+			);
+
+			const failure = await rejectionOf(createAgent());
+
+			expect(failure).toBeInstanceOf(UnrecoverableError);
+			expect(failure).toMatchObject({ cause: 'model failed', usageUnreported: true });
 		});
 
 		it('classifies a stream that fails part-way through a turn', async () => {

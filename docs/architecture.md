@@ -108,6 +108,17 @@ Three contracts have rules of their own:
   model that spent them. Providers disagree on whether cached tokens are part of
   their input count, so each engine converts to this meaning: Codex subtracts both cache
   counters from its `input_tokens`, while Claude already reports them apart.
+- **Every token a run spends travels with its end.** `run()` always resolves to an
+  `AgentResponse`, whose `response` is empty when the run produced no text, or rejects with a
+  `RecoverableError` or `UnrecoverableError` whose `tokens` hold what the run spent before
+  failing. `RetryingAgent` adds failed attempts to whichever ends the run, and
+  `OrchestratorAgent` adds every earlier role. `tokens` is missing, not zero, when any response
+  in the run came without usage: its call was billed, so a partial sum would look complete.
+  A failure tells the two cases apart. The engine sets `usageUnreported` when the provider
+  answered without usage before the run failed, which makes every total that includes it
+  unknown. A failure that never got an answer, such as a dropped connection, adds nothing. A
+  cancellation carries no tokens: an `AbortError` must propagate unchanged. `duration` is each
+  layer's own wall clock, so a retried run or a whole workflow reports what the consumer waited.
 
 - **`ProgressEvent` grows in minor releases.** Consumers are told to render the types they
   know and ignore the rest, so a new type must never carry information a consumer needs to be
@@ -153,9 +164,8 @@ reaches the consumer through one stream.
 
 **A model-backed turn.** `LLMAgent.run` sends the stored context plus the new prompt to its
 `LLMClient`, inside `classifyProviderFailure`. A `refused` or `truncated` stop ends the run
-with `UnrecoverableError`. An answer whose client reported no usage cannot be accounted for,
-so the run returns `undefined` without recording or narrating it, as a Codex turn without
-usage does. Only a completed answer is recorded, together with its prompt, so
+with `UnrecoverableError` that carries the call's usage. An answer whose client reported no
+usage is kept, and only its `tokens` are missing. Only a completed answer is recorded, together with its prompt, so
 a failed call leaves the conversation untouched and a retry of the same prompt cannot appear
 twice. Each part of the answer is then narrated as `reasoning` or `agentMessage` through
 `classifyHostFailure`; the response carries the text parts alone. The agent emits no

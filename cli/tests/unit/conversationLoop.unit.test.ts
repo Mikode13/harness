@@ -84,15 +84,54 @@ describe('ConversationLoop', () => {
 		expect(eventTypes).toEqual(['turnStarted', 'turnEnded']);
 	});
 
-	it('does not print usage when the agent has no response', async () => {
+	it('says the tokens are unknown when a call did not report its usage', async () => {
 		const promptEmitter = createPromptEmitter('hello', { error: abortError() });
 		const output = createOutput();
-		const agent: Agent = { run: vi.fn().mockResolvedValue(undefined) };
+		const agent: Agent = { run: vi.fn().mockResolvedValue(response({ tokens: undefined })) };
 		const loop = new ConversationLoop(agent, vi.fn(), promptEmitter, output);
 
 		await loop.start();
 
-		expect(output.print).not.toHaveBeenCalled();
+		expect(output.print).toHaveBeenCalledWith('tokens: unknown, a call did not report its usage');
+	});
+
+	it('says the tokens of a failed run are unknown when a call did not report its usage', async () => {
+		const promptEmitter = createPromptEmitter('hello');
+		const output = createOutput();
+		const failure = new UnrecoverableError('broken', { cause: 'fatal', usageUnreported: true });
+		const loop = new ConversationLoop(
+			{ run: vi.fn().mockRejectedValue(failure) },
+			vi.fn(),
+			promptEmitter,
+			output,
+		);
+
+		await loop.start();
+
+		expect(output.print).toHaveBeenCalledWith('usage before the failure:');
+		expect(output.print).toHaveBeenCalledWith('tokens: unknown, a call did not report its usage');
+	});
+
+	it('prints the tokens a failed run spent before failing', async () => {
+		const promptEmitter = createPromptEmitter('hello');
+		const output = createOutput();
+		const failure = new UnrecoverableError('Max attempts exhausted', {
+			cause: 'quota',
+			tokens: { inputTokens: 3, readCacheTokens: 2, writtenCacheTokens: 1, outputTokens: 4 },
+		});
+		const loop = new ConversationLoop(
+			{ run: vi.fn().mockRejectedValue(failure) },
+			vi.fn(),
+			promptEmitter,
+			output,
+		);
+
+		await loop.start();
+
+		expect(output.print).toHaveBeenCalledWith('usage before the failure:');
+		expect(output.print).toHaveBeenCalledWith('inputTokens: 3');
+		expect(output.print).toHaveBeenCalledWith('outputTokens: 4');
+		expect(output.printError).toHaveBeenCalledWith(failure);
 	});
 
 	it('exits immediately on an interrupt while idle at the prompt', async () => {

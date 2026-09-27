@@ -17,3 +17,21 @@ export interface Tokens {
 	/** Every generated token, reasoning included. */
 	outputTokens: number;
 }
+
+/**
+ * Sums two counts where a missing side adds nothing, as for a failure that never got an
+ * answer. A call the provider answered without usage is different: it was billed, so the
+ * layers that accumulate track it apart (`usageUnreported` on an error, missing `tokens` on a
+ * response) and report the whole total as unknown, never as this partial sum.
+ */
+export function addTokens(a: Tokens | undefined, b: Tokens | undefined): Tokens | undefined {
+	if (!a) return b;
+	if (!b) return a;
+
+	return {
+		inputTokens: a.inputTokens + b.inputTokens,
+		readCacheTokens: a.readCacheTokens + b.readCacheTokens,
+		writtenCacheTokens: a.writtenCacheTokens + b.writtenCacheTokens,
+		outputTokens: a.outputTokens + b.outputTokens,
+	};
+}

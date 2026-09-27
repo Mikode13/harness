@@ -9,6 +9,7 @@ import {
 	InvalidAgentConfigError,
 	RecoverableError,
 	UnrecoverableError,
+	withSpentTokens,
 } from '../../agent/domain/errors.ts';
 import {
 	classifyHostFailure,
@@ -131,14 +132,24 @@ function toTokens(usage: ResponseUsage | undefined, logger: ILogger): Tokens | u
 }
 
 function toLLMResponse(response: Response, logger: ILogger): LLMResponse {
-	return {
-		message: {
-			role: 'assistant',
-			content: response.output.flatMap(item => describeItem(item, logger)),
-		},
-		usage: toTokens(response.usage, logger),
-		stopReason: toStopReason(response),
-	};
+	let usage: Tokens | undefined;
+
+	try {
+		// Inside the try: it warns when the usage is missing, and that warning can throw too.
+		usage = toTokens(response.usage, logger);
+		return {
+			message: {
+				role: 'assistant',
+				content: response.output.flatMap(item => describeItem(item, logger)),
+			},
+			usage,
+			stopReason: toStopReason(response),
+		};
+	} catch (error) {
+		// The call was billed whether the response failed or a logger did while mapping it, and
+		// an answer without usage leaves the run's count unknown.
+		throw withSpentTokens(error, usage, !response.usage);
+	}
 }
 
 function classifyOpenAIFailure(error: unknown): Error {
