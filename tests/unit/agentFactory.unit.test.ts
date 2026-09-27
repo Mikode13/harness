@@ -2,10 +2,13 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query } from '@anthropic-ai/claude-agent-sdk';
 import { Codex } from '@openai/codex-sdk';
 import type { Thread, ThreadEvent } from '@openai/codex-sdk';
+import OpenAI from 'openai';
+import type { Response } from 'openai/resources/responses/responses';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { InvalidAgentConfigError } from '../../src/agent/domain/errors.ts';
+import { InvalidAgentConfigError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
 import {
 	createAgent,
+	createLLMAgent,
 	createOrchestrator,
 	isAgentProvider,
 	type AgentProvider,
@@ -13,6 +16,11 @@ import {
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 vi.mock('@openai/codex-sdk', () => ({ Codex: vi.fn() }));
+// The error classes stay real: the OpenAI client classifies failures by them.
+vi.mock('openai', async importOriginal => ({
+	...(await importOriginal<Record<string, unknown>>()),
+	default: vi.fn(),
+}));
 
 const signal = new AbortController().signal;
 
@@ -83,6 +91,38 @@ function codexReplying(text: string) {
 	});
 
 	return startThread;
+}
+
+/** Every OpenAI response answers `text`; returns the spy that records each request. */
+function openAIReplying(text: string) {
+	const create = vi.fn(() =>
+		Promise.resolve({
+			status: 'completed',
+			incomplete_details: null,
+			error: null,
+			output: [
+				{
+					type: 'message',
+					id: 'msg-1',
+					role: 'assistant',
+					status: 'completed',
+					content: [{ type: 'output_text', text, annotations: [] }],
+				},
+			],
+			usage: {
+				input_tokens: 1,
+				input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+				output_tokens: 1,
+				output_tokens_details: { reasoning_tokens: 0 },
+				total_tokens: 2,
+			},
+		} as unknown as Response),
+	);
+	vi.mocked(OpenAI).mockImplementation(function () {
+		return { responses: { create } } as unknown as OpenAI;
+	});
+
+	return create;
 }
 
 function codexModels(startThread: ReturnType<typeof codexReplying>): string[] {
@@ -176,7 +216,7 @@ describe('createAgent', () => {
 
 		const response = await createAgent('claude', { logger }).run('prompt', signal, vi.fn());
 
-		expect(response?.response).toBe('recovered');
+		expect(response.response).toBe('recovered');
 		expect(query).toHaveBeenCalledTimes(2);
 		expect(logger.warn).toHaveBeenCalledOnce();
 	});
@@ -189,6 +229,63 @@ describe('createAgent', () => {
 		await createAgent('claude').run('prompt', signal, vi.fn());
 
 		expect(warn).toHaveBeenCalledWith(unknownMessage, 'Unknown Claude message type');
+	});
+});
+
+describe('createLLMAgent', () => {
+	it('sends the system prompt with the default model', async () => {
+		const create = openAIReplying('hi');
+
+		const response = await createLLMAgent({
+			systemPrompt: 'Be brief.',
+			logger: createLogger(),
+		}).run('prompt', signal, vi.fn());
+
+		expect(response.response).toBe('hi');
+		expect(create).toHaveBeenCalledWith(
+			expect.objectContaining({ model: 'gpt-5.6-luna', instructions: 'Be brief.' }),
+			{ signal },
+		);
+	});
+
+	it('rejects a model the OpenAI client does not support', () => {
+		openAIReplying('hi');
+
+		expect(() =>
+			createLLMAgent({ model: 'opus', systemPrompt: '', logger: createLogger() }),
+		).toThrow(InvalidAgentConfigError);
+	});
+
+	it('retries a recoverable provider failure inside the agent it returns', async () => {
+		const create = openAIReplying('recovered');
+		create.mockRejectedValueOnce(new Error('socket hang up'));
+		const logger = createLogger();
+
+		const response = await createLLMAgent({ systemPrompt: '', logger }).run(
+			'prompt',
+			signal,
+			vi.fn(),
+		);
+
+		expect(response.response).toBe('recovered');
+		expect(create).toHaveBeenCalledTimes(2);
+		expect(logger.warn).toHaveBeenCalledOnce();
+		// The retry resends the prompt alone: a note would stay in the conversation for good.
+		expect(create).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({ input: [{ role: 'user', content: 'prompt' }] }),
+			{ signal },
+		);
+	});
+
+	it('fails to build when the OpenAI client cannot be set up', () => {
+		vi.mocked(OpenAI).mockImplementation(function () {
+			throw new Error('The OPENAI_API_KEY environment variable is missing');
+		});
+
+		expect(() => createLLMAgent({ systemPrompt: '', logger: createLogger() })).toThrow(
+			UnrecoverableError,
+		);
 	});
 });
 

@@ -115,9 +115,12 @@ const render = (event: ProgressEvent) => {
 
 try {
 	const result = await agent.run('Summarize this repository.', controller.signal, render);
-	console.log(result?.duration, result?.inputTokens, result?.outputTokens);
+	// `response` is empty when the run produced no text; `tokens` is missing when the provider
+	// reported no usage.
+	console.log(result.duration, result.tokens);
 } catch (error) {
-	if (error instanceof UnrecoverableError) console.error(error.message, error.cause);
+	// A failed run reports what it spent before failing.
+	if (error instanceof UnrecoverableError) console.error(error.message, error.cause, error.tokens);
 }
 ```
 

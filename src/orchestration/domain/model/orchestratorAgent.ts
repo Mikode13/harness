@@ -1,5 +1,10 @@
 import type { Agent, AgentResponse, Callback } from '../../../agent/domain/agent.ts';
-import { RecoverableError, UnrecoverableError } from '../../../agent/domain/errors.ts';
+import { addTokens, type Tokens } from '../../../shared/domain/tokens.ts';
+import {
+	RecoverableError,
+	UnrecoverableError,
+	withSpentTokens,
+} from '../../../agent/domain/errors.ts';
 import type { ReviewerDecision } from './reviewerDecision.ts';
 import type { Validator } from '../interface/validator.ts';
 import type { ILogger } from '../../../shared/domain/logger.ts';
@@ -60,15 +65,20 @@ ${executorResult}
 };
 
 interface RunTotals {
-	duration: number;
-	inputTokens: number;
-	outputTokens: number;
+	tokens: Tokens | undefined;
+	/** A role answered without usage, so the run's total cannot be known. */
+	unreported: boolean;
 }
 
+// Every role's response counts, even an empty one that starts another round: it was billed.
 function addToTotals(totals: RunTotals, response: AgentResponse): void {
-	totals.duration += response.duration;
-	totals.inputTokens += response.inputTokens;
-	totals.outputTokens += response.outputTokens;
+	if (!response.tokens) totals.unreported = true;
+	totals.tokens = addTokens(totals.tokens, response.tokens);
+}
+
+/** Unknown rather than partial: a sum missing a billed call must not look complete. */
+function runTokens(totals: RunTotals): Tokens | undefined {
+	return totals.unreported ? undefined : totals.tokens;
 }
 
 function stripCodeFence(text: string): string {
@@ -77,10 +87,10 @@ function stripCodeFence(text: string): string {
 }
 
 function parseReviewerDecision(
-	response: AgentResponse | undefined,
+	response: AgentResponse,
 	reviewerDecisionValidator: Validator<ReviewerDecision>,
 ): ReviewerDecision {
-	if (!response?.response) {
+	if (!response.response) {
 		throw new RecoverableError("There's no decision from the reviewer, something went wrong", {
 			cause: 'Reviewer decision is missing.',
 		});
@@ -140,13 +150,32 @@ export class OrchestratorAgent implements Agent {
 		this.logger = logger;
 	}
 
-	async run(
+	async run(prompt: string, signal: AbortSignal, callback: Callback): Promise<AgentResponse> {
+		const start = Date.now();
+		// Per invocation, not per instance: the CLI keeps one orchestrator for a whole session.
+		const totals: RunTotals = { tokens: undefined, unreported: false };
+
+		try {
+			await this.runRounds(prompt, signal, callback, totals);
+		} catch (error) {
+			// A failing role carries its own tokens; the roles before it are in the totals.
+			throw withSpentTokens(error, totals.tokens, totals.unreported);
+		}
+
+		return {
+			response: 'All job has finished',
+			tokens: runTokens(totals),
+			// The whole run's wall clock, so it matches what the consumer waited.
+			duration: (Date.now() - start) / 1000,
+		};
+	}
+
+	private async runRounds(
 		prompt: string,
 		signal: AbortSignal,
 		callback: Callback,
-	): Promise<AgentResponse | undefined> {
-		// Per invocation, not per instance: the CLI keeps one orchestrator for a whole session.
-		const totals: RunTotals = { duration: 0, inputTokens: 0, outputTokens: 0 };
+		totals: RunTotals,
+	): Promise<void> {
 		let lastFailureReason: string | undefined;
 
 		for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
@@ -157,8 +186,9 @@ export class OrchestratorAgent implements Agent {
 				signal,
 				callback,
 			);
+			addToTotals(totals, plannerResponse);
 
-			if (!plannerResponse?.response) {
+			if (!plannerResponse.response) {
 				lastFailureReason = 'The planner produced no response.';
 				if (isLastAttempt) {
 					throw new UnrecoverableError('Max attempts exhausted', { cause: lastFailureReason });
@@ -169,15 +199,14 @@ export class OrchestratorAgent implements Agent {
 				continue;
 			}
 
-			addToTotals(totals, plannerResponse);
-
 			const executorResponse = await this.executorAgent.run(
 				getExecutorPrompt(prompt, plannerResponse.response),
 				signal,
 				callback,
 			);
+			addToTotals(totals, executorResponse);
 
-			if (!executorResponse?.response) {
+			if (!executorResponse.response) {
 				lastFailureReason = 'The executor produced no response.';
 				if (isLastAttempt) {
 					throw new UnrecoverableError('Max attempts exhausted', { cause: lastFailureReason });
@@ -189,8 +218,6 @@ export class OrchestratorAgent implements Agent {
 				continue;
 			}
 
-			addToTotals(totals, executorResponse);
-
 			const reviewerDecision = await this.getReviewerDecision(
 				prompt,
 				plannerResponse.response,
@@ -200,9 +227,7 @@ export class OrchestratorAgent implements Agent {
 				totals,
 			);
 
-			if (reviewerDecision.decision === 'approved') {
-				return { response: 'All job has finished', ...totals };
-			}
+			if (reviewerDecision.decision === 'approved') return;
 
 			lastFailureReason = reviewerDecision.feedback;
 			if (isLastAttempt) {
@@ -240,9 +265,7 @@ export class OrchestratorAgent implements Agent {
 				callback,
 			);
 
-			if (reviewerResponse) {
-				addToTotals(totals, reviewerResponse);
-			}
+			addToTotals(totals, reviewerResponse);
 
 			try {
 				return parseReviewerDecision(reviewerResponse, this.reviewerDecisionValidator);

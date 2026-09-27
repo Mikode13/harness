@@ -1,14 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Agent, AgentResponse } from '../../src/agent/domain/agent.ts';
 import { RecoverableError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
+import { MaxContextError } from '../../src/llm/domain/errors.ts';
 import { RetryingAgent } from '../../src/retry/domain/model/retryingAgent.ts';
 
 const okResponse: AgentResponse = {
 	response: 'pong',
-	inputTokens: 1,
-	outputTokens: 1,
+	tokens: { inputTokens: 1, outputTokens: 1, readCacheTokens: 0, writtenCacheTokens: 0 },
 	duration: 1,
 };
+
+/** Input tokens alone, so sums across attempts stay easy to read. */
+function tokens(inputTokens: number) {
+	return { inputTokens, outputTokens: 0, readCacheTokens: 0, writtenCacheTokens: 0 };
+}
 
 const signal = new AbortController().signal;
 const callback = vi.fn();
@@ -32,6 +37,7 @@ function fakeAgent(...behaviors: (Error | AgentResponse)[]) {
 describe('RetryingAgent', () => {
 	afterEach(() => {
 		vi.clearAllMocks();
+		vi.restoreAllMocks();
 	});
 
 	// The consumer never sees a failure that a later attempt recovered, so the warning is
@@ -89,13 +95,14 @@ describe('RetryingAgent', () => {
 
 		const result = await retryingAgent.run('hi', signal, callback);
 
-		expect(result).toBe(okResponse);
+		expect(result).toMatchObject({ response: okResponse.response, tokens: okResponse.tokens });
 		expect(run).toHaveBeenCalledTimes(1);
 	});
 
-	it('retries on RecoverableError and returns the eventual success', async () => {
+	// The failed attempts were billed too, so the success carries their tokens.
+	it("retries on RecoverableError and returns the eventual success with every attempt's tokens", async () => {
 		const { agent, run } = fakeAgent(
-			new RecoverableError('flaky', { cause: 'network blip' }),
+			new RecoverableError('flaky', { cause: 'network blip', tokens: tokens(10) }),
 			new RecoverableError('flaky again', { cause: 'timeout' }),
 			okResponse,
 		);
@@ -103,8 +110,136 @@ describe('RetryingAgent', () => {
 
 		const result = await retryingAgent.run('hi', signal, callback);
 
-		expect(result).toBe(okResponse);
+		// okResponse spent 1 input and 1 output token.
+		expect(result.tokens).toEqual({ ...tokens(11), outputTokens: 1 });
 		expect(run).toHaveBeenCalledTimes(3);
+	});
+
+	it('reports every attempt it waited for as its duration', async () => {
+		vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValueOnce(4_000);
+		const { agent } = fakeAgent(new RecoverableError('flaky', { cause: 'network blip' }), {
+			...okResponse,
+			duration: 1,
+		});
+		const retryingAgent = new RetryingAgent({ inner: agent, logger });
+
+		const result = await retryingAgent.run('hi', signal, callback);
+
+		expect(result.duration).toBe(3);
+	});
+
+	// A sum that misses a billed call would look complete, so the count becomes unknown.
+	it('reports unknown tokens when the successful attempt reported no usage', async () => {
+		const { agent } = fakeAgent(
+			new RecoverableError('flaky', { cause: 'network blip', tokens: tokens(10) }),
+			{ response: 'pong', duration: 1 },
+		);
+		const retryingAgent = new RetryingAgent({ inner: agent, logger });
+
+		const result = await retryingAgent.run('hi', signal, callback);
+
+		expect(result.tokens).toBeUndefined();
+	});
+
+	// The failed call was answered and billed, so the success alone is not the run's total.
+	it('reports unknown tokens after a failed attempt that was answered without usage', async () => {
+		const { agent } = fakeAgent(
+			new RecoverableError('failed response', { cause: 'server_error', usageUnreported: true }),
+			{ ...okResponse, tokens: tokens(10) },
+		);
+		const retryingAgent = new RetryingAgent({ inner: agent, logger });
+
+		const result = await retryingAgent.run('hi', signal, callback);
+
+		expect(result.tokens).toBeUndefined();
+	});
+
+	// A dropped connection may never have reached the provider, so it adds nothing.
+	it("reports the success's tokens after a failure that never got an answer", async () => {
+		const { agent } = fakeAgent(new RecoverableError('flaky', { cause: 'socket hang up' }), {
+			...okResponse,
+			tokens: tokens(10),
+		});
+		const retryingAgent = new RetryingAgent({ inner: agent, logger });
+
+		const result = await retryingAgent.run('hi', signal, callback);
+
+		expect(result.tokens).toEqual(tokens(10));
+	});
+
+	it('carries unreported usage into the exhaustion error', async () => {
+		const { agent } = fakeAgent(
+			new RecoverableError('1', { cause: 'first', usageUnreported: true }),
+			new RecoverableError('2', { cause: 'second', tokens: tokens(3) }),
+		);
+		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 2, logger });
+
+		await expect(retryingAgent.run('hi', signal, callback)).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			tokens: undefined,
+			usageUnreported: true,
+		});
+	});
+
+	it('keeps the spent tokens when its logger fails', async () => {
+		const { agent } = fakeAgent(
+			new RecoverableError('flaky', { cause: 'network blip', tokens: tokens(4) }),
+		);
+		const throwingLogger = {
+			warn: vi.fn(() => {
+				throw new Error('log sink closed');
+			}),
+		};
+		const retryingAgent = new RetryingAgent({ inner: agent, logger: throwingLogger });
+
+		await expect(retryingAgent.run('hi', signal, callback)).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			cause: 'log sink closed',
+			tokens: tokens(4),
+		});
+	});
+
+	it("carries every attempt's tokens into the exhaustion error", async () => {
+		const { agent } = fakeAgent(
+			new RecoverableError('1', { cause: 'first failure', tokens: tokens(2) }),
+			new RecoverableError('2', { cause: 'second failure', tokens: tokens(3) }),
+		);
+		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 2, logger });
+
+		await expect(retryingAgent.run('hi', signal, callback)).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			tokens: tokens(5),
+		});
+	});
+
+	// A subclass keeps its meaning: a caller that compacts on MaxContextError must still see one.
+	it('keeps the class and trace of a failure it adds tokens to', async () => {
+		const tooLong = new MaxContextError('Context too long', { cause: 'limit', tokens: tokens(3) });
+		const { agent } = fakeAgent(
+			new RecoverableError('flaky', { cause: 'network blip', tokens: tokens(2) }),
+			tooLong,
+		);
+		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
+
+		const failure = await retryingAgent.run('hi', signal, callback).catch((e: unknown) => e);
+
+		expect(failure).toBeInstanceOf(MaxContextError);
+		expect(failure).toMatchObject({ cause: 'limit', tokens: tokens(5), stack: tooLong.stack });
+	});
+
+	it("adds the earlier attempts' tokens to an unrecoverable failure", async () => {
+		const { agent } = fakeAgent(
+			new RecoverableError('flaky', { cause: 'network blip', tokens: tokens(2) }),
+			new UnrecoverableError('broken', { cause: 'fatal', tokens: tokens(3) }),
+		);
+		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
+
+		await expect(retryingAgent.run('hi', signal, callback)).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			message: 'broken',
+			cause: 'fatal',
+			tokens: tokens(5),
+		});
 	});
 
 	it('gives up after maxAttempts and rethrows the last error', async () => {
@@ -141,6 +276,22 @@ describe('RetryingAgent', () => {
 		expect(run).toHaveBeenCalledTimes(1);
 	});
 
+	it('stops retrying when a later attempt is cancelled', async () => {
+		const absorbed = new RecoverableError('flaky', { cause: 'network blip' });
+		const abortError = new DOMException('The operation was aborted', 'AbortError');
+		const { agent, run } = fakeAgent(absorbed, abortError, okResponse);
+		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
+
+		const failure = await retryingAgent
+			.run('hi', signal, callback)
+			.catch((error: unknown) => error);
+
+		expect(failure).toBe(abortError);
+		expect(run).toHaveBeenCalledTimes(2);
+		expect(logger.warn).toHaveBeenCalledOnce();
+		expect(logger.warn).toHaveBeenCalledWith('Attempt 1/3 failed; retrying', absorbed);
+	});
+
 	it('sends the original prompt unchanged on the first attempt', async () => {
 		const { agent, run } = fakeAgent(okResponse);
 		const retryingAgent = new RetryingAgent({ inner: agent, logger });
@@ -152,6 +303,19 @@ describe('RetryingAgent', () => {
 
 	// Regression: the retry sent only the failure reason, so an attempt that failed before the
 	// provider registered the turn was retried without the task.
+	// For an agent whose conversation records the prompt, the note would stay there for good.
+	it('retries with the original prompt alone when failures are not noted', async () => {
+		const { agent, run } = fakeAgent(
+			new RecoverableError('flaky', { cause: 'network blip' }),
+			okResponse,
+		);
+		const retryingAgent = new RetryingAgent({ inner: agent, logger, noteFailures: false });
+
+		await retryingAgent.run('ship the feature', signal, callback);
+
+		expect(run).toHaveBeenNthCalledWith(2, 'ship the feature', signal, callback);
+	});
+
 	it('retries with the original request and the previous failure reason', async () => {
 		const { agent, run } = fakeAgent(
 			new RecoverableError('flaky', { cause: 'network blip' }),

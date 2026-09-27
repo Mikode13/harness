@@ -138,7 +138,16 @@ describe('CodexAgent', () => {
 				type: 'todo_list',
 			}),
 			completed({ id: 'message-2', text: 'goodbye', type: 'agent_message' }),
-			{ type: 'turn.completed', usage: usage({ input_tokens: 21, output_tokens: 34 }) },
+			// Codex's input_tokens already contains both cache counters.
+			{
+				type: 'turn.completed',
+				usage: usage({
+					input_tokens: 100,
+					cached_input_tokens: 80,
+					cache_write_input_tokens: 5,
+					output_tokens: 34,
+				}),
+			},
 		]);
 		const start = vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValueOnce(3_250);
 
@@ -159,8 +168,7 @@ describe('CodexAgent', () => {
 		]);
 		expect(response).toEqual({
 			response: 'hello\ngoodbye',
-			inputTokens: 21,
-			outputTokens: 34,
+			tokens: { inputTokens: 15, outputTokens: 34, readCacheTokens: 80, writtenCacheTokens: 5 },
 			duration: 2.25,
 		});
 		expect(start).toHaveBeenCalledTimes(2);
@@ -202,22 +210,36 @@ describe('CodexAgent', () => {
 		expect(Codex).not.toHaveBeenCalled();
 	});
 
-	it.each([
-		['without an agent message', [{ type: 'turn.completed', usage: usage() }] as ThreadEvent[]],
-		[
-			'without completed usage',
-			[completed({ id: 'message-1', text: 'partial', type: 'agent_message' })] as ThreadEvent[],
-		],
-	])('returns no response for an incomplete stream %s', async (_case, events) => {
-		createSdk(events);
+	// A turn that only ran commands or edited files was still billed.
+	it('answers with empty text and the usage for a turn without an agent message', async () => {
+		createSdk([{ type: 'turn.completed', usage: usage() }]);
 
-		await expect(
-			new CodexAgent({ model: 'gpt-5.6-sol', logger: createLogger() }).run(
-				'prompt',
-				new AbortController().signal,
-				vi.fn(),
-			),
-		).resolves.toBeUndefined();
+		const response = await new CodexAgent({ model: 'gpt-5.6-sol', logger: createLogger() }).run(
+			'prompt',
+			new AbortController().signal,
+			vi.fn(),
+		);
+
+		expect(response).toMatchObject({
+			response: '',
+			tokens: { inputTokens: 10, readCacheTokens: 2, writtenCacheTokens: 1, outputTokens: 8 },
+		});
+	});
+
+	// The turn's work stands; only its accounting is unknown, and the warning says so.
+	it('keeps a turn that reported no usage, without tokens', async () => {
+		createSdk([completed({ id: 'message-1', text: 'partial', type: 'agent_message' })]);
+		const logger = createLogger();
+
+		const response = await new CodexAgent({ model: 'gpt-5.6-sol', logger }).run(
+			'prompt',
+			new AbortController().signal,
+			vi.fn(),
+		);
+
+		expect(response.response).toBe('partial');
+		expect(response.tokens).toBeUndefined();
+		expect(logger.warn).toHaveBeenCalledWith('Codex ended a turn without reporting usage');
 	});
 
 	it.each([
@@ -321,7 +343,24 @@ describe('CodexAgent', () => {
 			const failure = await rejectionOf(createAgent());
 
 			expect(failure).toBeInstanceOf(RecoverableError);
-			expect(failure).toMatchObject({ cause: 'socket hang up' });
+			// Codex never answered, so nothing can be missing from the count.
+			expect(failure).toMatchObject({ cause: 'socket hang up', usageUnreported: false });
+		});
+
+		// Codex already produced an item, so the turn was billed without a count.
+		it('marks a turn that failed after answering as unreported', async () => {
+			const { runStreamed } = createSdk();
+			runStreamed.mockResolvedValue(
+				streamedTurn([
+					completed({ id: 'message-1', text: 'working', type: 'agent_message' }),
+					{ type: 'turn.failed', error: { message: 'model failed' } },
+				]),
+			);
+
+			const failure = await rejectionOf(createAgent());
+
+			expect(failure).toBeInstanceOf(UnrecoverableError);
+			expect(failure).toMatchObject({ cause: 'model failed', usageUnreported: true });
 		});
 
 		it('classifies a stream that fails part-way through a turn', async () => {
@@ -345,6 +384,18 @@ describe('CodexAgent', () => {
 			expect(failure).toBe(abort);
 		});
 
+		// The SDK spawns its process with the signal, so a cancellation mid-turn surfaces as
+		// an AbortError thrown by the event stream rather than by `runStreamed`.
+		it('lets a cancellation raised part-way through a turn through unchanged', async () => {
+			const abort = new DOMException('The operation was aborted', 'AbortError');
+			const { runStreamed } = createSdk();
+			runStreamed.mockResolvedValue(failingStream(abort));
+
+			const failure = await rejectionOf(createAgent());
+
+			expect(failure).toBe(abort);
+		});
+
 		it('does not reclassify an error the adapter already classified', async () => {
 			const { runStreamed } = createSdk();
 			runStreamed.mockResolvedValue(
@@ -354,7 +405,8 @@ describe('CodexAgent', () => {
 			const failure = await rejectionOf(createAgent());
 
 			expect(failure).toBeInstanceOf(UnrecoverableError);
-			expect(failure).toMatchObject({ cause: 'quota exhausted' });
+			// No item came first, so it may be a quota or authentication failure with no model work.
+			expect(failure).toMatchObject({ cause: 'quota exhausted', usageUnreported: false });
 		});
 
 		it('reports a thread the SDK refuses to open as unrecoverable', () => {

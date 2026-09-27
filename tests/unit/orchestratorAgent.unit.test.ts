@@ -1,27 +1,35 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OrchestratorAgent } from '../../src/orchestration/domain/model/orchestratorAgent.ts';
 import type { Agent, AgentResponse } from '../../src/agent/domain/agent.ts';
+import type { Tokens } from '../../src/shared/domain/tokens.ts';
 import type { ILogger } from '../../src/shared/domain/logger.ts';
-import { UnrecoverableError } from '../../src/agent/domain/errors.ts';
+import { RecoverableError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
 import { ReviewerDecisionValidator } from '../../src/orchestration/infrastructure/model/reviewerDecisionValidator.ts';
 
-function createResponse(overrides: Partial<AgentResponse> = {}): AgentResponse {
-	return {
-		response: 'response',
-		inputTokens: 1,
-		outputTokens: 1,
-		duration: 1,
-		...overrides,
-	};
+/** Token counts go in flat so the scripted responses stay one line each. */
+function createResponse({
+	response = 'response',
+	duration = 1,
+	...tokens
+}: Partial<Omit<AgentResponse, 'tokens'> & Tokens> = {}): AgentResponse {
+	return { response, duration, tokens: usage(tokens) };
 }
 
-function createFakeAgent(...responses: (AgentResponse | undefined)[]) {
-	const run = vi.fn(() => {
-		if (responses.length === 0) {
-			throw new Error('fake agent ran out of scripted responses');
-		}
+/** A role that finished without text, such as an executor turn that only edited files. */
+function emptyResponse(): AgentResponse {
+	return createResponse({ response: '' });
+}
 
-		return Promise.resolve(responses.shift());
+function usage(tokens: Partial<Tokens> = {}): Tokens {
+	return { inputTokens: 1, outputTokens: 1, readCacheTokens: 0, writtenCacheTokens: 0, ...tokens };
+}
+
+function createFakeAgent(...responses: AgentResponse[]) {
+	const run = vi.fn(() => {
+		const next = responses.shift();
+		if (!next) throw new Error('fake agent ran out of scripted responses');
+
+		return Promise.resolve(next);
 	});
 	const agent: Agent = { run };
 
@@ -33,17 +41,26 @@ const logger = { warn: vi.fn() };
 describe('OrchestratorAgent', () => {
 	afterEach(() => {
 		vi.clearAllMocks();
+		vi.restoreAllMocks();
 	});
 
 	it('completes the planner, executor, and reviewer flow with forwarded inputs and summed usage', async () => {
 		const planner = createFakeAgent(
-			createResponse({ response: 'draft plan', inputTokens: 2, outputTokens: 3, duration: 1 }),
+			createResponse({
+				response: 'draft plan',
+				inputTokens: 2,
+				outputTokens: 3,
+				readCacheTokens: 1,
+				writtenCacheTokens: 4,
+				duration: 1,
+			}),
 		);
 		const executor = createFakeAgent(
 			createResponse({
 				response: 'implemented changes',
 				inputTokens: 5,
 				outputTokens: 6,
+				readCacheTokens: 2,
 				duration: 4,
 			}),
 		);
@@ -52,6 +69,8 @@ describe('OrchestratorAgent', () => {
 				response: '{"decision":"approved"}',
 				inputTokens: 8,
 				outputTokens: 9,
+				readCacheTokens: 4,
+				writtenCacheTokens: 1,
 				duration: 7,
 			}),
 		);
@@ -67,9 +86,13 @@ describe('OrchestratorAgent', () => {
 
 		await expect(orchestrator.run('ship feature', signal, callback)).resolves.toEqual({
 			response: 'All job has finished',
-			duration: 12,
-			inputTokens: 15,
-			outputTokens: 18,
+			duration: expect.any(Number) as number,
+			tokens: usage({
+				inputTokens: 15,
+				outputTokens: 18,
+				readCacheTokens: 7,
+				writtenCacheTokens: 5,
+			}),
 		});
 
 		expect(planner.run).toHaveBeenCalledWith(
@@ -163,9 +186,8 @@ describe('OrchestratorAgent', () => {
 
 		await expect(orchestrator.run('ship feature', signal, callback)).resolves.toEqual({
 			response: 'All job has finished',
-			duration: 6,
-			inputTokens: 6,
-			outputTokens: 6,
+			duration: expect.any(Number) as number,
+			tokens: usage({ inputTokens: 6, outputTokens: 6 }),
 		});
 
 		expect(planner.run).toHaveBeenNthCalledWith(
@@ -255,7 +277,7 @@ describe('OrchestratorAgent', () => {
 	it('throws an UnrecoverableError after exhausting reviewer decision attempts', async () => {
 		const planner = createFakeAgent(createResponse({ response: 'draft plan' }));
 		const executor = createFakeAgent(createResponse({ response: 'implementation' }));
-		const reviewer = createFakeAgent(undefined);
+		const reviewer = createFakeAgent(emptyResponse());
 		const orchestrator = new OrchestratorAgent({
 			plannerAgent: planner.agent,
 			executorAgent: executor.agent,
@@ -342,12 +364,9 @@ describe('OrchestratorAgent', () => {
 		expect(reviewer.run).toHaveBeenCalledTimes(2);
 	});
 
-	it.each([
-		['missing', undefined],
-		['blank', createResponse({ response: '' })],
-	] as const)(
-		'throws an UnrecoverableError for a %s planner response after exhausting attempts',
-		async (_case, plannerResponse) => {
+	it('throws an UnrecoverableError for an empty planner response after exhausting attempts', async () => {
+		const plannerResponse = emptyResponse();
+		{
 			const planner = createFakeAgent(plannerResponse);
 			const executor = createFakeAgent();
 			const reviewer = createFakeAgent();
@@ -366,18 +385,17 @@ describe('OrchestratorAgent', () => {
 			await expect(error).rejects.toMatchObject({
 				message: 'Max attempts exhausted',
 				cause: 'The planner produced no response.',
+				// The empty response was billed.
+				tokens: usage(),
 			});
 			expect(executor.run).not.toHaveBeenCalled();
 			expect(reviewer.run).not.toHaveBeenCalled();
-		},
-	);
+		}
+	});
 
-	it.each([
-		['missing', undefined],
-		['blank', createResponse({ response: '' })],
-	] as const)(
-		'throws an UnrecoverableError for a %s executor response after exhausting attempts',
-		async (_case, executorResponse) => {
+	it('throws an UnrecoverableError for an empty executor response after exhausting attempts', async () => {
+		const executorResponse = emptyResponse();
+		{
 			const planner = createFakeAgent(createResponse({ response: 'draft plan' }));
 			const executor = createFakeAgent(executorResponse);
 			const reviewer = createFakeAgent();
@@ -398,8 +416,8 @@ describe('OrchestratorAgent', () => {
 				cause: 'The executor produced no response.',
 			});
 			expect(reviewer.run).not.toHaveBeenCalled();
-		},
-	);
+		}
+	});
 
 	it('rejects a non-positive-integer maxAttempts', () => {
 		const planner = createFakeAgent();
@@ -419,10 +437,188 @@ describe('OrchestratorAgent', () => {
 		).toThrow(RangeError);
 	});
 
+	// A leaf failure is not a rejected round: the leaf already applied its own retry policy,
+	// and a cancellation is a deliberate stop. Either way the workflow ends where it failed.
+	it("reports the whole run's wall clock as its duration", async () => {
+		vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValueOnce(4_500);
+		const orchestrator = new OrchestratorAgent({
+			plannerAgent: createFakeAgent(createResponse({ response: 'draft plan', duration: 50 })).agent,
+			executorAgent: createFakeAgent(createResponse({ response: 'done', duration: 50 })).agent,
+			reviewerAgent: createFakeAgent(createResponse({ response: '{"decision":"approved"}' })).agent,
+			reviewerDecisionValidator: new ReviewerDecisionValidator(),
+			logger,
+		});
+
+		const response = await orchestrator.run('ship feature', new AbortController().signal, vi.fn());
+
+		expect(response.duration).toBe(3.5);
+	});
+
+	// A sum that misses a billed call would look complete, so the total becomes unknown.
+	it('reports unknown tokens when a role answered without usage', async () => {
+		const orchestrator = new OrchestratorAgent({
+			plannerAgent: createFakeAgent(createResponse({ response: 'draft plan' })).agent,
+			executorAgent: createFakeAgent({ response: 'done', duration: 1 }).agent,
+			reviewerAgent: createFakeAgent(createResponse({ response: '{"decision":"approved"}' })).agent,
+			reviewerDecisionValidator: new ReviewerDecisionValidator(),
+			logger,
+		});
+
+		const response = await orchestrator.run('ship feature', new AbortController().signal, vi.fn());
+
+		expect(response.tokens).toBeUndefined();
+	});
+
+	it('fails with unknown tokens when a role before the failure answered without usage', async () => {
+		const orchestrator = new OrchestratorAgent({
+			plannerAgent: createFakeAgent({ response: 'draft plan', duration: 1 }).agent,
+			executorAgent: {
+				run: () =>
+					Promise.reject(new UnrecoverableError('broken', { cause: 'fatal', tokens: usage() })),
+			},
+			reviewerAgent: createFakeAgent().agent,
+			reviewerDecisionValidator: new ReviewerDecisionValidator(),
+			logger,
+		});
+
+		await expect(
+			orchestrator.run('ship feature', new AbortController().signal, vi.fn()),
+		).rejects.toMatchObject({ constructor: UnrecoverableError, cause: 'fatal', tokens: undefined });
+	});
+
+	it("keeps a role's unreported usage when it fails, even with the earlier roles known", async () => {
+		const orchestrator = new OrchestratorAgent({
+			plannerAgent: createFakeAgent(createResponse({ response: 'draft plan' })).agent,
+			executorAgent: {
+				run: () =>
+					Promise.reject(
+						new UnrecoverableError('broken', { cause: 'fatal', usageUnreported: true }),
+					),
+			},
+			reviewerAgent: createFakeAgent().agent,
+			reviewerDecisionValidator: new ReviewerDecisionValidator(),
+			logger,
+		});
+
+		await expect(
+			orchestrator.run('ship feature', new AbortController().signal, vi.fn()),
+		).rejects.toMatchObject({ tokens: undefined, usageUnreported: true });
+	});
+
+	describe('leaf failures', () => {
+		function createFailingAgent(error: Error) {
+			const run = vi.fn(() => Promise.reject(error));
+			const agent: Agent = { run };
+
+			return { agent, run };
+		}
+
+		function orchestratorWith(planner: Agent, executor: Agent, reviewer: Agent) {
+			return new OrchestratorAgent({
+				plannerAgent: planner,
+				executorAgent: executor,
+				reviewerAgent: reviewer,
+				reviewerDecisionValidator: new ReviewerDecisionValidator(),
+				logger,
+			});
+		}
+
+		function abortError() {
+			return new DOMException('The operation was aborted', 'AbortError');
+		}
+
+		it('stops the workflow when the planner is cancelled', async () => {
+			const abort = abortError();
+			const planner = createFailingAgent(abort);
+			const executor = createFakeAgent();
+			const reviewer = createFakeAgent();
+
+			const failure = await orchestratorWith(planner.agent, executor.agent, reviewer.agent)
+				.run('ship feature', new AbortController().signal, vi.fn())
+				.catch((error: unknown) => error);
+
+			expect(failure).toBe(abort);
+			expect(planner.run).toHaveBeenCalledOnce();
+			expect(executor.run).not.toHaveBeenCalled();
+			expect(reviewer.run).not.toHaveBeenCalled();
+			expect(logger.warn).not.toHaveBeenCalled();
+		});
+
+		it('does not call the reviewer when the executor is cancelled', async () => {
+			const abort = abortError();
+			const planner = createFakeAgent(createResponse({ response: 'draft plan' }));
+			const executor = createFailingAgent(abort);
+			const reviewer = createFakeAgent();
+
+			const failure = await orchestratorWith(planner.agent, executor.agent, reviewer.agent)
+				.run('ship feature', new AbortController().signal, vi.fn())
+				.catch((error: unknown) => error);
+
+			expect(failure).toBe(abort);
+			expect(reviewer.run).not.toHaveBeenCalled();
+			expect(logger.warn).not.toHaveBeenCalled();
+		});
+
+		it('does not ask a cancelled reviewer again as if its decision were malformed', async () => {
+			const abort = abortError();
+			const planner = createFakeAgent(createResponse({ response: 'draft plan' }));
+			const executor = createFakeAgent(createResponse({ response: 'implementation' }));
+			const reviewer = createFailingAgent(abort);
+
+			const failure = await orchestratorWith(planner.agent, executor.agent, reviewer.agent)
+				.run('ship feature', new AbortController().signal, vi.fn())
+				.catch((error: unknown) => error);
+
+			expect(failure).toBe(abort);
+			expect(reviewer.run).toHaveBeenCalledOnce();
+			expect(logger.warn).not.toHaveBeenCalled();
+		});
+
+		// The leaf's own tokens plus the planner's: the whole run was billed, not only the failing role.
+		it.each([
+			[
+				'unrecoverable',
+				new UnrecoverableError('Max attempts exhausted', {
+					cause: 'quota',
+					tokens: usage({ inputTokens: 7 }),
+				}),
+			],
+			[
+				'recoverable',
+				new RecoverableError('Codex refused the request', {
+					cause: 'timeout',
+					tokens: usage({ inputTokens: 7 }),
+				}),
+			],
+		])(
+			"propagates an %s leaf failure with the run's tokens, without starting another round",
+			async (_kind, leafFailure) => {
+				const planner = createFakeAgent(createResponse({ response: 'draft plan' }));
+				const executor = createFailingAgent(leafFailure);
+				const reviewer = createFakeAgent();
+
+				const failure = await orchestratorWith(planner.agent, executor.agent, reviewer.agent)
+					.run('ship feature', new AbortController().signal, vi.fn())
+					.catch((error: unknown) => error);
+
+				expect(failure).toBeInstanceOf(leafFailure.constructor);
+				expect(failure).toMatchObject({
+					message: leafFailure.message,
+					cause: leafFailure.cause,
+					tokens: usage({ inputTokens: 8, outputTokens: 2 }),
+				});
+				expect(planner.run).toHaveBeenCalledOnce();
+				expect(executor.run).toHaveBeenCalledOnce();
+				expect(reviewer.run).not.toHaveBeenCalled();
+				expect(logger.warn).not.toHaveBeenCalled();
+			},
+		);
+	});
+
 	// Regression: usage accumulated on the instance, and the CLI keeps one orchestrator for
 	// a whole session — so every session after the first reported inflated totals.
 	describe('per-run accounting', () => {
-		function approvingRun() {
+		function approvingRun(): [AgentResponse, AgentResponse, AgentResponse] {
 			return [
 				createResponse({ response: 'draft plan', inputTokens: 10, outputTokens: 2, duration: 1 }),
 				createResponse({ response: 'implemented', inputTokens: 15, outputTokens: 3, duration: 1 }),
@@ -451,9 +647,8 @@ describe('OrchestratorAgent', () => {
 			const signal = new AbortController().signal;
 			const expected = {
 				response: 'All job has finished',
-				duration: 3,
-				inputTokens: 30,
-				outputTokens: 6,
+				duration: expect.any(Number) as number,
+				tokens: usage({ inputTokens: 30, outputTokens: 6 }),
 			};
 
 			await expect(orchestrator.run('first', signal, vi.fn())).resolves.toEqual(expected);
@@ -476,9 +671,8 @@ describe('OrchestratorAgent', () => {
 			const signal = new AbortController().signal;
 			const expected = {
 				response: 'All job has finished',
-				duration: 3,
-				inputTokens: 30,
-				outputTokens: 6,
+				duration: expect.any(Number) as number,
+				tokens: usage({ inputTokens: 30, outputTokens: 6 }),
 			};
 
 			const [first, second] = await Promise.all([
@@ -497,7 +691,7 @@ describe('OrchestratorAgent', () => {
 				createResponse({ response: 'draft plan', inputTokens: 10, outputTokens: 2, duration: 1 }),
 			);
 			const executor = createFakeAgent(
-				undefined,
+				emptyResponse(),
 				createResponse({ response: 'implemented', inputTokens: 15, outputTokens: 3, duration: 1 }),
 			);
 			const reviewer = createFakeAgent(
@@ -524,9 +718,8 @@ describe('OrchestratorAgent', () => {
 
 			await expect(orchestrator.run('second', signal, vi.fn())).resolves.toEqual({
 				response: 'All job has finished',
-				duration: 3,
-				inputTokens: 30,
-				outputTokens: 6,
+				duration: expect.any(Number) as number,
+				tokens: usage({ inputTokens: 30, outputTokens: 6 }),
 			});
 		});
 	});
@@ -597,7 +790,7 @@ describe('OrchestratorAgent', () => {
 
 		it('warns about an empty planner response before starting another round', async () => {
 			const orchestrator = orchestratorWith(
-				createFakeAgent(undefined, createResponse({ response: 'draft plan' })),
+				createFakeAgent(emptyResponse(), createResponse({ response: 'draft plan' })),
 				createFakeAgent(createResponse({ response: 'implementation' })),
 				createFakeAgent(approved()),
 			);
@@ -615,7 +808,7 @@ describe('OrchestratorAgent', () => {
 					createResponse({ response: 'first plan' }),
 					createResponse({ response: 'second plan' }),
 				),
-				createFakeAgent(undefined, createResponse({ response: 'implementation' })),
+				createFakeAgent(emptyResponse(), createResponse({ response: 'implementation' })),
 				createFakeAgent(approved()),
 			);
 
@@ -628,7 +821,7 @@ describe('OrchestratorAgent', () => {
 
 		it('does not warn about the failure it throws', async () => {
 			const orchestrator = orchestratorWith(
-				createFakeAgent(undefined),
+				createFakeAgent(emptyResponse()),
 				createFakeAgent(),
 				createFakeAgent(),
 				{ maxAttempts: 1 },

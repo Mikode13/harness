@@ -106,7 +106,12 @@ function result(resultText = 'final answer'): Record<string, unknown> {
 		session_id: sessionId,
 		subtype: 'success',
 		type: 'result',
-		usage: { input_tokens: 11, output_tokens: 7 },
+		usage: {
+			input_tokens: 11,
+			output_tokens: 7,
+			cache_read_input_tokens: 5,
+			cache_creation_input_tokens: 3,
+		},
 	};
 }
 
@@ -117,9 +122,12 @@ function createLogger() {
 describe('ClaudeAgent', () => {
 	afterEach(() => {
 		vi.clearAllMocks();
+		vi.restoreAllMocks();
 	});
 
 	it('normalizes assistant blocks and completed tool results in stream order', async () => {
+		// Measured by the agent, not taken from the SDK's `duration_ms`.
+		vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValueOnce(3_500);
 		vi.mocked(query).mockReturnValue(
 			stream([
 				{ type: 'system', subtype: 'init', session_id: sessionId },
@@ -191,9 +199,8 @@ describe('ClaudeAgent', () => {
 		]);
 		expect(response).toEqual({
 			response: 'final answer',
-			inputTokens: 11,
-			outputTokens: 7,
-			duration: 1.25,
+			tokens: { inputTokens: 11, outputTokens: 7, readCacheTokens: 5, writtenCacheTokens: 3 },
+			duration: 2.5,
 		});
 	});
 
@@ -222,7 +229,7 @@ describe('ClaudeAgent', () => {
 
 		expect(callback).toHaveBeenCalledTimes(1);
 		expect(callback).toHaveBeenCalledWith({ type: 'agentMessage', message: 'visible progress' });
-		expect(response?.response).toBe('visible progress');
+		expect(response.response).toBe('visible progress');
 		expect(logger.warn).not.toHaveBeenCalled();
 	});
 
@@ -249,7 +256,7 @@ describe('ClaudeAgent', () => {
 			);
 
 			expect(logger.warn).toHaveBeenCalledWith(message, warning);
-			expect(response?.response).toBe('final answer');
+			expect(response.response).toBe('final answer');
 		});
 
 		it('warns about an unknown content block and keeps narrating the rest', async () => {
@@ -287,8 +294,25 @@ describe('ClaudeAgent', () => {
 					message,
 					'Claude reported a failure without failing the turn',
 				);
-				expect(response?.response).toBe('final answer');
+				expect(response.response).toBe('final answer');
 			},
+		);
+	});
+
+	// The turn's work stands; only its accounting is unknown, and the warning says so.
+	it('keeps a turn that ended without a result message, without tokens', async () => {
+		vi.mocked(query).mockReturnValue(stream([assistant([{ text: 'partial', type: 'text' }])]));
+		const logger = createLogger();
+
+		const response = await new ClaudeAgent({ model: 'sonnet', logger }).run(
+			'prompt',
+			new AbortController().signal,
+			vi.fn(),
+		);
+
+		expect(response.tokens).toBeUndefined();
+		expect(logger.warn).toHaveBeenCalledWith(
+			'Claude ended a turn without a result message; its usage is unknown',
 		);
 	});
 
@@ -401,8 +425,7 @@ describe('ClaudeAgent', () => {
 			const completedAgent: Agent = {
 				run: vi.fn().mockResolvedValue({
 					response: 'completed',
-					inputTokens: 1,
-					outputTokens: 1,
+					tokens: { inputTokens: 1, outputTokens: 1, readCacheTokens: 0, writtenCacheTokens: 0 },
 					duration: 1,
 				}),
 			};
@@ -426,9 +449,11 @@ describe('ClaudeAgent', () => {
 		});
 	});
 
-	it('turns a failed SDK result into a recoverable error', async () => {
+	// The failed result reports the turn's usage itself, so answering before it loses nothing.
+	it('turns a failed SDK result into a recoverable error carrying its usage', async () => {
 		vi.mocked(query).mockReturnValue(
 			stream([
+				assistant([{ text: 'working', type: 'text' }]),
 				{
 					errors: ['rate limited'],
 					session_id: sessionId,
@@ -436,6 +461,12 @@ describe('ClaudeAgent', () => {
 					subtype: 'error_during_execution',
 					terminal_reason: 'temporary failure',
 					type: 'result',
+					usage: {
+						input_tokens: 4,
+						output_tokens: 2,
+						cache_read_input_tokens: 1,
+						cache_creation_input_tokens: 0,
+					},
 				},
 			]),
 		);
@@ -449,6 +480,8 @@ describe('ClaudeAgent', () => {
 		).rejects.toMatchObject({
 			message: 'Claude sdk error',
 			cause: 'error,temporary failure,rate limited',
+			tokens: { inputTokens: 4, outputTokens: 2, readCacheTokens: 1, writtenCacheTokens: 0 },
+			usageUnreported: false,
 		});
 	});
 
@@ -529,6 +562,8 @@ describe('ClaudeAgent', () => {
 			expect(failure).toMatchObject({
 				message: 'Claude progress callback failed',
 				cause: 'the renderer crashed',
+				// Claude had answered, and the failure came before the result that counts it.
+				usageUnreported: true,
 			});
 		});
 
