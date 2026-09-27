@@ -132,9 +132,11 @@ function toTokens(usage: ResponseUsage | undefined, logger: ILogger): Tokens | u
 }
 
 function toLLMResponse(response: Response, logger: ILogger): LLMResponse {
-	const usage = toTokens(response.usage, logger);
+	let usage: Tokens | undefined;
 
 	try {
+		// Inside the try: it warns when the usage is missing, and that warning can throw too.
+		usage = toTokens(response.usage, logger);
 		return {
 			message: {
 				role: 'assistant',
@@ -146,7 +148,7 @@ function toLLMResponse(response: Response, logger: ILogger): LLMResponse {
 	} catch (error) {
 		// The call was billed whether the response failed or a logger did while mapping it, and
 		// an answer without usage leaves the run's count unknown.
-		throw withSpentTokens(error, usage, !usage);
+		throw withSpentTokens(error, usage, !response.usage);
 	}
 }
 

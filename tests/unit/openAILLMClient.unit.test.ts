@@ -276,6 +276,21 @@ describe('OpenAILLMClient', () => {
 		});
 	});
 
+	it('marks an answer without usage as unreported when warning about it fails', async () => {
+		const logger = {
+			warn: vi.fn(() => {
+				throw new Error('log sink closed');
+			}),
+		};
+		createSdk(response({ usage: undefined }));
+
+		await expect(createClient(logger).send([userMessage('prompt')], signal)).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			cause: 'log sink closed',
+			usageUnreported: true,
+		});
+	});
+
 	// No answer arrived, so nothing can be missing from the count.
 	it('does not mark a connection failure as unreported', async () => {
 		createSdk(new Error('socket hang up'));
