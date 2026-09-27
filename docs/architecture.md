@@ -112,9 +112,11 @@ Three contracts have rules of their own:
   `AgentResponse`, whose `response` is empty when the run produced no text, or rejects with a
   `RecoverableError` or `UnrecoverableError` whose `tokens` hold what the run spent before
   failing. `RetryingAgent` adds failed attempts to whichever ends the run, and
-  `OrchestratorAgent` adds every earlier role. `tokens` is missing, not zero, when no provider
-  call in the run reported usage. A cancellation carries no tokens: an `AbortError` must
-  propagate unchanged.
+  `OrchestratorAgent` adds every earlier role. `tokens` is missing, not zero, when any response
+  in the run came without usage: its call was billed, so a partial sum would look complete. A
+  failure that reported nothing adds nothing, since it may not have reached the provider. A
+  cancellation carries no tokens: an `AbortError` must propagate unchanged. `duration` is each
+  layer's own wall clock, so a retried run or a whole workflow reports what the consumer waited.
 
 - **`ProgressEvent` grows in minor releases.** Consumers are told to render the types they
   know and ignore the rest, so a new type must never carry information a consumer needs to be

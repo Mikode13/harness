@@ -7,9 +7,12 @@ import type { Tokens } from '../../shared/domain/tokens.ts';
 export interface AgentResponse {
 	/** The final text. Empty when the run produced none, for example a turn that only edited files. */
 	response: string;
-	/** Missing when the provider reported no usage, which is not the same as zero. */
+	/**
+	 * Missing when any call in the run completed without reporting usage, which is not the same
+	 * as zero: a partial sum would look complete.
+	 */
 	tokens?: Tokens;
-	/** Wall-clock seconds the consumer waited for the run. */
+	/** Wall-clock seconds the consumer waited for the run, retries and every role included. */
 	duration: number;
 }
 

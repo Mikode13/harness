@@ -84,7 +84,7 @@ describe('ConversationLoop', () => {
 		expect(eventTypes).toEqual(['turnStarted', 'turnEnded']);
 	});
 
-	it('says the tokens are unknown when the provider reported none', async () => {
+	it('says the tokens are unknown when a call did not report its usage', async () => {
 		const promptEmitter = createPromptEmitter('hello', { error: abortError() });
 		const output = createOutput();
 		const agent: Agent = { run: vi.fn().mockResolvedValue(response({ tokens: undefined })) };
@@ -92,7 +92,7 @@ describe('ConversationLoop', () => {
 
 		await loop.start();
 
-		expect(output.print).toHaveBeenCalledWith('tokens: not reported by the provider');
+		expect(output.print).toHaveBeenCalledWith('tokens: unknown, a call did not report its usage');
 	});
 
 	it('prints the tokens a failed run spent before failing', async () => {

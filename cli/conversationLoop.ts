@@ -65,7 +65,7 @@ export class ConversationLoop {
 
 	private printTokens(tokens: Tokens | undefined): void {
 		if (!tokens) {
-			this.output.print('tokens: not reported by the provider');
+			this.output.print('tokens: unknown, a call did not report its usage');
 			return;
 		}
 

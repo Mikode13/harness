@@ -211,6 +211,8 @@ describe('OpenAILLMClient', () => {
 		await expect(createClient(logger).send([userMessage('prompt')], signal)).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			cause: 'log sink closed',
+			// The call was billed whatever the logger did.
+			tokens: { inputTokens: 10, readCacheTokens: 60, writtenCacheTokens: 30, outputTokens: 20 },
 		});
 	});
 

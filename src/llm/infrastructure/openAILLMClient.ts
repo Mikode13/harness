@@ -133,22 +133,20 @@ function toTokens(usage: ResponseUsage | undefined, logger: ILogger): Tokens | u
 
 function toLLMResponse(response: Response, logger: ILogger): LLMResponse {
 	const usage = toTokens(response.usage, logger);
-	let stopReason: StopReason;
+
 	try {
-		stopReason = toStopReason(response);
+		return {
+			message: {
+				role: 'assistant',
+				content: response.output.flatMap(item => describeItem(item, logger)),
+			},
+			usage,
+			stopReason: toStopReason(response),
+		};
 	} catch (error) {
-		// A failed response may still have been billed.
+		// The call was billed whether the response failed or a logger did while mapping it.
 		throw withSpentTokens(error, usage);
 	}
-
-	return {
-		message: {
-			role: 'assistant',
-			content: response.output.flatMap(item => describeItem(item, logger)),
-		},
-		usage,
-		stopReason,
-	};
 }
 
 function classifyOpenAIFailure(error: unknown): Error {

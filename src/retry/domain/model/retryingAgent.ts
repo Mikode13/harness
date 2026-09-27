@@ -37,6 +37,7 @@ export class RetryingAgent implements Agent {
 	}
 
 	async run(prompt: string, signal: AbortSignal, callback: Callback): Promise<AgentResponse> {
+		const start = Date.now();
 		let lastPrompt: string | null = null;
 		// Failed attempts were billed too, so they travel with whichever way the run ends.
 		let spent: Tokens | undefined;
@@ -45,7 +46,13 @@ export class RetryingAgent implements Agent {
 			try {
 				const promptToSend = lastPrompt ?? prompt;
 				const response = await this.inner.run(promptToSend, signal, callback);
-				return { ...response, tokens: addTokens(spent, response.tokens) };
+				return {
+					...response,
+					// A response without usage makes the whole count unknown, not partial.
+					tokens: response.tokens && addTokens(spent, response.tokens),
+					// Every attempt was waited for, not only the last one.
+					duration: (Date.now() - start) / 1000,
+				};
 			} catch (e) {
 				if (isAbortError(e)) throw e;
 				if (e instanceof UnrecoverableError) throw withSpentTokens(e, spent);
@@ -70,16 +77,21 @@ export class RetryingAgent implements Agent {
 				// Keeps the original request: an attempt that failed before the provider registered
 				// the turn left no session that remembers it.
 				lastPrompt = `${prompt}\n\nThe previous attempt failed for the following reason: ${e.cause}`;
-				treatErrors(
-					() => {
-						this.logger.warn(
-							`Attempt ${String(attempt)}/${String(this.maxAttempts)} failed; retrying`,
-							e,
-						);
-					},
-					classifyHostFailure,
-					'RetryingAgent logger failed while reporting a retry',
-				);
+				try {
+					treatErrors(
+						() => {
+							this.logger.warn(
+								`Attempt ${String(attempt)}/${String(this.maxAttempts)} failed; retrying`,
+								e,
+							);
+						},
+						classifyHostFailure,
+						'RetryingAgent logger failed while reporting a retry',
+					);
+				} catch (logFailure) {
+					// The attempts already spent their tokens, whatever the logger did.
+					throw withSpentTokens(logFailure, spent);
+				}
 			}
 		}
 	}

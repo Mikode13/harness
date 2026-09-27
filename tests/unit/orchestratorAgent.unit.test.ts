@@ -41,6 +41,7 @@ const logger = { warn: vi.fn() };
 describe('OrchestratorAgent', () => {
 	afterEach(() => {
 		vi.clearAllMocks();
+		vi.restoreAllMocks();
 	});
 
 	it('completes the planner, executor, and reviewer flow with forwarded inputs and summed usage', async () => {
@@ -85,7 +86,7 @@ describe('OrchestratorAgent', () => {
 
 		await expect(orchestrator.run('ship feature', signal, callback)).resolves.toEqual({
 			response: 'All job has finished',
-			duration: 12,
+			duration: expect.any(Number) as number,
 			tokens: usage({
 				inputTokens: 15,
 				outputTokens: 18,
@@ -185,7 +186,7 @@ describe('OrchestratorAgent', () => {
 
 		await expect(orchestrator.run('ship feature', signal, callback)).resolves.toEqual({
 			response: 'All job has finished',
-			duration: 6,
+			duration: expect.any(Number) as number,
 			tokens: usage({ inputTokens: 6, outputTokens: 6 }),
 		});
 
@@ -438,6 +439,53 @@ describe('OrchestratorAgent', () => {
 
 	// A leaf failure is not a rejected round: the leaf already applied its own retry policy,
 	// and a cancellation is a deliberate stop. Either way the workflow ends where it failed.
+	it("reports the whole run's wall clock as its duration", async () => {
+		vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValueOnce(4_500);
+		const orchestrator = new OrchestratorAgent({
+			plannerAgent: createFakeAgent(createResponse({ response: 'draft plan', duration: 50 })).agent,
+			executorAgent: createFakeAgent(createResponse({ response: 'done', duration: 50 })).agent,
+			reviewerAgent: createFakeAgent(createResponse({ response: '{"decision":"approved"}' })).agent,
+			reviewerDecisionValidator: new ReviewerDecisionValidator(),
+			logger,
+		});
+
+		const response = await orchestrator.run('ship feature', new AbortController().signal, vi.fn());
+
+		expect(response.duration).toBe(3.5);
+	});
+
+	// A sum that misses a billed call would look complete, so the total becomes unknown.
+	it('reports unknown tokens when a role answered without usage', async () => {
+		const orchestrator = new OrchestratorAgent({
+			plannerAgent: createFakeAgent(createResponse({ response: 'draft plan' })).agent,
+			executorAgent: createFakeAgent({ response: 'done', duration: 1 }).agent,
+			reviewerAgent: createFakeAgent(createResponse({ response: '{"decision":"approved"}' })).agent,
+			reviewerDecisionValidator: new ReviewerDecisionValidator(),
+			logger,
+		});
+
+		const response = await orchestrator.run('ship feature', new AbortController().signal, vi.fn());
+
+		expect(response.tokens).toBeUndefined();
+	});
+
+	it('fails with unknown tokens when a role before the failure answered without usage', async () => {
+		const orchestrator = new OrchestratorAgent({
+			plannerAgent: createFakeAgent({ response: 'draft plan', duration: 1 }).agent,
+			executorAgent: {
+				run: () =>
+					Promise.reject(new UnrecoverableError('broken', { cause: 'fatal', tokens: usage() })),
+			},
+			reviewerAgent: createFakeAgent().agent,
+			reviewerDecisionValidator: new ReviewerDecisionValidator(),
+			logger,
+		});
+
+		await expect(
+			orchestrator.run('ship feature', new AbortController().signal, vi.fn()),
+		).rejects.toMatchObject({ constructor: UnrecoverableError, cause: 'fatal', tokens: undefined });
+	});
+
 	describe('leaf failures', () => {
 		function createFailingAgent(error: Error) {
 			const run = vi.fn(() => Promise.reject(error));
@@ -580,7 +628,7 @@ describe('OrchestratorAgent', () => {
 			const signal = new AbortController().signal;
 			const expected = {
 				response: 'All job has finished',
-				duration: 3,
+				duration: expect.any(Number) as number,
 				tokens: usage({ inputTokens: 30, outputTokens: 6 }),
 			};
 
@@ -604,7 +652,7 @@ describe('OrchestratorAgent', () => {
 			const signal = new AbortController().signal;
 			const expected = {
 				response: 'All job has finished',
-				duration: 3,
+				duration: expect.any(Number) as number,
 				tokens: usage({ inputTokens: 30, outputTokens: 6 }),
 			};
 
@@ -651,7 +699,7 @@ describe('OrchestratorAgent', () => {
 
 			await expect(orchestrator.run('second', signal, vi.fn())).resolves.toEqual({
 				response: 'All job has finished',
-				duration: 3,
+				duration: expect.any(Number) as number,
 				tokens: usage({ inputTokens: 30, outputTokens: 6 }),
 			});
 		});

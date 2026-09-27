@@ -4,6 +4,7 @@ import {
 	RecoverableError,
 	UnrecoverableError,
 	withSpentTokens,
+	withTokens,
 } from '../../../agent/domain/errors.ts';
 import type { ReviewerDecision } from './reviewerDecision.ts';
 import type { Validator } from '../interface/validator.ts';
@@ -65,14 +66,20 @@ ${executorResult}
 };
 
 interface RunTotals {
-	duration: number;
 	tokens: Tokens | undefined;
+	/** A role answered without usage, so the run's total cannot be known. */
+	unreported: boolean;
 }
 
 // Every role's response counts, even an empty one that starts another round: it was billed.
 function addToTotals(totals: RunTotals, response: AgentResponse): void {
-	totals.duration += response.duration;
+	if (!response.tokens) totals.unreported = true;
 	totals.tokens = addTokens(totals.tokens, response.tokens);
+}
+
+/** Unknown rather than partial: a sum missing a billed call must not look complete. */
+function runTokens(totals: RunTotals): Tokens | undefined {
+	return totals.unreported ? undefined : totals.tokens;
 }
 
 function stripCodeFence(text: string): string {
@@ -145,15 +152,25 @@ export class OrchestratorAgent implements Agent {
 	}
 
 	async run(prompt: string, signal: AbortSignal, callback: Callback): Promise<AgentResponse> {
+		const start = Date.now();
 		// Per invocation, not per instance: the CLI keeps one orchestrator for a whole session.
-		const totals: RunTotals = { duration: 0, tokens: undefined };
+		const totals: RunTotals = { tokens: undefined, unreported: false };
 
 		try {
-			return await this.runRounds(prompt, signal, callback, totals);
+			await this.runRounds(prompt, signal, callback, totals);
 		} catch (error) {
 			// A failing role carries its own tokens; the roles before it are in the totals.
-			throw withSpentTokens(error, totals.tokens);
+			throw totals.unreported
+				? withTokens(error, undefined)
+				: withSpentTokens(error, totals.tokens);
 		}
+
+		return {
+			response: 'All job has finished',
+			tokens: runTokens(totals),
+			// The whole run's wall clock, so it matches what the consumer waited.
+			duration: (Date.now() - start) / 1000,
+		};
 	}
 
 	private async runRounds(
@@ -161,7 +178,7 @@ export class OrchestratorAgent implements Agent {
 		signal: AbortSignal,
 		callback: Callback,
 		totals: RunTotals,
-	): Promise<AgentResponse> {
+	): Promise<void> {
 		let lastFailureReason: string | undefined;
 
 		for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
@@ -213,9 +230,7 @@ export class OrchestratorAgent implements Agent {
 				totals,
 			);
 
-			if (reviewerDecision.decision === 'approved') {
-				return { response: 'All job has finished', ...totals };
-			}
+			if (reviewerDecision.decision === 'approved') return;
 
 			lastFailureReason = reviewerDecision.feedback;
 			if (isLastAttempt) {

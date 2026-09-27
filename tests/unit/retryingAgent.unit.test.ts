@@ -37,6 +37,7 @@ function fakeAgent(...behaviors: (Error | AgentResponse)[]) {
 describe('RetryingAgent', () => {
 	afterEach(() => {
 		vi.clearAllMocks();
+		vi.restoreAllMocks();
 	});
 
 	// The consumer never sees a failure that a later attempt recovered, so the warning is
@@ -94,7 +95,7 @@ describe('RetryingAgent', () => {
 
 		const result = await retryingAgent.run('hi', signal, callback);
 
-		expect(result).toEqual(okResponse);
+		expect(result).toMatchObject({ response: okResponse.response, tokens: okResponse.tokens });
 		expect(run).toHaveBeenCalledTimes(1);
 	});
 
@@ -110,8 +111,52 @@ describe('RetryingAgent', () => {
 		const result = await retryingAgent.run('hi', signal, callback);
 
 		// okResponse spent 1 input and 1 output token.
-		expect(result).toEqual({ ...okResponse, tokens: { ...tokens(11), outputTokens: 1 } });
+		expect(result.tokens).toEqual({ ...tokens(11), outputTokens: 1 });
 		expect(run).toHaveBeenCalledTimes(3);
+	});
+
+	it('reports every attempt it waited for as its duration', async () => {
+		vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValueOnce(4_000);
+		const { agent } = fakeAgent(new RecoverableError('flaky', { cause: 'network blip' }), {
+			...okResponse,
+			duration: 1,
+		});
+		const retryingAgent = new RetryingAgent({ inner: agent, logger });
+
+		const result = await retryingAgent.run('hi', signal, callback);
+
+		expect(result.duration).toBe(3);
+	});
+
+	// A sum that misses a billed call would look complete, so the count becomes unknown.
+	it('reports unknown tokens when the successful attempt reported no usage', async () => {
+		const { agent } = fakeAgent(
+			new RecoverableError('flaky', { cause: 'network blip', tokens: tokens(10) }),
+			{ response: 'pong', duration: 1 },
+		);
+		const retryingAgent = new RetryingAgent({ inner: agent, logger });
+
+		const result = await retryingAgent.run('hi', signal, callback);
+
+		expect(result.tokens).toBeUndefined();
+	});
+
+	it('keeps the spent tokens when its logger fails', async () => {
+		const { agent } = fakeAgent(
+			new RecoverableError('flaky', { cause: 'network blip', tokens: tokens(4) }),
+		);
+		const throwingLogger = {
+			warn: vi.fn(() => {
+				throw new Error('log sink closed');
+			}),
+		};
+		const retryingAgent = new RetryingAgent({ inner: agent, logger: throwingLogger });
+
+		await expect(retryingAgent.run('hi', signal, callback)).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			cause: 'log sink closed',
+			tokens: tokens(4),
+		});
 	});
 
 	it("carries every attempt's tokens into the exhaustion error", async () => {
