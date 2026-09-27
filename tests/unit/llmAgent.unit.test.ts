@@ -108,6 +108,18 @@ describe('LLMAgent', () => {
 		expect(response).toMatchObject({ response: '', tokens: textResponse('').usage });
 	});
 
+	it('marks a stop without usage as unreported', async () => {
+		const llmClient = new FakeLLMClient(
+			textResponse('partial', { stopReason: 'truncated', usage: null }),
+		);
+
+		await expect(new LLMAgent({ llmClient }).run('prompt', signal, vi.fn())).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			tokens: undefined,
+			usageUnreported: true,
+		});
+	});
+
 	it.each(['refused', 'truncated'] as const)(
 		'fails without remembering the exchange when the model stopped as %s',
 		async stopReason => {

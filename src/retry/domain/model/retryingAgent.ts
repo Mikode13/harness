@@ -41,6 +41,8 @@ export class RetryingAgent implements Agent {
 		let lastPrompt: string | null = null;
 		// Failed attempts were billed too, so they travel with whichever way the run ends.
 		let spent: Tokens | undefined;
+		// An attempt was answered without usage, so `spent` is only a subtotal.
+		let unreported = false;
 
 		for (let attempt = 1; ; attempt++) {
 			try {
@@ -48,14 +50,14 @@ export class RetryingAgent implements Agent {
 				const response = await this.inner.run(promptToSend, signal, callback);
 				return {
 					...response,
-					// A response without usage makes the whole count unknown, not partial.
-					tokens: response.tokens && addTokens(spent, response.tokens),
+					// Any call answered without usage makes the whole count unknown, not partial.
+					tokens: unreported ? undefined : response.tokens && addTokens(spent, response.tokens),
 					// Every attempt was waited for, not only the last one.
 					duration: (Date.now() - start) / 1000,
 				};
 			} catch (e) {
 				if (isAbortError(e)) throw e;
-				if (e instanceof UnrecoverableError) throw withSpentTokens(e, spent);
+				if (e instanceof UnrecoverableError) throw withSpentTokens(e, spent, unreported);
 
 				// Only a failure the agent classified as recoverable earns another call. An
 				// unclassified one breaks the `Agent` contract, so nothing here knows whether
@@ -64,14 +66,17 @@ export class RetryingAgent implements Agent {
 					throw new UnrecoverableError('The agent failed without classifying the failure', {
 						cause: describeFailure(e),
 						tokens: spent,
+						usageUnreported: unreported,
 					});
 
 				spent = addTokens(spent, e.tokens);
+				unreported ||= e.usageUnreported;
 
 				if (attempt === this.maxAttempts)
 					throw new UnrecoverableError('Max attempts exhausted', {
 						cause: `Gave up after ${String(this.maxAttempts)} attempts. Last failure: ${e.cause}`,
 						tokens: spent,
+						usageUnreported: unreported,
 					});
 
 				// Keeps the original request: an attempt that failed before the provider registered
@@ -90,7 +95,7 @@ export class RetryingAgent implements Agent {
 					);
 				} catch (logFailure) {
 					// The attempts already spent their tokens, whatever the logger did.
-					throw withSpentTokens(logFailure, spent);
+					throw withSpentTokens(logFailure, spent, unreported);
 				}
 			}
 		}

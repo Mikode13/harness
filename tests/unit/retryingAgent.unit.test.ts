@@ -141,6 +141,46 @@ describe('RetryingAgent', () => {
 		expect(result.tokens).toBeUndefined();
 	});
 
+	// The failed call was answered and billed, so the success alone is not the run's total.
+	it('reports unknown tokens after a failed attempt that was answered without usage', async () => {
+		const { agent } = fakeAgent(
+			new RecoverableError('failed response', { cause: 'server_error', usageUnreported: true }),
+			{ ...okResponse, tokens: tokens(10) },
+		);
+		const retryingAgent = new RetryingAgent({ inner: agent, logger });
+
+		const result = await retryingAgent.run('hi', signal, callback);
+
+		expect(result.tokens).toBeUndefined();
+	});
+
+	// A dropped connection may never have reached the provider, so it adds nothing.
+	it("reports the success's tokens after a failure that never got an answer", async () => {
+		const { agent } = fakeAgent(new RecoverableError('flaky', { cause: 'socket hang up' }), {
+			...okResponse,
+			tokens: tokens(10),
+		});
+		const retryingAgent = new RetryingAgent({ inner: agent, logger });
+
+		const result = await retryingAgent.run('hi', signal, callback);
+
+		expect(result.tokens).toEqual(tokens(10));
+	});
+
+	it('carries unreported usage into the exhaustion error', async () => {
+		const { agent } = fakeAgent(
+			new RecoverableError('1', { cause: 'first', usageUnreported: true }),
+			new RecoverableError('2', { cause: 'second', tokens: tokens(3) }),
+		);
+		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 2, logger });
+
+		await expect(retryingAgent.run('hi', signal, callback)).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			tokens: undefined,
+			usageUnreported: true,
+		});
+	});
+
 	it('keeps the spent tokens when its logger fails', async () => {
 		const { agent } = fakeAgent(
 			new RecoverableError('flaky', { cause: 'network blip', tokens: tokens(4) }),

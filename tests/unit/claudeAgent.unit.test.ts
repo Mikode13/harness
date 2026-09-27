@@ -432,9 +432,11 @@ describe('ClaudeAgent', () => {
 		});
 	});
 
+	// The failed result reports the turn's usage itself, so answering before it loses nothing.
 	it('turns a failed SDK result into a recoverable error carrying its usage', async () => {
 		vi.mocked(query).mockReturnValue(
 			stream([
+				assistant([{ text: 'working', type: 'text' }]),
 				{
 					errors: ['rate limited'],
 					session_id: sessionId,
@@ -462,6 +464,7 @@ describe('ClaudeAgent', () => {
 			message: 'Claude sdk error',
 			cause: 'error,temporary failure,rate limited',
 			tokens: { inputTokens: 4, outputTokens: 2, readCacheTokens: 1, writtenCacheTokens: 0 },
+			usageUnreported: false,
 		});
 	});
 
@@ -542,6 +545,8 @@ describe('ClaudeAgent', () => {
 			expect(failure).toMatchObject({
 				message: 'Claude progress callback failed',
 				cause: 'the renderer crashed',
+				// Claude had answered, and the failure came before the result that counts it.
+				usageUnreported: true,
 			});
 		});
 

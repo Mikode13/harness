@@ -14,7 +14,12 @@ import type {
 	Callback,
 	ProgressEvent,
 } from '../../../../agent/domain/agent.ts';
-import { InvalidAgentConfigError, RecoverableError } from '../../../../agent/domain/errors.ts';
+import {
+	InvalidAgentConfigError,
+	RecoverableError,
+	UnrecoverableError,
+	withSpentTokens,
+} from '../../../../agent/domain/errors.ts';
 import {
 	classifiedProviderStream,
 	classifyHostFailure,
@@ -260,60 +265,75 @@ export class ClaudeAgent implements Agent {
 		let resultMessage: SDKResultSuccess | undefined;
 		const pendingTools = new Map<string, PendingTool>();
 
-		const messages = classifiedProviderStream(stream, 'Claude stream ended unexpectedly');
+		// Once Claude sent an assistant message, the provider answered: a failure after that
+		// without usage leaves the run's count unknown, unlike one that never got an answer.
+		let answered = false;
 
-		for await (const message of messages) {
-			this.sessionId ??= message.session_id;
+		try {
+			const messages = classifiedProviderStream(stream, 'Claude stream ended unexpectedly');
 
-			try {
-				switch (message.type) {
-					case 'assistant':
-						this.handleAssistantMessage(message, pendingTools, callback);
-						break;
-					case 'user':
-						this.handleUserMessage(message, pendingTools, callback);
-						break;
-					case 'result':
-						if (message.subtype === 'success') {
-							lines.push(message.result);
-							resultMessage = message;
-						} else {
-							throw new RecoverableError('Claude sdk error', {
-								cause: [message.stop_reason, message.terminal_reason, ...message.errors].join(','),
-								// A failed result still reports what the turn spent.
-								tokens: toTokens(message.usage),
-							});
+			for await (const message of messages) {
+				this.sessionId ??= message.session_id;
+
+				try {
+					switch (message.type) {
+						case 'assistant':
+							answered = true;
+							this.handleAssistantMessage(message, pendingTools, callback);
+							break;
+						case 'user':
+							this.handleUserMessage(message, pendingTools, callback);
+							break;
+						case 'result':
+							if (message.subtype === 'success') {
+								lines.push(message.result);
+								resultMessage = message;
+							} else {
+								throw new RecoverableError('Claude sdk error', {
+									cause: [message.stop_reason, message.terminal_reason, ...message.errors].join(
+										',',
+									),
+									// A failed result still reports what the turn spent.
+									tokens: toTokens(message.usage),
+								});
+							}
+							break;
+						case 'system':
+							this.handleSystemMessage(message);
+							break;
+						// Known messages with nothing to narrate or report.
+						case 'stream_event':
+						case 'tool_progress':
+						case 'tool_use_summary':
+						case 'auth_status':
+						case 'rate_limit_event':
+						case 'prompt_suggestion':
+						case 'conversation_reset':
+							break;
+						default: {
+							// `never` breaks the build when an SDK upgrade adds a message type; the
+							// warning covers a CLI binary that is newer than the types.
+							const unknownMessage: never = message;
+							this.warn(unknownMessage, 'Unknown Claude message type');
 						}
-						break;
-					case 'system':
-						this.handleSystemMessage(message);
-						break;
-					// Known messages with nothing to narrate or report.
-					case 'stream_event':
-					case 'tool_progress':
-					case 'tool_use_summary':
-					case 'auth_status':
-					case 'rate_limit_event':
-					case 'prompt_suggestion':
-					case 'conversation_reset':
-						break;
-					default: {
-						// `never` breaks the build when an SDK upgrade adds a message type; the
-						// warning covers a CLI binary that is newer than the types.
-						const unknownMessage: never = message;
-						this.warn(unknownMessage, 'Unknown Claude message type');
 					}
+				} catch (error) {
+					throw classifyLocalFailure(error, 'Claude failed while mapping progress');
 				}
-			} catch (error) {
-				throw classifyLocalFailure(error, 'Claude failed while mapping progress');
 			}
-		}
 
-		signal.throwIfAborted();
+			signal.throwIfAborted();
 
-		if (!resultMessage) {
-			// The turn's work stands; only its accounting is missing.
-			this.warn('Claude ended a turn without a result message; its usage is unknown');
+			if (!resultMessage) {
+				// The turn's work stands; only its accounting is missing.
+				this.warn('Claude ended a turn without a result message; its usage is unknown');
+			}
+		} catch (error) {
+			// A failed result reports the turn's usage itself.
+			const reported =
+				(error instanceof RecoverableError || error instanceof UnrecoverableError) &&
+				error.tokens !== undefined;
+			throw answered && !reported ? withSpentTokens(error, undefined, true) : error;
 		}
 
 		return {

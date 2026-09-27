@@ -95,6 +95,23 @@ describe('ConversationLoop', () => {
 		expect(output.print).toHaveBeenCalledWith('tokens: unknown, a call did not report its usage');
 	});
 
+	it('says the tokens of a failed run are unknown when a call did not report its usage', async () => {
+		const promptEmitter = createPromptEmitter('hello');
+		const output = createOutput();
+		const failure = new UnrecoverableError('broken', { cause: 'fatal', usageUnreported: true });
+		const loop = new ConversationLoop(
+			{ run: vi.fn().mockRejectedValue(failure) },
+			vi.fn(),
+			promptEmitter,
+			output,
+		);
+
+		await loop.start();
+
+		expect(output.print).toHaveBeenCalledWith('usage before the failure:');
+		expect(output.print).toHaveBeenCalledWith('tokens: unknown, a call did not report its usage');
+	});
+
 	it('prints the tokens a failed run spent before failing', async () => {
 		const promptEmitter = createPromptEmitter('hello');
 		const output = createOutput();

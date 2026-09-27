@@ -113,8 +113,10 @@ Three contracts have rules of their own:
   `RecoverableError` or `UnrecoverableError` whose `tokens` hold what the run spent before
   failing. `RetryingAgent` adds failed attempts to whichever ends the run, and
   `OrchestratorAgent` adds every earlier role. `tokens` is missing, not zero, when any response
-  in the run came without usage: its call was billed, so a partial sum would look complete. A
-  failure that reported nothing adds nothing, since it may not have reached the provider. A
+  in the run came without usage: its call was billed, so a partial sum would look complete.
+  A failure tells the two cases apart. The engine sets `usageUnreported` when the provider
+  answered without usage before the run failed, which makes every total that includes it
+  unknown. A failure that never got an answer, such as a dropped connection, adds nothing. A
   cancellation carries no tokens: an `AbortError` must propagate unchanged. `duration` is each
   layer's own wall clock, so a retried run or a whole workflow reports what the consumer waited.
 

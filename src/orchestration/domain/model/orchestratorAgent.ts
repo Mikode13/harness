@@ -4,7 +4,6 @@ import {
 	RecoverableError,
 	UnrecoverableError,
 	withSpentTokens,
-	withTokens,
 } from '../../../agent/domain/errors.ts';
 import type { ReviewerDecision } from './reviewerDecision.ts';
 import type { Validator } from '../interface/validator.ts';
@@ -160,9 +159,7 @@ export class OrchestratorAgent implements Agent {
 			await this.runRounds(prompt, signal, callback, totals);
 		} catch (error) {
 			// A failing role carries its own tokens; the roles before it are in the totals.
-			throw totals.unreported
-				? withTokens(error, undefined)
-				: withSpentTokens(error, totals.tokens);
+			throw withSpentTokens(error, totals.tokens, totals.unreported);
 		}
 
 		return {

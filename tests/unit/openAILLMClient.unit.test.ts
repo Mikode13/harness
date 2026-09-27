@@ -259,6 +259,33 @@ describe('OpenAILLMClient', () => {
 		expect(result.stopReason).toBe(stopReason);
 	});
 
+	// OpenAI answered, so the call may have been billed: the run's count is unknown.
+	it('marks a failed response without usage as unreported', async () => {
+		createSdk(
+			response({
+				status: 'failed',
+				error: { code: 'invalid_prompt', message: 'The prompt was rejected' },
+				usage: undefined,
+			}),
+		);
+
+		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			tokens: undefined,
+			usageUnreported: true,
+		});
+	});
+
+	// No answer arrived, so nothing can be missing from the count.
+	it('does not mark a connection failure as unreported', async () => {
+		createSdk(new Error('socket hang up'));
+
+		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+			constructor: RecoverableError,
+			usageUnreported: false,
+		});
+	});
+
 	it('makes a failed response unrecoverable with its error', async () => {
 		createSdk(
 			response({

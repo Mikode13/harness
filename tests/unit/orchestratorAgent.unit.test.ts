@@ -486,6 +486,25 @@ describe('OrchestratorAgent', () => {
 		).rejects.toMatchObject({ constructor: UnrecoverableError, cause: 'fatal', tokens: undefined });
 	});
 
+	it("keeps a role's unreported usage when it fails, even with the earlier roles known", async () => {
+		const orchestrator = new OrchestratorAgent({
+			plannerAgent: createFakeAgent(createResponse({ response: 'draft plan' })).agent,
+			executorAgent: {
+				run: () =>
+					Promise.reject(
+						new UnrecoverableError('broken', { cause: 'fatal', usageUnreported: true }),
+					),
+			},
+			reviewerAgent: createFakeAgent().agent,
+			reviewerDecisionValidator: new ReviewerDecisionValidator(),
+			logger,
+		});
+
+		await expect(
+			orchestrator.run('ship feature', new AbortController().signal, vi.fn()),
+		).rejects.toMatchObject({ tokens: undefined, usageUnreported: true });
+	});
+
 	describe('leaf failures', () => {
 		function createFailingAgent(error: Error) {
 			const run = vi.fn(() => Promise.reject(error));

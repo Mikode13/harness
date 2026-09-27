@@ -16,6 +16,7 @@ import {
 	InvalidAgentConfigError,
 	RecoverableError,
 	UnrecoverableError,
+	withSpentTokens,
 } from '../../../../agent/domain/errors.ts';
 import {
 	classifiedProviderStream,
@@ -183,44 +184,54 @@ export class CodexAgent implements Agent {
 		const lines: string[] = [];
 		let usage: Usage | undefined = undefined;
 
-		const events = classifiedProviderStream(turn.events, 'Codex stream ended unexpectedly');
+		// Once Codex produced an item, the provider answered: a failure after that without usage
+		// leaves the run's count unknown, unlike one that never got an answer.
+		let answered = false;
 
-		for await (const event of events) {
-			if (event.type === 'turn.completed') {
-				usage = event.usage;
-				continue;
-			}
+		try {
+			const events = classifiedProviderStream(turn.events, 'Codex stream ended unexpectedly');
 
-			const item = convertEventToItem(event);
-
-			if (!item) continue;
-
-			let description: ProgressEvent | undefined;
-			try {
-				description = describeItem(item, this.logger);
-			} catch (error) {
-				throw classifyLocalFailure(error, 'Codex failed while mapping progress');
-			}
-
-			if (description) {
-				try {
-					callback(description);
-				} catch (error) {
-					throw classifyHostFailure(error, 'Codex progress callback failed');
+			for await (const event of events) {
+				if (event.type.startsWith('item.') || event.type === 'turn.failed') answered = true;
+				if (event.type === 'turn.completed') {
+					usage = event.usage;
+					continue;
 				}
-			}
-			if (description?.type === 'agentMessage') lines.push(description.message);
-		}
 
-		if (!usage) {
-			// The turn's work stands; only its accounting is missing.
-			treatErrors(
-				() => {
-					this.logger.warn('Codex ended a turn without reporting usage');
-				},
-				classifyHostFailure,
-				'Codex logger failed while reporting missing usage',
-			);
+				const item = convertEventToItem(event);
+
+				if (!item) continue;
+
+				let description: ProgressEvent | undefined;
+				try {
+					description = describeItem(item, this.logger);
+				} catch (error) {
+					throw classifyLocalFailure(error, 'Codex failed while mapping progress');
+				}
+
+				if (description) {
+					try {
+						callback(description);
+					} catch (error) {
+						throw classifyHostFailure(error, 'Codex progress callback failed');
+					}
+				}
+				if (description?.type === 'agentMessage') lines.push(description.message);
+			}
+
+			if (!usage) {
+				// The turn's work stands; only its accounting is missing.
+				treatErrors(
+					() => {
+						this.logger.warn('Codex ended a turn without reporting usage');
+					},
+					classifyHostFailure,
+					'Codex logger failed while reporting missing usage',
+				);
+			}
+		} catch (error) {
+			if (usage) throw withSpentTokens(error, toTokens(usage));
+			throw answered ? withSpentTokens(error, undefined, true) : error;
 		}
 
 		return {

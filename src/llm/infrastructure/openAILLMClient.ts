@@ -144,8 +144,9 @@ function toLLMResponse(response: Response, logger: ILogger): LLMResponse {
 			stopReason: toStopReason(response),
 		};
 	} catch (error) {
-		// The call was billed whether the response failed or a logger did while mapping it.
-		throw withSpentTokens(error, usage);
+		// The call was billed whether the response failed or a logger did while mapping it, and
+		// an answer without usage leaves the run's count unknown.
+		throw withSpentTokens(error, usage, !usage);
 	}
 }
 

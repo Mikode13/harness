@@ -343,7 +343,24 @@ describe('CodexAgent', () => {
 			const failure = await rejectionOf(createAgent());
 
 			expect(failure).toBeInstanceOf(RecoverableError);
-			expect(failure).toMatchObject({ cause: 'socket hang up' });
+			// Codex never answered, so nothing can be missing from the count.
+			expect(failure).toMatchObject({ cause: 'socket hang up', usageUnreported: false });
+		});
+
+		// Codex already produced an item, so the turn was billed without a count.
+		it('marks a turn that failed after answering as unreported', async () => {
+			const { runStreamed } = createSdk();
+			runStreamed.mockResolvedValue(
+				streamedTurn([
+					completed({ id: 'message-1', text: 'working', type: 'agent_message' }),
+					{ type: 'turn.failed', error: { message: 'model failed' } },
+				]),
+			);
+
+			const failure = await rejectionOf(createAgent());
+
+			expect(failure).toBeInstanceOf(UnrecoverableError);
+			expect(failure).toMatchObject({ cause: 'model failed', usageUnreported: true });
 		});
 
 		it('classifies a stream that fails part-way through a turn', async () => {

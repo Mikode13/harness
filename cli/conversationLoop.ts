@@ -46,7 +46,10 @@ export class ConversationLoop {
 				if (isAbortError(e)) continue;
 
 				// A failed run was billed for whatever it spent before failing.
-				if ((e instanceof RecoverableError || e instanceof UnrecoverableError) && e.tokens) {
+				if (
+					(e instanceof RecoverableError || e instanceof UnrecoverableError) &&
+					(e.tokens || e.usageUnreported)
+				) {
 					this.output.print('usage before the failure:');
 					this.printTokens(e.tokens);
 				}

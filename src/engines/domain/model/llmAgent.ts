@@ -49,6 +49,7 @@ export class LLMAgent implements Agent {
 				cause: `The model stopped with "${response.stopReason}".`,
 				// The call was billed even though its answer is unusable.
 				tokens: response.usage,
+				usageUnreported: !response.usage,
 			});
 		}
 
@@ -66,7 +67,7 @@ export class LLMAgent implements Agent {
 			}
 		} catch (error) {
 			// The answer already arrived, so the run spent its tokens whatever the consumer did.
-			throw withSpentTokens(error, response.usage);
+			throw withSpentTokens(error, response.usage, !response.usage);
 		}
 
 		const text = response.message.content

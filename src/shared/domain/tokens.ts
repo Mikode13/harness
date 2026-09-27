@@ -19,10 +19,10 @@ export interface Tokens {
 }
 
 /**
- * Sums two counts where a missing side adds nothing, as for a failure that reported no usage:
- * it may not have reached the provider at all. A response without usage is different, since
- * its call completed and was billed; the layers that accumulate responses make their whole
- * total unknown instead of calling this, so a partial sum never looks complete.
+ * Sums two counts where a missing side adds nothing, as for a failure that never got an
+ * answer. A call the provider answered without usage is different: it was billed, so the
+ * layers that accumulate track it apart (`usageUnreported` on an error, missing `tokens` on a
+ * response) and report the whole total as unknown, never as this partial sum.
  */
 export function addTokens(a: Tokens | undefined, b: Tokens | undefined): Tokens | undefined {
 	if (!a) return b;
