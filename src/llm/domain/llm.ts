@@ -6,8 +6,9 @@ export type StopReason = 'completed' | 'truncated' | 'refused';
 export interface LLMResponse {
 	message: Message & { role: 'assistant' };
 	/**
-	 * Missing when the provider did not report it. The call was made but cannot be accounted
-	 * for, so the agent treats the response as unusable.
+	 * Missing when the provider did not report it. The call was made and may have been billed,
+	 * so the agent keeps the answer and only its tokens become unknown; a failure raised from
+	 * such a response is marked `usageUnreported`.
 	 */
 	usage: Tokens | undefined;
 	stopReason: StopReason;

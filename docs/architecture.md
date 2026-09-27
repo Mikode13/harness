@@ -128,7 +128,7 @@ Three contracts have rules of their own:
   built. The factory does not validate them, so adding a model is a change in one file.
 
 External integrations are `@anthropic-ai/claude-agent-sdk` and `@openai/codex-sdk`, each
-reached only from its own adapter, and `zod`, used only by
+reached only from its own engine, `openai`, reached only from `OpenAILLMClient`, and `zod`, used only by
 `ReviewerDecisionValidator` behind the `Validator<T>` interface. `ILogger` is the one outbound
 port: the factories default it to a stderr logger, and nothing in `src/` writes to stdout,
 which belongs to the consumer.
