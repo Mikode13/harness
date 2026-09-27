@@ -153,7 +153,9 @@ reaches the consumer through one stream.
 
 **A model-backed turn.** `LLMAgent.run` sends the stored context plus the new prompt to its
 `LLMClient`, inside `classifyProviderFailure`. A `refused` or `truncated` stop ends the run
-with `UnrecoverableError`. Only a completed answer is recorded, together with its prompt, so
+with `UnrecoverableError`. An answer whose client reported no usage cannot be accounted for,
+so the run returns `undefined` without recording or narrating it, as a Codex turn without
+usage does. Only a completed answer is recorded, together with its prompt, so
 a failed call leaves the conversation untouched and a retry of the same prompt cannot appear
 twice. Each part of the answer is then narrated as `reasoning` or `agentMessage` through
 `classifyHostFailure`; the response carries the text parts alone. The agent emits no

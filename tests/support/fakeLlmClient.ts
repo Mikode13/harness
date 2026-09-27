@@ -36,11 +36,15 @@ export function textResponse(
 	{
 		usage = {},
 		stopReason = 'completed',
-	}: { usage?: Partial<Tokens>; stopReason?: StopReason } = {},
+	}: { usage?: Partial<Tokens> | null; stopReason?: StopReason } = {},
 ): LLMResponse {
 	return {
 		message: { role: 'assistant', content: [{ type: 'text', text }] },
-		usage: { inputTokens: 1, outputTokens: 1, readCacheTokens: 0, writtenCacheTokens: 0, ...usage },
+		// `null` stands for a provider that reported no usage.
+		usage:
+			usage === null
+				? undefined
+				: { inputTokens: 1, outputTokens: 1, readCacheTokens: 0, writtenCacheTokens: 0, ...usage },
 		stopReason,
 	};
 }

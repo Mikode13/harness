@@ -108,17 +108,17 @@ function toStopReason(response: Response): StopReason {
 }
 
 /** OpenAI counts both cache reads and cache writes inside `input_tokens`. */
-function toTokens(usage: ResponseUsage | undefined, logger: ILogger): Tokens {
+function toTokens(usage: ResponseUsage | undefined, logger: ILogger): Tokens | undefined {
 	if (!usage) {
-		// The answer is still valid; failing the run over its accounting would lose it.
+		// Zeros would report a call that may have been billed as free.
 		treatErrors(
 			() => {
-				logger.warn('OpenAI returned a response without usage; counting it as zero tokens');
+				logger.warn('OpenAI returned a response without usage; it cannot be accounted for');
 			},
 			classifyHostFailure,
 			'OpenAI client logger failed while reading usage',
 		);
-		return { inputTokens: 0, readCacheTokens: 0, writtenCacheTokens: 0, outputTokens: 0 };
+		return undefined;
 	}
 
 	const { cached_tokens, cache_write_tokens } = usage.input_tokens_details;

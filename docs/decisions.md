@@ -744,4 +744,6 @@ tags: #mikode-harness #provider-integration #error-handling
 
 **Alternatives considered:** keeping `encrypted_content` in the message — deferred to the provider-state slice of #23, which must decide where state one provider can read and another cannot lives. Making `Message` a class that renders itself for a provider — rejected: the domain would learn every provider's format, and `structuredClone`, which the conversation relies on, drops a class's prototype.
 
+A response without usage is reported as missing, not as zero: zeros would present a call that may have been billed as free, so `LLMAgent` returns `undefined` for it, as `CodexAgent` already does for a turn without usage.
+
 **Consequences:** a reasoning model starts each turn without its earlier reasoning, which costs some quality on multi-turn work until provider state exists. Unknown output items are logged and left out, which is correct while no tools are sent. `openai` moves to `dependencies`.

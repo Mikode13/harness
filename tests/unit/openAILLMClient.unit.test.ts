@@ -227,18 +227,13 @@ describe('OpenAILLMClient', () => {
 		});
 	});
 
-	it('counts a response without usage as zero tokens and warns', async () => {
+	it('reports a response without usage as unaccounted and warns', async () => {
 		const logger = { warn: vi.fn() };
 		createSdk(response({ usage: undefined }));
 
 		const result = await createClient(logger).send([userMessage('prompt')], signal);
 
-		expect(result.usage).toEqual({
-			inputTokens: 0,
-			readCacheTokens: 0,
-			writtenCacheTokens: 0,
-			outputTokens: 0,
-		});
+		expect(result.usage).toBeUndefined();
 		expect(logger.warn).toHaveBeenCalledOnce();
 	});
 
