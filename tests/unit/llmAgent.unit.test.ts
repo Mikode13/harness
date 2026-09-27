@@ -96,15 +96,16 @@ describe('LLMAgent', () => {
 			{ type: 'reasoning', message: 'thinking' },
 			{ type: 'agentMessage', message: 'answer' },
 		]);
-		expect(response?.response).toBe('answer');
+		expect(response.response).toBe('answer');
 	});
 
-	it('returns undefined when the model produced no text', async () => {
+	// The call was billed, so its tokens travel even without an answer.
+	it('answers with empty text and the usage when the model produced no text', async () => {
 		const llmClient = new FakeLLMClient(reasonedResponse('thinking only'));
 
-		await expect(new LLMAgent({ llmClient }).run('prompt', signal, vi.fn())).resolves.toBe(
-			undefined,
-		);
+		const response = await new LLMAgent({ llmClient }).run('prompt', signal, vi.fn());
+
+		expect(response).toMatchObject({ response: '', tokens: textResponse('').usage });
 	});
 
 	it.each(['refused', 'truncated'] as const)(
@@ -119,6 +120,8 @@ describe('LLMAgent', () => {
 			await expect(agent.run('first', signal, vi.fn())).rejects.toMatchObject({
 				constructor: UnrecoverableError,
 				cause: `The model stopped with "${stopReason}".`,
+				// The unusable answer was billed.
+				tokens: textResponse('').usage,
 			});
 			await agent.run('second', signal, vi.fn());
 
@@ -126,19 +129,20 @@ describe('LLMAgent', () => {
 		},
 	);
 
-	it('returns undefined without narrating or remembering an answer with no usage', async () => {
+	// Missing accounting does not make the answer wrong: only the tokens are unknown.
+	it('keeps an answer whose usage was not reported, without tokens', async () => {
 		const llmClient = new FakeLLMClient(
 			textResponse('unaccounted', { usage: null }),
 			textResponse('answer'),
 		);
 		const agent = new LLMAgent({ llmClient });
-		const callback = vi.fn();
 
-		await expect(agent.run('first', signal, callback)).resolves.toBe(undefined);
+		const response = await agent.run('first', signal, vi.fn());
 		await agent.run('second', signal, vi.fn());
 
-		expect(callback).not.toHaveBeenCalled();
-		expect(llmClient.contexts[1]).toEqual([userMessage('second')]);
+		expect(response.response).toBe('unaccounted');
+		expect(response.tokens).toBeUndefined();
+		expect(llmClient.contexts[1]).toHaveLength(3);
 	});
 
 	// RetryingAgent runs the same prompt again after a recoverable failure; the prompt of the
@@ -182,6 +186,7 @@ describe('LLMAgent', () => {
 			constructor: UnrecoverableError,
 			message: 'LLM agent progress callback failed',
 			cause: 'render failed',
+			tokens: textResponse('').usage,
 		});
 	});
 });

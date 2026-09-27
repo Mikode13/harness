@@ -17,3 +17,20 @@ export interface Tokens {
 	/** Every generated token, reasoning included. */
 	outputTokens: number;
 }
+
+/**
+ * Sums what was reported. A side without usage adds nothing, and the sum is missing only
+ * when neither side reported any: a partial count is still better than none, and the
+ * engine that could not report already logged it.
+ */
+export function addTokens(a: Tokens | undefined, b: Tokens | undefined): Tokens | undefined {
+	if (!a) return b;
+	if (!b) return a;
+
+	return {
+		inputTokens: a.inputTokens + b.inputTokens,
+		readCacheTokens: a.readCacheTokens + b.readCacheTokens,
+		writtenCacheTokens: a.writtenCacheTokens + b.writtenCacheTokens,
+		outputTokens: a.outputTokens + b.outputTokens,
+	};
+}

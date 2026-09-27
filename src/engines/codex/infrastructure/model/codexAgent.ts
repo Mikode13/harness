@@ -26,6 +26,7 @@ import {
 	treatErrors,
 } from '../../../../agent/domain/providerFailure.ts';
 import type { ILogger } from '../../../../shared/domain/logger.ts';
+import type { Tokens } from '../../../../shared/domain/tokens.ts';
 import { isOneOf } from '../../../../shared/domain/isOneOf.ts';
 
 // The SDK types `model` as a plain string, so this list is maintained by hand.
@@ -95,6 +96,16 @@ function describeItem(item: ThreadItem, logger: ILogger): ProgressEvent | undefi
 	}
 }
 
+// Codex counts cached tokens inside input_tokens; Tokens keeps them apart.
+function toTokens(usage: Usage): Tokens {
+	return {
+		inputTokens: usage.input_tokens - usage.cached_input_tokens - usage.cache_write_input_tokens,
+		readCacheTokens: usage.cached_input_tokens,
+		writtenCacheTokens: usage.cache_write_input_tokens,
+		outputTokens: usage.output_tokens,
+	};
+}
+
 export class CodexAgent implements Agent {
 	private thread: Thread;
 	private logger: ILogger;
@@ -151,11 +162,8 @@ export class CodexAgent implements Agent {
 		this.logger = logger;
 	}
 
-	async run(
-		prompt: string,
-		signal: AbortSignal,
-		callback: Callback,
-	): Promise<AgentResponse | undefined> {
+	async run(prompt: string, signal: AbortSignal, callback: Callback): Promise<AgentResponse> {
+		const start = Date.now();
 		let turn: StreamedTurn;
 
 		try {
@@ -164,15 +172,15 @@ export class CodexAgent implements Agent {
 			throw classifyProviderFailure(error, 'Codex refused the request');
 		}
 
-		return await this.parseResponse(turn, callback);
+		return await this.parseResponse(turn, callback, start);
 	}
 
 	private async parseResponse(
 		turn: StreamedTurn,
 		callback: Callback,
-	): Promise<AgentResponse | undefined> {
+		start: number,
+	): Promise<AgentResponse> {
 		const lines: string[] = [];
-		const start = Date.now();
 		let usage: Usage | undefined = undefined;
 
 		const events = classifiedProviderStream(turn.events, 'Codex stream ended unexpectedly');
@@ -204,20 +212,21 @@ export class CodexAgent implements Agent {
 			if (description?.type === 'agentMessage') lines.push(description.message);
 		}
 
-		if (!lines.length || !usage) {
-			return undefined;
+		if (!usage) {
+			// The turn's work stands; only its accounting is missing.
+			treatErrors(
+				() => {
+					this.logger.warn('Codex ended a turn without reporting usage');
+				},
+				classifyHostFailure,
+				'Codex logger failed while reporting missing usage',
+			);
 		}
 
 		return {
+			// Empty when the turn only ran commands or edited files.
 			response: lines.join('\n'),
-			tokens: {
-				// Codex counts cached tokens inside input_tokens; Tokens keeps them apart.
-				inputTokens:
-					usage.input_tokens - usage.cached_input_tokens - usage.cache_write_input_tokens,
-				outputTokens: usage.output_tokens,
-				writtenCacheTokens: usage.cache_write_input_tokens,
-				readCacheTokens: usage.cached_input_tokens,
-			},
+			tokens: usage && toTokens(usage),
 			duration: (Date.now() - start) / 1000,
 		};
 	}

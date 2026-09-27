@@ -1,5 +1,6 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
+	NonNullableUsage,
 	EffortLevel,
 	Query,
 	SDKAssistantMessage,
@@ -22,6 +23,7 @@ import {
 	treatErrors,
 } from '../../../../agent/domain/providerFailure.ts';
 import type { ILogger } from '../../../../shared/domain/logger.ts';
+import type { Tokens } from '../../../../shared/domain/tokens.ts';
 import { isOneOf } from '../../../../shared/domain/isOneOf.ts';
 
 // The SDK types `model` as a plain string, so this list is maintained by hand.
@@ -50,6 +52,16 @@ interface ToolResultBlock {
 	tool_use_id: string;
 	is_error?: boolean;
 	content?: unknown;
+}
+
+// Claude reports its cache counters apart from input_tokens already.
+function toTokens(usage: NonNullableUsage): Tokens {
+	return {
+		inputTokens: usage.input_tokens,
+		readCacheTokens: usage.cache_read_input_tokens,
+		writtenCacheTokens: usage.cache_creation_input_tokens,
+		outputTokens: usage.output_tokens,
+	};
 }
 
 function emitProgress(callback: Callback, event: ProgressEvent): void {
@@ -199,12 +211,9 @@ export class ClaudeAgent implements Agent {
 		this.logger = logger;
 	}
 
-	async run(
-		prompt: string,
-		signal: AbortSignal,
-		callback: Callback,
-	): Promise<AgentResponse | undefined> {
+	async run(prompt: string, signal: AbortSignal, callback: Callback): Promise<AgentResponse> {
 		signal.throwIfAborted();
+		const start = Date.now();
 
 		let stream: Query;
 
@@ -235,7 +244,7 @@ export class ClaudeAgent implements Agent {
 		signal.addEventListener('abort', closeStream, { once: true });
 
 		try {
-			return await this.parseResponse(stream, signal, callback);
+			return await this.parseResponse(stream, signal, callback, start);
 		} finally {
 			signal.removeEventListener('abort', closeStream);
 		}
@@ -245,7 +254,8 @@ export class ClaudeAgent implements Agent {
 		stream: Query,
 		signal: AbortSignal,
 		callback: Callback,
-	): Promise<AgentResponse | undefined> {
+		start: number,
+	): Promise<AgentResponse> {
 		const lines: string[] = [];
 		let resultMessage: SDKResultSuccess | undefined;
 		const pendingTools = new Map<string, PendingTool>();
@@ -270,6 +280,8 @@ export class ClaudeAgent implements Agent {
 						} else {
 							throw new RecoverableError('Claude sdk error', {
 								cause: [message.stop_reason, message.terminal_reason, ...message.errors].join(','),
+								// A failed result still reports what the turn spent.
+								tokens: toTokens(message.usage),
 							});
 						}
 						break;
@@ -299,19 +311,16 @@ export class ClaudeAgent implements Agent {
 
 		signal.throwIfAborted();
 
-		if (!lines.length || !resultMessage) {
-			return undefined;
+		if (!resultMessage) {
+			// The turn's work stands; only its accounting is missing.
+			this.warn('Claude ended a turn without a result message; its usage is unknown');
 		}
 
 		return {
 			response: lines.join('\n'),
-			tokens: {
-				inputTokens: resultMessage.usage.input_tokens,
-				outputTokens: resultMessage.usage.output_tokens,
-				writtenCacheTokens: resultMessage.usage.cache_creation_input_tokens,
-				readCacheTokens: resultMessage.usage.cache_read_input_tokens,
-			},
-			duration: resultMessage.duration_ms / 1000,
+			tokens: resultMessage && toTokens(resultMessage.usage),
+			// Measured here, like the other engines, so it exists even without a result message.
+			duration: (Date.now() - start) / 1000,
 		};
 	}
 

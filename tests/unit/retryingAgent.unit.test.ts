@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Agent, AgentResponse } from '../../src/agent/domain/agent.ts';
 import { RecoverableError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
+import { MaxContextError } from '../../src/llm/domain/errors.ts';
 import { RetryingAgent } from '../../src/retry/domain/model/retryingAgent.ts';
 
 const okResponse: AgentResponse = {
@@ -8,6 +9,11 @@ const okResponse: AgentResponse = {
 	tokens: { inputTokens: 1, outputTokens: 1, readCacheTokens: 0, writtenCacheTokens: 0 },
 	duration: 1,
 };
+
+/** Input tokens alone, so sums across attempts stay easy to read. */
+function tokens(inputTokens: number) {
+	return { inputTokens, outputTokens: 0, readCacheTokens: 0, writtenCacheTokens: 0 };
+}
 
 const signal = new AbortController().signal;
 const callback = vi.fn();
@@ -88,13 +94,14 @@ describe('RetryingAgent', () => {
 
 		const result = await retryingAgent.run('hi', signal, callback);
 
-		expect(result).toBe(okResponse);
+		expect(result).toEqual(okResponse);
 		expect(run).toHaveBeenCalledTimes(1);
 	});
 
-	it('retries on RecoverableError and returns the eventual success', async () => {
+	// The failed attempts were billed too, so the success carries their tokens.
+	it("retries on RecoverableError and returns the eventual success with every attempt's tokens", async () => {
 		const { agent, run } = fakeAgent(
-			new RecoverableError('flaky', { cause: 'network blip' }),
+			new RecoverableError('flaky', { cause: 'network blip', tokens: tokens(10) }),
 			new RecoverableError('flaky again', { cause: 'timeout' }),
 			okResponse,
 		);
@@ -102,8 +109,52 @@ describe('RetryingAgent', () => {
 
 		const result = await retryingAgent.run('hi', signal, callback);
 
-		expect(result).toBe(okResponse);
+		// okResponse spent 1 input and 1 output token.
+		expect(result).toEqual({ ...okResponse, tokens: { ...tokens(11), outputTokens: 1 } });
 		expect(run).toHaveBeenCalledTimes(3);
+	});
+
+	it("carries every attempt's tokens into the exhaustion error", async () => {
+		const { agent } = fakeAgent(
+			new RecoverableError('1', { cause: 'first failure', tokens: tokens(2) }),
+			new RecoverableError('2', { cause: 'second failure', tokens: tokens(3) }),
+		);
+		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 2, logger });
+
+		await expect(retryingAgent.run('hi', signal, callback)).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			tokens: tokens(5),
+		});
+	});
+
+	// A subclass keeps its meaning: a caller that compacts on MaxContextError must still see one.
+	it('keeps the class and trace of a failure it adds tokens to', async () => {
+		const tooLong = new MaxContextError('Context too long', { cause: 'limit', tokens: tokens(3) });
+		const { agent } = fakeAgent(
+			new RecoverableError('flaky', { cause: 'network blip', tokens: tokens(2) }),
+			tooLong,
+		);
+		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
+
+		const failure = await retryingAgent.run('hi', signal, callback).catch((e: unknown) => e);
+
+		expect(failure).toBeInstanceOf(MaxContextError);
+		expect(failure).toMatchObject({ cause: 'limit', tokens: tokens(5), stack: tooLong.stack });
+	});
+
+	it("adds the earlier attempts' tokens to an unrecoverable failure", async () => {
+		const { agent } = fakeAgent(
+			new RecoverableError('flaky', { cause: 'network blip', tokens: tokens(2) }),
+			new UnrecoverableError('broken', { cause: 'fatal', tokens: tokens(3) }),
+		);
+		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
+
+		await expect(retryingAgent.run('hi', signal, callback)).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			message: 'broken',
+			cause: 'fatal',
+			tokens: tokens(5),
+		});
 	});
 
 	it('gives up after maxAttempts and rethrows the last error', async () => {

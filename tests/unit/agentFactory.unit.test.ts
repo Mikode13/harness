@@ -216,7 +216,7 @@ describe('createAgent', () => {
 
 		const response = await createAgent('claude', { logger }).run('prompt', signal, vi.fn());
 
-		expect(response?.response).toBe('recovered');
+		expect(response.response).toBe('recovered');
 		expect(query).toHaveBeenCalledTimes(2);
 		expect(logger.warn).toHaveBeenCalledOnce();
 	});
@@ -241,7 +241,7 @@ describe('createLLMAgent', () => {
 			logger: createLogger(),
 		}).run('prompt', signal, vi.fn());
 
-		expect(response?.response).toBe('hi');
+		expect(response.response).toBe('hi');
 		expect(create).toHaveBeenCalledWith(
 			expect.objectContaining({ model: 'gpt-5.6-luna', instructions: 'Be brief.' }),
 			{ signal },
@@ -267,7 +267,7 @@ describe('createLLMAgent', () => {
 			vi.fn(),
 		);
 
-		expect(response?.response).toBe('recovered');
+		expect(response.response).toBe('recovered');
 		expect(create).toHaveBeenCalledTimes(2);
 		expect(logger.warn).toHaveBeenCalledOnce();
 	});

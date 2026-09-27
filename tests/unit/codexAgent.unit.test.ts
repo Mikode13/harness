@@ -210,22 +210,36 @@ describe('CodexAgent', () => {
 		expect(Codex).not.toHaveBeenCalled();
 	});
 
-	it.each([
-		['without an agent message', [{ type: 'turn.completed', usage: usage() }] as ThreadEvent[]],
-		[
-			'without completed usage',
-			[completed({ id: 'message-1', text: 'partial', type: 'agent_message' })] as ThreadEvent[],
-		],
-	])('returns no response for an incomplete stream %s', async (_case, events) => {
-		createSdk(events);
+	// A turn that only ran commands or edited files was still billed.
+	it('answers with empty text and the usage for a turn without an agent message', async () => {
+		createSdk([{ type: 'turn.completed', usage: usage() }]);
 
-		await expect(
-			new CodexAgent({ model: 'gpt-5.6-sol', logger: createLogger() }).run(
-				'prompt',
-				new AbortController().signal,
-				vi.fn(),
-			),
-		).resolves.toBeUndefined();
+		const response = await new CodexAgent({ model: 'gpt-5.6-sol', logger: createLogger() }).run(
+			'prompt',
+			new AbortController().signal,
+			vi.fn(),
+		);
+
+		expect(response).toMatchObject({
+			response: '',
+			tokens: { inputTokens: 10, readCacheTokens: 2, writtenCacheTokens: 1, outputTokens: 8 },
+		});
+	});
+
+	// The turn's work stands; only its accounting is unknown, and the warning says so.
+	it('keeps a turn that reported no usage, without tokens', async () => {
+		createSdk([completed({ id: 'message-1', text: 'partial', type: 'agent_message' })]);
+		const logger = createLogger();
+
+		const response = await new CodexAgent({ model: 'gpt-5.6-sol', logger }).run(
+			'prompt',
+			new AbortController().signal,
+			vi.fn(),
+		);
+
+		expect(response.response).toBe('partial');
+		expect(response.tokens).toBeUndefined();
+		expect(logger.warn).toHaveBeenCalledWith('Codex ended a turn without reporting usage');
 	});
 
 	it.each([

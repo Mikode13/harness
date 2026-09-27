@@ -1,5 +1,9 @@
 import type { Agent, AgentResponse, Callback } from '../../../agent/domain/agent.ts';
-import { RecoverableError, UnrecoverableError } from '../../../agent/domain/errors.ts';
+import {
+	RecoverableError,
+	UnrecoverableError,
+	withSpentTokens,
+} from '../../../agent/domain/errors.ts';
 import {
 	classifyHostFailure,
 	describeFailure,
@@ -7,6 +11,7 @@ import {
 } from '../../../agent/domain/providerFailure.ts';
 import { isAbortError } from '../../../shared/domain/isAbortError.ts';
 import type { ILogger } from '../../../shared/domain/logger.ts';
+import { addTokens, type Tokens } from '../../../shared/domain/tokens.ts';
 
 export class RetryingAgent implements Agent {
 	private inner: Agent;
@@ -31,18 +36,19 @@ export class RetryingAgent implements Agent {
 		this.logger = logger;
 	}
 
-	async run(
-		prompt: string,
-		signal: AbortSignal,
-		callback: Callback,
-	): Promise<AgentResponse | undefined> {
+	async run(prompt: string, signal: AbortSignal, callback: Callback): Promise<AgentResponse> {
 		let lastPrompt: string | null = null;
-		for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
+		// Failed attempts were billed too, so they travel with whichever way the run ends.
+		let spent: Tokens | undefined;
+
+		for (let attempt = 1; ; attempt++) {
 			try {
 				const promptToSend = lastPrompt ?? prompt;
-				return await this.inner.run(promptToSend, signal, callback);
+				const response = await this.inner.run(promptToSend, signal, callback);
+				return { ...response, tokens: addTokens(spent, response.tokens) };
 			} catch (e) {
-				if (isAbortError(e) || e instanceof UnrecoverableError) throw e;
+				if (isAbortError(e)) throw e;
+				if (e instanceof UnrecoverableError) throw withSpentTokens(e, spent);
 
 				// Only a failure the agent classified as recoverable earns another call. An
 				// unclassified one breaks the `Agent` contract, so nothing here knows whether
@@ -50,11 +56,15 @@ export class RetryingAgent implements Agent {
 				if (!(e instanceof RecoverableError))
 					throw new UnrecoverableError('The agent failed without classifying the failure', {
 						cause: describeFailure(e),
+						tokens: spent,
 					});
+
+				spent = addTokens(spent, e.tokens);
 
 				if (attempt === this.maxAttempts)
 					throw new UnrecoverableError('Max attempts exhausted', {
 						cause: `Gave up after ${String(this.maxAttempts)} attempts. Last failure: ${e.cause}`,
+						tokens: spent,
 					});
 
 				// Keeps the original request: an attempt that failed before the provider registered
@@ -72,6 +82,5 @@ export class RetryingAgent implements Agent {
 				);
 			}
 		}
-		return undefined;
 	}
 }

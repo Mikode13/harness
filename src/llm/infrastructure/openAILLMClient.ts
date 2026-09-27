@@ -9,6 +9,7 @@ import {
 	InvalidAgentConfigError,
 	RecoverableError,
 	UnrecoverableError,
+	withSpentTokens,
 } from '../../agent/domain/errors.ts';
 import {
 	classifyHostFailure,
@@ -131,13 +132,22 @@ function toTokens(usage: ResponseUsage | undefined, logger: ILogger): Tokens | u
 }
 
 function toLLMResponse(response: Response, logger: ILogger): LLMResponse {
+	const usage = toTokens(response.usage, logger);
+	let stopReason: StopReason;
+	try {
+		stopReason = toStopReason(response);
+	} catch (error) {
+		// A failed response may still have been billed.
+		throw withSpentTokens(error, usage);
+	}
+
 	return {
 		message: {
 			role: 'assistant',
 			content: response.output.flatMap(item => describeItem(item, logger)),
 		},
-		usage: toTokens(response.usage, logger),
-		stopReason: toStopReason(response),
+		usage,
+		stopReason,
 	};
 }
 

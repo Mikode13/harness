@@ -744,6 +744,26 @@ tags: #mikode-harness #provider-integration #error-handling
 
 **Alternatives considered:** keeping `encrypted_content` in the message — deferred to the provider-state slice of #23, which must decide where state one provider can read and another cannot lives. Making `Message` a class that renders itself for a provider — rejected: the domain would learn every provider's format, and `structuredClone`, which the conversation relies on, drops a class's prototype.
 
-A response without usage is reported as missing, not as zero: zeros would present a call that may have been billed as free, so `LLMAgent` returns `undefined` for it, as `CodexAgent` already does for a turn without usage.
+A response without usage is reported as missing, not as zero: zeros would present a call that may have been billed as free. See "Every token a run spends travels with its end" for what the agent does with it.
 
 **Consequences:** a reasoning model starts each turn without its earlier reasoning, which costs some quality on multi-turn work until provider state exists. Unknown output items are logged and left out, which is correct while no tools are sent. `openai` moves to `dependencies`.
+
+---
+
+## Every token a run spends travels with its end
+
+tags: #mikode-harness #api-surface #observability #error-handling
+
+**Decision:** `Agent.run` resolves to an `AgentResponse` or rejects; it no longer resolves to `undefined`. A run that produced no text answers `{ response: '', tokens }`. `RecoverableError` and `UnrecoverableError` gain an optional `tokens`: what the run spent before it failed. Each engine attaches the usage it knows to its failures, `RetryingAgent` adds its failed attempts to the response or error that ends the run, and `OrchestratorAgent` adds every earlier role to any error that leaves the run. `AgentResponse.tokens` becomes optional: missing means the provider reported no usage, which is not the same as zero. Every engine measures `duration` itself, from the start of `run()`.
+
+**Context:** measuring what the direct API path would cost exposed that tokens only travelled when a run ended in an `AgentResponse`. A `truncated` or `refused` LLM answer, the failed attempts before a successful retry, a Codex turn that only edited files, and every role of an orchestrator run that failed after three rounds were billed and reported nowhere. `undefined` could not carry anything, and it meant two different things: no text, and no usage.
+
+**Alternatives considered:**
+
+- **Throwing when usage is missing.** A Codex executor turn that already edited files would be retried only because its accounting was missing, so the work is kept and the tokens are marked unknown instead.
+- **A usage `ProgressEvent`.** Consumers may ignore event types they do not know, and an accurate total is information a consumer needs to be correct.
+- **Keeping `undefined` and adding tokens to errors only.** Cheaper, but a run without text would still lose its usage. The break costs nothing extra: the integration branch already reaches `main` with a breaking change.
+
+**Consequences:** a breaking change to the `Agent` contract and to `AgentResponse`. Consumers test `response` for emptiness instead of the result for `undefined`, and read `error.tokens` to account for a failed run. `ClaudeAgent` no longer takes `duration` from the SDK's `duration_ms`, so the three engines measure the same thing, including process start-up. A cancelled run still loses its tokens, because an `AbortError` must propagate unchanged.
+
+**Lesson:** a result type that can be absent can carry nothing. When every outcome of a call costs money, every outcome has to be able to report it.

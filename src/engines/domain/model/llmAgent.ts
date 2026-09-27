@@ -1,5 +1,5 @@
 import type { Agent, AgentResponse, Callback, ProgressEvent } from '../../../agent/domain/agent.ts';
-import { UnrecoverableError } from '../../../agent/domain/errors.ts';
+import { UnrecoverableError, withSpentTokens } from '../../../agent/domain/errors.ts';
 import {
 	classifyHostFailure,
 	classifyProviderFailure,
@@ -29,11 +29,7 @@ export class LLMAgent implements Agent {
 		this.conversation = new Conversation(messages);
 	}
 
-	async run(
-		prompt: string,
-		signal: AbortSignal,
-		callback: Callback,
-	): Promise<AgentResponse | undefined> {
+	async run(prompt: string, signal: AbortSignal, callback: Callback): Promise<AgentResponse> {
 		const start = Date.now();
 		const userMessage: Message = { role: 'user', content: [{ type: 'text', text: prompt }] };
 
@@ -51,31 +47,32 @@ export class LLMAgent implements Agent {
 		if (response.stopReason !== 'completed') {
 			throw new UnrecoverableError('The LLM stopped before completing its answer', {
 				cause: `The model stopped with "${response.stopReason}".`,
+				// The call was billed even though its answer is unusable.
+				tokens: response.usage,
 			});
 		}
 
-		// Like a Codex turn without usage: the call was made but cannot be accounted for, so the
-		// run produced nothing usable, and an answer that is not valid stays out of the conversation.
-		if (!response.usage) return undefined;
-
 		this.conversation.addExchange(userMessage, response.message);
 
-		for (const part of response.message.content) {
-			treatErrors(
-				() => {
-					callback(describePart(part));
-				},
-				classifyHostFailure,
-				'LLM agent progress callback failed',
-			);
+		try {
+			for (const part of response.message.content) {
+				treatErrors(
+					() => {
+						callback(describePart(part));
+					},
+					classifyHostFailure,
+					'LLM agent progress callback failed',
+				);
+			}
+		} catch (error) {
+			// The answer already arrived, so the run spent its tokens whatever the consumer did.
+			throw withSpentTokens(error, response.usage);
 		}
 
 		const text = response.message.content
 			.filter(part => part.type === 'text')
 			.map(part => part.text)
 			.join('\n');
-
-		if (!text) return undefined;
 
 		return {
 			response: text,
