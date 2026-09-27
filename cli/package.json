@@ -9,6 +9,6 @@
 		"node": "^22.13.0 || ^24.0.0"
 	},
 	"scripts": {
-		"dev": "node cli.ts"
+		"dev": "node --conditions=mikode-harness-source cli.ts"
 	}
 }

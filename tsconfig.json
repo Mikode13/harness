@@ -2,7 +2,8 @@
 	"extends": "@mikode13/tsconfig/node",
 	"compilerOptions": {
 		"types": ["node"],
-		"rewriteRelativeImportExtensions": true
+		"rewriteRelativeImportExtensions": true,
+		"customConditions": ["mikode-harness-source"]
 	},
 	"include": ["src", "vitest.config.ts"]
 }

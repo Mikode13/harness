@@ -786,3 +786,17 @@ tags: #mikode-harness #provider-integration #error-handling
 **Alternatives considered:** turning the SDK's retries off (`maxRetries: 0`), so `RetryingAgent` owns every retry and logs it. Rejected for now: `RetryingAgent` retries immediately, without backoff or `Retry-After`, so a rate limit would use up its three attempts at once and end the run as `UnrecoverableError`.
 
 **Consequences:** a stateless call has no side effects and a failed HTTP request is not billed, so nine requests cost time but no tokens. The SDK's retries stay invisible to the logger. The follow-up is to give `RetryingAgent` a backoff that honours a provider's retry hint, and then turn the SDK's retries off so one layer owns and logs them all.
+
+---
+
+## `#src/*` is a Node subpath import, not a `tsconfig` path alias
+
+tags: #mikode-harness #typescript #build #module-resolution
+
+**Decision:** imports inside the package can use `#src/*` instead of deep relative paths. It is declared in the `imports` field of `package.json`, written without an extension, and resolved by condition: `mikode-harness-source` points it at `src/*.ts`, and the default points it at `dist/*.js`. Every `tsconfig` sets that condition in `customConditions`, `pnpm run dev` passes it to Node, and Vitest mirrors it with a resolve alias.
+
+**Context:** `@` aliases such as `@/` are `tsconfig` `paths` or bundler aliases. `tsc` does not rewrite them when it emits, so a library built with `tsc` would publish `dist/` files importing paths Node cannot resolve. Node reserves `#` for package-internal specifiers precisely so they cannot collide with package names, including scoped ones like `@mikode13/harness`. A packed tarball was imported from outside the repository to verify both the runtime and the published declaration files.
+
+**Consequences:** running source with plain `node` silently falls back to `dist/` and can load a stale build, so any new entry point that executes `src/` directly must pass the condition. The condition name is private on purpose: a shared name such as `development` is enabled by Vite and other tools in consumer projects, which would resolve to `.ts` files the tarball does not contain. Imports that cross a module boundary were migrated in the same pull request, which changes no behaviour; imports within one module stay relative.
+
+**Lesson:** an import alias in a published library is part of what ships. Choose the mechanism the runtime resolves, not the one the compiler understands, and prove it from the tarball rather than from the repository.

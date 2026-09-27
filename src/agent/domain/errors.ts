@@ -1,4 +1,4 @@
-import { addTokens, type Tokens } from '../../shared/domain/tokens.ts';
+import { addTokens, type Tokens } from '#src/shared/domain/tokens';
 
 interface ClassifiedErrorOptions {
 	cause: string;

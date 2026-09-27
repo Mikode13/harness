@@ -1,13 +1,13 @@
-import type { Agent, AgentResponse, Callback, ProgressEvent } from '../../../agent/domain/agent.ts';
-import { UnrecoverableError, withSpentTokens } from '../../../agent/domain/errors.ts';
+import type { Agent, AgentResponse, Callback, ProgressEvent } from '#src/agent/domain/agent';
+import { UnrecoverableError, withSpentTokens } from '#src/agent/domain/errors';
 import {
 	classifyHostFailure,
 	classifyProviderFailure,
 	treatErrors,
-} from '../../../agent/domain/providerFailure.ts';
-import { Conversation } from '../../../llm/domain/conversation.ts';
-import type { LLMClient, LLMResponse } from '../../../llm/domain/llm.ts';
-import type { Message, MessagePart } from '../../../llm/domain/message.ts';
+} from '#src/agent/domain/providerFailure';
+import { Conversation } from '#src/llm/domain/conversation';
+import type { LLMClient, LLMResponse } from '#src/llm/domain/llm';
+import type { Message, MessagePart } from '#src/llm/domain/message';
 
 function describePart(part: MessagePart): ProgressEvent {
 	return part.type === 'text'

@@ -1,14 +1,10 @@
-import type { Agent, AgentResponse, Callback } from '../../../agent/domain/agent.ts';
-import { addTokens, type Tokens } from '../../../shared/domain/tokens.ts';
-import {
-	RecoverableError,
-	UnrecoverableError,
-	withSpentTokens,
-} from '../../../agent/domain/errors.ts';
+import type { Agent, AgentResponse, Callback } from '#src/agent/domain/agent';
+import { addTokens, type Tokens } from '#src/shared/domain/tokens';
+import { RecoverableError, UnrecoverableError, withSpentTokens } from '#src/agent/domain/errors';
 import type { ReviewerDecision } from './reviewerDecision.ts';
 import type { Validator } from '../interface/validator.ts';
-import type { ILogger } from '../../../shared/domain/logger.ts';
-import { classifyHostFailure, treatErrors } from '../../../agent/domain/providerFailure.ts';
+import type { ILogger } from '#src/shared/domain/logger';
+import { classifyHostFailure, treatErrors } from '#src/agent/domain/providerFailure';
 
 const getPlannerPrompt = (userPrompt: string, previousFailureReason?: string) => {
 	const feedback = previousFailureReason

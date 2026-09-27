@@ -3,6 +3,7 @@
 	"compilerOptions": {
 		"types": ["node"],
 		"rewriteRelativeImportExtensions": true,
+		"customConditions": ["mikode-harness-source"],
 		"noEmit": true
 	},
 	"include": ["**/*.ts", "../src/**/*.ts"]

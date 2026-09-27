@@ -1,4 +1,4 @@
-import type { Tokens } from '../../shared/domain/tokens.ts';
+import type { Tokens } from '#src/shared/domain/tokens';
 
 /**
  * How a run ended when it did not fail. Every token a run spends travels with its end: here

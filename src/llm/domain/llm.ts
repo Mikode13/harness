@@ -1,4 +1,4 @@
-import type { Tokens } from '../../shared/domain/tokens.ts';
+import type { Tokens } from '#src/shared/domain/tokens';
 import type { Message } from './message.ts';
 
 export type StopReason = 'completed' | 'truncated' | 'refused';
