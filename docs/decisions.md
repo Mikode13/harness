@@ -769,3 +769,20 @@ tags: #mikode-harness #api-surface #observability #error-handling
 **Consequences:** a breaking change to the `Agent` contract and to `AgentResponse`. Consumers test `response` for emptiness instead of the result for `undefined`, and read `error.tokens` to account for a failed run. `ClaudeAgent` no longer takes `duration` from the SDK's `duration_ms`, so the three engines measure the same thing, including process start-up. A cancelled run still loses its tokens, because an `AbortError` must propagate unchanged.
 
 **Lesson:** a result type that can be absent can carry nothing. When every outcome of a call costs money, every outcome has to be able to report it.
+
+---
+
+## The OpenAI SDK keeps its transport retries under `RetryingAgent`
+
+tags: #mikode-harness #provider-integration #error-handling
+
+**Decision:** `OpenAILLMClient` builds its SDK client with the default retry policy, and `createLLMAgent` still wraps the agent in `RetryingAgent`. Each layer does a different job:
+
+- **The SDK** retries transport failures: dropped connections, 429s and 5xx responses. It backs off exponentially and honours `Retry-After`.
+- **`RetryingAgent`** retries what the SDK cannot see: a response that arrives as HTTP 200 with `status: 'failed'` and a transient code, and any other failure the client classified as recoverable.
+
+**Context:** an AI review of #36 pointed out that the two layers stack. A persistent transient failure can make up to nine requests: three agent attempts, each with the SDK's own retries. The retries the SDK absorbs are not logged, contrary to "log what you absorb". The SDK logs them at `info`, the same level it uses for every successful response, so they could only be picked out by matching the message text.
+
+**Alternatives considered:** turning the SDK's retries off (`maxRetries: 0`), so `RetryingAgent` owns every retry and logs it. Rejected for now: `RetryingAgent` retries immediately, without backoff or `Retry-After`, so a rate limit would use up its three attempts at once and end the run as `UnrecoverableError`.
+
+**Consequences:** a stateless call has no side effects and a failed HTTP request is not billed, so nine requests cost time but no tokens. The SDK's retries stay invisible to the logger. The follow-up is to give `RetryingAgent` a backoff that honours a provider's retry hint, and then turn the SDK's retries off so one layer owns and logs them all.
