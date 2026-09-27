@@ -201,7 +201,7 @@ export class OpenAILLMClient implements LLMClient {
 
 		try {
 			// The SDK's default retries stay on: they back off and honour `Retry-After`, which
-			// `RetryingAgent` does not. See "The OpenAI SDK keeps its transport retries" in decisions.md.
+			// `RetryingAgent` does not. See "The provider SDKs keep their transport retries" in decisions.md.
 			this.client = new OpenAI();
 		} catch (error) {
 			// A missing API key, for example: building the client again cannot fix it.

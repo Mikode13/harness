@@ -1,3 +1,5 @@
+import Anthropic from '@anthropic-ai/sdk';
+import type { Message as AnthropicMessage } from '@anthropic-ai/sdk/resources/messages';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query } from '@anthropic-ai/claude-agent-sdk';
 import { Codex } from '@openai/codex-sdk';
@@ -12,12 +14,17 @@ import {
 	createOrchestrator,
 	isAgentProvider,
 	type AgentProvider,
+	type LLMProvider,
 } from '../../src/factory/infrastructure/agentFactory.ts';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 vi.mock('@openai/codex-sdk', () => ({ Codex: vi.fn() }));
 // The error classes stay real: the OpenAI client classifies failures by them.
 vi.mock('openai', async importOriginal => ({
+	...(await importOriginal<Record<string, unknown>>()),
+	default: vi.fn(),
+}));
+vi.mock('@anthropic-ai/sdk', async importOriginal => ({
 	...(await importOriginal<Record<string, unknown>>()),
 	default: vi.fn(),
 }));
@@ -120,6 +127,26 @@ function openAIReplying(text: string) {
 	);
 	vi.mocked(OpenAI).mockImplementation(function () {
 		return { responses: { create } } as unknown as OpenAI;
+	});
+
+	return create;
+}
+
+function claudeAPIReplying(text: string) {
+	const create = vi.fn(() =>
+		Promise.resolve({
+			stop_reason: 'end_turn',
+			content: [{ type: 'text', text, citations: null }],
+			usage: {
+				input_tokens: 1,
+				cache_read_input_tokens: 0,
+				cache_creation_input_tokens: 0,
+				output_tokens: 1,
+			},
+		} as unknown as AnthropicMessage),
+	);
+	vi.mocked(Anthropic).mockImplementation(function () {
+		return { messages: { create } } as unknown as Anthropic;
 	});
 
 	return create;
@@ -233,10 +260,10 @@ describe('createAgent', () => {
 });
 
 describe('createLLMAgent', () => {
-	it('sends the system prompt with the default model', async () => {
+	it('sends the system prompt with the default OpenAI model', async () => {
 		const create = openAIReplying('hi');
 
-		const response = await createLLMAgent({
+		const response = await createLLMAgent('openai', {
 			systemPrompt: 'Be brief.',
 			logger: createLogger(),
 		}).run('prompt', signal, vi.fn());
@@ -252,7 +279,7 @@ describe('createLLMAgent', () => {
 		openAIReplying('hi');
 
 		expect(() =>
-			createLLMAgent({ model: 'opus', systemPrompt: '', logger: createLogger() }),
+			createLLMAgent('openai', { model: 'opus', systemPrompt: '', logger: createLogger() }),
 		).toThrow(InvalidAgentConfigError);
 	});
 
@@ -261,7 +288,7 @@ describe('createLLMAgent', () => {
 		create.mockRejectedValueOnce(new Error('socket hang up'));
 		const logger = createLogger();
 
-		const response = await createLLMAgent({ systemPrompt: '', logger }).run(
+		const response = await createLLMAgent('openai', { systemPrompt: '', logger }).run(
 			'prompt',
 			signal,
 			vi.fn(),
@@ -278,12 +305,41 @@ describe('createLLMAgent', () => {
 		);
 	});
 
+	it('sends the system prompt with the default Claude model', async () => {
+		const create = claudeAPIReplying('hi');
+
+		const response = await createLLMAgent('claude', {
+			systemPrompt: 'Be brief.',
+			logger: createLogger(),
+		}).run('prompt', signal, vi.fn());
+
+		expect(response.response).toBe('hi');
+		expect(create).toHaveBeenCalledWith(
+			expect.objectContaining({ model: 'claude-sonnet-5', system: 'Be brief.' }),
+			{ signal },
+		);
+	});
+
+	it('rejects a model the Claude client does not support', () => {
+		claudeAPIReplying('hi');
+
+		expect(() =>
+			createLLMAgent('claude', { model: 'gpt-5.6-luna', systemPrompt: '', logger: createLogger() }),
+		).toThrow(InvalidAgentConfigError);
+	});
+
+	it('rejects an unknown provider', () => {
+		expect(() =>
+			createLLMAgent('gemini' as LLMProvider, { systemPrompt: '', logger: createLogger() }),
+		).toThrow(InvalidAgentConfigError);
+	});
+
 	it('fails to build when the OpenAI client cannot be set up', () => {
 		vi.mocked(OpenAI).mockImplementation(function () {
 			throw new Error('The OPENAI_API_KEY environment variable is missing');
 		});
 
-		expect(() => createLLMAgent({ systemPrompt: '', logger: createLogger() })).toThrow(
+		expect(() => createLLMAgent('openai', { systemPrompt: '', logger: createLogger() })).toThrow(
 			UnrecoverableError,
 		);
 	});
