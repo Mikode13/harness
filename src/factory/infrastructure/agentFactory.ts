@@ -191,7 +191,8 @@ const defaultLLMAgentModels = {
  * @throws {InvalidAgentConfigError} for an unknown provider, or a model its client does not
  * support.
  * @throws {UnrecoverableError} when the client cannot be set up, for example because
- * `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is missing.
+ * `OPENAI_API_KEY` is missing. The Anthropic SDK resolves credentials lazily, so a missing
+ * `ANTHROPIC_API_KEY` fails the first run instead, with an `UnrecoverableError`.
  */
 export function createLLMAgent(
 	provider: LLMProvider,

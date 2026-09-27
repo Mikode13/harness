@@ -1,4 +1,4 @@
-import Anthropic, { APIError, APIUserAbortError } from '@anthropic-ai/sdk';
+import Anthropic, { AnthropicError, APIError, APIUserAbortError } from '@anthropic-ai/sdk';
 import type {
 	ContentBlock,
 	Message as AnthropicMessage,
@@ -150,6 +150,7 @@ describe('ClaudeLLMClient', () => {
 					{ role: 'user', content: 'third' },
 				],
 				thinking: { type: 'adaptive', display: 'summarized' },
+				cache_control: { type: 'ephemeral' },
 			},
 			{ signal },
 		);
@@ -316,6 +317,37 @@ describe('ClaudeLLMClient', () => {
 		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
 			constructor: RecoverableError,
 			usageUnreported: false,
+		});
+	});
+
+	// The real SDK, so a change to how it reports missing credentials fails here. It resolves no
+	// local profile and has no network, so the test is the same on every machine.
+	it('makes missing credentials unrecoverable on the first call, without retrying them', async () => {
+		const { default: RealAnthropic } =
+			await vi.importActual<typeof import('@anthropic-ai/sdk')>('@anthropic-ai/sdk');
+		class WithoutCredentials extends RealAnthropic {
+			protected override _shouldResolveDefaultCredentials() {
+				return false;
+			}
+		}
+		const fetch = vi.fn(() => Promise.reject(new Error('no network in tests')));
+		vi.mocked(Anthropic).mockImplementation(function () {
+			return new WithoutCredentials({ apiKey: null, authToken: null, fetch, maxRetries: 0 });
+		});
+
+		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			message: 'The Claude client cannot send the request',
+		});
+		expect(fetch).not.toHaveBeenCalled();
+	});
+
+	it('makes a failure the SDK raises before sending unrecoverable', async () => {
+		createSdk(new AnthropicError('Profile "work" could not be resolved'));
+
+		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			cause: 'Profile "work" could not be resolved',
 		});
 	});
 

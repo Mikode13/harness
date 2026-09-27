@@ -1,4 +1,4 @@
-import Anthropic, { APIError } from '@anthropic-ai/sdk';
+import Anthropic, { AnthropicError, APIError } from '@anthropic-ai/sdk';
 import type {
 	ContentBlock,
 	Message as AnthropicMessage,
@@ -141,7 +141,26 @@ function toLLMResponse(response: AnthropicMessage, logger: ILogger): LLMResponse
 	}
 }
 
+/**
+ * The SDK resolves credentials lazily, so a missing key surfaces on the first call, as a plain
+ * `Error` the SDK gives no class of its own. An `AnthropicError` that is not an `APIError` never
+ * carries an answer from the API: on this client's path it is the SDK refusing to make the
+ * call, such as an unresolved profile or a request too large to send without streaming.
+ */
+function isLocalSDKFailure(error: unknown): boolean {
+	return (
+		(error instanceof AnthropicError && !(error instanceof APIError)) ||
+		(error instanceof Error && error.message.startsWith('Could not resolve authentication method'))
+	);
+}
+
 function classifyClaudeFailure(error: unknown): Error {
+	if (isLocalSDKFailure(error)) {
+		// The API never answered, and calling again would fail the same way.
+		return new UnrecoverableError('The Claude client cannot send the request', {
+			cause: describeFailure(error),
+		});
+	}
 	if (error instanceof APIError) {
 		// Anthropic gives an overlong prompt no code of its own, only a 400 with this message.
 		if (error.status === 400 && error.message.includes('prompt is too long')) {
@@ -194,7 +213,8 @@ export class ClaudeLLMClient implements LLMClient {
 			// transport retries under RetryingAgent" in decisions.md.
 			this.client = new Anthropic();
 		} catch (error) {
-			// A missing API key, for example: building the client again cannot fix it.
+			// Conflicting credential options, for example: building it again cannot fix them. A
+			// missing key does not fail here but on the first call; see `isLocalSDKFailure`.
 			throw new UnrecoverableError('The Claude client could not be set up', {
 				cause: describeFailure(error),
 			});
@@ -216,6 +236,9 @@ export class ClaudeLLMClient implements LLMClient {
 					system: this.systemPrompt,
 					messages: context.flatMap(toClaudeInput),
 					thinking: { type: 'adaptive', display: 'summarized' },
+					// Anthropic caches only on request. This marks the last block, so the next call
+					// reads everything before it from the cache instead of paying for it again.
+					cache_control: { type: 'ephemeral' },
 				},
 				{ signal },
 			);
