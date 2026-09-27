@@ -8,28 +8,23 @@ import type {
 	SDKResultSuccess,
 	SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
-import type {
-	Agent,
-	AgentResponse,
-	Callback,
-	ProgressEvent,
-} from '../../../../agent/domain/agent.ts';
+import type { Agent, AgentResponse, Callback, ProgressEvent } from '#src/agent/domain/agent';
 import {
 	InvalidAgentConfigError,
 	RecoverableError,
 	UnrecoverableError,
 	withSpentTokens,
-} from '../../../../agent/domain/errors.ts';
+} from '#src/agent/domain/errors';
 import {
 	classifiedProviderStream,
 	classifyHostFailure,
 	classifyLocalFailure,
 	classifyProviderFailure,
 	treatErrors,
-} from '../../../../agent/domain/providerFailure.ts';
-import type { ILogger } from '../../../../shared/domain/logger.ts';
-import type { Tokens } from '../../../../shared/domain/tokens.ts';
-import { isOneOf } from '../../../../shared/domain/isOneOf.ts';
+} from '#src/agent/domain/providerFailure';
+import type { ILogger } from '#src/shared/domain/logger';
+import type { Tokens } from '#src/shared/domain/tokens';
+import { isOneOf } from '#src/shared/domain/isOneOf';
 
 // The SDK types `model` as a plain string, so this list is maintained by hand.
 export const claudeModels = ['haiku', 'sonnet', 'opus', 'fable'] as const;

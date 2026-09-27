@@ -99,6 +99,11 @@ comment on `Agent` in `src/agent/domain/agent.ts`.
 pnpm add @mikode13/harness
 ```
 
+The package is ESM only and runs on Node.js 22 (22.13 or later) or 24. Its type declarations resolve
+internal modules through the `imports` field of its `package.json`, so a TypeScript consumer
+needs `moduleResolution` set to `node16`, `nodenext` or `bundler`; the legacy `node10`
+resolution cannot read that field.
+
 An agent is built by a factory, then driven. The only output the package produces
 on its own is diagnostic warnings on stderr, from a default logger that both
 factories let you replace through their `logger` option:

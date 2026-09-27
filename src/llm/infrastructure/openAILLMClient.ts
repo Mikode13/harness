@@ -10,17 +10,17 @@ import {
 	RecoverableError,
 	UnrecoverableError,
 	withSpentTokens,
-} from '../../agent/domain/errors.ts';
+} from '#src/agent/domain/errors';
 import {
 	classifyHostFailure,
 	classifyLocalFailure,
 	classifyProviderFailure,
 	describeFailure,
 	treatErrors,
-} from '../../agent/domain/providerFailure.ts';
-import { isOneOf } from '../../shared/domain/isOneOf.ts';
-import type { ILogger } from '../../shared/domain/logger.ts';
-import type { Tokens } from '../../shared/domain/tokens.ts';
+} from '#src/agent/domain/providerFailure';
+import { isOneOf } from '#src/shared/domain/isOneOf';
+import type { ILogger } from '#src/shared/domain/logger';
+import type { Tokens } from '#src/shared/domain/tokens';
 import { MaxContextError } from '../domain/errors.ts';
 import type { LLMClient, LLMResponse, StopReason } from '../domain/llm.ts';
 import type { Message, MessagePart } from '../domain/message.ts';

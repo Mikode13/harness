@@ -17,6 +17,12 @@
 	"exports": {
 		".": "./dist/index.js"
 	},
+	"imports": {
+		"#src/*": {
+			"mikode-harness-source": "./src/*.ts",
+			"default": "./dist/*.js"
+		}
+	},
 	"files": [
 		"dist"
 	],

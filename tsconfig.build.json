@@ -5,6 +5,7 @@
 		"rootDir": "src",
 		"types": ["node"],
 		"rewriteRelativeImportExtensions": true,
+		"customConditions": ["mikode-harness-source"],
 		"inlineSources": true,
 		"declarationMap": false
 	},

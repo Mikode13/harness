@@ -74,6 +74,12 @@ pnpm run dev         # the interactive CLI, against real providers
 
 ### Hazards
 
+- `#src/*` is a Node subpath import declared in `package.json`, not a `tsconfig` path, so
+  `dist/` keeps it and still resolves. Write it without an extension. The
+  `mikode-harness-source` condition points it at `src/*.ts`; without that condition it
+  falls back to `dist/*.js`, so running source with plain `node` silently loads a stale
+  build. `pnpm run dev` and Vitest already select the source; never rename the condition
+  to a shared one such as `development`, which a consumer's tooling may enable.
 - The tests never contact a provider. Both engines are exercised through offline fakes of
   their SDK surfaces; keep it that way, and add a fake rather than a live call.
 - `cli/` must stay out of the published package. `files` lists `dist` only, and

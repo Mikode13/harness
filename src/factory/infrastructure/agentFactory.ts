@@ -1,23 +1,23 @@
-import type { Agent } from '../../agent/domain/agent.ts';
-import { InvalidAgentConfigError } from '../../agent/domain/errors.ts';
+import type { Agent } from '#src/agent/domain/agent';
+import { InvalidAgentConfigError } from '#src/agent/domain/errors';
 import {
 	ClaudeAgent,
 	type ClaudeModel,
 	type ClaudeReasoningEffort,
-} from '../../engines/claude/infrastructure/model/claudeAgent.ts';
+} from '#src/engines/claude/infrastructure/model/claudeAgent';
 import {
 	CodexAgent,
 	type CodexModel,
 	type CodexReasoningEffort,
-} from '../../engines/codex/infrastructure/model/codexAgent.ts';
-import { LLMAgent } from '../../engines/domain/model/llmAgent.ts';
-import { OpenAILLMClient, type OpenAIModel } from '../../llm/infrastructure/openAILLMClient.ts';
-import { OrchestratorAgent } from '../../orchestration/domain/model/orchestratorAgent.ts';
-import { ReviewerDecisionValidator } from '../../orchestration/infrastructure/model/reviewerDecisionValidator.ts';
-import { RetryingAgent } from '../../retry/domain/model/retryingAgent.ts';
-import { isOneOf } from '../../shared/domain/isOneOf.ts';
-import type { ILogger } from '../../shared/domain/logger.ts';
-import { Logger } from '../../shared/infrastructure/logger.ts';
+} from '#src/engines/codex/infrastructure/model/codexAgent';
+import { LLMAgent } from '#src/engines/domain/model/llmAgent';
+import { OpenAILLMClient, type OpenAIModel } from '#src/llm/infrastructure/openAILLMClient';
+import { OrchestratorAgent } from '#src/orchestration/domain/model/orchestratorAgent';
+import { ReviewerDecisionValidator } from '#src/orchestration/infrastructure/model/reviewerDecisionValidator';
+import { RetryingAgent } from '#src/retry/domain/model/retryingAgent';
+import { isOneOf } from '#src/shared/domain/isOneOf';
+import type { ILogger } from '#src/shared/domain/logger';
+import { Logger } from '#src/shared/infrastructure/logger';
 
 export const agentProviders = ['claude', 'codex'] as const;
 export type AgentProvider = (typeof agentProviders)[number];

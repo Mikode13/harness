@@ -1,4 +1,4 @@
-import { isAbortError } from '../../shared/domain/isAbortError.ts';
+import { isAbortError } from '#src/shared/domain/isAbortError';
 import { RecoverableError, UnrecoverableError } from './errors.ts';
 
 /**

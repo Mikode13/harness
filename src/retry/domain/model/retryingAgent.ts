@@ -1,17 +1,13 @@
-import type { Agent, AgentResponse, Callback } from '../../../agent/domain/agent.ts';
-import {
-	RecoverableError,
-	UnrecoverableError,
-	withSpentTokens,
-} from '../../../agent/domain/errors.ts';
+import type { Agent, AgentResponse, Callback } from '#src/agent/domain/agent';
+import { RecoverableError, UnrecoverableError, withSpentTokens } from '#src/agent/domain/errors';
 import {
 	classifyHostFailure,
 	describeFailure,
 	treatErrors,
-} from '../../../agent/domain/providerFailure.ts';
-import { isAbortError } from '../../../shared/domain/isAbortError.ts';
-import type { ILogger } from '../../../shared/domain/logger.ts';
-import { addTokens, type Tokens } from '../../../shared/domain/tokens.ts';
+} from '#src/agent/domain/providerFailure';
+import { isAbortError } from '#src/shared/domain/isAbortError';
+import type { ILogger } from '#src/shared/domain/logger';
+import { addTokens, type Tokens } from '#src/shared/domain/tokens';
 
 export class RetryingAgent implements Agent {
 	private inner: Agent;
