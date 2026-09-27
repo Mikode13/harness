@@ -5,7 +5,11 @@ import type {
 	ResponseOutputItem,
 	ResponseUsage,
 } from 'openai/resources/responses/responses';
-import { InvalidAgentConfigError, UnrecoverableError } from '../../agent/domain/errors.ts';
+import {
+	InvalidAgentConfigError,
+	RecoverableError,
+	UnrecoverableError,
+} from '../../agent/domain/errors.ts';
 import {
 	classifyHostFailure,
 	classifyLocalFailure,
@@ -31,6 +35,17 @@ export type OpenAIModel = (typeof openAIModels)[number];
 
 // The request itself is wrong or not allowed, so sending it again cannot succeed.
 const unrecoverableStatuses = [400, 401, 403, 404, 422];
+
+// Out of credit or over a spend limit. These arrive as a 429 like a rate limit, but the account
+// stays blocked however often the request is sent.
+const exhaustedQuotaCodes = [
+	'insufficient_quota',
+	'credit_balance_exhausted',
+	'project_spend_limit_exceeded',
+];
+
+// The codes OpenAI gives a failed response that a new attempt can succeed past.
+const transientResponseErrorCodes = ['server_error', 'rate_limit_exceeded'];
 
 /**
  * Only the text crosses back. OpenAI replays reasoning only from the encrypted item it
@@ -76,11 +91,14 @@ function toStopReason(response: Response): StopReason {
 		return response.incomplete_details?.reason === 'content_filter' ? 'refused' : 'truncated';
 	}
 	if (response.status !== 'completed') {
-		throw new UnrecoverableError('The OpenAI response did not complete', {
-			cause:
-				response.error?.message ??
-				`The response ended with status "${response.status ?? 'unknown'}".`,
-		});
+		const cause =
+			response.error?.message ??
+			`The response ended with status "${response.status ?? 'unknown'}".`;
+		// The same failure is retried when it arrives as an SDK error, so it must be here too.
+		if (response.error && transientResponseErrorCodes.includes(response.error.code)) {
+			throw new RecoverableError('The OpenAI response failed', { cause });
+		}
+		throw new UnrecoverableError('The OpenAI response did not complete', { cause });
 	}
 
 	const refused = response.output.some(
@@ -130,9 +148,8 @@ function classifyOpenAIFailure(error: unknown): Error {
 				cause: describeFailure(error),
 			});
 		}
-		// A 429 is usually a rate limit worth retrying, but an exhausted quota stays exhausted.
 		if (
-			error.code === 'insufficient_quota' ||
+			exhaustedQuotaCodes.some(code => code === error.code) ||
 			unrecoverableStatuses.some(status => status === error.status)
 		) {
 			return new UnrecoverableError('OpenAI rejected the request', {

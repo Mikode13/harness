@@ -266,15 +266,28 @@ describe('OpenAILLMClient', () => {
 		createSdk(
 			response({
 				status: 'failed',
-				error: { code: 'server_error', message: 'The model crashed' },
+				error: { code: 'invalid_prompt', message: 'The prompt was rejected' },
 			}),
 		);
 
 		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
 			constructor: UnrecoverableError,
-			cause: 'The model crashed',
+			cause: 'The prompt was rejected',
 		});
 	});
+
+	// Retried like the same failure arriving as an SDK error.
+	it.each(['server_error', 'rate_limit_exceeded'] as const)(
+		'makes a failed response with %s recoverable',
+		async code => {
+			createSdk(response({ status: 'failed', error: { code, message: 'Try again later' } }));
+
+			await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+				constructor: RecoverableError,
+				cause: 'Try again later',
+			});
+		},
+	);
 
 	it('turns a context that no longer fits into a MaxContextError', async () => {
 		createSdk(apiError(400, 'context_length_exceeded'));
@@ -288,6 +301,8 @@ describe('OpenAILLMClient', () => {
 		[400, 'invalid_request_error'],
 		[401, 'invalid_api_key'],
 		[429, 'insufficient_quota'],
+		[429, 'credit_balance_exhausted'],
+		[429, 'project_spend_limit_exceeded'],
 	])('makes a %i %s unrecoverable', async (status, code) => {
 		createSdk(apiError(status, code));
 
