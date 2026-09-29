@@ -1,5 +1,6 @@
 import type { Tokens } from '#src/shared/domain/tokens';
 import type { Message } from './message.ts';
+import type { ToolDefinition } from './tool.ts';
 
 export type StopReason = 'completed' | 'truncated' | 'refused';
 
@@ -15,5 +16,8 @@ export interface LLMResponse {
 }
 
 export interface LLMClient {
-	send(context: Message[], signal: AbortSignal): Promise<LLMResponse>;
+	send(
+		{ context, tools }: { context: Message[]; tools: ToolDefinition[] },
+		signal: AbortSignal,
+	): Promise<LLMResponse>;
 }

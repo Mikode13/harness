@@ -23,6 +23,7 @@ import type { Tokens } from '#src/shared/domain/tokens';
 import { MaxContextError } from '../domain/errors.ts';
 import type { LLMClient, LLMResponse, StopReason } from '../domain/llm.ts';
 import type { Message, MessagePart } from '../domain/message.ts';
+import type { ToolDefinition } from '../domain/tool.ts';
 
 // The Messages API takes full model IDs, not the Agent SDK's aliases, so this list is its own.
 export const claudeLLMModels = ['claude-opus-5-5', 'claude-fable-5-1', 'claude-sonnet-5'] as const;
@@ -40,12 +41,17 @@ const unrecoverableStatuses = [400, 401, 403, 404, 413, 422];
 const unrecoverableErrorTypes = ['billing_error', 'authentication_error', 'permission_error'];
 
 /**
- * Only the text crosses back. Anthropic needs a thinking block again only to continue a turn
- * that called a tool, and none is sent yet, so a reasoning part stays in the conversation for
- * narration and is left out of the request. A message with no text is left out whole; the API
- * joins the consecutive user turns that leaves.
+ * Only the text crosses back. A reasoning part stays in the conversation for narration and is
+ * left out of the request: the API accepts a turn without its earlier thinking, even within a
+ * turn that called a tool. A message with no text is left out whole; the API joins the
+ * consecutive user turns that leaves.
  */
 function toClaudeInput(message: Message): MessageParam[] {
+	// Tool results only follow tool calls, and this client offers the model no tools yet.
+	if (message.role === 'tool') {
+		return [];
+	}
+
 	const text = message.content
 		.filter(part => part.type === 'text')
 		.map(part => part.text)
@@ -225,7 +231,17 @@ export class ClaudeLLMClient implements LLMClient {
 		this.logger = logger;
 	}
 
-	async send(context: Message[], signal: AbortSignal): Promise<LLMResponse> {
+	async send(
+		{ context, tools }: { context: Message[]; tools: ToolDefinition[] },
+		signal: AbortSignal,
+	): Promise<LLMResponse> {
+		if (tools.length > 0) {
+			// Ignoring them would leave an agent believing the model can call tools it never saw.
+			throw new UnrecoverableError('The Claude client cannot offer tools to the model yet', {
+				cause: `It was given ${String(tools.length)} tools.`,
+			});
+		}
+
 		let response: AnthropicMessage;
 
 		try {

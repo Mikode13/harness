@@ -106,7 +106,10 @@ describe('OpenAILLMClient', () => {
 			response({ output: [reasoning('greeting them'), message({ text: 'Hi Miki' })] }),
 			response({ output: [message({ text: 'Your name is Miki.' })] }),
 		);
-		const first = await createClient().send([userMessage('My name is Miki.')], signal);
+		const first = await createClient().send(
+			{ context: [userMessage('My name is Miki.')], tools: [] },
+			signal,
+		);
 
 		// What a session manager would persist, handed to a new SDK instance and a new agent.
 		const persisted = [userMessage('My name is Miki.'), first.message];
@@ -143,7 +146,16 @@ describe('OpenAILLMClient', () => {
 		};
 
 		await createClient().send(
-			[userMessage('first'), answered, userMessage('second'), thinkingOnly, userMessage('third')],
+			{
+				context: [
+					userMessage('first'),
+					answered,
+					userMessage('second'),
+					thinkingOnly,
+					userMessage('third'),
+				],
+				tools: [],
+			},
 			signal,
 		);
 
@@ -164,12 +176,30 @@ describe('OpenAILLMClient', () => {
 		);
 	});
 
+	// Until the client maps tools (#23), offering one would be ignored in silence.
+	it('rejects tools it cannot offer the model yet, without calling OpenAI', async () => {
+		const { create } = createSdk(response());
+		const weather = {
+			name: 'weather',
+			description: 'Weather',
+			inputSchema: { type: 'object' as const },
+		};
+
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [weather] }, signal),
+		).rejects.toBeInstanceOf(UnrecoverableError);
+		expect(create).not.toHaveBeenCalled();
+	});
+
 	it('maps reasoning summaries and text into parts, in order', async () => {
 		createSdk(
 			response({ output: [reasoning('step one', 'step two'), message({ text: 'answer' })] }),
 		);
 
-		const result = await createClient().send([userMessage('prompt')], signal);
+		const result = await createClient().send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
 
 		expect(result.message).toEqual({
 			role: 'assistant',
@@ -184,7 +214,10 @@ describe('OpenAILLMClient', () => {
 	it('leaves out an empty reasoning summary', async () => {
 		createSdk(response({ output: [reasoning(), message({ text: 'answer' })] }));
 
-		const result = await createClient().send([userMessage('prompt')], signal);
+		const result = await createClient().send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
 
 		expect(result.message.content).toEqual(textResponse('answer').message.content);
 	});
@@ -194,7 +227,10 @@ describe('OpenAILLMClient', () => {
 		const call = { type: 'function_call', call_id: 'c1', name: 'ls', arguments: '{}' };
 		createSdk(response({ output: [call as ResponseOutputItem, message({ text: 'answer' })] }));
 
-		const result = await createClient(logger).send([userMessage('prompt')], signal);
+		const result = await createClient(logger).send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
 
 		expect(result.message.content).toEqual([{ type: 'text', text: 'answer' }]);
 		expect(logger.warn).toHaveBeenCalledWith(call, expect.any(String));
@@ -208,7 +244,9 @@ describe('OpenAILLMClient', () => {
 		};
 		createSdk(response({ output: [{ type: 'web_search_call' } as ResponseOutputItem] }));
 
-		await expect(createClient(logger).send([userMessage('prompt')], signal)).rejects.toMatchObject({
+		await expect(
+			createClient(logger).send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			cause: 'log sink closed',
 			// The call was billed whatever the logger did.
@@ -219,7 +257,10 @@ describe('OpenAILLMClient', () => {
 	it('counts cache reads and writes apart from the uncached input', async () => {
 		createSdk(response());
 
-		const result = await createClient().send([userMessage('prompt')], signal);
+		const result = await createClient().send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
 
 		expect(result.usage).toEqual({
 			inputTokens: 10,
@@ -233,7 +274,10 @@ describe('OpenAILLMClient', () => {
 		const logger = { warn: vi.fn() };
 		createSdk(response({ usage: undefined }));
 
-		const result = await createClient(logger).send([userMessage('prompt')], signal);
+		const result = await createClient(logger).send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
 
 		expect(result.usage).toBeUndefined();
 		expect(logger.warn).toHaveBeenCalledOnce();
@@ -254,7 +298,10 @@ describe('OpenAILLMClient', () => {
 	] as const)('stops on %s as %s', async (_, sdkResponse, stopReason) => {
 		createSdk(sdkResponse);
 
-		const result = await createClient().send([userMessage('prompt')], signal);
+		const result = await createClient().send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
 
 		expect(result.stopReason).toBe(stopReason);
 	});
@@ -269,7 +316,9 @@ describe('OpenAILLMClient', () => {
 			}),
 		);
 
-		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			tokens: undefined,
 			usageUnreported: true,
@@ -284,7 +333,9 @@ describe('OpenAILLMClient', () => {
 		};
 		createSdk(response({ usage: undefined }));
 
-		await expect(createClient(logger).send([userMessage('prompt')], signal)).rejects.toMatchObject({
+		await expect(
+			createClient(logger).send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			cause: 'log sink closed',
 			usageUnreported: true,
@@ -295,7 +346,9 @@ describe('OpenAILLMClient', () => {
 	it('does not mark a connection failure as unreported', async () => {
 		createSdk(new Error('socket hang up'));
 
-		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toMatchObject({
 			constructor: RecoverableError,
 			usageUnreported: false,
 		});
@@ -309,7 +362,9 @@ describe('OpenAILLMClient', () => {
 			}),
 		);
 
-		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			cause: 'The prompt was rejected',
 			// A failed response may still have been billed.
@@ -323,7 +378,9 @@ describe('OpenAILLMClient', () => {
 		async code => {
 			createSdk(response({ status: 'failed', error: { code, message: 'Try again later' } }));
 
-			await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+			await expect(
+				createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+			).rejects.toMatchObject({
 				constructor: RecoverableError,
 				cause: 'Try again later',
 			});
@@ -333,9 +390,9 @@ describe('OpenAILLMClient', () => {
 	it('turns a context that no longer fits into a MaxContextError', async () => {
 		createSdk(apiError(400, 'context_length_exceeded'));
 
-		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toBeInstanceOf(
-			MaxContextError,
-		);
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toBeInstanceOf(MaxContextError);
 	});
 
 	it.each([
@@ -347,7 +404,9 @@ describe('OpenAILLMClient', () => {
 	])('makes a %i %s unrecoverable', async (status, code) => {
 		createSdk(apiError(status, code));
 
-		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			message: 'OpenAI rejected the request',
 		});
@@ -360,9 +419,9 @@ describe('OpenAILLMClient', () => {
 	])('makes %s recoverable', async (_, error) => {
 		createSdk(error);
 
-		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toBeInstanceOf(
-			RecoverableError,
-		);
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toBeInstanceOf(RecoverableError);
 	});
 
 	// The SDK's abort error is named 'Error', so it must not reach the caller as a failure.
@@ -375,7 +434,7 @@ describe('OpenAILLMClient', () => {
 		});
 
 		await expect(
-			createClient().send([userMessage('prompt')], controller.signal),
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, controller.signal),
 		).rejects.toMatchObject({ name: 'AbortError' });
 	});
 });

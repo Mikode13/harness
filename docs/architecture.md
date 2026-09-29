@@ -11,7 +11,7 @@ The package is a provider-agnostic seam for driving coding agents. It owns one c
 `Agent`, two provider adapters behind it, a model-backed agent that owns its conversation, a retry policy, a planner → executor → reviewer
 workflow, and the classification that keeps every failure crossing the seam legible to its
 consumers. It does not own terminal or network I/O, prompt composition for a consumer's own
-use case, tool definitions, memory, or scheduling.
+use case, the tools an agent runs, memory, or scheduling.
 
 This document covers the published package under `src/`. The `cli/` workspace project in the
 same repository is a development-only consumer and is not part of the published artifact.
@@ -24,7 +24,7 @@ same repository is a development-only consumer and is not part of the published 
 src/agent/          the seam: Agent, ProgressEvent, errors, provider-failure classification
 src/engines/*/      one provider adapter each, infrastructure only
 src/engines/domain/ LLMAgent, the agent that owns its conversation and calls an LLMClient
-src/llm/            the stateless model boundary: LLMClient, Message, Conversation
+src/llm/            the stateless model boundary: LLMClient, Message, Conversation, Tool
 src/factory/        createAgent and createOrchestrator, the only public way to build agents
 src/orchestration/  planner -> executor -> reviewer, with a validated reviewer decision
 src/retry/          the retry decorator
@@ -40,15 +40,15 @@ provider: it drives whatever `LLMClient` it is given.
 
 ## Responsibilities and boundaries
 
-| Module               | Owns                                                                                                                                                 |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/agent/`         | `Agent`, `AgentResponse`, `ProgressEvent`, the error types, and the functions that classify a failure                                                |
-| `src/engines/`       | One adapter per provider: SDK calls, session or thread continuity, and SDK events mapped to `ProgressEvent`; `LLMAgent`, which drives an `LLMClient` |
-| `src/llm/`           | `LLMClient`, the stateless model port; `Message` and its parts; `Conversation`; `MaxContextError`; `OpenAILLMClient`; `ClaudeLLMClient`              |
-| `src/factory/`       | Provider selection, default model and reasoning effort per role, and composition with the retry decorator                                            |
-| `src/orchestration/` | The three role prompts, the attempt loop, per-run usage totals, and the validated reviewer decision                                                  |
-| `src/retry/`         | The decision to call an inner agent again, and the prompt that carries the previous failure into the next call                                       |
-| `src/shared/`        | `ILogger` and its stderr implementation, `isAbortError`, `isOneOf`, `Tokens`                                                                         |
+| Module               | Owns                                                                                                                                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/agent/`         | `Agent`, `AgentResponse`, `ProgressEvent`, the error types, and the functions that classify a failure                                                                                      |
+| `src/engines/`       | One adapter per provider: SDK calls, session or thread continuity, and SDK events mapped to `ProgressEvent`; `LLMAgent`, which drives an `LLMClient` and runs the tools it is given        |
+| `src/llm/`           | `LLMClient`, the stateless model port; `Message` and its parts; `Conversation`; `Tool` and the `ToolDefinition` a client receives; `MaxContextError`; `OpenAILLMClient`; `ClaudeLLMClient` |
+| `src/factory/`       | Provider selection, default model and reasoning effort per role, and composition with the retry decorator                                                                                  |
+| `src/orchestration/` | The three role prompts, the attempt loop, per-run usage totals, and the validated reviewer decision                                                                                        |
+| `src/retry/`         | The decision to call an inner agent again, and the prompt that carries the previous failure into the next call                                                                             |
+| `src/shared/`        | `ILogger` and its stderr implementation, `isAbortError`, `isOneOf`, `Tokens`                                                                                                               |
 
 Two boundaries carry most of the design:
 
@@ -141,7 +141,8 @@ context server-side. `LLMAgent` is the exception being built for #23: it keeps i
 holds no state. Its adapters are `OpenAILLMClient`, on the OpenAI Responses API with
 `store: false`, and `ClaudeLLMClient`, on the Anthropic Messages API. The internal
 `createLLMAgent` builds one of them and the agent together for a provider, wrapped in retry
-like every other agent; it is not exported from `src/index.ts` until #23 reaches parity.
+like every other agent, and gives it no tools; it is not exported from `src/index.ts` until
+#23 reaches parity.
 
 ## Important flows
 
@@ -163,15 +164,27 @@ feedback carried into the planner prompt. All three roles receive the same `Abor
 the same callback, so one cancellation stops the whole workflow and progress from every role
 reaches the consumer through one stream.
 
-**A model-backed turn.** `LLMAgent.run` sends the stored context plus the new prompt to its
-`LLMClient`, inside `classifyProviderFailure`. A `refused` or `truncated` stop ends the run
-with `UnrecoverableError` that carries the call's usage. An answer whose client reported no
-usage is kept, and only its `tokens` are missing. Only a completed answer is recorded, together with its prompt, so
-a failed call leaves the conversation untouched and a retry of the same prompt cannot appear
-twice. Each part of the answer is then narrated as `reasoning` or `agentMessage` through
-`classifyHostFailure`; the response carries the text parts alone. The agent emits no
-`turnStarted` or `turnEnded`: like the other engines, it leaves turn boundaries to the
-consumer.
+**A model-backed turn.** `LLMAgent.run` sends the stored context, the new prompt and the
+definitions of its tools to its `LLMClient`, inside `classifyProviderFailure`; the client
+never receives a tool's `execute`. When the answer calls tools, the agent runs them one at a
+time, in order, and calls the model again with the calls and a `tool` message holding their
+results. The run ends when an answer calls no tool. After `maxSteps` calls to the model it
+fails with `UnrecoverableError` instead, without running the last step's calls, because no
+call is left to send their results to. A missing tool, or a tool that throws, becomes an
+error result the model can correct itself from; only a cancellation escapes, whatever error
+the tool turned it into. A `refused` or `truncated` stop ends the run with
+`UnrecoverableError`.
+
+Nothing is recorded until the run completes. Then the prompt, every answer and every tool
+result enter the conversation together, so a failed run leaves it untouched, no tool call is
+kept without its result, and a retry of the same prompt cannot appear twice. Once a tool has
+run, a recoverable failure becomes `UnrecoverableError`: `RetryingAgent` would run the prompt
+again and repeat the tool's effects. Every part of every answer is narrated as it arrives, as
+`reasoning`, `agentMessage` or a `tool` event, and so is every tool result, through
+`classifyHostFailure`; the response carries the text of the final answer alone. Tokens are
+summed over every call of the run: one call without usage leaves the total unknown, and a
+failure carries what the earlier calls spent. The agent emits no `turnStarted` or
+`turnEnded`: like the other engines, it leaves turn boundaries to the consumer.
 
 **Usage accounting belongs to a `run()`, not to an instance.** The totals are created inside
 `run()` and passed down. A consumer that keeps one orchestrator for a whole session would
@@ -197,8 +210,15 @@ each other's.
   WebSocket consumer would call `Agent.run()` per request and want none of it. It stays out of
   the tarball too — `files` lists `dist` only, and `scripts/pack-check.mjs` fails on anything
   else reaching it.
-- **The seam has no tool, memory or routing model.** MCP, long-term memory, graph execution
-  and file-based agent registries are deliberately absent; each waits for a real consumer.
+- **No tool reaches a model yet.** `LLMAgent` runs the tools it is given, but no concrete
+  tool exists, `createLLMAgent` gives none, and both `LLMClient`s reject a request that
+  carries tools and leave `tool` messages out of the context until they map them for their
+  provider.
+- **Tools run one at a time.** Independent calls in one answer would finish sooner in
+  parallel, but running them in order keeps their effects and narration deterministic, and
+  asking a human to approve a call (#43) needs one call at a time.
+- **The seam has no memory or routing model.** MCP, long-term memory, graph execution and
+  file-based agent registries are deliberately absent; each waits for a real consumer.
   `LLMAgent`'s `Conversation` lives only as long as the agent: persisting it waits for the
   session manager (#29).
 - **Reasoning is not replayed.** Both `LLMClient`s send text only, so a reasoning model

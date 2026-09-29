@@ -98,7 +98,10 @@ describe('ClaudeLLMClient', () => {
 			response({ content: [thinking('greeting them'), text('Hi Miki')] }),
 			response({ content: [text('Your name is Miki.')] }),
 		);
-		const first = await createClient().send([userMessage('My name is Miki.')], signal);
+		const first = await createClient().send(
+			{ context: [userMessage('My name is Miki.')], tools: [] },
+			signal,
+		);
 
 		// What a session manager would persist, handed to a new SDK instance and a new agent.
 		const persisted = [userMessage('My name is Miki.'), first.message];
@@ -134,7 +137,16 @@ describe('ClaudeLLMClient', () => {
 		};
 
 		await createClient().send(
-			[userMessage('first'), answered, userMessage('second'), thinkingOnly, userMessage('third')],
+			{
+				context: [
+					userMessage('first'),
+					answered,
+					userMessage('second'),
+					thinkingOnly,
+					userMessage('third'),
+				],
+				tools: [],
+			},
 			signal,
 		);
 
@@ -156,6 +168,21 @@ describe('ClaudeLLMClient', () => {
 		);
 	});
 
+	// Until the client maps tools (#23), offering one would be ignored in silence.
+	it('rejects tools it cannot offer the model yet, without calling Claude', async () => {
+		const { create } = createSdk(response());
+		const weather = {
+			name: 'weather',
+			description: 'Weather',
+			inputSchema: { type: 'object' as const },
+		};
+
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [weather] }, signal),
+		).rejects.toBeInstanceOf(UnrecoverableError);
+		expect(create).not.toHaveBeenCalled();
+	});
+
 	it('maps thinking and text into parts, in order, and drops redacted thinking', async () => {
 		createSdk(
 			response({
@@ -167,7 +194,10 @@ describe('ClaudeLLMClient', () => {
 			}),
 		);
 
-		const result = await createClient().send([userMessage('prompt')], signal);
+		const result = await createClient().send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
 
 		expect(result.message).toEqual({
 			role: 'assistant',
@@ -182,7 +212,10 @@ describe('ClaudeLLMClient', () => {
 	it('leaves out empty thinking', async () => {
 		createSdk(response({ content: [thinking(''), text('answer')] }));
 
-		const result = await createClient().send([userMessage('prompt')], signal);
+		const result = await createClient().send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
 
 		expect(result.message.content).toEqual(textResponse('answer').message.content);
 	});
@@ -192,7 +225,10 @@ describe('ClaudeLLMClient', () => {
 		const call = { type: 'tool_use', id: 't1', name: 'ls', input: {} } as ContentBlock;
 		createSdk(response({ content: [call, text('answer')] }));
 
-		const result = await createClient(logger).send([userMessage('prompt')], signal);
+		const result = await createClient(logger).send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
 
 		expect(result.message.content).toEqual([{ type: 'text', text: 'answer' }]);
 		expect(logger.warn).toHaveBeenCalledWith(call, expect.any(String));
@@ -206,7 +242,9 @@ describe('ClaudeLLMClient', () => {
 		};
 		createSdk(response({ content: [{ type: 'server_tool_use' } as ContentBlock] }));
 
-		await expect(createClient(logger).send([userMessage('prompt')], signal)).rejects.toMatchObject({
+		await expect(
+			createClient(logger).send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			cause: 'log sink closed',
 			// The call was billed whatever the logger did.
@@ -217,7 +255,10 @@ describe('ClaudeLLMClient', () => {
 	it('takes the input tokens as uncached, because Anthropic counts the cache apart', async () => {
 		createSdk(response());
 
-		const result = await createClient().send([userMessage('prompt')], signal);
+		const result = await createClient().send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
 
 		expect(result.usage).toEqual({
 			inputTokens: 10,
@@ -239,7 +280,10 @@ describe('ClaudeLLMClient', () => {
 			}),
 		);
 
-		const result = await createClient().send([userMessage('prompt')], signal);
+		const result = await createClient().send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
 
 		// No output is still a reported count, not a missing one.
 		expect(result.usage).toEqual({
@@ -254,7 +298,10 @@ describe('ClaudeLLMClient', () => {
 		const logger = { warn: vi.fn() };
 		createSdk(response({ usage: undefined }));
 
-		const result = await createClient(logger).send([userMessage('prompt')], signal);
+		const result = await createClient(logger).send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
 
 		expect(result.usage).toBeUndefined();
 		expect(logger.warn).toHaveBeenCalledOnce();
@@ -268,7 +315,9 @@ describe('ClaudeLLMClient', () => {
 		};
 		createSdk(response({ usage: undefined }));
 
-		await expect(createClient(logger).send([userMessage('prompt')], signal)).rejects.toMatchObject({
+		await expect(
+			createClient(logger).send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			cause: 'log sink closed',
 			usageUnreported: true,
@@ -282,7 +331,10 @@ describe('ClaudeLLMClient', () => {
 	] as const)('stops on %s as %s', async (stopReason, expected) => {
 		createSdk(response({ stop_reason: stopReason }));
 
-		const result = await createClient().send([userMessage('prompt')], signal);
+		const result = await createClient().send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
 
 		expect(result.stopReason).toBe(expected);
 	});
@@ -290,7 +342,9 @@ describe('ClaudeLLMClient', () => {
 	it('turns a response stopped at the context window into a MaxContextError with its tokens', async () => {
 		createSdk(response({ stop_reason: 'model_context_window_exceeded' }));
 
-		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toMatchObject({
 			constructor: MaxContextError,
 			tokens: { inputTokens: 10, readCacheTokens: 60, writtenCacheTokens: 30, outputTokens: 20 },
 		});
@@ -302,7 +356,9 @@ describe('ClaudeLLMClient', () => {
 		async stopReason => {
 			createSdk(response({ stop_reason: stopReason }));
 
-			await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+			await expect(
+				createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+			).rejects.toMatchObject({
 				constructor: UnrecoverableError,
 				cause: `The response stopped with "${stopReason}".`,
 				tokens: { inputTokens: 10, readCacheTokens: 60, writtenCacheTokens: 30, outputTokens: 20 },
@@ -314,7 +370,9 @@ describe('ClaudeLLMClient', () => {
 	it('does not mark a connection failure as unreported', async () => {
 		createSdk(new Error('socket hang up'));
 
-		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toMatchObject({
 			constructor: RecoverableError,
 			usageUnreported: false,
 		});
@@ -335,7 +393,9 @@ describe('ClaudeLLMClient', () => {
 			return new WithoutCredentials({ apiKey: null, authToken: null, fetch, maxRetries: 0 });
 		});
 
-		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			message: 'The Claude client cannot send the request',
 		});
@@ -345,7 +405,9 @@ describe('ClaudeLLMClient', () => {
 	it('makes a failure the SDK raises before sending unrecoverable', async () => {
 		createSdk(new AnthropicError('Profile "work" could not be resolved'));
 
-		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			cause: 'Profile "work" could not be resolved',
 		});
@@ -356,9 +418,9 @@ describe('ClaudeLLMClient', () => {
 			apiError(400, 'invalid_request_error', 'prompt is too long: 210000 tokens > 200000 maximum'),
 		);
 
-		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toBeInstanceOf(
-			MaxContextError,
-		);
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toBeInstanceOf(MaxContextError);
 	});
 
 	it.each([
@@ -371,7 +433,9 @@ describe('ClaudeLLMClient', () => {
 	])('makes a %i %s unrecoverable', async (status, type) => {
 		createSdk(apiError(status, type));
 
-		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			message: 'Claude rejected the request',
 		});
@@ -385,9 +449,9 @@ describe('ClaudeLLMClient', () => {
 	])('makes %s recoverable', async (_, error) => {
 		createSdk(error);
 
-		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toBeInstanceOf(
-			RecoverableError,
-		);
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toBeInstanceOf(RecoverableError);
 	});
 
 	// The SDK's abort error is named 'Error', so it must not reach the caller as a failure.
@@ -400,7 +464,7 @@ describe('ClaudeLLMClient', () => {
 		});
 
 		await expect(
-			createClient().send([userMessage('prompt')], controller.signal),
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, controller.signal),
 		).rejects.toMatchObject({ name: 'AbortError' });
 	});
 });

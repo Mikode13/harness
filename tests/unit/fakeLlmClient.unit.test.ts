@@ -10,17 +10,21 @@ describe('FakeLLMClient', () => {
 	it('answers from its script in order', async () => {
 		const client = new FakeLLMClient(textResponse('first'), textResponse('second'));
 
-		await expect(client.send([userMessage('a')], signal)).resolves.toEqual(textResponse('first'));
-		await expect(client.send([userMessage('b')], signal)).resolves.toEqual(textResponse('second'));
+		await expect(client.send({ context: [userMessage('a')], tools: [] }, signal)).resolves.toEqual(
+			textResponse('first'),
+		);
+		await expect(client.send({ context: [userMessage('b')], tools: [] }, signal)).resolves.toEqual(
+			textResponse('second'),
+		);
 	});
 
 	it('records each context as it was when sent, not as the caller later changes it', async () => {
 		const client = new FakeLLMClient(textResponse('pong'), textResponse('pong again'));
 		const context: Message[] = [userMessage('ping')];
 
-		const first = await client.send(context, signal);
+		const first = await client.send({ context, tools: [] }, signal);
 		context.push(first.message, userMessage('ping again'));
-		await client.send(context, signal);
+		await client.send({ context, tools: [] }, signal);
 
 		expect(client.contexts).toEqual([
 			[userMessage('ping')],
@@ -28,11 +32,27 @@ describe('FakeLLMClient', () => {
 		]);
 	});
 
+	it('records the tools each call offered', async () => {
+		const client = new FakeLLMClient(textResponse('first'), textResponse('second'));
+		const weather = {
+			name: 'weather',
+			description: 'Current weather for a city',
+			inputSchema: { type: 'object' as const },
+		};
+
+		await client.send({ context: [userMessage('a')], tools: [weather] }, signal);
+		await client.send({ context: [userMessage('b')], tools: [] }, signal);
+
+		expect(client.tools).toEqual([[weather], []]);
+	});
+
 	it('rejects with the scripted failure', async () => {
 		const failure = new Error('provider down');
 		const client = new FakeLLMClient(failure);
 
-		await expect(client.send([userMessage('a')], signal)).rejects.toBe(failure);
+		await expect(client.send({ context: [userMessage('a')], tools: [] }, signal)).rejects.toBe(
+			failure,
+		);
 	});
 
 	it('rejects a cancelled call with an AbortError and records nothing', async () => {
@@ -40,7 +60,9 @@ describe('FakeLLMClient', () => {
 		controller.abort();
 		const client = new FakeLLMClient(textResponse('never sent'));
 
-		await expect(client.send([userMessage('a')], controller.signal)).rejects.toMatchObject({
+		await expect(
+			client.send({ context: [userMessage('a')], tools: [] }, controller.signal),
+		).rejects.toMatchObject({
 			name: 'AbortError',
 		});
 		expect(client.contexts).toEqual([]);
@@ -49,7 +71,7 @@ describe('FakeLLMClient', () => {
 	it('fails loudly when a test scripts too few responses', async () => {
 		const client = new FakeLLMClient();
 
-		await expect(client.send([userMessage('a')], signal)).rejects.toThrow(
+		await expect(client.send({ context: [userMessage('a')], tools: [] }, signal)).rejects.toThrow(
 			'FakeLLMClient ran out of scripted responses',
 		);
 	});

@@ -87,7 +87,7 @@ describe('a conversation handed between providers', () => {
 		claudeAnswering('ok');
 		const claude = new ClaudeLLMClient({ model: 'claude-sonnet-5', systemPrompt: '', logger });
 		const introduction = userMessage('My name is Miki.');
-		const heard = await claude.send([introduction], signal);
+		const heard = await claude.send({ context: [introduction], tools: [] }, signal);
 		const openAICreate = openAIAnswering('Your name is Miki.');
 
 		const answer = await new LLMAgent({
@@ -113,7 +113,7 @@ describe('a conversation handed between providers', () => {
 		openAIAnswering('ok');
 		const openAI = new OpenAILLMClient({ model: 'gpt-5.6-luna', systemPrompt: '', logger });
 		const introduction = userMessage('My name is Miki.');
-		const heard = await openAI.send([introduction], signal);
+		const heard = await openAI.send({ context: [introduction], tools: [] }, signal);
 		const claudeCreate = claudeAnswering('Your name is Miki.');
 
 		const answer = await new LLMAgent({

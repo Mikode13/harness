@@ -30,6 +30,8 @@ export type ProgressEvent =
 	| { type: 'fileChange'; changes: { path: string; kind: 'add' | 'update' | 'delete' }[] }
 	| { type: 'mcpTool'; server: string; tool: string; status: string }
 	| { type: 'agentMessage'; message: string }
+	/** `id` pairs a call's end with its start when one step calls the same tool more than once. */
+	| { type: 'tool'; id: string; name: string; status: 'in_progress' | 'completed' | 'error' }
 	| { type: 'todoList'; items: { text: string; completed: boolean }[] }
 	| { type: 'turnStarted' }
 	| { type: 'turnEnded' };
