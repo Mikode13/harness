@@ -56,6 +56,12 @@ describe('LLMAgent with tools', () => {
 		expect(llmClient.tools).toEqual([[]]);
 	});
 
+	it.each([0, -1, 1.5, Number.NaN])('rejects %s as maxSteps', maxSteps => {
+		expect(() => new LLMAgent({ llmClient: new FakeLLMClient(), maxSteps })).toThrow(
+			InvalidAgentConfigError,
+		);
+	});
+
 	it('rejects two tools with the same name', () => {
 		expect(
 			() =>
@@ -238,6 +244,25 @@ describe('LLMAgent with tools', () => {
 			new LLMAgent({ llmClient, tools: [weather] }).run('prompt', controller.signal, vi.fn()),
 		).rejects.toMatchObject({ name: 'AbortError' });
 		expect(send).toHaveBeenCalledOnce();
+	});
+
+	// A tool that ignores the signal cannot make the run start the next one.
+	it('starts no further tool once the run is cancelled', async () => {
+		const controller = new AbortController();
+		const first = fakeTool('weather', () => {
+			controller.abort();
+			return Promise.resolve('finished anyway');
+		});
+		const second = fakeTool('forecast');
+		const llmClient = new FakeLLMClient(
+			assistantResponse([madridCall, toolCall('call-2', 'forecast', { city: 'Oslo' })]),
+			textResponse('never'),
+		);
+
+		await expect(
+			new LLMAgent({ llmClient, tools: [first, second] }).run('prompt', controller.signal, vi.fn()),
+		).rejects.toMatchObject({ name: 'AbortError' });
+		expect(second.execute).not.toHaveBeenCalled();
 	});
 
 	// `maxSteps` counts calls to the model. The last step's calls are not run: no call is left

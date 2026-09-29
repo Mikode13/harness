@@ -72,6 +72,12 @@ export class LLMAgent implements Agent {
 		/** How many calls to the model one run may make before it fails. */
 		maxSteps?: number;
 	}) {
+		if (!Number.isInteger(maxSteps) || maxSteps < 1) {
+			throw new InvalidAgentConfigError(
+				`maxSteps must be a positive integer; got ${String(maxSteps)}`,
+			);
+		}
+
 		this.llmClient = llmClient;
 		this.conversation = new Conversation(messages);
 		this.maxSteps = maxSteps;
@@ -130,6 +136,8 @@ export class LLMAgent implements Agent {
 			};
 		}
 
+		// A tool before this one may have ignored the cancellation; this one must not start.
+		signal.throwIfAborted();
 		try {
 			return { ...result, output: await tool.execute(call.input, signal), isError: false };
 		} catch (error) {
