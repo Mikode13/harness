@@ -24,6 +24,7 @@ import type { Tokens } from '#src/shared/domain/tokens';
 import { MaxContextError } from '../domain/errors.ts';
 import type { LLMClient, LLMResponse, StopReason } from '../domain/llm.ts';
 import type { Message, MessagePart } from '../domain/message.ts';
+import type { ToolDefinition } from '../domain/tool.ts';
 
 // The SDK types `model` as a plain string, so this list is maintained by hand.
 export const openAIModels = [
@@ -54,6 +55,11 @@ const transientResponseErrorCodes = ['server_error', 'rate_limit_exceeded'];
  * for narration and is left out of the request. A message with no text is left out whole.
  */
 function toOpenAIInput(message: Message): ResponseInputItem[] {
+	// Tool results only follow tool calls, and this client offers the model no tools yet.
+	if (message.role === 'tool') {
+		return [];
+	}
+
 	const text = message.content
 		.filter(part => part.type === 'text')
 		.map(part => part.text)
@@ -215,7 +221,17 @@ export class OpenAILLMClient implements LLMClient {
 		this.logger = logger;
 	}
 
-	async send(context: Message[], signal: AbortSignal): Promise<LLMResponse> {
+	async send(
+		{ context, tools }: { context: Message[]; tools: ToolDefinition[] },
+		signal: AbortSignal,
+	): Promise<LLMResponse> {
+		if (tools.length > 0) {
+			// Ignoring them would leave an agent believing the model can call tools it never saw.
+			throw new UnrecoverableError('The OpenAI client cannot offer tools to the model yet', {
+				cause: `It was given ${String(tools.length)} tools.`,
+			});
+		}
+
 		let response: Response;
 
 		try {

@@ -54,10 +54,10 @@ describe('LLMAgent', () => {
 		const answer = textResponse('answer');
 		const contexts: Message[][] = [];
 		const llmClient: LLMClient = {
-			send: context => {
+			send: ({ context }) => {
 				contexts.push(structuredClone(context));
 				for (const message of context) {
-					for (const part of message.content) part.text = 'rewritten';
+					for (const part of message.content) if (part.type === 'text') part.text = 'rewritten';
 				}
 				return Promise.resolve(answer);
 			},

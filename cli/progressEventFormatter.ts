@@ -13,6 +13,8 @@ export function formatProgressEvent(item: ProgressEvent): string | undefined {
 		case 'mcpTool':
 			if (!item.server || !item.status) return undefined;
 			return `tool: ${item.tool}, server: ${item.server}, status: ${item.status}`;
+		case 'tool':
+			return `tool: ${item.name}, status: ${item.status}`;
 		case 'search':
 			if (!item.query) return undefined;
 			return `searching... query:${item.query}`;

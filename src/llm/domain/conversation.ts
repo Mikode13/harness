@@ -13,11 +13,12 @@ export class Conversation {
 	}
 
 	/**
-	 * Records a prompt and its answer together, once the call succeeded. A failed call
-	 * records nothing, so a retry of the same prompt cannot appear twice.
+	 * Records a whole run at once, once it succeeded: the prompt, every step the model took and
+	 * every tool result. A failed run records nothing, so a retry cannot repeat its prompt, and
+	 * no tool call is ever kept without its result.
 	 */
-	addExchange(prompt: Message, answer: Message): void {
-		this.messages.push(structuredClone(prompt), structuredClone(answer));
+	addRun(messages: Message[]): void {
+		this.messages.push(...structuredClone(messages));
 	}
 
 	/**
