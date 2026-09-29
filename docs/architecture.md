@@ -142,7 +142,7 @@ holds no state. Its adapters are `OpenAILLMClient`, on the OpenAI Responses API 
 `store: false`, and `ClaudeLLMClient`, on the Anthropic Messages API. The internal
 `createLLMAgent` builds one of them and the agent together for a provider, wrapped in retry
 like every other agent, and gives it no tools; it is not exported from `src/index.ts` until
-#23 reaches parity.
+parity with the Agent SDK engines (#23).
 
 ## Important flows
 
