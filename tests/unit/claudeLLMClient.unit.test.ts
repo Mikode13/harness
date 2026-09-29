@@ -380,6 +380,47 @@ describe('ClaudeLLMClient', () => {
 		);
 	});
 
+	// OpenAI arguments that did not parse stay a string; Anthropic would reject it on every call.
+	it('sends a call whose input is not an object as empty, beside the result that says it failed', async () => {
+		const { create } = createSdk(response());
+
+		await createClient().send(
+			{
+				context: [
+					userMessage('prompt'),
+					{ role: 'assistant', content: [toolCall('call_1', 'weather', '{"city":')] },
+					toolMessage(toolResult('call_1', 'weather', 'Invalid input', true)),
+				],
+				tools: [],
+			},
+			signal,
+		);
+
+		expect(create).toHaveBeenCalledWith(
+			expect.objectContaining({
+				messages: [
+					{ role: 'user', content: [{ type: 'text', text: 'prompt' }] },
+					{
+						role: 'assistant',
+						content: [{ type: 'tool_use', id: 'call_1', name: 'weather', input: {} }],
+					},
+					{
+						role: 'user',
+						content: [
+							{
+								type: 'tool_result',
+								tool_use_id: 'call_1',
+								content: 'Invalid input',
+								is_error: true,
+							},
+						],
+					},
+				],
+			}),
+			{ signal },
+		);
+	});
+
 	it('warns about a content block it does not map and leaves it out', async () => {
 		const logger = { warn: vi.fn() };
 		const call = {

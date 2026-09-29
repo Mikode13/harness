@@ -47,6 +47,15 @@ const unrecoverableErrorTypes = ['billing_error', 'authentication_error', 'permi
 // This client's label on the thinking blocks it keeps for replay; see `ProviderDataPart`.
 const claudeSource = 'claude';
 
+/**
+ * Anthropic rejects a `tool_use` whose input is not an object, with a 400 on every later call.
+ * Another provider's call can hold anything else, such as OpenAI arguments that did not parse;
+ * its result already told the model the call failed, so sending it as empty loses nothing.
+ */
+function toClaudeInputObject(input: unknown): unknown {
+	return typeof input === 'object' && input !== null && !Array.isArray(input) ? input : {};
+}
+
 /** Thinking crosses back only as the signed block this client kept, never as its text. */
 function toClaudeBlocks(part: MessagePart): ContentBlockParam[] {
 	switch (part.type) {
@@ -54,7 +63,9 @@ function toClaudeBlocks(part: MessagePart): ContentBlockParam[] {
 			// The API rejects an empty text block.
 			return part.text ? [{ type: 'text', text: part.text }] : [];
 		case 'toolCall':
-			return [{ type: 'tool_use', id: part.id, name: part.name, input: part.input }];
+			return [
+				{ type: 'tool_use', id: part.id, name: part.name, input: toClaudeInputObject(part.input) },
+			];
 		case 'toolResult':
 			return [
 				{
