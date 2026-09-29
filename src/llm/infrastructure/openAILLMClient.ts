@@ -54,6 +54,9 @@ const transientResponseErrorCodes = ['server_error', 'rate_limit_exceeded'];
 // This client's label on the reasoning items it keeps for replay; see `ProviderDataPart`.
 const openAISource = 'openai';
 
+// Marks a failed call's output, which would otherwise read the same as a successful one.
+const failedToolPrefix = 'The tool call failed: ';
+
 /**
  * OpenAI takes a flat list of items, so every part becomes its own, in order. Reasoning crosses
  * back only as the encrypted item this client kept, which OpenAI requires beside the tool calls
@@ -74,8 +77,14 @@ function toOpenAIItems(part: MessagePart, role: 'user' | 'assistant'): ResponseI
 				},
 			];
 		case 'toolResult':
-			// OpenAI has no error flag: the output's own text has to say the call failed.
-			return [{ type: 'function_call_output', call_id: part.callId, output: part.output }];
+			return [
+				{
+					type: 'function_call_output',
+					call_id: part.callId,
+					// OpenAI has no error flag, so the text says it; the conversation keeps the output as it was.
+					output: part.isError ? `${failedToolPrefix}${part.output}` : part.output,
+				},
+			];
 		case 'providerData':
 			// Another provider's item would be rejected; losing it only costs that provider's reasoning.
 			return part.source === openAISource ? [part.data as ResponseReasoningItem] : [];

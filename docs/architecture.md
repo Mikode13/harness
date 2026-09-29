@@ -176,7 +176,7 @@ the tool turned it into, and a cancelled run neither starts nor announces anothe
 `refused` or `truncated` stop ends the run with `UnrecoverableError`. Each client maps the
 parts to its provider's shapes and back: Claude's `tool_use` and `tool_result`, with every
 result in one user turn, and OpenAI's `function_call` and `function_call_output`, paired by
-`call_id`, where the output text alone says whether the call failed.
+`call_id`, where a failed result is marked in the text sent, since OpenAI has no error flag.
 
 Nothing is recorded until the run completes. Then the prompt, every answer and every tool
 result enter the conversation together, so a failed run leaves it untouched, no tool call is

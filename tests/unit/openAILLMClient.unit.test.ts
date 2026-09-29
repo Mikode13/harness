@@ -372,11 +372,45 @@ describe('OpenAILLMClient', () => {
 					{ type: 'function_call', call_id: 'call_2', name: 'weather', arguments: '{"city":' },
 					// OpenAI has no error flag; the output text carries the failure.
 					{ type: 'function_call_output', call_id: 'call_1', output: 'Sunny' },
-					{ type: 'function_call_output', call_id: 'call_2', output: 'Invalid input' },
+					{
+						type: 'function_call_output',
+						call_id: 'call_2',
+						output: 'The tool call failed: Invalid input',
+					},
 				],
 			}),
 			{ signal },
 		);
+	});
+
+	// Without a marker a failure and a success with the same output would read the same.
+	it('marks a failed result in the text it sends, and leaves the conversation as it was', async () => {
+		const { create } = createSdk(response());
+		const context = [
+			userMessage('prompt'),
+			{
+				role: 'assistant' as const,
+				content: [toolCall('call_1', 'answer'), toolCall('call_2', 'answer')],
+			},
+			toolMessage(toolResult('call_1', 'answer', '42'), toolResult('call_2', 'answer', '42', true)),
+		];
+		const before = structuredClone(context);
+
+		await createClient().send({ context, tools: [] }, signal);
+
+		expect(create).toHaveBeenCalledWith(
+			expect.objectContaining({
+				input: [
+					{ role: 'user', content: 'prompt' },
+					{ type: 'function_call', call_id: 'call_1', name: 'answer', arguments: '{}' },
+					{ type: 'function_call', call_id: 'call_2', name: 'answer', arguments: '{}' },
+					{ type: 'function_call_output', call_id: 'call_1', output: '42' },
+					{ type: 'function_call_output', call_id: 'call_2', output: 'The tool call failed: 42' },
+				],
+			}),
+			{ signal },
+		);
+		expect(context).toEqual(before);
 	});
 
 	it("leaves out another provider's data, which OpenAI could not read", async () => {
