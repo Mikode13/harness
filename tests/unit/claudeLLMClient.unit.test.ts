@@ -12,7 +12,7 @@ import {
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import { MaxContextError } from '../../src/llm/domain/errors.ts';
 import { ClaudeLLMClient } from '../../src/llm/infrastructure/claudeLLMClient.ts';
-import { textResponse, userMessage } from '../support/fakeLlmClient.ts';
+import { toolCall, toolMessage, toolResult, userMessage } from '../support/fakeLlmClient.ts';
 
 // The error classes stay real: the client classifies failures by them.
 vi.mock('@anthropic-ai/sdk', async importOriginal => ({
@@ -114,15 +114,22 @@ describe('ClaudeLLMClient', () => {
 		expect(Anthropic).toHaveBeenCalledTimes(2);
 		expect(create.mock.calls[1]?.[0]).toMatchObject({
 			messages: [
-				{ role: 'user', content: 'My name is Miki.' },
-				{ role: 'assistant', content: 'Hi Miki' },
-				{ role: 'user', content: 'What is my name?' },
+				{ role: 'user', content: [{ type: 'text', text: 'My name is Miki.' }] },
+				{
+					role: 'assistant',
+					// The signed thinking survives the new client too.
+					content: [
+						{ type: 'thinking', thinking: 'greeting them', signature: 'opaque' },
+						{ type: 'text', text: 'Hi Miki' },
+					],
+				},
+				{ role: 'user', content: [{ type: 'text', text: 'What is my name?' }] },
 			],
 		});
 		expect(answer.response).toBe('Your name is Miki.');
 	});
 
-	it('sends the whole context with the system prompt apart, text alone and no empty messages', async () => {
+	it('sends the whole context with the system prompt apart, no reasoning text and no empty messages', async () => {
 		const { create } = createSdk(response());
 		const thinkingOnly = {
 			role: 'assistant' as const,
@@ -143,6 +150,7 @@ describe('ClaudeLLMClient', () => {
 					answered,
 					userMessage('second'),
 					thinkingOnly,
+					userMessage(''),
 					userMessage('third'),
 				],
 				tools: [],
@@ -150,16 +158,17 @@ describe('ClaudeLLMClient', () => {
 			signal,
 		);
 
+		// Without tools the request carries no `tools` field at all.
 		expect(create).toHaveBeenCalledWith(
 			{
 				model: 'claude-sonnet-5',
 				max_tokens: 16_000,
 				system: 'Be brief.',
 				messages: [
-					{ role: 'user', content: 'first' },
-					{ role: 'assistant', content: 'first answer' },
-					{ role: 'user', content: 'second' },
-					{ role: 'user', content: 'third' },
+					{ role: 'user', content: [{ type: 'text', text: 'first' }] },
+					{ role: 'assistant', content: [{ type: 'text', text: 'first answer' }] },
+					{ role: 'user', content: [{ type: 'text', text: 'second' }] },
+					{ role: 'user', content: [{ type: 'text', text: 'third' }] },
 				],
 				thinking: { type: 'adaptive', display: 'summarized' },
 				cache_control: { type: 'ephemeral' },
@@ -168,22 +177,36 @@ describe('ClaudeLLMClient', () => {
 		);
 	});
 
-	// Until the client maps tools (#23), offering one would be ignored in silence.
-	it('rejects tools it cannot offer the model yet, without calling Claude', async () => {
+	it('offers each tool by its definition, in strict mode', async () => {
 		const { create } = createSdk(response());
-		const weather = {
-			name: 'weather',
-			description: 'Weather',
-			inputSchema: { type: 'object' as const },
+		const inputSchema = {
+			type: 'object' as const,
+			properties: { city: { type: 'string' } },
+			required: ['city'],
+			additionalProperties: false,
 		};
 
-		await expect(
-			createClient().send({ context: [userMessage('prompt')], tools: [weather] }, signal),
-		).rejects.toBeInstanceOf(UnrecoverableError);
-		expect(create).not.toHaveBeenCalled();
+		await createClient().send(
+			{
+				context: [userMessage('prompt')],
+				tools: [{ name: 'weather', description: 'Weather in a city', inputSchema }],
+			},
+			signal,
+		);
+
+		expect(create.mock.calls[0]?.[0]).toMatchObject({
+			tools: [
+				{
+					name: 'weather',
+					description: 'Weather in a city',
+					input_schema: inputSchema,
+					strict: true,
+				},
+			],
+		});
 	});
 
-	it('maps thinking and text into parts, in order, and drops redacted thinking', async () => {
+	it('maps thinking and text into parts, in order, keeping each signed block for replay', async () => {
 		createSdk(
 			response({
 				content: [
@@ -203,13 +226,23 @@ describe('ClaudeLLMClient', () => {
 			role: 'assistant',
 			content: [
 				{ type: 'reasoning', text: 'step one' },
+				{
+					type: 'providerData',
+					source: 'claude',
+					data: { type: 'thinking', thinking: 'step one', signature: 'opaque' },
+				},
+				{
+					type: 'providerData',
+					source: 'claude',
+					data: { type: 'redacted_thinking', data: 'encrypted' },
+				},
 				{ type: 'text', text: 'answer' },
 			],
 		});
 		expect(result.stopReason).toBe('completed');
 	});
 
-	it('leaves out empty thinking', async () => {
+	it('keeps empty thinking only for replay', async () => {
 		createSdk(response({ content: [thinking(''), text('answer')] }));
 
 		const result = await createClient().send(
@@ -217,12 +250,144 @@ describe('ClaudeLLMClient', () => {
 			signal,
 		);
 
-		expect(result.message.content).toEqual(textResponse('answer').message.content);
+		expect(result.message.content).toEqual([
+			{
+				type: 'providerData',
+				source: 'claude',
+				data: { type: 'thinking', thinking: '', signature: 'opaque' },
+			},
+			{ type: 'text', text: 'answer' },
+		]);
+	});
+
+	it('maps a tool_use block into a tool call, as a completed answer', async () => {
+		createSdk(
+			response({
+				stop_reason: 'tool_use',
+				content: [
+					text('Checking.'),
+					{
+						type: 'tool_use',
+						id: 'toolu_1',
+						name: 'weather',
+						input: { city: 'Madrid' },
+						caller: { type: 'direct' },
+					},
+				],
+			}),
+		);
+
+		const result = await createClient().send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
+
+		expect(result.message.content).toEqual([
+			{ type: 'text', text: 'Checking.' },
+			toolCall('toolu_1', 'weather', { city: 'Madrid' }),
+		]);
+		expect(result.stopReason).toBe('completed');
+	});
+
+	// The API requires the signed thinking before the call, and every result in the next user turn.
+	it('sends a tool round trip back with its signed thinking, and every result in one user turn', async () => {
+		const { create } = createSdk(response());
+		const signed = { type: 'thinking', thinking: 'need weather', signature: 'sig' };
+
+		await createClient().send(
+			{
+				context: [
+					userMessage('Weather in Madrid and Paris?'),
+					{
+						role: 'assistant',
+						content: [
+							{ type: 'reasoning', text: 'need weather' },
+							{ type: 'providerData', source: 'claude', data: signed },
+							{ type: 'text', text: 'Checking.' },
+							toolCall('toolu_1', 'weather', { city: 'Madrid' }),
+							toolCall('toolu_2', 'weather', { city: 'Paris' }),
+						],
+					},
+					toolMessage(
+						toolResult('toolu_1', 'weather', 'Sunny'),
+						toolResult('toolu_2', 'weather', 'Service down', true),
+					),
+				],
+				tools: [],
+			},
+			signal,
+		);
+
+		expect(create).toHaveBeenCalledWith(
+			expect.objectContaining({
+				messages: [
+					{ role: 'user', content: [{ type: 'text', text: 'Weather in Madrid and Paris?' }] },
+					{
+						role: 'assistant',
+						content: [
+							signed,
+							{ type: 'text', text: 'Checking.' },
+							{ type: 'tool_use', id: 'toolu_1', name: 'weather', input: { city: 'Madrid' } },
+							{ type: 'tool_use', id: 'toolu_2', name: 'weather', input: { city: 'Paris' } },
+						],
+					},
+					{
+						role: 'user',
+						content: [
+							{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'Sunny', is_error: false },
+							{
+								type: 'tool_result',
+								tool_use_id: 'toolu_2',
+								content: 'Service down',
+								is_error: true,
+							},
+						],
+					},
+				],
+			}),
+			{ signal },
+		);
+	});
+
+	it("leaves out another provider's data, which Claude could not read", async () => {
+		const { create } = createSdk(response());
+
+		await createClient().send(
+			{
+				context: [
+					userMessage('prompt'),
+					{
+						role: 'assistant',
+						content: [
+							{ type: 'providerData', source: 'openai', data: { type: 'reasoning', id: 'rs_1' } },
+							{ type: 'text', text: 'answer' },
+						],
+					},
+				],
+				tools: [],
+			},
+			signal,
+		);
+
+		expect(create).toHaveBeenCalledWith(
+			expect.objectContaining({
+				messages: [
+					{ role: 'user', content: [{ type: 'text', text: 'prompt' }] },
+					{ role: 'assistant', content: [{ type: 'text', text: 'answer' }] },
+				],
+			}),
+			{ signal },
+		);
 	});
 
 	it('warns about a content block it does not map and leaves it out', async () => {
 		const logger = { warn: vi.fn() };
-		const call = { type: 'tool_use', id: 't1', name: 'ls', input: {} } as ContentBlock;
+		const call = {
+			type: 'server_tool_use',
+			id: 's1',
+			name: 'web_search',
+			input: {},
+		} as ContentBlock;
 		createSdk(response({ content: [call, text('answer')] }));
 
 		const result = await createClient(logger).send(
@@ -326,6 +491,7 @@ describe('ClaudeLLMClient', () => {
 
 	it.each([
 		['end_turn', 'completed'],
+		['tool_use', 'completed'],
 		['max_tokens', 'truncated'],
 		['refusal', 'refused'],
 	] as const)('stops on %s as %s', async (stopReason, expected) => {
@@ -350,8 +516,8 @@ describe('ClaudeLLMClient', () => {
 		});
 	});
 
-	// Each needs something this client never sends: tools, server tools or stop sequences.
-	it.each(['tool_use', 'pause_turn', 'stop_sequence'] as const)(
+	// Each needs something this client never sends: server tools or stop sequences.
+	it.each(['pause_turn', 'stop_sequence'] as const)(
 		'makes a response that stopped on %s unrecoverable with its tokens',
 		async stopReason => {
 			createSdk(response({ stop_reason: stopReason }));

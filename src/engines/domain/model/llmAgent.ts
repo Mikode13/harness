@@ -17,29 +17,36 @@ import type { Message, MessagePart, ToolCallPart, ToolResultPart } from '#src/ll
 import type { Tool, ToolDefinition } from '#src/llm/domain/tool';
 import { addTokens, type Tokens } from '#src/shared/domain/tokens';
 
-function describePart(part: MessagePart): ProgressEvent {
-	if (part.type === 'toolCall') {
-		return { type: 'tool', id: part.id, name: part.name, status: 'in_progress' };
+function describePart(part: MessagePart): ProgressEvent | undefined {
+	switch (part.type) {
+		case 'text':
+			return { type: 'agentMessage', message: part.text };
+		case 'reasoning':
+			return { type: 'reasoning', message: part.text };
+		case 'toolCall':
+			return { type: 'tool', id: part.id, name: part.name, status: 'in_progress' };
+		case 'toolResult':
+			return {
+				type: 'tool',
+				id: part.callId,
+				name: part.name,
+				status: part.isError ? 'error' : 'completed',
+			};
+		case 'providerData':
+			// Opaque by design: its readable side, if any, arrives as a reasoning part.
+			return undefined;
 	}
-
-	if (part.type === 'toolResult') {
-		return {
-			type: 'tool',
-			id: part.callId,
-			name: part.name,
-			status: part.isError ? 'error' : 'completed',
-		};
-	}
-
-	return part.type === 'text'
-		? { type: 'agentMessage', message: part.text }
-		: { type: 'reasoning', message: part.text };
 }
 
 function narrate(part: MessagePart, callback: Callback): void {
+	const event = describePart(part);
+	if (!event) {
+		return;
+	}
+
 	treatErrors(
 		() => {
-			callback(describePart(part));
+			callback(event);
 		},
 		classifyHostFailure,
 		'LLM agent progress callback failed',
