@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
-import { InvalidAgentConfigError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
+import {
+	InvalidAgentConfigError,
+	RecoverableError,
+	UnrecoverableError,
+} from '../../src/agent/domain/errors.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import type { Tool } from '../../src/llm/domain/tool.ts';
 import {
@@ -166,10 +170,11 @@ describe('LLMAgent with tools', () => {
 			events.push(event),
 		);
 
+		// Each call is announced only when its turn comes, never while another is running.
 		expect(events.filter(event => event.type === 'tool')).toEqual([
 			{ type: 'tool', id: 'call-1', name: 'weather', status: 'in_progress' },
-			{ type: 'tool', id: 'call-2', name: 'weather', status: 'in_progress' },
 			{ type: 'tool', id: 'call-1', name: 'weather', status: 'completed' },
+			{ type: 'tool', id: 'call-2', name: 'weather', status: 'in_progress' },
 			{ type: 'tool', id: 'call-2', name: 'weather', status: 'completed' },
 		]);
 	});
@@ -275,14 +280,20 @@ describe('LLMAgent with tools', () => {
 			textResponse('never'),
 		);
 
+		const events: ProgressEvent[] = [];
+
 		await expect(
-			new LLMAgent({ llmClient, tools: [weather], maxSteps: 2 }).run('prompt', signal, vi.fn()),
+			new LLMAgent({ llmClient, tools: [weather], maxSteps: 2 }).run('prompt', signal, event =>
+				events.push(event),
+			),
 		).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			tokens: { inputTokens: 2, readCacheTokens: 0, writtenCacheTokens: 0, outputTokens: 2 },
 		});
 		expect(llmClient.contexts).toHaveLength(2);
 		expect(weather.execute).toHaveBeenCalledOnce();
+		// The unrun call is never announced as running.
+		expect(events).not.toContainEqual(expect.objectContaining({ id: 'call-2' }));
 	});
 
 	it('reports the tokens of every step', async () => {
@@ -338,6 +349,18 @@ describe('LLMAgent with tools', () => {
 			constructor: UnrecoverableError,
 			tokens: textResponse('').usage,
 		});
+	});
+
+	// A missing tool never reached `execute`, so a retry cannot repeat any effect.
+	it('keeps a recoverable failure recoverable when the only call named a missing tool', async () => {
+		const llmClient = new FakeLLMClient(
+			assistantResponse([toolCall('call-1', 'forecast', { city: 'Madrid' })]),
+			new Error('socket hang up'),
+		);
+
+		await expect(
+			new LLMAgent({ llmClient, tools: [fakeTool('weather')] }).run('prompt', signal, vi.fn()),
+		).rejects.toBeInstanceOf(RecoverableError);
 	});
 
 	// A tool call recorded without its result would make every later request invalid.

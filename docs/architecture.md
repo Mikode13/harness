@@ -177,11 +177,13 @@ the tool turned it into, and a cancelled run starts no further tool. A `refused`
 
 Nothing is recorded until the run completes. Then the prompt, every answer and every tool
 result enter the conversation together, so a failed run leaves it untouched, no tool call is
-kept without its result, and a retry of the same prompt cannot appear twice. Once a tool has
-run, a recoverable failure becomes `UnrecoverableError`: `RetryingAgent` would run the prompt
-again and repeat the tool's effects. Every part of every answer is narrated as it arrives, as
-`reasoning`, `agentMessage` or a `tool` event, and so is every tool result, through
-`classifyHostFailure`; the response carries the text of the final answer alone. Tokens are
+kept without its result, and a retry of the same prompt cannot appear twice. Once a call has
+reached an existing tool, a recoverable failure becomes `UnrecoverableError`: `RetryingAgent`
+would run the prompt again and repeat the tool's effects. A call to a missing tool does not
+count, because nothing ran. Text and reasoning are narrated as each answer arrives, as
+`agentMessage` and `reasoning`. A tool call is narrated as a `tool` event only when it starts,
+and again when it ends, so a call the run never starts is never shown as running. All of it
+goes through `classifyHostFailure`; the response carries the text of the final answer alone. Tokens are
 summed over every call of the run: one call without usage leaves the total unknown, and a
 failure carries what the earlier calls spent. The agent emits no `turnStarted` or
 `turnEnded`: like the other engines, it leaves turn boundaries to the consumer.

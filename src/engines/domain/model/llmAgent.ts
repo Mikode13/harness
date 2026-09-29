@@ -154,6 +154,8 @@ export class LLMAgent implements Agent {
 	): Promise<Message> {
 		const results: MessagePart[] = [];
 		for (const call of calls) {
+			// Announced only as its turn comes, so a consumer never shows a call as running early.
+			narrate(call, callback);
 			const result = await this.runTool(call, signal);
 			narrate(result, callback);
 			results.push(result);
@@ -177,7 +179,10 @@ export class LLMAgent implements Agent {
 				unreported ||= !response.usage;
 				runMessages.push(response.message);
 
-				for (const part of response.message.content) narrate(part, callback);
+				// Tool calls are narrated as they start, in `runTools`, and never if they do not run.
+				for (const part of response.message.content) {
+					if (part.type !== 'toolCall') narrate(part, callback);
+				}
 
 				const calls = response.message.content.filter(part => part.type === 'toolCall');
 				if (calls.length === 0) {
@@ -197,7 +202,9 @@ export class LLMAgent implements Agent {
 
 				// On the last step no call is left to send the results to, so the tools do not run.
 				if (step < this.maxSteps) {
-					toolRan = true;
+					// Only a call to a tool the agent has reaches `execute`; a missing one has no
+					// effect a retry could repeat.
+					toolRan ||= calls.some(call => this.tools.has(call.name));
 					runMessages.push(await this.runTools(calls, signal, callback));
 				}
 			}
