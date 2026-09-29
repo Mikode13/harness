@@ -742,7 +742,7 @@ tags: #mikode-harness #provider-integration #error-handling
 
 **Context:** with `store: false`, OpenAI can replay reasoning only from the encrypted item it returned, and a `Message` has nowhere to keep it. A summary sent back as text would be a different input, not the model's reasoning. `classifyProviderFailure` treats any unclassified failure as recoverable, so without the adapter's mapping a wrong API key or an exhausted quota would be retried to exhaustion. The SDK's abort error is named `Error`, so the client rethrows the signal's reason instead.
 
-**Alternatives considered:** keeping `encrypted_content` in the message — deferred to the provider-state slice of #23, which must decide where state one provider can read and another cannot lives. Making `Message` a class that renders itself for a provider — rejected: the domain would learn every provider's format, and `structuredClone`, which the conversation relies on, drops a class's prototype.
+**Alternatives considered:** keeping `encrypted_content` in the message — deferred to the provider-state slice of #23, since done in "Both clients offer tools in strict mode, and each replays only its own reasoning", which must decide where state one provider can read and another cannot lives. Making `Message` a class that renders itself for a provider — rejected: the domain would learn every provider's format, and `structuredClone`, which the conversation relies on, drops a class's prototype.
 
 A response without usage is reported as missing, not as zero: zeros would present a call that may have been billed as free. See "Every token a run spends travels with its end" for what the agent does with it.
 
@@ -769,7 +769,7 @@ tags: #mikode-harness #provider-integration #error-handling #agent-loops
 
 **Alternatives considered:** reusing `claudeModels` from the Agent SDK engine and translating aliases to IDs — rejected: it couples the new path to the engine it replaces, and an alias names a different model whenever Anthropic moves it. `max_tokens` as a constructor option — deferred until a caller needs to vary it. Treating a rate limit as unrecoverable — rejected: a 429 is transient, and on Anthropic an empty balance arrives as `billing_error`, not as a rate limit.
 
-**Consequences:** a cache write costs more than plain input, so a conversation of a single call pays a little extra for a cache it never reads; a prefix below the model's minimum is not cached and costs nothing extra. `createLLMAgent('claude')` builds without credentials, and the first run reports them missing. `@anthropic-ai/sdk` moves from `devDependencies` to `dependencies`, because the published package now imports it. Replaying thinking blocks with their `signature` within a tool-using turn is part of the provider-state slice of #23. `createLLMAgent` changes signature, which is internal and not exported.
+**Consequences:** a cache write costs more than plain input, so a conversation of a single call pays a little extra for a cache it never reads; a prefix below the model's minimum is not cached and costs nothing extra. `createLLMAgent('claude')` builds without credentials, and the first run reports them missing. `@anthropic-ai/sdk` moves from `devDependencies` to `dependencies`, because the published package now imports it. Replaying thinking blocks with their `signature` within a tool-using turn is part of the provider-state slice of #23, since done in "Both clients offer tools in strict mode, and each replays only its own reasoning". `createLLMAgent` changes signature, which is internal and not exported.
 
 ---
 
@@ -856,4 +856,31 @@ tags: #mikode-harness #agent-loops #tool-use #error-handling
 - **Running a step's calls in parallel.** Deferred: it is faster for independent reads, but it interleaves effects and narration, and approving calls one by one (#43) needs them in order.
 - **Ending the run on a missing tool or a tool failure.** Rejected: the model can correct itself from an error result, and ending the run would waste every step before it.
 
-**Consequences:** `LLMClient.send` takes `{ context, tools }`, which is internal. Neither client offers tools yet: both reject a request that carries any, instead of letting an agent believe the model saw them, and leave `tool` messages out of the context until they map them for their provider. `ProgressEvent` gains a type, a minor change; the CLI prints it. A run that already ran a tool is not retried even after a transient failure, but the SDKs' own transport retries still absorb those inside a call.
+**Consequences:** `LLMClient.send` takes `{ context, tools }`, which is internal. Neither client offers tools yet (until "Both clients offer tools in strict mode, and each replays only its own reasoning"): both reject a request that carries any, instead of letting an agent believe the model saw them, and leave `tool` messages out of the context until they map them for their provider. `ProgressEvent` gains a type, a minor change; the CLI prints it. A run that already ran a tool is not retried even after a transient failure, but the SDKs' own transport retries still absorb those inside a call.
+
+---
+
+## Both clients offer tools in strict mode, and each replays only its own reasoning
+
+tags: #mikode-harness #provider-integration #tool-use #agent-loops
+
+**Decision:** both `LLMClient`s map the tool loop to their provider in both directions, and send back the reasoning their provider needs beside its calls. The rules:
+
+- **Calls and results.** Claude's `tool_use` becomes a `toolCall` and a `tool` message becomes one user turn of `tool_result` blocks with `is_error`. OpenAI's `function_call` becomes a `toolCall` whose id is the `call_id`, and each result a `function_call_output` paired by it. Claude's `tool_use` stop reason is `completed`: the answer is whole, and whether to run the calls is the agent's decision.
+- **Strict mode on both providers.** Every tool is offered with `strict: true`, so the model's input always parses and matches the schema. Anthropic made strict tool use generally available, so the same rule holds on both clients.
+- **Arguments that do not parse reach the tool as the raw string.** Strict mode makes it rare, and a response cut mid-call already ends as `truncated`. Failing the mapping would make the run unrecoverable; the tool's rejection lets the model correct itself instead. The string goes back to OpenAI as the model wrote it.
+- **OpenAI's failed results carry no marker.** `function_call_output` has no error flag and OpenAI leaves the format to the caller, so the output goes as it is and its own text says the call failed. The conversation keeps `isError`, and Claude still receives it.
+- **Provider data is a part of its own.** A `providerData` part holds a block only its client can read back, whole: Claude's thinking with its `signature`, a `redacted_thinking` block, or OpenAI's reasoning item with its `encrypted_content`, which the client now requests through `include`. Its `source` is a plain string each client sets to its own label, and a client sends back only parts carrying its label. A `reasoning` part stays the readable summary, for narration; it is no longer what gets replayed. The agent never narrates provider data.
+
+**Context:** OpenAI documents that reasoning items returned with tool calls must be passed back with their outputs, so shipping tools without replay would have released a loop that loses its reasoning between the steps of one run. Anthropic accepted a tool turn without its thinking, but replaying it keeps the model's continuity. A run against both real APIs confirmed the design: each provider accepted its own signed or encrypted reasoning sent back before its parallel calls, a failing tool came back as an error result both models read, a second run continued the same conversation, and each conversation, tool calls included, continued on the other provider without its reasoning. OpenAI accepted the `function_call` items without their own `id`, sent only with `call_id`.
+
+**Alternatives considered:**
+
+- **Envelopes for OpenAI results**, such as `{"error": ...}`. Wrapping only errors stays ambiguous, because a tool can return that JSON as a success. Wrapping every result escapes file contents into one JSON string, which costs tokens and reads worse once repository tools return code (#25).
+- **Non-strict tools.** They accept any JSON Schema, but the model can then send input that does not match or does not parse. Strict mode costs a subset of JSON Schema instead; see the constraint in `architecture.md`.
+- **Replaying reasoning after the release.** Rejected: the release would ship a tool loop that OpenAI documents as needing it, and the integration branch keeps the pull requests small anyway.
+- **A `provider` union such as `'claude' | 'openai'`.** Rejected: the domain would grow with every provider, and no other domain type names one. The domain gives `source` no meaning.
+- **An opaque field on the reasoning part.** Rejected: redacted thinking has no text, and a provider's block would be split from nothing but its summary. A part of its own keeps the whole block, in the order the provider returned it, which both APIs require before the calls.
+- **Keeping the provider state in the client.** Rejected: the client is stateless, and recreating it would lose the state, which #23 forbids.
+
+**Consequences:** the conversation stores thinking twice, as its summary and inside its block. A schema outside strict mode fails every request with a 400. Claude also allows at most 20 strict tools per request. The provider-state question #23 left open is answered: continuation state lives beside the canonical parts, as parts of its own, and is dropped when a conversation changes provider. Compaction can drop `providerData` first, since only one provider can read it.

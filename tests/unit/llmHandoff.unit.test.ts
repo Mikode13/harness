@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import { ClaudeLLMClient } from '../../src/llm/infrastructure/claudeLLMClient.ts';
 import { OpenAILLMClient } from '../../src/llm/infrastructure/openAILLMClient.ts';
-import { userMessage } from '../support/fakeLlmClient.ts';
+import { toolCall, toolMessage, toolResult, userMessage } from '../support/fakeLlmClient.ts';
 
 // The error classes stay real: the clients classify failures by them.
 vi.mock('@anthropic-ai/sdk', async importOriginal => ({
@@ -125,13 +125,57 @@ describe('a conversation handed between providers', () => {
 		expect(claudeCreate).toHaveBeenCalledWith(
 			expect.objectContaining({
 				messages: [
-					{ role: 'user', content: 'My name is Miki.' },
-					{ role: 'assistant', content: 'ok' },
-					{ role: 'user', content: 'What is my name?' },
+					{ role: 'user', content: [{ type: 'text', text: 'My name is Miki.' }] },
+					{ role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+					{ role: 'user', content: [{ type: 'text', text: 'What is my name?' }] },
 				],
 			}),
 			{ signal },
 		);
 		expect(answer.response).toBe('Your name is Miki.');
+	});
+
+	// A tool round trip is semantic history too: the calls and their results cross with their IDs.
+	it('lets Claude carry on from a tool round trip OpenAI made', async () => {
+		const claudeCreate = claudeAnswering('It is sunny in Madrid.');
+
+		await new LLMAgent({
+			llmClient: new ClaudeLLMClient({ model: 'claude-sonnet-5', systemPrompt: '', logger }),
+			messages: [
+				userMessage('Weather in Madrid?'),
+				{
+					role: 'assistant',
+					content: [
+						{ type: 'providerData', source: 'openai', data: { type: 'reasoning', id: 'rs-1' } },
+						toolCall('call_1', 'weather', { city: 'Madrid' }),
+					],
+				},
+				toolMessage(toolResult('call_1', 'weather', 'Sunny')),
+				{ role: 'assistant', content: [{ type: 'text', text: 'Sunny.' }] },
+			],
+		}).run('Thanks!', signal, vi.fn());
+
+		expect(claudeCreate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				messages: [
+					{ role: 'user', content: [{ type: 'text', text: 'Weather in Madrid?' }] },
+					{
+						role: 'assistant',
+						content: [
+							{ type: 'tool_use', id: 'call_1', name: 'weather', input: { city: 'Madrid' } },
+						],
+					},
+					{
+						role: 'user',
+						content: [
+							{ type: 'tool_result', tool_use_id: 'call_1', content: 'Sunny', is_error: false },
+						],
+					},
+					{ role: 'assistant', content: [{ type: 'text', text: 'Sunny.' }] },
+					{ role: 'user', content: [{ type: 'text', text: 'Thanks!' }] },
+				],
+			}),
+			{ signal },
+		);
 	});
 });

@@ -40,15 +40,15 @@ provider: it drives whatever `LLMClient` it is given.
 
 ## Responsibilities and boundaries
 
-| Module               | Owns                                                                                                                                                                                       |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `src/agent/`         | `Agent`, `AgentResponse`, `ProgressEvent`, the error types, and the functions that classify a failure                                                                                      |
-| `src/engines/`       | One adapter per provider: SDK calls, session or thread continuity, and SDK events mapped to `ProgressEvent`; `LLMAgent`, which drives an `LLMClient` and runs the tools it is given        |
-| `src/llm/`           | `LLMClient`, the stateless model port; `Message` and its parts; `Conversation`; `Tool` and the `ToolDefinition` a client receives; `MaxContextError`; `OpenAILLMClient`; `ClaudeLLMClient` |
-| `src/factory/`       | Provider selection, default model and reasoning effort per role, and composition with the retry decorator                                                                                  |
-| `src/orchestration/` | The three role prompts, the attempt loop, per-run usage totals, and the validated reviewer decision                                                                                        |
-| `src/retry/`         | The decision to call an inner agent again, and the prompt that carries the previous failure into the next call                                                                             |
-| `src/shared/`        | `ILogger` and its stderr implementation, `isAbortError`, `isOneOf`, `Tokens`                                                                                                               |
+| Module               | Owns                                                                                                                                                                                                                        |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/agent/`         | `Agent`, `AgentResponse`, `ProgressEvent`, the error types, and the functions that classify a failure                                                                                                                       |
+| `src/engines/`       | One adapter per provider: SDK calls, session or thread continuity, and SDK events mapped to `ProgressEvent`; `LLMAgent`, which drives an `LLMClient` and runs the tools it is given                                         |
+| `src/llm/`           | `LLMClient`, the stateless model port; `Message` and its parts, including opaque `providerData`; `Conversation`; `Tool` and the `ToolDefinition` a client receives; `MaxContextError`; `OpenAILLMClient`; `ClaudeLLMClient` |
+| `src/factory/`       | Provider selection, default model and reasoning effort per role, and composition with the retry decorator                                                                                                                   |
+| `src/orchestration/` | The three role prompts, the attempt loop, per-run usage totals, and the validated reviewer decision                                                                                                                         |
+| `src/retry/`         | The decision to call an inner agent again, and the prompt that carries the previous failure into the next call                                                                                                              |
+| `src/shared/`        | `ILogger` and its stderr implementation, `isAbortError`, `isOneOf`, `Tokens`                                                                                                                                                |
 
 Two boundaries carry most of the design:
 
@@ -172,8 +172,11 @@ results. The run ends when an answer calls no tool. After `maxSteps` calls to th
 fails with `UnrecoverableError` instead, without running the last step's calls, because no
 call is left to send their results to. A missing tool, or a tool that throws, becomes an
 error result the model can correct itself from; only a cancellation escapes, whatever error
-the tool turned it into, and a cancelled run neither starts nor announces another tool. A `refused` or `truncated` stop ends the run with
-`UnrecoverableError`.
+the tool turned it into, and a cancelled run neither starts nor announces another tool. A
+`refused` or `truncated` stop ends the run with `UnrecoverableError`. Each client maps the
+parts to its provider's shapes and back: Claude's `tool_use` and `tool_result`, with every
+result in one user turn, and OpenAI's `function_call` and `function_call_output`, paired by
+`call_id`, where the output text alone says whether the call failed.
 
 Nothing is recorded until the run completes. Then the prompt, every answer and every tool
 result enter the conversation together, so a failed run leaves it untouched, no tool call is
@@ -181,7 +184,7 @@ kept without its result, and a retry of the same prompt cannot appear twice. Onc
 reached an existing tool, a recoverable failure becomes `UnrecoverableError`: `RetryingAgent`
 would run the prompt again and repeat the tool's effects. A call to a missing tool does not
 count, because nothing ran. Text and reasoning are narrated as each answer arrives, as
-`agentMessage` and `reasoning`. A tool call is narrated as a `tool` event only when it starts,
+`agentMessage` and `reasoning`; `providerData` is never narrated. A tool call is narrated as a `tool` event only when it starts,
 and again when it ends, so a call the run never starts is never shown as running. All of it
 goes through `classifyHostFailure`; the response carries the text of the final answer alone. Tokens are
 summed over every call of the run: one call without usage leaves the total unknown, and a
@@ -212,10 +215,15 @@ each other's.
   WebSocket consumer would call `Agent.run()` per request and want none of it. It stays out of
   the tarball too — `files` lists `dist` only, and `scripts/pack-check.mjs` fails on anything
   else reaching it.
-- **No tool reaches a model yet.** `LLMAgent` runs the tools it is given, but no concrete
-  tool exists, `createLLMAgent` gives none, and both `LLMClient`s reject a request that
-  carries tools and leave `tool` messages out of the context until they map them for their
-  provider.
+- **No concrete tool exists yet.** Both `LLMClient`s offer tools to their model and map
+  calls and results in both directions, but `createLLMAgent` gives none; repository tools
+  wait for #25.
+- **Tool schemas must fit strict mode.** Both clients offer every tool with `strict: true`, so
+  the model's input always parses and matches the schema. The price is the providers' subset
+  of JSON Schema: `additionalProperties: false` on every object, every property in
+  `required` (an optional one is a union with `null`), no numeric or length bounds, and at
+  most 20 tools per request on Claude. A schema outside it fails every request with a 400,
+  which is `UnrecoverableError`.
 - **Tools run one at a time.** Independent calls in one answer would finish sooner in
   parallel, but running them in order keeps their effects and narration deterministic, and
   asking a human to approve a call (#43) needs one call at a time.
@@ -223,8 +231,10 @@ each other's.
   file-based agent registries are deliberately absent; each waits for a real consumer.
   `LLMAgent`'s `Conversation` lives only as long as the agent: persisting it waits for the
   session manager (#29).
-- **Reasoning is not replayed.** Both `LLMClient`s send text only, so a reasoning model
-  starts each turn without its earlier reasoning until #23 adds provider state.
+- **Reasoning is replayed only to the provider that produced it.** Each client keeps its
+  signed or encrypted reasoning as a `providerData` part labelled with its own `source`, and
+  sends back only its own. A conversation handed to the other provider keeps its text, tool
+  calls and results, and loses the private reasoning.
 - **`LLMClient` does not stream.** A call returns the whole answer, so an `LLMAgent`
   narrates it only once it is complete. The CLI shows a spinner and then the message, which
   is all it needs; streaming would be a separate method when a consumer needs text as it is

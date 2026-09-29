@@ -9,7 +9,7 @@ import {
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import { MaxContextError } from '../../src/llm/domain/errors.ts';
 import { OpenAILLMClient } from '../../src/llm/infrastructure/openAILLMClient.ts';
-import { textResponse, userMessage } from '../support/fakeLlmClient.ts';
+import { toolCall, toolMessage, toolResult, userMessage } from '../support/fakeLlmClient.ts';
 
 // The error classes stay real: the client classifies failures by them.
 vi.mock('openai', async importOriginal => ({
@@ -40,6 +40,10 @@ function reasoning(...summary: string[]): ResponseOutputItem {
 		summary: summary.map(text => ({ type: 'summary_text', text })),
 		encrypted_content: 'opaque',
 	};
+}
+
+function functionCall(callId: string, name: string, args: string): ResponseOutputItem {
+	return { type: 'function_call', id: `fc-${callId}`, call_id: callId, name, arguments: args };
 }
 
 function response(overrides: Partial<Response> = {}): Response {
@@ -124,6 +128,13 @@ describe('OpenAILLMClient', () => {
 			store: false,
 			input: [
 				{ role: 'user', content: 'My name is Miki.' },
+				// The encrypted reasoning survives the new client too.
+				{
+					type: 'reasoning',
+					id: 'rs-1',
+					summary: [{ type: 'summary_text', text: 'greeting them' }],
+					encrypted_content: 'opaque',
+				},
 				{ role: 'assistant', content: 'Hi Miki' },
 				{ role: 'user', content: 'What is my name?' },
 			],
@@ -131,7 +142,7 @@ describe('OpenAILLMClient', () => {
 		expect(answer.response).toBe('Your name is Miki.');
 	});
 
-	it('sends the whole context statelessly, with text alone and no empty messages', async () => {
+	it('sends the whole context statelessly, with no reasoning text and no empty messages', async () => {
 		const { create } = createSdk(response());
 		const thinkingOnly = {
 			role: 'assistant' as const,
@@ -152,6 +163,7 @@ describe('OpenAILLMClient', () => {
 					answered,
 					userMessage('second'),
 					thinkingOnly,
+					userMessage(''),
 					userMessage('third'),
 				],
 				tools: [],
@@ -159,6 +171,7 @@ describe('OpenAILLMClient', () => {
 			signal,
 		);
 
+		// Without tools the request carries no `tools` field at all.
 		expect(create).toHaveBeenCalledWith(
 			{
 				model: 'gpt-5.6-sol',
@@ -171,27 +184,43 @@ describe('OpenAILLMClient', () => {
 				],
 				store: false,
 				reasoning: { summary: 'auto' },
+				include: ['reasoning.encrypted_content'],
 			},
 			{ signal },
 		);
 	});
 
-	// Until the client maps tools (#23), offering one would be ignored in silence.
-	it('rejects tools it cannot offer the model yet, without calling OpenAI', async () => {
+	it('offers each tool as a strict function', async () => {
 		const { create } = createSdk(response());
-		const weather = {
-			name: 'weather',
-			description: 'Weather',
-			inputSchema: { type: 'object' as const },
+		const inputSchema = {
+			type: 'object' as const,
+			properties: { city: { type: 'string' } },
+			required: ['city'],
+			additionalProperties: false,
 		};
 
-		await expect(
-			createClient().send({ context: [userMessage('prompt')], tools: [weather] }, signal),
-		).rejects.toBeInstanceOf(UnrecoverableError);
-		expect(create).not.toHaveBeenCalled();
+		await createClient().send(
+			{
+				context: [userMessage('prompt')],
+				tools: [{ name: 'weather', description: 'Weather in a city', inputSchema }],
+			},
+			signal,
+		);
+
+		expect(create.mock.calls[0]?.[0]).toMatchObject({
+			tools: [
+				{
+					type: 'function',
+					name: 'weather',
+					description: 'Weather in a city',
+					parameters: inputSchema,
+					strict: true,
+				},
+			],
+		});
 	});
 
-	it('maps reasoning summaries and text into parts, in order', async () => {
+	it('maps reasoning summaries and text into parts, in order, keeping the encrypted item for replay', async () => {
 		createSdk(
 			response({ output: [reasoning('step one', 'step two'), message({ text: 'answer' })] }),
 		);
@@ -205,13 +234,26 @@ describe('OpenAILLMClient', () => {
 			role: 'assistant',
 			content: [
 				{ type: 'reasoning', text: 'step one\nstep two' },
+				{
+					type: 'providerData',
+					source: 'openai',
+					data: {
+						type: 'reasoning',
+						id: 'rs-1',
+						summary: [
+							{ type: 'summary_text', text: 'step one' },
+							{ type: 'summary_text', text: 'step two' },
+						],
+						encrypted_content: 'opaque',
+					},
+				},
 				{ type: 'text', text: 'answer' },
 			],
 		});
 		expect(result.stopReason).toBe('completed');
 	});
 
-	it('leaves out an empty reasoning summary', async () => {
+	it('keeps a reasoning item with an empty summary only for replay', async () => {
 		createSdk(response({ output: [reasoning(), message({ text: 'answer' })] }));
 
 		const result = await createClient().send(
@@ -219,13 +261,159 @@ describe('OpenAILLMClient', () => {
 			signal,
 		);
 
-		expect(result.message.content).toEqual(textResponse('answer').message.content);
+		expect(result.message.content).toEqual([
+			{
+				type: 'providerData',
+				source: 'openai',
+				data: { type: 'reasoning', id: 'rs-1', summary: [], encrypted_content: 'opaque' },
+			},
+			{ type: 'text', text: 'answer' },
+		]);
+	});
+
+	// OpenAI stores nothing, so an item without its encrypted content has nothing to send back.
+	it('keeps no replay for a reasoning item without encrypted content', async () => {
+		createSdk(
+			response({
+				output: [
+					{ ...reasoning('step one'), encrypted_content: null } as ResponseOutputItem,
+					message({ text: 'answer' }),
+				],
+			}),
+		);
+
+		const result = await createClient().send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
+
+		expect(result.message.content).toEqual([
+			{ type: 'reasoning', text: 'step one' },
+			{ type: 'text', text: 'answer' },
+		]);
+	});
+
+	it('maps a function call into a tool call with parsed arguments', async () => {
+		createSdk(
+			response({
+				output: [
+					functionCall('call_1', 'weather', '{"city":"Madrid"}'),
+					functionCall('call_2', 'weather', '{"city":"Paris"}'),
+				],
+			}),
+		);
+
+		const result = await createClient().send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
+
+		// The pairing ID is `call_id`; the item's own `id` means nothing outside OpenAI.
+		expect(result.message.content).toEqual([
+			toolCall('call_1', 'weather', { city: 'Madrid' }),
+			toolCall('call_2', 'weather', { city: 'Paris' }),
+		]);
+		expect(result.stopReason).toBe('completed');
+	});
+
+	// Failing the mapping would end the run; the tool's rejection lets the model try again.
+	it('hands arguments that do not parse to the tool as the raw string', async () => {
+		createSdk(response({ output: [functionCall('call_1', 'weather', '{"city":')] }));
+
+		const result = await createClient().send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
+
+		expect(result.message.content).toEqual([toolCall('call_1', 'weather', '{"city":')]);
+	});
+
+	// OpenAI requires each reasoning item beside the calls that followed it.
+	it('sends a tool round trip back as items, in order, with the reasoning before its calls', async () => {
+		const { create } = createSdk(response());
+		const encrypted = { type: 'reasoning', id: 'rs-1', summary: [], encrypted_content: 'opaque' };
+
+		await createClient().send(
+			{
+				context: [
+					userMessage('Weather in Madrid?'),
+					{
+						role: 'assistant',
+						content: [
+							{ type: 'providerData', source: 'openai', data: encrypted },
+							{ type: 'text', text: 'Checking.' },
+							toolCall('call_1', 'weather', { city: 'Madrid' }),
+							toolCall('call_2', 'weather', '{"city":'),
+						],
+					},
+					toolMessage(
+						toolResult('call_1', 'weather', 'Sunny'),
+						toolResult('call_2', 'weather', 'Invalid input', true),
+					),
+				],
+				tools: [],
+			},
+			signal,
+		);
+
+		expect(create).toHaveBeenCalledWith(
+			expect.objectContaining({
+				input: [
+					{ role: 'user', content: 'Weather in Madrid?' },
+					encrypted,
+					{ role: 'assistant', content: 'Checking.' },
+					{
+						type: 'function_call',
+						call_id: 'call_1',
+						name: 'weather',
+						arguments: '{"city":"Madrid"}',
+					},
+					// Sent back exactly as the model wrote it, not serialized again.
+					{ type: 'function_call', call_id: 'call_2', name: 'weather', arguments: '{"city":' },
+					// OpenAI has no error flag; the output text carries the failure.
+					{ type: 'function_call_output', call_id: 'call_1', output: 'Sunny' },
+					{ type: 'function_call_output', call_id: 'call_2', output: 'Invalid input' },
+				],
+			}),
+			{ signal },
+		);
+	});
+
+	it("leaves out another provider's data, which OpenAI could not read", async () => {
+		const { create } = createSdk(response());
+
+		await createClient().send(
+			{
+				context: [
+					userMessage('prompt'),
+					{
+						role: 'assistant',
+						content: [
+							{ type: 'providerData', source: 'claude', data: { type: 'thinking' } },
+							{ type: 'text', text: 'answer' },
+						],
+					},
+				],
+				tools: [],
+			},
+			signal,
+		);
+
+		expect(create).toHaveBeenCalledWith(
+			expect.objectContaining({
+				input: [
+					{ role: 'user', content: 'prompt' },
+					{ role: 'assistant', content: 'answer' },
+				],
+			}),
+			{ signal },
+		);
 	});
 
 	it('warns about an output item it does not map and leaves it out', async () => {
 		const logger = { warn: vi.fn() };
-		const call = { type: 'function_call', call_id: 'c1', name: 'ls', arguments: '{}' };
-		createSdk(response({ output: [call as ResponseOutputItem, message({ text: 'answer' })] }));
+		const search = { type: 'web_search_call', id: 'ws-1', status: 'completed' };
+		createSdk(response({ output: [search as ResponseOutputItem, message({ text: 'answer' })] }));
 
 		const result = await createClient(logger).send(
 			{ context: [userMessage('prompt')], tools: [] },
@@ -233,7 +421,7 @@ describe('OpenAILLMClient', () => {
 		);
 
 		expect(result.message.content).toEqual([{ type: 'text', text: 'answer' }]);
-		expect(logger.warn).toHaveBeenCalledWith(call, expect.any(String));
+		expect(logger.warn).toHaveBeenCalledWith(search, expect.any(String));
 	});
 
 	it('makes a throwing logger unrecoverable', async () => {

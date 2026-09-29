@@ -1,8 +1,10 @@
 import OpenAI, { APIError } from 'openai';
 import type {
+	FunctionTool,
 	Response,
 	ResponseInputItem,
 	ResponseOutputItem,
+	ResponseReasoningItem,
 	ResponseUsage,
 } from 'openai/resources/responses/responses';
 import {
@@ -49,23 +51,64 @@ const exhaustedQuotaCodes = [
 // The codes OpenAI gives a failed response that a new attempt can succeed past.
 const transientResponseErrorCodes = ['server_error', 'rate_limit_exceeded'];
 
+// This client's label on the reasoning items it keeps for replay; see `ProviderDataPart`.
+const openAISource = 'openai';
+
 /**
- * Only the text crosses back. OpenAI replays reasoning only from the encrypted item it
- * returned, which a `Message` does not keep, so a reasoning part stays in the conversation
- * for narration and is left out of the request. A message with no text is left out whole.
+ * OpenAI takes a flat list of items, so every part becomes its own, in order. Reasoning crosses
+ * back only as the encrypted item this client kept, which OpenAI requires beside the tool calls
+ * that followed it; a reasoning part is its summary, kept for narration.
  */
-function toOpenAIInput(message: Message): ResponseInputItem[] {
-	// Tool results only follow tool calls, and this client offers the model no tools yet.
-	if (message.role === 'tool') {
-		return [];
+function toOpenAIItems(part: MessagePart, role: 'user' | 'assistant'): ResponseInputItem[] {
+	switch (part.type) {
+		case 'text':
+			return part.text ? [{ role, content: part.text }] : [];
+		case 'toolCall':
+			return [
+				{
+					type: 'function_call',
+					call_id: part.id,
+					name: part.name,
+					// A string is arguments that did not parse, sent back as the model wrote them.
+					arguments: typeof part.input === 'string' ? part.input : JSON.stringify(part.input),
+				},
+			];
+		case 'toolResult':
+			// OpenAI has no error flag: the output's own text has to say the call failed.
+			return [{ type: 'function_call_output', call_id: part.callId, output: part.output }];
+		case 'providerData':
+			// Another provider's item would be rejected; losing it only costs that provider's reasoning.
+			return part.source === openAISource ? [part.data as ResponseReasoningItem] : [];
+		case 'reasoning':
+			return [];
 	}
+}
 
-	const text = message.content
-		.filter(part => part.type === 'text')
-		.map(part => part.text)
-		.join('\n');
+function toOpenAIInput(message: Message): ResponseInputItem[] {
+	// A tool message holds only results, which carry no role.
+	const role = message.role === 'assistant' ? 'assistant' : 'user';
+	return message.content.flatMap(part => toOpenAIItems(part, role));
+}
 
-	return text ? [{ role: message.role, content: text }] : [];
+/**
+ * Strict: the API constrains the model to the schema, so its arguments always parse and match.
+ * A schema outside what strict mode supports fails the request with a 400.
+ */
+function toOpenAITool({ name, description, inputSchema }: ToolDefinition): FunctionTool {
+	return { type: 'function', name, description, parameters: inputSchema, strict: true };
+}
+
+/**
+ * Strict mode makes arguments that do not parse rare: a response cut short mid-call ends as
+ * `truncated` before any tool runs. Should one arrive, the tool gets the raw string and its
+ * rejection lets the model correct itself, instead of the run failing.
+ */
+function parseArguments(serialized: string): unknown {
+	try {
+		return JSON.parse(serialized);
+	} catch {
+		return serialized;
+	}
 }
 
 function describeItem(item: ResponseOutputItem, logger: ILogger): MessagePart[] {
@@ -76,12 +119,32 @@ function describeItem(item: ResponseOutputItem, logger: ILogger): MessagePart[] 
 				content.type === 'output_text' ? [{ type: 'text' as const, text: content.text }] : [],
 			);
 		case 'reasoning': {
-			// The summary is the readable part; the encrypted content is opaque by design.
+			// The summary is the readable part; the encrypted item is what OpenAI reads back.
 			const text = item.summary.map(summary => summary.text).join('\n');
-			return text ? [{ type: 'reasoning', text }] : [];
+			const parts: MessagePart[] = text ? [{ type: 'reasoning', text }] : [];
+			// Without its encrypted content the item cannot be replayed: OpenAI stores nothing.
+			if (item.encrypted_content) {
+				const encrypted: ResponseReasoningItem = {
+					type: 'reasoning',
+					id: item.id,
+					summary: item.summary,
+					encrypted_content: item.encrypted_content,
+				};
+				parts.push({ type: 'providerData', source: openAISource, data: encrypted });
+			}
+			return parts;
 		}
+		case 'function_call':
+			return [
+				{
+					type: 'toolCall',
+					id: item.call_id,
+					name: item.name,
+					input: parseArguments(item.arguments),
+				},
+			];
 		default:
-			// No tools are sent yet, so any other item is output this client does not expect.
+			// No built-in tools are offered, so any other item is output this client does not expect.
 			treatErrors(
 				() => {
 					logger.warn(item, 'OpenAI returned an output item the client does not map');
@@ -225,13 +288,6 @@ export class OpenAILLMClient implements LLMClient {
 		{ context, tools }: { context: Message[]; tools: ToolDefinition[] },
 		signal: AbortSignal,
 	): Promise<LLMResponse> {
-		if (tools.length > 0) {
-			// Ignoring them would leave an agent believing the model can call tools it never saw.
-			throw new UnrecoverableError('The OpenAI client cannot offer tools to the model yet', {
-				cause: `It was given ${String(tools.length)} tools.`,
-			});
-		}
-
 		let response: Response;
 
 		try {
@@ -240,8 +296,12 @@ export class OpenAILLMClient implements LLMClient {
 					model: this.model,
 					instructions: this.systemPrompt,
 					input: context.flatMap(toOpenAIInput),
+					// Left out when empty, so a request without tools stays as it always was.
+					...(tools.length > 0 && { tools: tools.map(toOpenAITool) }),
 					store: false,
 					reasoning: { summary: 'auto' },
+					// With `store: false` this is the only way to send the reasoning back.
+					include: ['reasoning.encrypted_content'],
 				},
 				{ signal },
 			);
