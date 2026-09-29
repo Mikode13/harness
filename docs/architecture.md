@@ -172,7 +172,7 @@ results. The run ends when an answer calls no tool. After `maxSteps` calls to th
 fails with `UnrecoverableError` instead, without running the last step's calls, because no
 call is left to send their results to. A missing tool, or a tool that throws, becomes an
 error result the model can correct itself from; only a cancellation escapes, whatever error
-the tool turned it into, and a cancelled run starts no further tool. A `refused` or `truncated` stop ends the run with
+the tool turned it into, and a cancelled run neither starts nor announces another tool. A `refused` or `truncated` stop ends the run with
 `UnrecoverableError`.
 
 Nothing is recorded until the run completes. Then the prompt, every answer and every tool

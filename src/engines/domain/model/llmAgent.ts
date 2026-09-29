@@ -136,8 +136,6 @@ export class LLMAgent implements Agent {
 			};
 		}
 
-		// A tool before this one may have ignored the cancellation; this one must not start.
-		signal.throwIfAborted();
 		try {
 			return { ...result, output: await tool.execute(call.input, signal), isError: false };
 		} catch (error) {
@@ -154,6 +152,9 @@ export class LLMAgent implements Agent {
 	): Promise<Message> {
 		const results: MessagePart[] = [];
 		for (const call of calls) {
+			// A call before this one may have ignored the cancellation; this one must not start,
+			// nor be announced as running.
+			signal.throwIfAborted();
 			// Announced only as its turn comes, so a consumer never shows a call as running early.
 			narrate(call, callback);
 			const result = await this.runTool(call, signal);

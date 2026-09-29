@@ -263,11 +263,19 @@ describe('LLMAgent with tools', () => {
 			assistantResponse([madridCall, toolCall('call-2', 'forecast', { city: 'Oslo' })]),
 			textResponse('never'),
 		);
+		const events: ProgressEvent[] = [];
 
 		await expect(
-			new LLMAgent({ llmClient, tools: [first, second] }).run('prompt', controller.signal, vi.fn()),
+			new LLMAgent({ llmClient, tools: [first, second] }).run('prompt', controller.signal, event =>
+				events.push(event),
+			),
 		).rejects.toMatchObject({ name: 'AbortError' });
 		expect(second.execute).not.toHaveBeenCalled();
+		// The call that never starts is never announced as running.
+		expect(events.filter(event => event.type === 'tool')).toEqual([
+			{ type: 'tool', id: 'call-1', name: 'weather', status: 'in_progress' },
+			{ type: 'tool', id: 'call-1', name: 'weather', status: 'completed' },
+		]);
 	});
 
 	// `maxSteps` counts calls to the model. The last step's calls are not run: no call is left
