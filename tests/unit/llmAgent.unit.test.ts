@@ -4,7 +4,12 @@ import { RecoverableError, UnrecoverableError } from '../../src/agent/domain/err
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import type { LLMClient, LLMResponse } from '../../src/llm/domain/llm.ts';
 import type { Message } from '../../src/llm/domain/message.ts';
-import { FakeLLMClient, textResponse, userMessage } from '../support/fakeLlmClient.ts';
+import {
+	assistantResponse,
+	FakeLLMClient,
+	textResponse,
+	userMessage,
+} from '../support/fakeLlmClient.ts';
 
 const signal = new AbortController().signal;
 
@@ -54,10 +59,10 @@ describe('LLMAgent', () => {
 		const answer = textResponse('answer');
 		const contexts: Message[][] = [];
 		const llmClient: LLMClient = {
-			send: context => {
+			send: ({ context }) => {
 				contexts.push(structuredClone(context));
 				for (const message of context) {
-					for (const part of message.content) part.text = 'rewritten';
+					for (const part of message.content) if (part.type === 'text') part.text = 'rewritten';
 				}
 				return Promise.resolve(answer);
 			},
@@ -97,6 +102,22 @@ describe('LLMAgent', () => {
 			{ type: 'agentMessage', message: 'answer' },
 		]);
 		expect(response.response).toBe('answer');
+	});
+
+	// Provider data is for the client to send back, not for anyone to read.
+	it('neither narrates nor answers with provider data, but keeps it for the next call', async () => {
+		const replay = { type: 'providerData' as const, source: 'fake', data: { signed: 'opaque' } };
+		const withReplay = assistantResponse([replay, { type: 'text', text: 'answer' }]);
+		const llmClient = new FakeLLMClient(withReplay, textResponse('second answer'));
+		const agent = new LLMAgent({ llmClient });
+		const events: ProgressEvent[] = [];
+
+		const response = await agent.run('first', signal, event => events.push(event));
+		await agent.run('second', signal, vi.fn());
+
+		expect(events).toEqual([{ type: 'agentMessage', message: 'answer' }]);
+		expect(response.response).toBe('answer');
+		expect(llmClient.contexts[1]?.[1]).toEqual(withReplay.message);
 	});
 
 	// The call was billed, so its tokens travel even without an answer.

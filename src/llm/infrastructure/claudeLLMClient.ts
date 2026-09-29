@@ -1,8 +1,12 @@
 import Anthropic, { AnthropicError, APIError } from '@anthropic-ai/sdk';
 import type {
 	ContentBlock,
+	ContentBlockParam,
 	Message as AnthropicMessage,
 	MessageParam,
+	RedactedThinkingBlockParam,
+	ThinkingBlockParam,
+	Tool as ClaudeTool,
 	Usage,
 } from '@anthropic-ai/sdk/resources/messages';
 import {
@@ -23,6 +27,7 @@ import type { Tokens } from '#src/shared/domain/tokens';
 import { MaxContextError } from '../domain/errors.ts';
 import type { LLMClient, LLMResponse, StopReason } from '../domain/llm.ts';
 import type { Message, MessagePart } from '../domain/message.ts';
+import type { ToolDefinition } from '../domain/tool.ts';
 
 // The Messages API takes full model IDs, not the Agent SDK's aliases, so this list is its own.
 export const claudeLLMModels = ['claude-opus-5-5', 'claude-fable-5-1', 'claude-sonnet-5'] as const;
@@ -39,33 +44,92 @@ const unrecoverableStatuses = [400, 401, 403, 404, 413, 422];
 // either, whatever status the error arrives with.
 const unrecoverableErrorTypes = ['billing_error', 'authentication_error', 'permission_error'];
 
+// This client's label on the thinking blocks it keeps for replay; see `ProviderDataPart`.
+const claudeSource = 'claude';
+
 /**
- * Only the text crosses back. Anthropic needs a thinking block again only to continue a turn
- * that called a tool, and none is sent yet, so a reasoning part stays in the conversation for
- * narration and is left out of the request. A message with no text is left out whole; the API
- * joins the consecutive user turns that leaves.
+ * Anthropic rejects a `tool_use` whose input is not an object, with a 400 on every later call.
+ * Another provider's call can hold anything else, such as OpenAI arguments that did not parse;
+ * its result already told the model the call failed, so sending it as empty loses nothing.
+ */
+function toClaudeInputObject(input: unknown): unknown {
+	return typeof input === 'object' && input !== null && !Array.isArray(input) ? input : {};
+}
+
+/** Thinking crosses back only as the signed block this client kept, never as its text. */
+function toClaudeBlocks(part: MessagePart): ContentBlockParam[] {
+	switch (part.type) {
+		case 'text':
+			// The API rejects an empty text block.
+			return part.text ? [{ type: 'text', text: part.text }] : [];
+		case 'toolCall':
+			return [
+				{ type: 'tool_use', id: part.id, name: part.name, input: toClaudeInputObject(part.input) },
+			];
+		case 'toolResult':
+			return [
+				{
+					type: 'tool_result',
+					tool_use_id: part.callId,
+					content: part.output,
+					is_error: part.isError,
+				},
+			];
+		case 'providerData':
+			// Another provider's block would be rejected; losing it only costs that provider's reasoning.
+			return part.source === claudeSource
+				? [part.data as ThinkingBlockParam | RedactedThinkingBlockParam]
+				: [];
+		case 'reasoning':
+			// Unsigned text cannot be replayed as thinking. The API accepts a turn without it.
+			return [];
+	}
+}
+
+/**
+ * Tool results travel in a user turn, as the API requires. A message left with no blocks is
+ * left out whole; the API joins the consecutive user turns that leaves.
  */
 function toClaudeInput(message: Message): MessageParam[] {
-	const text = message.content
-		.filter(part => part.type === 'text')
-		.map(part => part.text)
-		.join('\n');
+	const content = message.content.flatMap(toClaudeBlocks);
+	if (content.length === 0) {
+		return [];
+	}
 
-	return text ? [{ role: message.role, content: text }] : [];
+	return [{ role: message.role === 'tool' ? 'user' : message.role, content }];
+}
+
+/**
+ * Strict: the API constrains the model to the schema, so its input always parses and matches.
+ * A schema outside what strict mode supports fails the request with a 400.
+ */
+function toClaudeTool({ name, description, inputSchema }: ToolDefinition): ClaudeTool {
+	return { name, description, input_schema: inputSchema, strict: true };
 }
 
 function describeBlock(block: ContentBlock, logger: ILogger): MessagePart[] {
 	switch (block.type) {
 		case 'text':
 			return [{ type: 'text', text: block.text }];
-		case 'thinking':
-			// Summarized thinking; the signature only matters for replay, which is not done.
-			return block.thinking ? [{ type: 'reasoning', text: block.thinking }] : [];
-		case 'redacted_thinking':
-			// Encrypted by design: there is nothing to narrate.
-			return [];
+		case 'thinking': {
+			// Kept signed for replay; the summarized text is only for narration.
+			const signed: ThinkingBlockParam = {
+				type: 'thinking',
+				thinking: block.thinking,
+				signature: block.signature,
+			};
+			const replay: MessagePart = { type: 'providerData', source: claudeSource, data: signed };
+			return block.thinking ? [{ type: 'reasoning', text: block.thinking }, replay] : [replay];
+		}
+		case 'redacted_thinking': {
+			// Encrypted by design: nothing to narrate, but it still goes back.
+			const redacted: RedactedThinkingBlockParam = { type: 'redacted_thinking', data: block.data };
+			return [{ type: 'providerData', source: claudeSource, data: redacted }];
+		}
+		case 'tool_use':
+			return [{ type: 'toolCall', id: block.id, name: block.name, input: block.input }];
 		default:
-			// No tools are sent yet, so any other block is output this client does not expect.
+			// Server tools are never offered, so any other block is output this client does not expect.
 			treatErrors(
 				() => {
 					logger.warn(block, 'Claude returned a content block the client does not map');
@@ -79,7 +143,9 @@ function describeBlock(block: ContentBlock, logger: ILogger): MessagePart[] {
 
 function toStopReason(response: AnthropicMessage): StopReason {
 	switch (response.stop_reason) {
+		// `tool_use` is a complete answer that asks for tools: running them is the agent's call.
 		case 'end_turn':
+		case 'tool_use':
 			return 'completed';
 		case 'max_tokens':
 			return 'truncated';
@@ -90,8 +156,8 @@ function toStopReason(response: AnthropicMessage): StopReason {
 				cause: 'The response stopped at the model context window.',
 			});
 		default:
-			// `tool_use`, `pause_turn` and `stop_sequence` need tools, server tools or stop
-			// sequences, and this client sends none of them.
+			// `pause_turn` and `stop_sequence` need server tools or stop sequences, and this
+			// client sends neither.
 			throw new UnrecoverableError('The Claude response stopped unexpectedly', {
 				cause: `The response stopped with "${response.stop_reason ?? 'unknown'}".`,
 			});
@@ -225,7 +291,10 @@ export class ClaudeLLMClient implements LLMClient {
 		this.logger = logger;
 	}
 
-	async send(context: Message[], signal: AbortSignal): Promise<LLMResponse> {
+	async send(
+		{ context, tools }: { context: Message[]; tools: ToolDefinition[] },
+		signal: AbortSignal,
+	): Promise<LLMResponse> {
 		let response: AnthropicMessage;
 
 		try {
@@ -235,6 +304,8 @@ export class ClaudeLLMClient implements LLMClient {
 					max_tokens: maxOutputTokens,
 					system: this.systemPrompt,
 					messages: context.flatMap(toClaudeInput),
+					// Left out when empty, so a request without tools stays as it always was.
+					...(tools.length > 0 && { tools: tools.map(toClaudeTool) }),
 					thinking: { type: 'adaptive', display: 'summarized' },
 					// Anthropic caches only on request. This marks the last block, so the next call
 					// reads everything before it from the cache instead of paying for it again.

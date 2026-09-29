@@ -12,6 +12,10 @@ describe('formatProgressEvent', () => {
 			{ type: 'mcpTool', server: 'catalog', tool: 'lookup', status: 'completed' },
 			'tool: lookup, server: catalog, status: completed',
 		],
+		[
+			{ type: 'tool', id: 'call-1', name: 'weather', status: 'completed' },
+			'tool: weather, status: completed',
+		],
 		[{ type: 'search', query: 'Codex SDK' }, 'searching... query:Codex SDK'],
 		[
 			{

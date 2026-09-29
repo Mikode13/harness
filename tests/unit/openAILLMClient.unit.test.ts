@@ -9,7 +9,7 @@ import {
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import { MaxContextError } from '../../src/llm/domain/errors.ts';
 import { OpenAILLMClient } from '../../src/llm/infrastructure/openAILLMClient.ts';
-import { textResponse, userMessage } from '../support/fakeLlmClient.ts';
+import { toolCall, toolMessage, toolResult, userMessage } from '../support/fakeLlmClient.ts';
 
 // The error classes stay real: the client classifies failures by them.
 vi.mock('openai', async importOriginal => ({
@@ -40,6 +40,10 @@ function reasoning(...summary: string[]): ResponseOutputItem {
 		summary: summary.map(text => ({ type: 'summary_text', text })),
 		encrypted_content: 'opaque',
 	};
+}
+
+function functionCall(callId: string, name: string, args: string): ResponseOutputItem {
+	return { type: 'function_call', id: `fc-${callId}`, call_id: callId, name, arguments: args };
 }
 
 function response(overrides: Partial<Response> = {}): Response {
@@ -106,7 +110,10 @@ describe('OpenAILLMClient', () => {
 			response({ output: [reasoning('greeting them'), message({ text: 'Hi Miki' })] }),
 			response({ output: [message({ text: 'Your name is Miki.' })] }),
 		);
-		const first = await createClient().send([userMessage('My name is Miki.')], signal);
+		const first = await createClient().send(
+			{ context: [userMessage('My name is Miki.')], tools: [] },
+			signal,
+		);
 
 		// What a session manager would persist, handed to a new SDK instance and a new agent.
 		const persisted = [userMessage('My name is Miki.'), first.message];
@@ -121,6 +128,13 @@ describe('OpenAILLMClient', () => {
 			store: false,
 			input: [
 				{ role: 'user', content: 'My name is Miki.' },
+				// The encrypted reasoning survives the new client too.
+				{
+					type: 'reasoning',
+					id: 'rs-1',
+					summary: [{ type: 'summary_text', text: 'greeting them' }],
+					encrypted_content: 'opaque',
+				},
 				{ role: 'assistant', content: 'Hi Miki' },
 				{ role: 'user', content: 'What is my name?' },
 			],
@@ -128,7 +142,7 @@ describe('OpenAILLMClient', () => {
 		expect(answer.response).toBe('Your name is Miki.');
 	});
 
-	it('sends the whole context statelessly, with text alone and no empty messages', async () => {
+	it('sends the whole context statelessly, with no reasoning text and no empty messages', async () => {
 		const { create } = createSdk(response());
 		const thinkingOnly = {
 			role: 'assistant' as const,
@@ -143,10 +157,21 @@ describe('OpenAILLMClient', () => {
 		};
 
 		await createClient().send(
-			[userMessage('first'), answered, userMessage('second'), thinkingOnly, userMessage('third')],
+			{
+				context: [
+					userMessage('first'),
+					answered,
+					userMessage('second'),
+					thinkingOnly,
+					userMessage(''),
+					userMessage('third'),
+				],
+				tools: [],
+			},
 			signal,
 		);
 
+		// Without tools the request carries no `tools` field at all.
 		expect(create).toHaveBeenCalledWith(
 			{
 				model: 'gpt-5.6-sol',
@@ -159,45 +184,278 @@ describe('OpenAILLMClient', () => {
 				],
 				store: false,
 				reasoning: { summary: 'auto' },
+				include: ['reasoning.encrypted_content'],
 			},
 			{ signal },
 		);
 	});
 
-	it('maps reasoning summaries and text into parts, in order', async () => {
+	it('offers each tool as a strict function', async () => {
+		const { create } = createSdk(response());
+		const inputSchema = {
+			type: 'object' as const,
+			properties: { city: { type: 'string' } },
+			required: ['city'],
+			additionalProperties: false,
+		};
+
+		await createClient().send(
+			{
+				context: [userMessage('prompt')],
+				tools: [{ name: 'weather', description: 'Weather in a city', inputSchema }],
+			},
+			signal,
+		);
+
+		expect(create.mock.calls[0]?.[0]).toMatchObject({
+			tools: [
+				{
+					type: 'function',
+					name: 'weather',
+					description: 'Weather in a city',
+					parameters: inputSchema,
+					strict: true,
+				},
+			],
+		});
+	});
+
+	it('maps reasoning summaries and text into parts, in order, keeping the encrypted item for replay', async () => {
 		createSdk(
 			response({ output: [reasoning('step one', 'step two'), message({ text: 'answer' })] }),
 		);
 
-		const result = await createClient().send([userMessage('prompt')], signal);
+		const result = await createClient().send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
 
 		expect(result.message).toEqual({
 			role: 'assistant',
 			content: [
 				{ type: 'reasoning', text: 'step one\nstep two' },
+				{
+					type: 'providerData',
+					source: 'openai',
+					data: {
+						type: 'reasoning',
+						id: 'rs-1',
+						summary: [
+							{ type: 'summary_text', text: 'step one' },
+							{ type: 'summary_text', text: 'step two' },
+						],
+						encrypted_content: 'opaque',
+					},
+				},
 				{ type: 'text', text: 'answer' },
 			],
 		});
 		expect(result.stopReason).toBe('completed');
 	});
 
-	it('leaves out an empty reasoning summary', async () => {
+	it('keeps a reasoning item with an empty summary only for replay', async () => {
 		createSdk(response({ output: [reasoning(), message({ text: 'answer' })] }));
 
-		const result = await createClient().send([userMessage('prompt')], signal);
+		const result = await createClient().send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
 
-		expect(result.message.content).toEqual(textResponse('answer').message.content);
+		expect(result.message.content).toEqual([
+			{
+				type: 'providerData',
+				source: 'openai',
+				data: { type: 'reasoning', id: 'rs-1', summary: [], encrypted_content: 'opaque' },
+			},
+			{ type: 'text', text: 'answer' },
+		]);
+	});
+
+	// OpenAI stores nothing, so an item without its encrypted content has nothing to send back.
+	it('keeps no replay for a reasoning item without encrypted content', async () => {
+		createSdk(
+			response({
+				output: [
+					{ ...reasoning('step one'), encrypted_content: null } as ResponseOutputItem,
+					message({ text: 'answer' }),
+				],
+			}),
+		);
+
+		const result = await createClient().send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
+
+		expect(result.message.content).toEqual([
+			{ type: 'reasoning', text: 'step one' },
+			{ type: 'text', text: 'answer' },
+		]);
+	});
+
+	it('maps a function call into a tool call with parsed arguments', async () => {
+		createSdk(
+			response({
+				output: [
+					functionCall('call_1', 'weather', '{"city":"Madrid"}'),
+					functionCall('call_2', 'weather', '{"city":"Paris"}'),
+				],
+			}),
+		);
+
+		const result = await createClient().send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
+
+		// The pairing ID is `call_id`; the item's own `id` means nothing outside OpenAI.
+		expect(result.message.content).toEqual([
+			toolCall('call_1', 'weather', { city: 'Madrid' }),
+			toolCall('call_2', 'weather', { city: 'Paris' }),
+		]);
+		expect(result.stopReason).toBe('completed');
+	});
+
+	// Failing the mapping would end the run; the tool's rejection lets the model try again.
+	it('hands arguments that do not parse to the tool as the raw string', async () => {
+		createSdk(response({ output: [functionCall('call_1', 'weather', '{"city":')] }));
+
+		const result = await createClient().send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
+
+		expect(result.message.content).toEqual([toolCall('call_1', 'weather', '{"city":')]);
+	});
+
+	// OpenAI requires each reasoning item beside the calls that followed it.
+	it('sends a tool round trip back as items, in order, with the reasoning before its calls', async () => {
+		const { create } = createSdk(response());
+		const encrypted = { type: 'reasoning', id: 'rs-1', summary: [], encrypted_content: 'opaque' };
+
+		await createClient().send(
+			{
+				context: [
+					userMessage('Weather in Madrid?'),
+					{
+						role: 'assistant',
+						content: [
+							{ type: 'providerData', source: 'openai', data: encrypted },
+							{ type: 'text', text: 'Checking.' },
+							toolCall('call_1', 'weather', { city: 'Madrid' }),
+							toolCall('call_2', 'weather', '{"city":'),
+						],
+					},
+					toolMessage(
+						toolResult('call_1', 'weather', 'Sunny'),
+						toolResult('call_2', 'weather', 'Invalid input', true),
+					),
+				],
+				tools: [],
+			},
+			signal,
+		);
+
+		expect(create).toHaveBeenCalledWith(
+			expect.objectContaining({
+				input: [
+					{ role: 'user', content: 'Weather in Madrid?' },
+					encrypted,
+					{ role: 'assistant', content: 'Checking.' },
+					{
+						type: 'function_call',
+						call_id: 'call_1',
+						name: 'weather',
+						arguments: '{"city":"Madrid"}',
+					},
+					// Sent back exactly as the model wrote it, not serialized again.
+					{ type: 'function_call', call_id: 'call_2', name: 'weather', arguments: '{"city":' },
+					// OpenAI has no error flag; the output text carries the failure.
+					{ type: 'function_call_output', call_id: 'call_1', output: 'Sunny' },
+					{
+						type: 'function_call_output',
+						call_id: 'call_2',
+						output: 'The tool call failed: Invalid input',
+					},
+				],
+			}),
+			{ signal },
+		);
+	});
+
+	// Without a marker a failure and a success with the same output would read the same.
+	it('marks a failed result in the text it sends, and leaves the conversation as it was', async () => {
+		const { create } = createSdk(response());
+		const context = [
+			userMessage('prompt'),
+			{
+				role: 'assistant' as const,
+				content: [toolCall('call_1', 'answer'), toolCall('call_2', 'answer')],
+			},
+			toolMessage(toolResult('call_1', 'answer', '42'), toolResult('call_2', 'answer', '42', true)),
+		];
+		const before = structuredClone(context);
+
+		await createClient().send({ context, tools: [] }, signal);
+
+		expect(create).toHaveBeenCalledWith(
+			expect.objectContaining({
+				input: [
+					{ role: 'user', content: 'prompt' },
+					{ type: 'function_call', call_id: 'call_1', name: 'answer', arguments: '{}' },
+					{ type: 'function_call', call_id: 'call_2', name: 'answer', arguments: '{}' },
+					{ type: 'function_call_output', call_id: 'call_1', output: '42' },
+					{ type: 'function_call_output', call_id: 'call_2', output: 'The tool call failed: 42' },
+				],
+			}),
+			{ signal },
+		);
+		expect(context).toEqual(before);
+	});
+
+	it("leaves out another provider's data, which OpenAI could not read", async () => {
+		const { create } = createSdk(response());
+
+		await createClient().send(
+			{
+				context: [
+					userMessage('prompt'),
+					{
+						role: 'assistant',
+						content: [
+							{ type: 'providerData', source: 'claude', data: { type: 'thinking' } },
+							{ type: 'text', text: 'answer' },
+						],
+					},
+				],
+				tools: [],
+			},
+			signal,
+		);
+
+		expect(create).toHaveBeenCalledWith(
+			expect.objectContaining({
+				input: [
+					{ role: 'user', content: 'prompt' },
+					{ role: 'assistant', content: 'answer' },
+				],
+			}),
+			{ signal },
+		);
 	});
 
 	it('warns about an output item it does not map and leaves it out', async () => {
 		const logger = { warn: vi.fn() };
-		const call = { type: 'function_call', call_id: 'c1', name: 'ls', arguments: '{}' };
-		createSdk(response({ output: [call as ResponseOutputItem, message({ text: 'answer' })] }));
+		const search = { type: 'web_search_call', id: 'ws-1', status: 'completed' };
+		createSdk(response({ output: [search as ResponseOutputItem, message({ text: 'answer' })] }));
 
-		const result = await createClient(logger).send([userMessage('prompt')], signal);
+		const result = await createClient(logger).send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
 
 		expect(result.message.content).toEqual([{ type: 'text', text: 'answer' }]);
-		expect(logger.warn).toHaveBeenCalledWith(call, expect.any(String));
+		expect(logger.warn).toHaveBeenCalledWith(search, expect.any(String));
 	});
 
 	it('makes a throwing logger unrecoverable', async () => {
@@ -208,7 +466,9 @@ describe('OpenAILLMClient', () => {
 		};
 		createSdk(response({ output: [{ type: 'web_search_call' } as ResponseOutputItem] }));
 
-		await expect(createClient(logger).send([userMessage('prompt')], signal)).rejects.toMatchObject({
+		await expect(
+			createClient(logger).send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			cause: 'log sink closed',
 			// The call was billed whatever the logger did.
@@ -219,7 +479,10 @@ describe('OpenAILLMClient', () => {
 	it('counts cache reads and writes apart from the uncached input', async () => {
 		createSdk(response());
 
-		const result = await createClient().send([userMessage('prompt')], signal);
+		const result = await createClient().send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
 
 		expect(result.usage).toEqual({
 			inputTokens: 10,
@@ -233,7 +496,10 @@ describe('OpenAILLMClient', () => {
 		const logger = { warn: vi.fn() };
 		createSdk(response({ usage: undefined }));
 
-		const result = await createClient(logger).send([userMessage('prompt')], signal);
+		const result = await createClient(logger).send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
 
 		expect(result.usage).toBeUndefined();
 		expect(logger.warn).toHaveBeenCalledOnce();
@@ -254,7 +520,10 @@ describe('OpenAILLMClient', () => {
 	] as const)('stops on %s as %s', async (_, sdkResponse, stopReason) => {
 		createSdk(sdkResponse);
 
-		const result = await createClient().send([userMessage('prompt')], signal);
+		const result = await createClient().send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
 
 		expect(result.stopReason).toBe(stopReason);
 	});
@@ -269,7 +538,9 @@ describe('OpenAILLMClient', () => {
 			}),
 		);
 
-		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			tokens: undefined,
 			usageUnreported: true,
@@ -284,7 +555,9 @@ describe('OpenAILLMClient', () => {
 		};
 		createSdk(response({ usage: undefined }));
 
-		await expect(createClient(logger).send([userMessage('prompt')], signal)).rejects.toMatchObject({
+		await expect(
+			createClient(logger).send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			cause: 'log sink closed',
 			usageUnreported: true,
@@ -295,7 +568,9 @@ describe('OpenAILLMClient', () => {
 	it('does not mark a connection failure as unreported', async () => {
 		createSdk(new Error('socket hang up'));
 
-		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toMatchObject({
 			constructor: RecoverableError,
 			usageUnreported: false,
 		});
@@ -309,7 +584,9 @@ describe('OpenAILLMClient', () => {
 			}),
 		);
 
-		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			cause: 'The prompt was rejected',
 			// A failed response may still have been billed.
@@ -323,7 +600,9 @@ describe('OpenAILLMClient', () => {
 		async code => {
 			createSdk(response({ status: 'failed', error: { code, message: 'Try again later' } }));
 
-			await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+			await expect(
+				createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+			).rejects.toMatchObject({
 				constructor: RecoverableError,
 				cause: 'Try again later',
 			});
@@ -333,9 +612,9 @@ describe('OpenAILLMClient', () => {
 	it('turns a context that no longer fits into a MaxContextError', async () => {
 		createSdk(apiError(400, 'context_length_exceeded'));
 
-		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toBeInstanceOf(
-			MaxContextError,
-		);
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toBeInstanceOf(MaxContextError);
 	});
 
 	it.each([
@@ -347,7 +626,9 @@ describe('OpenAILLMClient', () => {
 	])('makes a %i %s unrecoverable', async (status, code) => {
 		createSdk(apiError(status, code));
 
-		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toMatchObject({
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			message: 'OpenAI rejected the request',
 		});
@@ -360,9 +641,9 @@ describe('OpenAILLMClient', () => {
 	])('makes %s recoverable', async (_, error) => {
 		createSdk(error);
 
-		await expect(createClient().send([userMessage('prompt')], signal)).rejects.toBeInstanceOf(
-			RecoverableError,
-		);
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toBeInstanceOf(RecoverableError);
 	});
 
 	// The SDK's abort error is named 'Error', so it must not reach the caller as a failure.
@@ -375,7 +656,7 @@ describe('OpenAILLMClient', () => {
 		});
 
 		await expect(
-			createClient().send([userMessage('prompt')], controller.signal),
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, controller.signal),
 		).rejects.toMatchObject({ name: 'AbortError' });
 	});
 });
