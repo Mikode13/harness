@@ -278,6 +278,20 @@ describe('LLMAgent with tools', () => {
 		]);
 	});
 
+	// A consumer can cancel synchronously from the callback, on the announcement itself.
+	it('does not run a tool whose announcement made the consumer cancel', async () => {
+		const controller = new AbortController();
+		const weather = fakeTool('weather');
+		const llmClient = new FakeLLMClient(assistantResponse([madridCall]), textResponse('never'));
+
+		await expect(
+			new LLMAgent({ llmClient, tools: [weather] }).run('prompt', controller.signal, event => {
+				if (event.type === 'tool' && event.status === 'in_progress') controller.abort();
+			}),
+		).rejects.toMatchObject({ name: 'AbortError' });
+		expect(weather.execute).not.toHaveBeenCalled();
+	});
+
 	// `maxSteps` counts calls to the model. The last step's calls are not run: no call is left
 	// to send their results to.
 	it('fails with the spent tokens when the model is still calling tools after maxSteps', async () => {

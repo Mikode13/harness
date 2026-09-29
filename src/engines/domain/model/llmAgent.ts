@@ -136,6 +136,8 @@ export class LLMAgent implements Agent {
 			};
 		}
 
+		// Checked again at the last moment: the consumer may cancel on the announcement itself.
+		signal.throwIfAborted();
 		try {
 			return { ...result, output: await tool.execute(call.input, signal), isError: false };
 		} catch (error) {
