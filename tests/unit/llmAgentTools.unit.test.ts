@@ -6,7 +6,7 @@ import {
 	UnrecoverableError,
 } from '../../src/agent/domain/errors.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
-import type { Tool } from '../../src/llm/domain/tool.ts';
+import type { Tool } from '../../src/tools/domain/tool.ts';
 import {
 	assistantResponse,
 	FakeLLMClient,

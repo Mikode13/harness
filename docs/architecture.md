@@ -24,7 +24,8 @@ same repository is a development-only consumer and is not part of the published 
 src/agent/          the seam: Agent, ProgressEvent, errors, provider-failure classification
 src/engines/*/      one provider adapter each, infrastructure only
 src/engines/domain/ LLMAgent, the agent that owns its conversation and calls an LLMClient
-src/llm/            the stateless model boundary: LLMClient, Message, Conversation, Tool
+src/llm/            the stateless model boundary: LLMClient, Message, Conversation, ToolDefinition
+src/tools/          what an agent can run: Tool, and the Workspace port its repository tools read through
 src/factory/        createAgent and createOrchestrator, the only public way to build agents
 src/orchestration/  planner -> executor -> reviewer, with a validated reviewer decision
 src/retry/          the retry decorator
@@ -40,15 +41,16 @@ provider: it drives whatever `LLMClient` it is given.
 
 ## Responsibilities and boundaries
 
-| Module               | Owns                                                                                                                                                                                                                        |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/agent/`         | `Agent`, `AgentResponse`, `ProgressEvent`, the error types, and the functions that classify a failure                                                                                                                       |
-| `src/engines/`       | One adapter per provider: SDK calls, session or thread continuity, and SDK events mapped to `ProgressEvent`; `LLMAgent`, which drives an `LLMClient` and runs the tools it is given                                         |
-| `src/llm/`           | `LLMClient`, the stateless model port; `Message` and its parts, including opaque `providerData`; `Conversation`; `Tool` and the `ToolDefinition` a client receives; `MaxContextError`; `OpenAILLMClient`; `ClaudeLLMClient` |
-| `src/factory/`       | Provider selection, default model and reasoning effort per role, and composition with the retry decorator                                                                                                                   |
-| `src/orchestration/` | The three role prompts, the attempt loop, per-run usage totals, and the validated reviewer decision                                                                                                                         |
-| `src/retry/`         | The decision to call an inner agent again, and the prompt that carries the previous failure into the next call                                                                                                              |
-| `src/shared/`        | `ILogger` and its stderr implementation, `isAbortError`, `isOneOf`, `Tokens`                                                                                                                                                |
+| Module               | Owns                                                                                                                                                                                                                           |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/agent/`         | `Agent`, `AgentResponse`, `ProgressEvent`, the error types, and the functions that classify a failure                                                                                                                          |
+| `src/engines/`       | One adapter per provider: SDK calls, session or thread continuity, and SDK events mapped to `ProgressEvent`; `LLMAgent`, which drives an `LLMClient` and runs the tools it is given                                            |
+| `src/llm/`           | `LLMClient`, the stateless model port; `Message` and its parts, including opaque `providerData`; `Conversation`; the `ToolDefinition` a client describes to the model; `MaxContextError`; `OpenAILLMClient`; `ClaudeLLMClient` |
+| `src/tools/`         | `Tool`, a `ToolDefinition` plus the `execute` the agent runs; `Workspace`, the read-only port to the folder an agent works on. It depends on `src/llm/` for the definition; `src/llm/` does not know it exists                 |
+| `src/factory/`       | Provider selection, default model and reasoning effort per role, and composition with the retry decorator                                                                                                                      |
+| `src/orchestration/` | The three role prompts, the attempt loop, per-run usage totals, and the validated reviewer decision                                                                                                                            |
+| `src/retry/`         | The decision to call an inner agent again, and the prompt that carries the previous failure into the next call                                                                                                                 |
+| `src/shared/`        | `ILogger` and its stderr implementation, `isAbortError`, `isOneOf`, `Tokens`                                                                                                                                                   |
 
 Two boundaries carry most of the design:
 
