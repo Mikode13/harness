@@ -38,7 +38,7 @@
 		"format:check": "prettier . --check",
 		"lint": "eslint . --max-warnings 0",
 		"lint:fix": "eslint . --fix",
-		"dev": "pnpm --filter @mikode13/harness-cli run dev",
+		"dev": "node --conditions=mikode-harness-source cli/cli.ts",
 		"test": "vitest run --project unit --project cli",
 		"test:unit": "vitest run --project unit --project cli",
 		"test:unit:watch": "vitest --project unit --project cli",

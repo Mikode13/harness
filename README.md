@@ -222,6 +222,7 @@ exists solely to exercise the library manually while working in this repository:
 pnpm run dev
 ```
 
+The agents work on the repository root, which is the directory the script runs in.
 `pnpm run dev --llm` plans and reviews on the model APIs instead, through
 `createLLMOrchestrator`, and needs the API keys in the environment (see
 [Authentication](#authentication)).
