@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
-import { createOrchestrator, type ProgressEvent } from '../src/index.ts';
+import { createLLMOrchestrator, createOrchestrator, type ProgressEvent } from '../src/index.ts';
 import { ConversationLoop } from './conversationLoop.ts';
 import { formatProgressEvent } from './progressEventFormatter.ts';
 import { clearLine, cursorTo } from 'node:readline';
+import { parseArgs } from 'node:util';
 import { Output } from './adapters/output.ts';
 import { PromptEmitter } from './adapters/promptEmitter.ts';
 
@@ -30,7 +31,12 @@ const autoApprove = true;
 const output = new Output();
 const promptEmitter = new PromptEmitter();
 
-const orchestratorAgent = createOrchestrator({ autoApprove });
+// `--llm` plans and reviews on the model APIs, which need ANTHROPIC_API_KEY and OPENAI_API_KEY.
+const { values: flags } = parseArgs({ options: { llm: { type: 'boolean', default: false } } });
+
+const orchestratorAgent = flags.llm
+	? await createLLMOrchestrator({ autoApprove })
+	: createOrchestrator({ autoApprove });
 
 let turnActive = false;
 

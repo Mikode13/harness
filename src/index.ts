@@ -6,6 +6,11 @@ export {
 	type CreateAgentOptions,
 } from './factory/infrastructure/agentFactory.ts';
 export {
+	createLLMAgent,
+	createLLMOrchestrator,
+	type CreateLLMAgentOptions,
+} from './factory/infrastructure/agentLLMFactory.ts';
+export {
 	agentProviders,
 	type AgentModel,
 	type AgentProvider,
@@ -25,3 +30,9 @@ export {
 } from './agent/domain/errors.ts';
 export { isAbortError } from './shared/domain/isAbortError.ts';
 export type { Tokens } from './shared/domain/tokens.ts';
+export type { JSONSchema, ToolDefinition } from './llm/domain/tool.ts';
+export type { Tool } from './tools/domain/tool.ts';
+export type { TextMatch, Workspace } from './tools/domain/workspace.ts';
+export { defineTool } from './tools/infrastructure/defineTool.ts';
+export { createWorkspace } from './tools/infrastructure/createWorkspace.ts';
+export { createWorkspaceTools } from './tools/infrastructure/workspaceTools.ts';

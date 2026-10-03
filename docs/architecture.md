@@ -26,7 +26,7 @@ src/engines/*/      one provider adapter each, infrastructure only
 src/engines/domain/ LLMAgent, the agent that owns its conversation and calls an LLMClient
 src/llm/            the stateless model boundary: LLMClient, Message, Conversation, ToolDefinition
 src/tools/          what an agent can run: Tool, defineTool, and the read-only repository tools over Workspace
-src/factory/        createAgent and createOrchestrator, the only public way to build agents
+src/factory/        createAgent, createOrchestrator and their model-API pair, the only public way to build agents
 src/orchestration/  planner -> executor -> reviewer, with a validated reviewer decision
 src/retry/          the retry decorator
 src/shared/         ports and helpers used across modules
@@ -95,9 +95,14 @@ the error types and on `src/shared/` for `Tokens`; only its `infrastructure` imp
 `src/llm/`, and `src/llm/` knows nothing about agents. No module imports `src/factory/`, which is
 why it is the only place that knows every provider.
 
-`src/index.ts` is the public API: `createAgent`, `createOrchestrator`, the `Agent`,
-`AgentResponse`, `Callback`, `ProgressEvent` and `Tokens` types, the three error types, `isAbortError`,
-`isAgentProvider`, `agentProviders`, and the option and model types. `RetryingAgent`,
+`src/index.ts` is the public API: `createAgent`, `createOrchestrator`, `createLLMAgent`,
+`createLLMOrchestrator`, the `Agent`, `AgentResponse`, `Callback`, `ProgressEvent` and `Tokens`
+types, the three error types, `isAbortError`, `isAgentProvider`, `agentProviders`, and the
+option and model types. For the model-backed agent's tools it also exports the `Tool`,
+`ToolDefinition`, `JSONSchema`, `Workspace` and `TextMatch` types, `defineTool`,
+`createWorkspace` and `createWorkspaceTools`. `defineTool` takes a Zod 4 schema, so Zod's major
+version is part of the contract, and `zod` is a peer dependency, so the consumer's schemas and
+the harness share one copy. `RetryingAgent`,
 `OrchestratorAgent`, `LLMAgent` and both engines are internal — the factories apply retry and the role
 defaults so a consumer never composes them, and a class that is not exported can change shape
 without a major release.
@@ -130,25 +135,25 @@ Four contracts have rules of their own:
   built. The factory does not validate them, so adding a model is a change in one file.
 
 External integrations are `@anthropic-ai/claude-agent-sdk` and `@openai/codex-sdk`, each
-reached only from its own engine, `openai` and `@anthropic-ai/sdk`, each reached only from its own `LLMClient`, and `zod`, used only by
-`ReviewerDecisionValidator` behind the `Validator<T>` interface. `ILogger` is the one outbound
+reached only from its own engine, `openai` and `@anthropic-ai/sdk`, each reached only from its own `LLMClient`, and `zod`, used by
+`ReviewerDecisionValidator` behind the `Validator<T>` interface and by `defineTool`. `ILogger` is the one outbound
 port: the factories default it to a stderr logger, and nothing in `src/` writes to stdout,
 which belongs to the consumer.
 
 Conversation continuity is each agent's own responsibility and is not modelled at the
 `Agent` seam. `CodexAgent` keeps one SDK `Thread` across turns; `ClaudeAgent` captures a
 `session_id` from the first turn and resumes with it. Either way the provider keeps the
-context server-side. `LLMAgent` is the exception being built for #23: it keeps its own
+context server-side. `LLMAgent` is the exception: it keeps its own
 `Conversation` in process and sends the whole context on every call, so the model behind it
 holds no state. Its adapters are `OpenAILLMClient`, on the OpenAI Responses API with
-`store: false`, and `ClaudeLLMClient`, on the Anthropic Messages API. The internal
-`createLLMAgent` builds one of them and the agent together for a provider, wrapped in retry
-like every other agent, with the tools it is given. The internal `createLLMOrchestrator` runs
+`store: false`, and `ClaudeLLMClient`, on the Anthropic Messages API. `createLLMAgent` builds one of them and the agent together for a provider, wrapped in retry
+like every other agent, with the tools it is given. `createLLMOrchestrator` runs
 the planner and reviewer on it, each with its role's instructions, or the caller's, as the system prompt and the
 read-only repository tools, and keeps the executor on its Agent SDK, because an agent of ours
 cannot change files yet. `OrchestratorAgent` sends each role only the round's data; an agent
-without a system prompt gets its instructions at the head of every prompt from `InstructedAgent`. Neither is exported from `src/index.ts` until parity with the Agent
-SDK engines (#23). Both paths name a provider by its company, `'anthropic'` or `'openai'`, and
+without a system prompt gets its instructions at the head of every prompt from `InstructedAgent`. The Agent SDK path stays the default: `createAgent`
+and `createOrchestrator` use the provider's own login, while the model API path needs
+`ANTHROPIC_API_KEY` or `OPENAI_API_KEY` and bills per token. Both paths name a provider by its company, `'anthropic'` or `'openai'`, and
 take the same model and effort names, so one role table serves both.
 
 ## Important flows
@@ -223,9 +228,16 @@ each other's.
   WebSocket consumer would call `Agent.run()` per request and want none of it. It stays out of
   the tarball too — `files` lists `dist` only, and `scripts/pack-check.mjs` fails on anything
   else reaching it.
-- **Only the model-backed planner and reviewer have tools, and they only read.**
-  `createLLMOrchestrator` gives them the repository tools of #25; nothing a model runs can change
-  a file until permissions exist (#43).
+- **The harness's own tools only read, and it runs whatever tools it is given.**
+  `createLLMOrchestrator` gives its planner and reviewer the repository tools of #25, so nothing
+  a model runs there can change a file. `createLLMAgent` runs any `Tool` a caller passes with no
+  approval step, because permissions do not exist yet (#43): a caller who passes a tool that
+  writes owns that decision.
+- **An API key in the environment can move the Claude executor off the subscription.** The
+  Claude Agent SDK authenticates with `ANTHROPIC_API_KEY` when it is set, and the harness does
+  not remove it from the environment it inherits. With `provider: 'anthropic'`,
+  `createLLMOrchestrator` needs that key for its planner and reviewer, and it also bills
+  the executor.
 - **An agent reads only what `.gitignore` does not ignore, inside one root.** Ignored files,
   tracked files `.gitignore` names, `.git`, files ripgrep's own `.ignore` would un-ignore, symlinks and paths outside the root do not exist
   for the repository tools, so a secret that is not ignored is visible. A line longer than 300

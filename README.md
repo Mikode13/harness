@@ -32,11 +32,16 @@ multi-agent workflow, chosen entirely by what gets wired up in `cli/cli.ts`; the
 chat loop itself never knows the difference.
 
 - **A provider-agnostic `Agent` contract** (`run(prompt, signal, callback)`) with
-  two real implementations, `CodexAgent` and `ClaudeAgent` — swapping one for the
-  other, anywhere in the composition, changes nothing else.
-- **Conversation continuity for free** in both engines: Codex reuses one `Thread`
-  across turns; Claude resumes via a captured `session_id` — the engine keeps
-  context server-side either way.
+  two paths to each provider — swapping one agent for another, anywhere in the
+  composition, changes nothing else.
+- **The Agent SDK path, the default**: `CodexAgent` and `ClaudeAgent` drive Codex
+  and Claude Code. Codex reuses one `Thread` across turns and Claude resumes via a
+  captured `session_id`, so the provider keeps the context.
+- **The model API path**: `LLMAgent` calls the OpenAI Responses API or the
+  Anthropic Messages API and keeps the conversation itself, in a form that can move
+  between providers. It runs its own tool loop over the tools it is given; the
+  harness ships three that only read the repository (list, search, read), bounded
+  by `.gitignore`.
 - **`OrchestratorAgent`**: coordinates a planner, an executor, and a reviewer
   (each an injected `Agent`) in a plan → execute → review loop. The reviewer's
   decision is a Zod-validated structured `{decision, feedback}`, not free text —
@@ -96,8 +101,11 @@ comment on `Agent` in `src/agent/domain/agent.ts`.
 ## Install
 
 ```sh
-pnpm add @mikode13/harness
+pnpm add @mikode13/harness zod
 ```
+
+`zod` 4 is a peer dependency: `defineTool` takes your Zod schemas, so the harness uses
+your copy rather than bundling its own.
 
 The package is ESM only and runs on Node.js 22 (22.13 or later) or 24. Its type declarations resolve
 internal modules through the `imports` field of its `package.json`, so a TypeScript consumer
@@ -147,6 +155,59 @@ reasoning effort the chosen provider does not support throws
 `UnrecoverableError` if the Codex CLI binary cannot be found, which happens when
 optional dependencies were skipped at install time.
 
+### Authentication
+
+The two paths authenticate differently:
+
+- `createAgent` and `createOrchestrator` use the Agent SDKs, which use the login of
+  the Codex CLI and of Claude Code, so a run counts against that subscription.
+- `createLLMAgent` and the planner and reviewer of `createLLMOrchestrator` call the
+  model APIs, which bill per token and need the key of each provider they use in
+  the environment: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or both for the
+  orchestrator's default roles. A missing OpenAI key fails when the agent is built; a missing
+  Anthropic key fails its first run.
+
+The Claude Agent SDK
+[authenticates with `ANTHROPIC_API_KEY`](https://code.claude.com/docs/en/agent-sdk) whenever
+it is set, so with that key in the environment a Claude agent from `createAgent`, or the executor of
+`createLLMOrchestrator({ provider: 'anthropic' })`, bills the key instead of the
+subscription.
+
+### Agents that own their conversation
+
+`createLLMAgent` takes a system prompt and the tools the model may call, and
+returns the same `Agent`. `defineTool` builds a tool from a Zod 4 schema; a field the
+model may leave out is `.nullable()`, not optional, because both APIs call tools in
+strict mode:
+
+```ts
+import {
+	createLLMAgent,
+	createWorkspace,
+	createWorkspaceTools,
+	defineTool,
+} from '@mikode13/harness';
+import { z } from 'zod';
+
+const now = defineTool({
+	name: 'now',
+	description: 'The current time, in ISO 8601.',
+	input: z.object({}),
+	execute: async () => new Date().toISOString(),
+});
+
+const workspace = await createWorkspace({ root: process.cwd() });
+const agent = createLLMAgent('openai', {
+	systemPrompt: 'You answer questions about this repository.',
+	tools: [...createWorkspaceTools(workspace), now],
+});
+```
+
+The agent runs every tool it is given, without asking: there is no approval step
+yet, so only give it tools you would let run unattended. `createLLMOrchestrator()`
+takes the same options as `createOrchestrator()` and returns a promise; its executor
+still runs on an Agent SDK, because the harness's own tools cannot change files.
+
 ## Tests
 
 `pnpm test` runs the unit suite against deterministic fakes; it never contacts a
@@ -163,6 +224,11 @@ exists solely to exercise the library manually while working in this repository:
 ```sh
 pnpm run dev
 ```
+
+The agents work on the repository root, which is the directory the script runs in.
+`pnpm run dev --llm` plans and reviews on the model APIs instead, through
+`createLLMOrchestrator`, and needs the API keys in the environment (see
+[Authentication](#authentication)).
 
 Type your prompt at `>`. Press Ctrl+C while idle at the prompt to exit; pressing
 it while an agent is running cancels only that turn and returns to the prompt.

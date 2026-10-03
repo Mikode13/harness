@@ -23,9 +23,6 @@ importers:
       openai:
         specifier: ^7.23.0
         version: 7.23.0(zod@4.4.3)
-      zod:
-        specifier: ^4.4.3
-        version: 4.4.3
     devDependencies:
       '@mikode13/code-quality':
         specifier: 1.0.0
@@ -60,6 +57,9 @@ importers:
       vitest:
         specifier: ^4.1.11
         version: 4.1.11(@types/node@26.1.2)(@vitest/coverage-v8@4.1.11)(vite@8.2.2(@types/node@26.1.2)(jiti@2.6.1))
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
 
   cli: {}
 

@@ -1,6 +1,7 @@
 import { UnrecoverableError } from '#src/agent/domain/errors';
 import { classifyHostFailure, treatErrors } from '#src/agent/domain/providerFailure';
 import type { ILogger } from '#src/shared/domain/logger';
+import { Logger } from '#src/shared/infrastructure/logger';
 import type { Workspace } from '../domain/workspace.ts';
 import { GitWorkspace } from './gitWorkspace.ts';
 import { RipgrepWorkspace } from './ripgrepWorkspace.ts';
@@ -42,10 +43,11 @@ async function isGitWorkTree(root: string): Promise<boolean> {
  */
 export async function createWorkspace({
 	root,
-	logger,
+	logger = new Logger(),
 }: {
 	root: string;
-	logger: ILogger;
+	/** Defaults to warnings on stderr. */
+	logger?: ILogger;
 }): Promise<Workspace> {
 	const ripgrepPath = await loadRipgrep();
 	if (ripgrepPath !== undefined) {
