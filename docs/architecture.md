@@ -55,9 +55,11 @@ provider: it drives whatever `LLMClient` it is given.
 Two boundaries carry most of the design:
 
 **Everything is an `Agent`.** `ClaudeAgent`, `CodexAgent`, `LLMAgent`, `RetryingAgent` and
-`OrchestratorAgent` all implement `run(prompt, signal, callback)`. A decorator and a whole
-multi-agent workflow are therefore substitutable for a bare engine anywhere, and a consumer's
-loop cannot tell which it is driving.
+`OrchestratorAgent` all implement `run(prompt, options)`, where `options` holds the run's
+`signal` and its optional `onProgress`. A decorator and a whole multi-agent workflow are
+therefore substitutable for a bare engine anywhere, and a consumer's loop cannot tell which it
+is driving. A decorator passes `options` on whole, never rebuilt, so a field added to it
+reaches every agent without each decorator learning about it.
 
 **Nothing escapes an `Agent` unclassified.** Every consumer branches on `RecoverableError`
 versus `UnrecoverableError`, so an unclassified error bypasses that decision entirely: it is
@@ -161,7 +163,7 @@ take the same model and effort names, so one role table serves both.
 **A single turn.** `createAgent` returns a `RetryingAgent` wrapping the engine. The engine
 calls its SDK inside `classifyProviderFailure`, then iterates the response stream through
 `classifiedProviderStream`, mapping each SDK event to a `ProgressEvent` and handing it to the
-consumer's callback. On a `RecoverableError` the decorator calls the engine again, with the
+consumer's `onProgress`. On a `RecoverableError` the decorator calls the engine again, with the
 previous failure appended to the original prompt — an attempt that failed before the provider
 registered the turn left no session that remembers it. On exhaustion it throws
 `UnrecoverableError`.
@@ -172,9 +174,9 @@ executor → reviewer. The reviewer is asked for JSON and its answer goes throug
 `{ decision: 'rejected', feedback }` and never free text. An unusable reviewer answer retries
 only the reviewer call, with the parse failure fed back — a malformed decision is not evidence
 that the plan or the implementation were wrong. A rejection starts another round with the
-feedback carried into the planner prompt. All three roles receive the same `AbortSignal` and
-the same callback, so one cancellation stops the whole workflow and progress from every role
-reaches the consumer through one stream.
+feedback carried into the planner prompt. All three roles receive the same run options, so one
+cancellation stops the whole workflow and progress from every role reaches the consumer
+through one stream.
 
 **A model-backed turn.** `LLMAgent.run` sends the stored context, the new prompt and the
 definitions of its tools to its `LLMClient`, inside `classifyProviderFailure`; the client

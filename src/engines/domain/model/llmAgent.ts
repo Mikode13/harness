@@ -1,4 +1,11 @@
-import type { Agent, AgentResponse, Callback, ProgressEvent } from '#src/agent/domain/agent';
+import {
+	type Agent,
+	type AgentResponse,
+	type Callback,
+	type ProgressEvent,
+	type RunOptions,
+	ignoreProgress,
+} from '#src/agent/domain/agent';
 import {
 	InvalidAgentConfigError,
 	RecoverableError,
@@ -175,7 +182,10 @@ export class LLMAgent implements Agent {
 		return { role: 'tool', content: results };
 	}
 
-	async run(prompt: string, signal: AbortSignal, callback: Callback): Promise<AgentResponse> {
+	async run(
+		prompt: string,
+		{ signal, onProgress: callback = ignoreProgress }: RunOptions,
+	): Promise<AgentResponse> {
 		const start = Date.now();
 		const runMessages: Message[] = [{ role: 'user', content: [{ type: 'text', text: prompt }] }];
 		let tokens: Tokens | undefined;

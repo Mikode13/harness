@@ -18,6 +18,17 @@ export interface AgentResponse {
 
 export type Callback = (item: ProgressEvent) => void;
 
+/** What a run needs besides its prompt. Decorators pass it on whole, so a new field reaches every agent. */
+export interface RunOptions {
+	/** Cancels the run, which then rejects with the signal's `AbortError`. */
+	signal: AbortSignal;
+	/** Receives the run's live activity. Without it, the run is silent. */
+	onProgress?: Callback | undefined;
+}
+
+/** The `onProgress` of a run that gave none. */
+export const ignoreProgress: Callback = () => undefined;
+
 /**
  * Live activity during a run, for narration only: the result travels in `AgentResponse`.
  * New event types can arrive in a minor release, so render the types you know and ignore
@@ -54,5 +65,5 @@ export type ProgressEvent =
  * consumers check for it before either error type.
  */
 export interface Agent {
-	run(prompt: string, signal: AbortSignal, callback: Callback): Promise<AgentResponse>;
+	run(prompt: string, options: RunOptions): Promise<AgentResponse>;
 }

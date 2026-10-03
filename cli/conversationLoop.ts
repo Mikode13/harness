@@ -33,11 +33,10 @@ export class ConversationLoop {
 			this.callback({ type: 'turnStarted' });
 			try {
 				this.abortController = new AbortController();
-				const agentResponse = await this.agent.run(
-					prompt,
-					this.abortController.signal,
-					this.callback,
-				);
+				const agentResponse = await this.agent.run(prompt, {
+					signal: this.abortController.signal,
+					onProgress: this.callback,
+				});
 
 				this.output.print('usage:');
 				this.output.print(`duration: ${String(agentResponse.duration)}s`);

@@ -10,7 +10,9 @@ import {
 	type Agent,
 	type AgentResponse,
 	type Callback,
+	ignoreProgress,
 	type ProgressEvent,
+	type RunOptions,
 } from '#src/agent/domain/agent';
 import {
 	InvalidAgentConfigError,
@@ -163,7 +165,10 @@ export class CodexAgent implements Agent {
 		this.logger = logger;
 	}
 
-	async run(prompt: string, signal: AbortSignal, callback: Callback): Promise<AgentResponse> {
+	async run(
+		prompt: string,
+		{ signal, onProgress: callback = ignoreProgress }: RunOptions,
+	): Promise<AgentResponse> {
 		const start = Date.now();
 		let turn: StreamedTurn;
 

@@ -31,7 +31,7 @@ An interactive terminal chat, backed by one `Agent` — a single engine, or a fu
 multi-agent workflow, chosen entirely by what gets wired up in `cli/cli.ts`; the
 chat loop itself never knows the difference.
 
-- **A provider-agnostic `Agent` contract** (`run(prompt, signal, callback)`) with
+- **A provider-agnostic `Agent` contract** (`run(prompt, { signal, onProgress })`) with
   two paths to each provider — swapping one agent for another, anywhere in the
   composition, changes nothing else.
 - **The Agent SDK path, the default**: `CodexAgent` and `ClaudeAgent` drive Codex
@@ -127,7 +127,10 @@ const render = (event: ProgressEvent) => {
 };
 
 try {
-	const result = await agent.run('Summarize this repository.', controller.signal, render);
+	const result = await agent.run('Summarize this repository.', {
+		signal: controller.signal,
+		onProgress: render,
+	});
 	// `response` is empty when the run produced no text; `tokens` is missing when the provider
 	// reported no usage.
 	console.log(result.duration, result.tokens);

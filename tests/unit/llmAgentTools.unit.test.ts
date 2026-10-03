@@ -45,7 +45,7 @@ describe('LLMAgent with tools', () => {
 	it('offers the model the definition of each tool, never its code', async () => {
 		const llmClient = new FakeLLMClient(textResponse('answer'));
 
-		await new LLMAgent({ llmClient, tools: [fakeTool('weather')] }).run('prompt', signal, vi.fn());
+		await new LLMAgent({ llmClient, tools: [fakeTool('weather')] }).run('prompt', { signal });
 
 		expect(llmClient.tools).toEqual([
 			[{ name: 'weather', description: 'The weather tool', inputSchema: citySchema }],
@@ -55,7 +55,7 @@ describe('LLMAgent with tools', () => {
 	it('offers no tools when it was given none', async () => {
 		const llmClient = new FakeLLMClient(textResponse('answer'));
 
-		await new LLMAgent({ llmClient }).run('prompt', signal, vi.fn());
+		await new LLMAgent({ llmClient }).run('prompt', { signal });
 
 		expect(llmClient.tools).toEqual([[]]);
 	});
@@ -83,11 +83,7 @@ describe('LLMAgent with tools', () => {
 			textResponse('Sunny in Madrid'),
 		);
 
-		const response = await new LLMAgent({ llmClient, tools: [weather] }).run(
-			'prompt',
-			signal,
-			vi.fn(),
-		);
+		const response = await new LLMAgent({ llmClient, tools: [weather] }).run('prompt', { signal });
 
 		expect(weather.execute).toHaveBeenCalledExactlyOnceWith({ city: 'Madrid' }, signal);
 		expect(llmClient.contexts[1]).toEqual([
@@ -114,7 +110,7 @@ describe('LLMAgent with tools', () => {
 			textResponse('answer'),
 		);
 
-		await new LLMAgent({ llmClient, tools: [weather] }).run('prompt', signal, vi.fn());
+		await new LLMAgent({ llmClient, tools: [weather] }).run('prompt', { signal });
 
 		expect(log).toEqual(['start Madrid', 'end Madrid', 'start Oslo', 'end Oslo']);
 		expect(llmClient.contexts[1]?.[2]).toEqual(
@@ -131,11 +127,9 @@ describe('LLMAgent with tools', () => {
 			textResponse('Sunny in Madrid'),
 		);
 
-		const response = await new LLMAgent({ llmClient, tools: [fakeTool('weather')] }).run(
-			'prompt',
+		const response = await new LLMAgent({ llmClient, tools: [fakeTool('weather')] }).run('prompt', {
 			signal,
-			vi.fn(),
-		);
+		});
 
 		expect(response.response).toBe('Sunny in Madrid');
 	});
@@ -147,9 +141,10 @@ describe('LLMAgent with tools', () => {
 		);
 		const events: ProgressEvent[] = [];
 
-		await new LLMAgent({ llmClient, tools: [fakeTool('weather')] }).run('prompt', signal, event =>
-			events.push(event),
-		);
+		await new LLMAgent({ llmClient, tools: [fakeTool('weather')] }).run('prompt', {
+			signal,
+			onProgress: event => events.push(event),
+		});
 
 		expect(events).toEqual([
 			{ type: 'agentMessage', message: 'Let me check.' },
@@ -166,9 +161,10 @@ describe('LLMAgent with tools', () => {
 		);
 		const events: ProgressEvent[] = [];
 
-		await new LLMAgent({ llmClient, tools: [fakeTool('weather')] }).run('prompt', signal, event =>
-			events.push(event),
-		);
+		await new LLMAgent({ llmClient, tools: [fakeTool('weather')] }).run('prompt', {
+			signal,
+			onProgress: event => events.push(event),
+		});
 
 		// Each call is announced only when its turn comes, never while another is running.
 		expect(events.filter(event => event.type === 'tool')).toEqual([
@@ -186,11 +182,9 @@ describe('LLMAgent with tools', () => {
 			textResponse('answer'),
 		);
 
-		const response = await new LLMAgent({ llmClient, tools: [fakeTool('weather')] }).run(
-			'prompt',
+		const response = await new LLMAgent({ llmClient, tools: [fakeTool('weather')] }).run('prompt', {
 			signal,
-			vi.fn(),
-		);
+		});
 
 		expect(llmClient.contexts[1]?.[2]).toEqual(
 			toolMessage({
@@ -210,11 +204,10 @@ describe('LLMAgent with tools', () => {
 		const llmClient = new FakeLLMClient(assistantResponse([madridCall]), textResponse('answer'));
 		const events: ProgressEvent[] = [];
 
-		const response = await new LLMAgent({ llmClient, tools: [weather] }).run(
-			'prompt',
+		const response = await new LLMAgent({ llmClient, tools: [weather] }).run('prompt', {
 			signal,
-			event => events.push(event),
-		);
+			onProgress: event => events.push(event),
+		});
 
 		expect(llmClient.contexts[1]?.[2]).toEqual(
 			toolMessage({
@@ -246,7 +239,7 @@ describe('LLMAgent with tools', () => {
 		const send = vi.spyOn(llmClient, 'send');
 
 		await expect(
-			new LLMAgent({ llmClient, tools: [weather] }).run('prompt', controller.signal, vi.fn()),
+			new LLMAgent({ llmClient, tools: [weather] }).run('prompt', { signal: controller.signal }),
 		).rejects.toMatchObject({ name: 'AbortError' });
 		expect(send).toHaveBeenCalledOnce();
 	});
@@ -266,9 +259,10 @@ describe('LLMAgent with tools', () => {
 		const events: ProgressEvent[] = [];
 
 		await expect(
-			new LLMAgent({ llmClient, tools: [first, second] }).run('prompt', controller.signal, event =>
-				events.push(event),
-			),
+			new LLMAgent({ llmClient, tools: [first, second] }).run('prompt', {
+				signal: controller.signal,
+				onProgress: event => events.push(event),
+			}),
 		).rejects.toMatchObject({ name: 'AbortError' });
 		expect(second.execute).not.toHaveBeenCalled();
 		// The call that never starts is never announced as running.
@@ -285,8 +279,11 @@ describe('LLMAgent with tools', () => {
 		const llmClient = new FakeLLMClient(assistantResponse([madridCall]), textResponse('never'));
 
 		await expect(
-			new LLMAgent({ llmClient, tools: [weather] }).run('prompt', controller.signal, event => {
-				if (event.type === 'tool' && event.status === 'in_progress') controller.abort();
+			new LLMAgent({ llmClient, tools: [weather] }).run('prompt', {
+				signal: controller.signal,
+				onProgress: event => {
+					if (event.type === 'tool' && event.status === 'in_progress') controller.abort();
+				},
 			}),
 		).rejects.toMatchObject({ name: 'AbortError' });
 		expect(weather.execute).not.toHaveBeenCalled();
@@ -305,9 +302,10 @@ describe('LLMAgent with tools', () => {
 		const events: ProgressEvent[] = [];
 
 		await expect(
-			new LLMAgent({ llmClient, tools: [weather], maxSteps: 2 }).run('prompt', signal, event =>
-				events.push(event),
-			),
+			new LLMAgent({ llmClient, tools: [weather], maxSteps: 2 }).run('prompt', {
+				signal,
+				onProgress: event => events.push(event),
+			}),
 		).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			tokens: { inputTokens: 2, readCacheTokens: 0, writtenCacheTokens: 0, outputTokens: 2 },
@@ -328,11 +326,9 @@ describe('LLMAgent with tools', () => {
 			}),
 		);
 
-		const response = await new LLMAgent({ llmClient, tools: [fakeTool('weather')] }).run(
-			'prompt',
+		const response = await new LLMAgent({ llmClient, tools: [fakeTool('weather')] }).run('prompt', {
 			signal,
-			vi.fn(),
-		);
+		});
 
 		expect(response.tokens).toEqual({
 			inputTokens: 30,
@@ -349,11 +345,9 @@ describe('LLMAgent with tools', () => {
 			textResponse('answer'),
 		);
 
-		const response = await new LLMAgent({ llmClient, tools: [fakeTool('weather')] }).run(
-			'prompt',
+		const response = await new LLMAgent({ llmClient, tools: [fakeTool('weather')] }).run('prompt', {
 			signal,
-			vi.fn(),
-		);
+		});
 
 		expect(response.tokens).toBeUndefined();
 	});
@@ -366,7 +360,7 @@ describe('LLMAgent with tools', () => {
 		);
 
 		await expect(
-			new LLMAgent({ llmClient, tools: [fakeTool('weather')] }).run('prompt', signal, vi.fn()),
+			new LLMAgent({ llmClient, tools: [fakeTool('weather')] }).run('prompt', { signal }),
 		).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			tokens: textResponse('').usage,
@@ -381,7 +375,7 @@ describe('LLMAgent with tools', () => {
 		);
 
 		await expect(
-			new LLMAgent({ llmClient, tools: [fakeTool('weather')] }).run('prompt', signal, vi.fn()),
+			new LLMAgent({ llmClient, tools: [fakeTool('weather')] }).run('prompt', { signal }),
 		).rejects.toBeInstanceOf(RecoverableError);
 	});
 
@@ -394,8 +388,8 @@ describe('LLMAgent with tools', () => {
 		);
 		const agent = new LLMAgent({ llmClient, tools: [fakeTool('weather')] });
 
-		await expect(agent.run('first', signal, vi.fn())).rejects.toThrow();
-		await agent.run('second', signal, vi.fn());
+		await expect(agent.run('first', { signal })).rejects.toThrow();
+		await agent.run('second', { signal });
 
 		expect(llmClient.contexts[2]).toEqual([userMessage('second')]);
 	});
@@ -408,8 +402,8 @@ describe('LLMAgent with tools', () => {
 		);
 		const agent = new LLMAgent({ llmClient, tools: [fakeTool('weather')] });
 
-		await agent.run('first', signal, vi.fn());
-		await agent.run('thanks', signal, vi.fn());
+		await agent.run('first', { signal });
+		await agent.run('thanks', { signal });
 
 		expect(llmClient.contexts[2]).toEqual([
 			userMessage('first'),
@@ -426,8 +420,11 @@ describe('LLMAgent with tools', () => {
 		const llmClient = new FakeLLMClient(assistantResponse([madridCall]));
 
 		await expect(
-			new LLMAgent({ llmClient, tools: [weather] }).run('prompt', signal, event => {
-				if (event.type === 'tool') throw new Error('render failed');
+			new LLMAgent({ llmClient, tools: [weather] }).run('prompt', {
+				signal,
+				onProgress: event => {
+					if (event.type === 'tool') throw new Error('render failed');
+				},
 			}),
 		).rejects.toMatchObject({
 			constructor: UnrecoverableError,

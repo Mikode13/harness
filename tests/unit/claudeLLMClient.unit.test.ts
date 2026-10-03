@@ -123,8 +123,7 @@ describe('ClaudeLLMClient', () => {
 		const persisted = [userMessage('My name is Miki.'), first.message];
 		const answer = await new LLMAgent({ llmClient: createClient(), messages: persisted }).run(
 			'What is my name?',
-			signal,
-			vi.fn(),
+			{ signal },
 		);
 
 		expect(Anthropic).toHaveBeenCalledTimes(2);

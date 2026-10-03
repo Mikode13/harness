@@ -32,7 +32,7 @@ describe('LLMAgent', () => {
 		const llmClient = new FakeLLMClient(textResponse('pong', { usage }));
 		vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValueOnce(3_500);
 
-		const response = await new LLMAgent({ llmClient }).run('ping', signal, vi.fn());
+		const response = await new LLMAgent({ llmClient }).run('ping', { signal });
 
 		expect(llmClient.contexts).toEqual([[userMessage('ping')]]);
 		expect(response).toEqual({ response: 'pong', tokens: usage, duration: 2.5 });
@@ -45,8 +45,8 @@ describe('LLMAgent', () => {
 		);
 		const agent = new LLMAgent({ llmClient });
 
-		await agent.run('first', signal, vi.fn());
-		await agent.run('second', signal, vi.fn());
+		await agent.run('first', { signal });
+		await agent.run('second', { signal });
 
 		expect(llmClient.contexts[1]).toEqual([
 			userMessage('first'),
@@ -69,9 +69,9 @@ describe('LLMAgent', () => {
 		};
 		const agent = new LLMAgent({ llmClient });
 
-		await agent.run('first', signal, vi.fn());
+		await agent.run('first', { signal });
 		answer.message.content = [{ type: 'text', text: 'rewritten' }];
-		await agent.run('second', signal, vi.fn());
+		await agent.run('second', { signal });
 
 		expect(contexts[1]).toEqual([
 			userMessage('first'),
@@ -84,7 +84,7 @@ describe('LLMAgent', () => {
 		const earlier = [userMessage('earlier'), textResponse('earlier answer').message];
 		const llmClient = new FakeLLMClient(textResponse('answer'));
 
-		await new LLMAgent({ llmClient, messages: earlier }).run('now', signal, vi.fn());
+		await new LLMAgent({ llmClient, messages: earlier }).run('now', { signal });
 
 		expect(llmClient.contexts).toEqual([[...earlier, userMessage('now')]]);
 	});
@@ -93,9 +93,10 @@ describe('LLMAgent', () => {
 		const llmClient = new FakeLLMClient(reasonedResponse('thinking', 'answer'));
 		const events: ProgressEvent[] = [];
 
-		const response = await new LLMAgent({ llmClient }).run('prompt', signal, event =>
-			events.push(event),
-		);
+		const response = await new LLMAgent({ llmClient }).run('prompt', {
+			signal,
+			onProgress: event => events.push(event),
+		});
 
 		expect(events).toEqual([
 			{ type: 'reasoning', message: 'thinking' },
@@ -112,8 +113,8 @@ describe('LLMAgent', () => {
 		const agent = new LLMAgent({ llmClient });
 		const events: ProgressEvent[] = [];
 
-		const response = await agent.run('first', signal, event => events.push(event));
-		await agent.run('second', signal, vi.fn());
+		const response = await agent.run('first', { signal, onProgress: event => events.push(event) });
+		await agent.run('second', { signal });
 
 		expect(events).toEqual([{ type: 'agentMessage', message: 'answer' }]);
 		expect(response.response).toBe('answer');
@@ -124,7 +125,7 @@ describe('LLMAgent', () => {
 	it('answers with empty text and the usage when the model produced no text', async () => {
 		const llmClient = new FakeLLMClient(reasonedResponse('thinking only'));
 
-		const response = await new LLMAgent({ llmClient }).run('prompt', signal, vi.fn());
+		const response = await new LLMAgent({ llmClient }).run('prompt', { signal });
 
 		expect(response).toMatchObject({ response: '', tokens: textResponse('').usage });
 	});
@@ -134,7 +135,7 @@ describe('LLMAgent', () => {
 			textResponse('partial', { stopReason: 'truncated', usage: null }),
 		);
 
-		await expect(new LLMAgent({ llmClient }).run('prompt', signal, vi.fn())).rejects.toMatchObject({
+		await expect(new LLMAgent({ llmClient }).run('prompt', { signal })).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			tokens: undefined,
 			usageUnreported: true,
@@ -150,13 +151,13 @@ describe('LLMAgent', () => {
 			);
 			const agent = new LLMAgent({ llmClient });
 
-			await expect(agent.run('first', signal, vi.fn())).rejects.toMatchObject({
+			await expect(agent.run('first', { signal })).rejects.toMatchObject({
 				constructor: UnrecoverableError,
 				cause: `The model stopped with "${stopReason}".`,
 				// The unusable answer was billed.
 				tokens: textResponse('').usage,
 			});
-			await agent.run('second', signal, vi.fn());
+			await agent.run('second', { signal });
 
 			expect(llmClient.contexts[1]).toEqual([userMessage('second')]);
 		},
@@ -170,8 +171,8 @@ describe('LLMAgent', () => {
 		);
 		const agent = new LLMAgent({ llmClient });
 
-		const response = await agent.run('first', signal, vi.fn());
-		await agent.run('second', signal, vi.fn());
+		const response = await agent.run('first', { signal });
+		await agent.run('second', { signal });
 
 		expect(response.response).toBe('unaccounted');
 		expect(response.tokens).toBeUndefined();
@@ -184,8 +185,8 @@ describe('LLMAgent', () => {
 		const llmClient = new FakeLLMClient(new Error('socket hang up'), textResponse('answer'));
 		const agent = new LLMAgent({ llmClient });
 
-		await expect(agent.run('prompt', signal, vi.fn())).rejects.toBeInstanceOf(RecoverableError);
-		await agent.run('prompt', signal, vi.fn());
+		await expect(agent.run('prompt', { signal })).rejects.toBeInstanceOf(RecoverableError);
+		await agent.run('prompt', { signal });
 
 		expect(llmClient.contexts[1]).toEqual([userMessage('prompt')]);
 	});
@@ -194,7 +195,7 @@ describe('LLMAgent', () => {
 		const failure = new UnrecoverableError('Quota exhausted', { cause: 'insufficient_quota' });
 		const llmClient = new FakeLLMClient(failure);
 
-		await expect(new LLMAgent({ llmClient }).run('prompt', signal, vi.fn())).rejects.toBe(failure);
+		await expect(new LLMAgent({ llmClient }).run('prompt', { signal })).rejects.toBe(failure);
 	});
 
 	it('lets a cancellation through unchanged', async () => {
@@ -203,7 +204,7 @@ describe('LLMAgent', () => {
 		const llmClient = new FakeLLMClient(textResponse('never sent'));
 
 		await expect(
-			new LLMAgent({ llmClient }).run('prompt', controller.signal, vi.fn()),
+			new LLMAgent({ llmClient }).run('prompt', { signal: controller.signal }),
 		).rejects.toMatchObject({ name: 'AbortError' });
 	});
 
@@ -212,8 +213,11 @@ describe('LLMAgent', () => {
 		const llmClient = new FakeLLMClient(textResponse('answer'));
 
 		await expect(
-			new LLMAgent({ llmClient }).run('prompt', signal, () => {
-				throw new Error('render failed');
+			new LLMAgent({ llmClient }).run('prompt', {
+				signal,
+				onProgress: () => {
+					throw new Error('render failed');
+				},
 			}),
 		).rejects.toMatchObject({
 			constructor: UnrecoverableError,
