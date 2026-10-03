@@ -9,6 +9,9 @@ export interface TextMatch {
  * `/`, and results come sorted. A file `.gitignore` ignores, or a path outside the root, does
  * not exist here: it is never listed, searched or read, whatever scope a query asks for.
  *
+ * A binary file is listed, but never searched or read. Every operation stops after a time
+ * limit and fails with an error that asks for a narrower query.
+ *
  * `total` counts everything the query matched and `truncated` says whether `limit` cut it.
  */
 export interface Workspace {

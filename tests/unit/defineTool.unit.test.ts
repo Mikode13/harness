@@ -42,10 +42,27 @@ describe('defineTool', () => {
 			'an optional field inside a nested object',
 			z.object({ place: z.object({ city: z.string().optional() }) }),
 		],
+		['an object open to any key, which strict mode rejects', z.looseObject({ city: z.string() })],
+		[
+			'a record, whose keys strict mode cannot know',
+			z.object({ tags: z.record(z.string(), z.string()) }),
+		],
 	])('refuses to define a tool with %s', (_, input) => {
 		expect(() =>
 			defineTool({ name: 'weather', description: '', input, execute: () => Promise.resolve('') }),
 		).toThrow(InvalidAgentConfigError);
+	});
+
+	// Only schemas are checked: these are the names of fields, not keywords.
+	it('accepts fields named like the keywords it refuses', () => {
+		expect(() =>
+			defineTool({
+				name: 'limits',
+				description: '',
+				input: z.object({ maxLength: z.number().nullable(), minimum: z.string() }),
+				execute: () => Promise.resolve(''),
+			}),
+		).not.toThrow();
 	});
 
 	it('runs with the validated input and the signal it was given', async () => {

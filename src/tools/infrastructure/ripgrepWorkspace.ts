@@ -41,8 +41,15 @@ function decode({ text, bytes }: RipgrepText): string {
 export class RipgrepWorkspace extends BoundedWorkspace {
 	private readonly ripgrepPath: string;
 
-	constructor({ root, ripgrepPath }: { root: string; ripgrepPath: string }) {
-		super({ root });
+	constructor({
+		ripgrepPath,
+		...options
+	}: {
+		root: string;
+		ripgrepPath: string;
+		timeoutMs?: number;
+	}) {
+		super(options);
 		this.ripgrepPath = ripgrepPath;
 	}
 

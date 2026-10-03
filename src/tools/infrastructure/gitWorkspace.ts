@@ -61,7 +61,13 @@ export class GitWorkspace extends BoundedWorkspace {
 	}
 
 	private git(args: string[], signal: AbortSignal) {
-		// Colour codes would end up inside the text the model reads.
-		return runProcess('git', ['-c', 'color.ui=never', ...args], { cwd: this.root, signal });
+		// A user's settings must not change the output this parses: colour codes would end up in
+		// the text, `grep.column` adds a field, and `grep.fullName` makes paths relative to the
+		// repository instead of the root.
+		return runProcess(
+			'git',
+			['-c', 'color.ui=never', '-c', 'grep.column=false', '-c', 'grep.fullName=false', ...args],
+			{ cwd: this.root, signal },
+		);
 	}
 }
