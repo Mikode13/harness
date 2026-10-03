@@ -7,7 +7,7 @@ import {
 	InvalidAgentConfigError,
 	RecoverableError,
 	UnrecoverableError,
-} from '../../src/agent/domain/errors.ts';
+} from '../../src/shared/domain/errors.ts';
 
 vi.mock('@openai/codex-sdk', () => ({ Codex: vi.fn() }));
 

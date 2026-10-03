@@ -18,7 +18,7 @@ async function withoutRipgrep() {
 	const [selection, git, errors] = await Promise.all([
 		import('../../src/tools/infrastructure/createWorkspace.ts'),
 		import('../../src/tools/infrastructure/gitWorkspace.ts'),
-		import('../../src/agent/domain/errors.ts'),
+		import('../../src/shared/domain/errors.ts'),
 	]);
 	return {
 		createWorkspace: selection.createWorkspace,

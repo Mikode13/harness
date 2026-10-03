@@ -22,7 +22,7 @@ decision, `OrchestratorAgent`'s failure handling — branches on `RecoverableErr
 `UnrecoverableError`. An unclassified error bypasses that decision entirely: it gets
 retried when it should be fatal, or it kills a run a retry would have recovered. Every
 call into a provider SDK, including the async iteration of a stream, goes through
-`classifyProviderFailure` in `src/agent/domain/providerFailure.ts`.
+`classifyProviderFailure` in `src/shared/domain/providerFailure.ts`.
 
 Cancellation is the one deliberate exception: an `AbortError` propagates unchanged,
 because a deliberate stop is not a failure and consumers check for it first.

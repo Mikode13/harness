@@ -1,10 +1,10 @@
 import type { Agent, AgentResponse, RunOptions } from '#src/agent/domain/agent';
 import { addTokens, type Tokens } from '#src/shared/domain/tokens';
-import { RecoverableError, UnrecoverableError, withSpentTokens } from '#src/agent/domain/errors';
+import { RecoverableError, UnrecoverableError, withSpentTokens } from '#src/shared/domain/errors';
 import type { ReviewerDecision } from './reviewerDecision.ts';
 import type { Validator } from '../interface/validator.ts';
 import type { ILogger } from '#src/shared/domain/logger';
-import { classifyHostFailure, treatErrors } from '#src/agent/domain/providerFailure';
+import { classifyHostFailure, treatErrors } from '#src/shared/domain/providerFailure';
 
 // Each role's standing instructions, kept apart from the data of a round so an agent with a
 // system prompt can hold them there instead of receiving them again in every prompt. An agent

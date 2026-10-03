@@ -8,7 +8,7 @@ import {
 import type { Agent, AgentResponse, RunOptions } from '../../src/agent/domain/agent.ts';
 import type { Tokens } from '../../src/shared/domain/tokens.ts';
 import type { ILogger } from '../../src/shared/domain/logger.ts';
-import { RecoverableError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
+import { RecoverableError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
 import { ReviewerDecisionValidator } from '../../src/orchestration/infrastructure/model/reviewerDecisionValidator.ts';
 
 /** Token counts go in flat so the scripted responses stay one line each. */

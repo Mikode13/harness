@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Agent, AgentResponse, RunOptions } from '../../src/agent/domain/agent.ts';
-import { RecoverableError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
+import { RecoverableError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
 import { MaxContextError } from '../../src/llm/domain/errors.ts';
 import { RetryingAgent } from '../../src/retry/domain/model/retryingAgent.ts';
 

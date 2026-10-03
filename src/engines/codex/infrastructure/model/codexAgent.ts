@@ -19,7 +19,7 @@ import {
 	RecoverableError,
 	UnrecoverableError,
 	withSpentTokens,
-} from '#src/agent/domain/errors';
+} from '#src/shared/domain/errors';
 import {
 	classifiedProviderStream,
 	classifyHostFailure,
@@ -27,7 +27,7 @@ import {
 	classifyProviderFailure,
 	describeFailure,
 	treatErrors,
-} from '#src/agent/domain/providerFailure';
+} from '#src/shared/domain/providerFailure';
 import type { ILogger } from '#src/shared/domain/logger';
 import type { Tokens } from '#src/shared/domain/tokens';
 import { isOneOf } from '#src/shared/domain/isOneOf';

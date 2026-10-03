@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { ToolRisk } from '#src/agent/domain/approval';
-import { InvalidAgentConfigError } from '#src/agent/domain/errors';
+import { InvalidAgentConfigError } from '#src/shared/domain/errors';
 import type { JSONSchema } from '#src/llm/domain/tool';
 import type { Tool } from '../domain/tool.ts';
 

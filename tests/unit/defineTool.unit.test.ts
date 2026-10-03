@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { InvalidAgentConfigError } from '../../src/agent/domain/errors.ts';
+import { InvalidAgentConfigError } from '../../src/shared/domain/errors.ts';
 import { defineTool } from '../../src/tools/infrastructure/defineTool.ts';
 
 const signal = new AbortController().signal;

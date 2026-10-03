@@ -84,7 +84,7 @@ file-based agent registries — each waits for a real need.
 
 A new provider only needs one thing to compose safely into everything above:
 **it must only ever reject with `RecoverableError` or `UnrecoverableError`**
-(`src/agent/domain/errors.ts`), never a raw SDK error. `RetryingAgent` and
+(`src/shared/domain/errors.ts`), never a raw SDK error. `RetryingAgent` and
 `OrchestratorAgent` both decide what to do next by `instanceof`-checking
 against those two types; anything else leaking through is treated as
 unrecoverable and ends the run, because nothing above the adapter can tell

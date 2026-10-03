@@ -1,5 +1,5 @@
-import { UnrecoverableError } from '#src/agent/domain/errors';
-import { classifyHostFailure, treatErrors } from '#src/agent/domain/providerFailure';
+import { UnrecoverableError } from '#src/shared/domain/errors';
+import { classifyHostFailure, treatErrors } from '#src/shared/domain/providerFailure';
 import type { ILogger } from '#src/shared/domain/logger';
 import { Logger } from '#src/shared/infrastructure/logger';
 import type { Workspace } from '../domain/workspace.ts';

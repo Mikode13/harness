@@ -6,7 +6,7 @@ import type {
 	ProgressEvent,
 	RunOptions,
 } from '../../../src/agent/domain/agent.ts';
-import { UnrecoverableError } from '../../../src/agent/domain/errors.ts';
+import { UnrecoverableError } from '../../../src/shared/domain/errors.ts';
 
 type EmitResult = string | { error: unknown };
 

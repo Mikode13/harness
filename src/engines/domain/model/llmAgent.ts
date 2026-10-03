@@ -12,13 +12,13 @@ import {
 	RecoverableError,
 	UnrecoverableError,
 	withSpentTokens,
-} from '#src/agent/domain/errors';
+} from '#src/shared/domain/errors';
 import {
 	classifyHostFailure,
 	classifyProviderFailure,
 	describeFailure,
 	treatErrors,
-} from '#src/agent/domain/providerFailure';
+} from '#src/shared/domain/providerFailure';
 import { Conversation } from '#src/llm/domain/conversation';
 import type { LLMClient, LLMResponse } from '#src/llm/domain/llm';
 import type { Message, MessagePart, ToolCallPart, ToolResultPart } from '#src/llm/domain/message';
