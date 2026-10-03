@@ -28,7 +28,7 @@ export {
 	InvalidAgentConfigError,
 	RecoverableError,
 	UnrecoverableError,
-} from './agent/domain/errors.ts';
+} from './shared/domain/errors.ts';
 export { isAbortError } from './shared/domain/isAbortError.ts';
 export type { Tokens } from './shared/domain/tokens.ts';
 export type {

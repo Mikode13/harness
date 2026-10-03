@@ -1,5 +1,5 @@
 import type { Agent } from '#src/agent/domain/agent';
-import { InvalidAgentConfigError } from '#src/agent/domain/errors';
+import { InvalidAgentConfigError } from '#src/shared/domain/errors';
 import { LLMAgent } from '#src/engines/domain/model/llmAgent';
 import type { LLMClient } from '#src/llm/domain/llm';
 import { ClaudeLLMClient } from '#src/llm/infrastructure/claudeLLMClient';

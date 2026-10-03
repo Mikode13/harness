@@ -8,7 +8,7 @@ import OpenAI from 'openai';
 import type { Response } from 'openai/resources/responses/responses';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { InvalidAgentConfigError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
+import { InvalidAgentConfigError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
 import {
 	createAgent,
 	createOrchestrator,

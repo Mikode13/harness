@@ -417,7 +417,7 @@ tags: #mikode-harness #tooling #technical-debt
 
 tags: #mikode-harness #error-handling #contracts
 
-**Decision:** every call into a provider SDK — starting a turn _and_ iterating its event stream — goes through `classifyProviderFailure` (`src/agent/domain/providerFailure.ts`). Anything unclassified becomes a `RecoverableError`; an `AbortError` and an already-classified error pass through untouched.
+**Decision:** every call into a provider SDK — starting a turn _and_ iterating its event stream — goes through `classifyProviderFailure` (`src/shared/domain/providerFailure.ts`). Anything unclassified becomes a `RecoverableError`; an `AbortError` and an already-classified error pass through untouched.
 
 **Context:** the `Agent` docblock has always promised that implementers only ever reject with `RecoverableError` or `UnrecoverableError`, because every consumer branches on exactly that. Neither engine honoured it. `CodexAgent.run()` awaited `thread.runStreamed()` bare, and both engines iterated their stream bare, so a dropped connection or a rejected request escaped as a raw `Error`. `RetryingAgent` then retried it blindly — an unclassified error is not `UnrecoverableError`, so it looked retryable — and on exhaustion replaced it with a generic error that named no cause at all. A promise in a docblock that nothing enforces is not a contract.
 
