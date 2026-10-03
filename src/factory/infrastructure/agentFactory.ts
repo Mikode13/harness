@@ -142,6 +142,7 @@ export function orchestratorRolesFor(
 export function createOrchestrator({
 	provider,
 	autoApprove,
+	systemPrompts = {},
 	logger = new Logger(),
 }: CreateOrchestratorOptions = {}): Agent {
 	const roles = orchestratorRolesFor(provider);
@@ -152,9 +153,9 @@ export function createOrchestrator({
 		});
 
 	return new OrchestratorAgent({
-		plannerAgent: agentFor(roles.planner, plannerInstructions),
-		executorAgent: agentFor(roles.executor, executorInstructions),
-		reviewerAgent: agentFor(roles.reviewer, reviewerInstructions),
+		plannerAgent: agentFor(roles.planner, systemPrompts.planner ?? plannerInstructions),
+		executorAgent: agentFor(roles.executor, systemPrompts.executor ?? executorInstructions),
+		reviewerAgent: agentFor(roles.reviewer, systemPrompts.reviewer ?? reviewerInstructions),
 		reviewerDecisionValidator: new ReviewerDecisionValidator(),
 		logger,
 	});

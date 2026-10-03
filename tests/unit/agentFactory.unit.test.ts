@@ -455,6 +455,25 @@ describe('createOrchestrator', () => {
 		expect(Codex).not.toHaveBeenCalled();
 	});
 
+	it("puts a caller's own instructions ahead of a role's prompt, and keeps ours for the rest", async () => {
+		vi.mocked(query)
+			.mockReturnValueOnce(claudeStream([claudeResult('plan')]))
+			.mockReturnValueOnce(claudeStream([claudeResult('implementation')]))
+			.mockReturnValueOnce(claudeStream([claudeResult('{"decision":"approved"}')]));
+
+		await createOrchestrator({
+			provider: 'anthropic',
+			systemPrompts: { planner: 'Plan in one line.' },
+			logger: createLogger(),
+		}).run('ship it', signal, vi.fn());
+
+		expect(vi.mocked(query).mock.calls.map(([params]) => params.prompt)).toEqual([
+			expect.stringMatching(/^Plan in one line\.\n\nOriginal user request:/),
+			expect.stringMatching(/^You are the executor agent/),
+			expect.stringMatching(/^You are the reviewer agent/),
+		]);
+	});
+
 	it('runs every role on OpenAI when asked to', () => {
 		const startThread = codexReplying('done');
 
@@ -551,6 +570,38 @@ describe('createLLMOrchestrator', () => {
 			runStreamed: ReturnType<typeof vi.fn>;
 		};
 		expect(runStreamed.mock.calls[0]?.[0]).toMatch(/^You are the executor agent/);
+	});
+
+	it("uses a caller's own system prompt word for word, and keeps ours for the rest", async () => {
+		const openAICreate = openAIReplying('plan');
+		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
+		const startThread = codexReplying('implementation');
+
+		await (
+			await createLLMOrchestrator({
+				systemPrompts: { reviewer: 'Review strictly.', executor: 'Change only tests.' },
+				logger: createLogger(),
+			})
+		).run('ship it', signal, vi.fn());
+
+		expect(claudeCreate).toHaveBeenCalledWith(
+			expect.objectContaining({ system: 'Review strictly.' }),
+			{ signal },
+		);
+		expect(openAICreate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				instructions: expect.stringMatching(
+					/^You are the planner agent[\s\S]*AGENTS\.md/,
+				) as unknown,
+			}),
+			{ signal },
+		);
+		const { runStreamed } = startThread.mock.results[0]?.value as {
+			runStreamed: ReturnType<typeof vi.fn>;
+		};
+		expect(runStreamed.mock.calls[0]?.[0]).toMatch(
+			/^Change only tests\.\n\nOriginal user request:/,
+		);
 	});
 
 	it('runs every role on Anthropic when asked to', async () => {

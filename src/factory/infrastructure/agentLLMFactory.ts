@@ -106,9 +106,9 @@ const repositoryGuidance =
 
 /**
  * Builds the planner → executor → reviewer workflow with the planner and reviewer on the model
- * APIs, from `createLLMAgent`, each holding its role's instructions as its system prompt and
- * the read-only repository tools for the current working directory. The executor stays on its
- * Agent SDK, from `createAgent`, until an agent of ours can change files; `autoApprove` reaches
+ * APIs, from `createLLMAgent`, each holding its role's instructions, or `systemPrompts`, as its
+ * system prompt, with the read-only repository tools for the current working directory. The
+ * executor stays on its Agent SDK, from `createAgent`, until an agent of ours can change files; `autoApprove` reaches
  * only it. Asynchronous because finding the program that reads the repository is.
  *
  * @throws {InvalidAgentConfigError} for an unknown provider.
@@ -119,21 +119,21 @@ const repositoryGuidance =
 export async function createLLMOrchestrator({
 	provider,
 	autoApprove,
+	systemPrompts = {},
 	logger = new Logger(),
 }: CreateOrchestratorOptions = {}): Promise<Agent> {
 	const roles = orchestratorRolesFor(provider);
 	const tools = createWorkspaceTools(await createWorkspace({ root: process.cwd(), logger }));
-	const llmAgentFor = ({ provider, model, reasoningEffort }: Role, instructions: string) =>
-		createLLMAgent(provider, {
-			model,
-			reasoningEffort,
-			systemPrompt: `${instructions}\n\n${repositoryGuidance}`,
-			tools,
-			logger,
-		});
+	const llmAgentFor = ({ provider, model, reasoningEffort }: Role, systemPrompt: string) =>
+		createLLMAgent(provider, { model, reasoningEffort, systemPrompt, tools, logger });
+	// A caller's own prompt replaces the whole of ours, guidance included.
+	const withGuidance = (instructions: string) => `${instructions}\n\n${repositoryGuidance}`;
 
 	return new OrchestratorAgent({
-		plannerAgent: llmAgentFor(roles.planner, plannerInstructions),
+		plannerAgent: llmAgentFor(
+			roles.planner,
+			systemPrompts.planner ?? withGuidance(plannerInstructions),
+		),
 		executorAgent: new InstructedAgent({
 			inner: createAgent(roles.executor.provider, {
 				model: roles.executor.model,
@@ -141,9 +141,12 @@ export async function createLLMOrchestrator({
 				autoApprove,
 				logger,
 			}),
-			instructions: executorInstructions,
+			instructions: systemPrompts.executor ?? executorInstructions,
 		}),
-		reviewerAgent: llmAgentFor(roles.reviewer, reviewerInstructions),
+		reviewerAgent: llmAgentFor(
+			roles.reviewer,
+			systemPrompts.reviewer ?? withGuidance(reviewerInstructions),
+		),
 		reviewerDecisionValidator: new ReviewerDecisionValidator(),
 		logger,
 	});

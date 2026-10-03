@@ -25,6 +25,14 @@ export interface CreateOrchestratorOptions {
 	provider?: AgentProvider;
 	/** Maps to each provider's permission-bypass mode. Defaults to `false`. */
 	autoApprove?: boolean;
+	/**
+	 * Replaces a role's instructions, word for word; a role left out keeps the harness's own. A
+	 * role on a model API receives them as its system prompt, and one on an Agent SDK, which
+	 * takes none, at the head of every prompt. The reviewer must still answer with the JSON
+	 * decision the workflow parses: `{"decision":"approved"}`, or
+	 * `{"decision":"rejected","feedback":"..."}`.
+	 */
+	systemPrompts?: { planner?: string; executor?: string; reviewer?: string };
 	/** Defaults to warnings on stderr. */
 	logger?: ILogger;
 }

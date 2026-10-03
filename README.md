@@ -137,6 +137,9 @@ releases, so render the ones you know and ignore the rest. Swapping the agent fo
 reviewer workflow, changes nothing else in the snippet above.
 `createOrchestrator({ provider: 'anthropic' })` runs every role on one provider, for
 example when the other one is out of quota.
+`systemPrompts: { planner, executor, reviewer }` replaces a role's instructions;
+a role left out keeps the harness's own, and the reviewer must still answer with
+the JSON decision described on the option.
 
 Every agent a factory returns already retries recoverable failures. A model or
 reasoning effort the chosen provider does not support throws
