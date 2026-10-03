@@ -24,7 +24,8 @@ same repository is a development-only consumer and is not part of the published 
 src/agent/          the seam: Agent, ProgressEvent, errors, provider-failure classification
 src/engines/*/      one provider adapter each, infrastructure only
 src/engines/domain/ LLMAgent, the agent that owns its conversation and calls an LLMClient
-src/llm/            the stateless model boundary: LLMClient, Message, Conversation, Tool
+src/llm/            the stateless model boundary: LLMClient, Message, Conversation, ToolDefinition
+src/tools/          what an agent can run: Tool, defineTool, and the read-only repository tools over Workspace
 src/factory/        createAgent and createOrchestrator, the only public way to build agents
 src/orchestration/  planner -> executor -> reviewer, with a validated reviewer decision
 src/retry/          the retry decorator
@@ -40,15 +41,16 @@ provider: it drives whatever `LLMClient` it is given.
 
 ## Responsibilities and boundaries
 
-| Module               | Owns                                                                                                                                                                                                                        |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/agent/`         | `Agent`, `AgentResponse`, `ProgressEvent`, the error types, and the functions that classify a failure                                                                                                                       |
-| `src/engines/`       | One adapter per provider: SDK calls, session or thread continuity, and SDK events mapped to `ProgressEvent`; `LLMAgent`, which drives an `LLMClient` and runs the tools it is given                                         |
-| `src/llm/`           | `LLMClient`, the stateless model port; `Message` and its parts, including opaque `providerData`; `Conversation`; `Tool` and the `ToolDefinition` a client receives; `MaxContextError`; `OpenAILLMClient`; `ClaudeLLMClient` |
-| `src/factory/`       | Provider selection, default model and reasoning effort per role, and composition with the retry decorator                                                                                                                   |
-| `src/orchestration/` | The three role prompts, the attempt loop, per-run usage totals, and the validated reviewer decision                                                                                                                         |
-| `src/retry/`         | The decision to call an inner agent again, and the prompt that carries the previous failure into the next call                                                                                                              |
-| `src/shared/`        | `ILogger` and its stderr implementation, `isAbortError`, `isOneOf`, `Tokens`                                                                                                                                                |
+| Module               | Owns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/agent/`         | `Agent`, `AgentResponse`, `ProgressEvent`, the error types, and the functions that classify a failure                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `src/engines/`       | One adapter per provider: SDK calls, session or thread continuity, and SDK events mapped to `ProgressEvent`; `LLMAgent`, which drives an `LLMClient` and runs the tools it is given                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `src/llm/`           | `LLMClient`, the stateless model port; `Message` and its parts, including opaque `providerData`; `Conversation`; the `ToolDefinition` a client describes to the model; `MaxContextError`; `OpenAILLMClient`; `ClaudeLLMClient`                                                                                                                                                                                                                                                                                                                                                                                              |
+| `src/tools/`         | `Tool`, a `ToolDefinition` plus the `execute` the agent runs; `defineTool`, which builds one from a Zod schema and rejects a schema strict mode would refuse (an optional field, a numeric or length bound, an object open to any key); `Workspace`, the read-only port to the folder an agent works on, and `createWorkspaceTools`, the `listFiles`, `searchText` and `readFile` tools over it; `createWorkspace`, which picks `RipgrepWorkspace` or falls back to `GitWorkspace`, both enforcing the boundary through `BoundedWorkspace`. It depends on `src/llm/` for the definition; `src/llm/` does not know it exists |
+| `src/factory/`       | Provider selection, default model and reasoning effort per role, and composition with the retry decorator                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `src/orchestration/` | The three role prompts, the attempt loop, per-run usage totals, and the validated reviewer decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `src/retry/`         | The decision to call an inner agent again, and the prompt that carries the previous failure into the next call                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `src/shared/`        | `ILogger` and its stderr implementation, `isAbortError`, `isOneOf`, `Tokens`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 Two boundaries carry most of the design:
 
@@ -215,9 +217,17 @@ each other's.
   WebSocket consumer would call `Agent.run()` per request and want none of it. It stays out of
   the tarball too — `files` lists `dist` only, and `scripts/pack-check.mjs` fails on anything
   else reaching it.
-- **No concrete tool exists yet.** Both `LLMClient`s offer tools to their model and map
-  calls and results in both directions, but `createLLMAgent` gives none; repository tools
-  wait for #25.
+- **No agent is given tools yet.** The read-only repository tools exist (#25), but
+  `createLLMAgent` gives none; the model-backed orchestrator of #23 is their first consumer.
+- **An agent reads only what `.gitignore` does not ignore, inside one root.** Ignored files,
+  tracked files `.gitignore` names, `.git`, files ripgrep's own `.ignore` would un-ignore, symlinks and paths outside the root do not exist
+  for the repository tools, so a secret that is not ignored is visible. A line longer than 300
+  characters reaches the model cut, and the result says so. The scope a model asks for is applied to the output
+  of a search over the whole root as it arrives, before anything is stored, and never passed to ripgrep, which stops honouring
+  `.gitignore` for a path it is given explicitly. ripgrep ships with the package
+  (`@vscode/ripgrep`); git is the fallback, and with neither the workspace cannot be built.
+  Every operation stops after 30 seconds with an error that asks the model for a narrower
+  query; it is not a cancellation of the run.
 - **Tool schemas must fit strict mode.** Both clients offer every tool with `strict: true`, so
   the model's input always parses and matches the schema. The price is the providers' subset
   of JSON Schema: `additionalProperties: false` on every object, every property in

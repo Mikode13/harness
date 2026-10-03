@@ -14,7 +14,8 @@ import {
 import { Conversation } from '#src/llm/domain/conversation';
 import type { LLMClient, LLMResponse } from '#src/llm/domain/llm';
 import type { Message, MessagePart, ToolCallPart, ToolResultPart } from '#src/llm/domain/message';
-import type { Tool, ToolDefinition } from '#src/llm/domain/tool';
+import type { ToolDefinition } from '#src/llm/domain/tool';
+import type { Tool } from '#src/tools/domain/tool';
 import { addTokens, type Tokens } from '#src/shared/domain/tokens';
 
 function describePart(part: MessagePart): ProgressEvent | undefined {
