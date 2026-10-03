@@ -7,6 +7,9 @@ import { firstLine, runProcess } from './runProcess.ts';
 const sameViewAsGit = [
 	// A user's ripgrep configuration could switch the ignore rules off.
 	'--no-config',
+	// ripgrep's own `.ignore` and `.rgignore` outrank `.gitignore`, so a `!.env` line in either
+	// would show a secret git hides. Only git's ignore sources count.
+	'--no-ignore-dot',
 	// Hidden files such as `.github/` are part of the repository; ripgrep skips them by default.
 	'--hidden',
 	// `.gitignore` applies even outside a git repository.
@@ -58,8 +61,9 @@ export class RipgrepWorkspace extends BoundedWorkspace {
 
 	protected async listCandidates(signal: AbortSignal): Promise<string[]> {
 		const { stdout, stderr, exitCode } = await this.ripgrep(['--files', '--null'], signal);
-		// 1 means nothing to list, which an empty repository is.
-		if (exitCode > 1) {
+		// 1 means nothing to list, which an empty repository is. 2 with a listing means some
+		// folder could not be read, which git skips with a warning too; without one, it failed.
+		if (exitCode > 1 && stdout === '') {
 			throw new Error(`ripgrep could not list the files: ${firstLine(stderr)}`);
 		}
 
@@ -75,8 +79,10 @@ export class RipgrepWorkspace extends BoundedWorkspace {
 		signal: AbortSignal,
 		keep: (match: TextMatch) => void,
 	): Promise<void> {
-		// A count, not a flag: TypeScript cannot see the callback change it.
-		let found = 0;
+		// ripgrep ends every search it ran with a summary. A failure before searching, such as a
+		// pattern that does not compile, prints none. A count, not a flag: TypeScript cannot see
+		// the callback change it.
+		let summaries = 0;
 		const { stderr, exitCode } = await this.ripgrep(
 			['--json', ...(ignoreCase ? ['--ignore-case'] : []), '-e', pattern],
 			signal,
@@ -85,8 +91,10 @@ export class RipgrepWorkspace extends BoundedWorkspace {
 					return;
 				}
 				const event = JSON.parse(line) as RipgrepEvent;
+				if (event.type === 'summary') {
+					summaries++;
+				}
 				if (event.type === 'match') {
-					found++;
 					keep({
 						path: decode(event.data.path).replace(/^\.\//, ''),
 						line: event.data.line_number,
@@ -96,9 +104,9 @@ export class RipgrepWorkspace extends BoundedWorkspace {
 			},
 		);
 
-		// 1 means no match. 2 is a failure, such as a pattern that does not compile, unless
-		// matches came back: then only some file could not be read.
-		if (exitCode > 1 && found === 0) {
+		// 1 means no match. 2 after a search means some file could not be read, and the rest
+		// stands, as it does on git; 2 with no search is the failure.
+		if (exitCode > 1 && summaries === 0) {
 			throw new Error(`ripgrep could not search for the pattern: ${firstLine(stderr)}`);
 		}
 	}

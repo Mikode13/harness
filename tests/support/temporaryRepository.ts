@@ -9,6 +9,7 @@ import { dirname, join } from 'node:path';
  *
  * ```text
  * root/.gitignore                 ignores .env and node_modules
+ * root/.ignore, root/.rgignore    ripgrep's own ignore files, trying to un-ignore the secrets
  * root/.env                       ignored, holds a secret
  * root/node_modules/pkg/index.js  ignored
  * root/.github/workflows/ci.yml   hidden but tracked
@@ -42,6 +43,8 @@ export function createTemporaryRepository() {
 	write(outside, 'secret.txt', 'outside needle\n');
 
 	write(root, '.gitignore', '.env\nnode_modules\n');
+	write(root, '.ignore', '!.env\n');
+	write(root, '.rgignore', '!node_modules\n!tracked-secret.txt\n');
 	write(root, '.env', 'API_KEY=needle-secret\n');
 	write(root, 'node_modules/pkg/index.js', "export const needle = 'in a dependency';\n");
 	write(root, '.github/workflows/ci.yml', 'name: needle-ci\n');

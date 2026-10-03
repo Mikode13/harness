@@ -1,3 +1,4 @@
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Workspace } from '../../src/tools/domain/workspace.ts';
@@ -8,6 +9,8 @@ const signal = new AbortController().signal;
 const everyFile = [
 	'.github/workflows/ci.yml',
 	'.gitignore',
+	'.ignore',
+	'.rgignore',
 	'docs/new.md',
 	'image.bin',
 	'src/agent.ts',
@@ -51,7 +54,7 @@ export function describeWorkspaceContract(
 		describe('listFiles', () => {
 			// Hidden files and new files count; ignored files, deleted files, symlinks and `.git` do not.
 			it('lists what git tracks or would track, sorted, as paths relative to the root', async () => {
-				expect(await list()).toEqual({ files: everyFile, total: 7, truncated: false });
+				expect(await list()).toEqual({ files: everyFile, total: 9, truncated: false });
 			});
 
 			it('narrows to a folder', async () => {
@@ -74,7 +77,7 @@ export function describeWorkspaceContract(
 			it('cuts at the limit and still counts everything', async () => {
 				expect(await list({ limit: 3 })).toEqual({
 					files: everyFile.slice(0, 3),
-					total: 7,
+					total: 9,
 					truncated: true,
 				});
 			});
@@ -240,6 +243,47 @@ export function describeWorkspaceContract(
 					);
 
 				expect(await messageFor('.env')).toBe(await messageFor('missing.ts'));
+			});
+		});
+
+		// A folder the user cannot read is skipped, as git skips it with a warning; the rest stands.
+		// Root reads every folder, so the case cannot be built there.
+		describe.skipIf(process.getuid?.() === 0)('a folder that cannot be read', () => {
+			let locked: ReturnType<typeof createTemporaryRepository>;
+			let lockedWorkspace: Workspace;
+
+			beforeAll(() => {
+				locked = createTemporaryRepository();
+				mkdirSync(join(locked.root, 'locked'));
+				writeFileSync(join(locked.root, 'locked', 'hidden.ts'), 'const needle = 3;\n');
+				chmodSync(join(locked.root, 'locked'), 0o000);
+				lockedWorkspace = createWorkspace(locked.root);
+			});
+
+			afterAll(() => {
+				chmodSync(join(locked.root, 'locked'), 0o755);
+				locked.remove();
+			});
+
+			it('leaves the rest of the listing intact', async () => {
+				expect((await lockedWorkspace.listFiles({ limit: 100 }, signal)).files).toEqual(everyFile);
+			});
+
+			it('leaves the rest of a search intact', async () => {
+				expect(
+					(
+						await lockedWorkspace.searchText(
+							{ pattern: 'needle', ignoreCase: false, limit: 100 },
+							signal,
+						)
+					).total,
+				).toBe(4);
+			});
+
+			it('answers a search that matches nothing with no match, not a failure', async () => {
+				await expect(
+					lockedWorkspace.searchText({ pattern: 'absent', ignoreCase: false, limit: 100 }, signal),
+				).resolves.toEqual({ matches: [], total: 0, truncated: false });
 			});
 		});
 

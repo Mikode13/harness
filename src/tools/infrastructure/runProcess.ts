@@ -70,7 +70,14 @@ export function runProcess(
 
 		// A missing program, or the cancellation, which arrives as an `AbortError`.
 		child.on('error', reject);
-		child.on('close', code => {
+		child.on('close', (code, killedBy) => {
+			// Stopped from outside, such as by the out-of-memory killer: what it printed is not the
+			// whole answer, and an exit code would pass it off as one. Its own stops set `failure`.
+			if (code === null && !failure) {
+				failure = new Error(
+					`${command} was stopped by ${killedBy ?? 'a signal'} before it finished`,
+				);
+			}
 			if (!failure) {
 				try {
 					deliver(decoder.end());
@@ -86,6 +93,7 @@ export function runProcess(
 			resolve({
 				stdout: stdout.join(''),
 				stderr: Buffer.concat(stderr).toString('utf8'),
+				// Not null here: a process stopped by a signal was rejected above.
 				exitCode: code ?? 1,
 			});
 		});

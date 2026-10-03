@@ -52,6 +52,20 @@ describe('runProcess', () => {
 		expect(stdout).toBe('$(echo injected); rm -rf /');
 	});
 
+	// Stopped from outside, a program has not said everything: its output must not pass for a result.
+	it('rejects when the program is stopped by a signal it did not expect', async () => {
+		await expect(
+			runProcess(
+				node,
+				['-e', 'process.stdout.write("partial\\n"); process.kill(process.pid, "SIGKILL")'],
+				{
+					cwd,
+					signal,
+				},
+			),
+		).rejects.toThrow(/SIGKILL/);
+	});
+
 	it('kills the program and rejects with the cancellation', async () => {
 		const controller = new AbortController();
 		const pending = runProcess(node, ['-e', 'setInterval(() => {}, 1000)'], {

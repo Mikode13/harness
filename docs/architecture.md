@@ -220,7 +220,7 @@ each other's.
 - **No agent is given tools yet.** The read-only repository tools exist (#25), but
   `createLLMAgent` gives none; the model-backed orchestrator of #23 is their first consumer.
 - **An agent reads only what `.gitignore` does not ignore, inside one root.** Ignored files,
-  tracked files `.gitignore` names, `.git`, symlinks and paths outside the root do not exist
+  tracked files `.gitignore` names, `.git`, files ripgrep's own `.ignore` would un-ignore, symlinks and paths outside the root do not exist
   for the repository tools, so a secret that is not ignored is visible. A line longer than 300
   characters reaches the model cut, and the result says so. The scope a model asks for is applied to the output
   of a search over the whole root as it arrives, before anything is stored, and never passed to ripgrep, which stops honouring
