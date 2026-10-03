@@ -20,7 +20,7 @@ export interface Workspace {
 		signal: AbortSignal,
 	): Promise<{ files: string[]; total: number; truncated: boolean }>;
 
-	/** `pattern` is a regular expression. */
+	/** `pattern` is a regular expression. A match's `text` is at most 1,000 characters. */
 	searchText(
 		query: { pattern: string; ignoreCase: boolean; path?: string; glob?: string; limit: number },
 		signal: AbortSignal,

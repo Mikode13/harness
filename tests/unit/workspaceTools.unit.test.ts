@@ -195,6 +195,26 @@ describe('the workspace tools', () => {
 			expect(output).toMatch(/950/);
 		});
 
+		// A minified bundle or a source map holds megabytes on one line.
+		it('cuts a very long line and says how many it cut', async () => {
+			const { workspace, run } = setUp();
+			workspace.content = {
+				lines: ['short', 'x'.repeat(100_000)],
+				totalLines: 2,
+				truncated: false,
+			};
+
+			const output = await run('readFile', {
+				path: 'dist/app.js',
+				fromLine: null,
+				lineCount: null,
+			});
+
+			expect(output).toContain(`1: short\n2: ${'x'.repeat(300)}…`);
+			expect(output).toMatch(/1 lines were longer than 300/);
+			expect(output.length).toBeLessThan(500);
+		});
+
 		it('never reads more than 200 lines at once, whatever the model asks', async () => {
 			const { workspace, run } = setUp();
 

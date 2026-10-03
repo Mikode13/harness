@@ -220,9 +220,10 @@ each other's.
 - **No agent is given tools yet.** The read-only repository tools exist (#25), but
   `createLLMAgent` gives none; the model-backed orchestrator of #23 is their first consumer.
 - **An agent reads only what `.gitignore` does not ignore, inside one root.** Ignored files,
-  `.git`, symlinks and paths outside the root do not exist for the repository tools, so a
-  secret that is not ignored is visible. The scope a model asks for is applied to the results
-  of a search over the whole root and never passed to ripgrep, which stops honouring
+  tracked files `.gitignore` names, `.git`, symlinks and paths outside the root do not exist
+  for the repository tools, so a secret that is not ignored is visible. A line longer than 300
+  characters reaches the model cut, and the result says so. The scope a model asks for is applied to the output
+  of a search over the whole root as it arrives, before anything is stored, and never passed to ripgrep, which stops honouring
   `.gitignore` for a path it is given explicitly. ripgrep ships with the package
   (`@vscode/ripgrep`); git is the fallback, and with neither the workspace cannot be built.
   Every operation stops after 30 seconds with an error that asks the model for a narrower

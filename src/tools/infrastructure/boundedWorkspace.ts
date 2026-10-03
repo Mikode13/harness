@@ -7,6 +7,11 @@ import type { TextMatch, Workspace } from '../domain/workspace.ts';
 // A NUL byte this early means a binary file, as git and ripgrep both judge it.
 const binaryProbeBytes = 8000;
 
+// What a search holds while it sorts. A minified file can put a whole bundle on one line, and
+// a careless pattern can match every line of a repository.
+const maxStoredMatches = 50_000;
+const maxStoredLineLength = 1_000;
+
 // Far beyond what ripgrep needs on a large repository, so only a runaway search reaches it,
 // such as a pattern that backtracks without end in git's Perl engine.
 const defaultTimeoutMs = 30_000;
@@ -39,12 +44,16 @@ export abstract class BoundedWorkspace implements Workspace {
 	/** Every file the program does not ignore, relative to the root, in any order. */
 	protected abstract listCandidates(signal: AbortSignal): Promise<string[]>;
 
-	/** Every line matching `pattern` in a file the program does not ignore, in any order. */
+	/**
+	 * Hands `keep` every line matching `pattern` in a file the program does not ignore, in any
+	 * order, as the program prints it. Nothing is held here: `keep` decides what to store.
+	 */
 	protected abstract findMatches(
 		pattern: string,
 		ignoreCase: boolean,
 		signal: AbortSignal,
-	): Promise<TextMatch[]>;
+		keep: (match: TextMatch) => void,
+	): Promise<void>;
 
 	listFiles(
 		query: { path?: string; glob?: string; limit: number },
@@ -69,19 +78,25 @@ export abstract class BoundedWorkspace implements Workspace {
 		signal: AbortSignal,
 	): Promise<{ matches: TextMatch[]; total: number; truncated: boolean }> {
 		return this.withTimeout(signal, async bounded => {
-			const [candidates, found] = await Promise.all([
-				this.listCandidates(bounded),
-				this.findMatches(query.pattern, query.ignoreCase, bounded),
-			]);
-			const listed = new Set(candidates);
-			const inScope = found.filter(
-				match => listed.has(match.path) && this.inScope(match.path, query),
-			);
+			const listed = new Set(await this.listCandidates(bounded));
+			// The scope applies as the output arrives, so narrowing a search is what makes it
+			// lighter: matches outside it are never stored, however many the program prints.
+			const kept: TextMatch[] = [];
+			await this.findMatches(query.pattern, query.ignoreCase, bounded, match => {
+				if (!listed.has(match.path) || !this.inScope(match.path, query)) {
+					return;
+				}
+				if (kept.length === maxStoredMatches) {
+					throw new Error(
+						`More than ${String(maxStoredMatches)} lines match; narrow the pattern, path or glob`,
+					);
+				}
+				kept.push({ ...match, text: match.text.slice(0, maxStoredLineLength) });
+			});
+
 			// Only the files that matched are checked on disk, not the whole repository.
-			const regular = new Set(
-				await this.regularFiles([...new Set(inScope.map(match => match.path))]),
-			);
-			const matches = inScope
+			const regular = new Set(await this.regularFiles([...new Set(kept.map(match => match.path))]));
+			const matches = kept
 				.filter(match => regular.has(match.path))
 				.sort((a, b) => compareText(a.path, b.path) || a.line - b.line);
 

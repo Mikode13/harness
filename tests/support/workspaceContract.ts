@@ -81,6 +81,7 @@ export function describeWorkspaceContract(
 
 			it.each([
 				['an ignored file', { path: '.env' }],
+				['a tracked file .gitignore names', { path: 'tracked-secret.txt' }],
 				['an ignored folder', { path: 'node_modules' }],
 				['a glob naming an ignored file', { glob: '.env' }],
 				['a glob naming an ignored folder', { glob: 'node_modules/**' }],
@@ -161,6 +162,7 @@ export function describeWorkspaceContract(
 			// The scope is what the model writes, so it is the way a secret would leak.
 			it.each([
 				['an ignored file', { path: '.env' }],
+				['a tracked file .gitignore names', { path: 'tracked-secret.txt' }],
 				['an ignored folder', { path: 'node_modules' }],
 				['a glob naming an ignored file', { glob: '.env' }],
 				['a glob naming an ignored folder', { glob: 'node_modules/**' }],
@@ -212,6 +214,7 @@ export function describeWorkspaceContract(
 
 			it.each([
 				['an ignored file', '.env'],
+				['a tracked file .gitignore names', 'tracked-secret.txt'],
 				['a file in an ignored folder', 'node_modules/pkg/index.js'],
 				['a file above the root', '../outside/secret.txt'],
 				['a symlink out of the root', 'link.txt'],

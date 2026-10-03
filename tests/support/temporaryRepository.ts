@@ -19,6 +19,7 @@ import { dirname, join } from 'node:path';
  * root/removed.ts                 tracked, but deleted from disk
  * root/image.bin                  tracked, binary
  * root/link.txt                   tracked symlink to outside/secret.txt
+ * root/tracked-secret.txt         tracked, then ignored: committed before .gitignore named it
  * outside/secret.txt              outside the root
  * ```
  */
@@ -54,14 +55,17 @@ export function createTemporaryRepository() {
 	write(root, 'removed.ts', 'const needle = "removed";\n');
 	write(root, 'image.bin', Buffer.from([0x6e, 0x65, 0x65, 0x64, 0x6c, 0x65, 0x00, 0xff, 0x00]));
 	symlinkSync(join('..', 'outside', 'secret.txt'), join(root, 'link.txt'));
+	write(root, 'tracked-secret.txt', 'TOKEN=needle-tracked\n');
 
 	git('init', '--quiet');
 	git('add', '--all');
 	git('commit', '--quiet', '--message', 'fixture');
 
-	// After the commit: one file git still tracks but the disk lost, one it has never seen.
+	// After the commit: one file git still tracks but the disk lost, one it has never seen, and
+	// one it tracks that .gitignore now names. git keeps tracking that last one; ripgrep hides it.
 	rmSync(join(root, 'removed.ts'));
 	write(root, 'docs/new.md', 'a new needle\n');
+	write(root, '.gitignore', '.env\nnode_modules\ntracked-secret.txt\n');
 
 	return {
 		root,

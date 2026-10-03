@@ -14,6 +14,9 @@ const sameViewAsGit = [
 	// `--hidden` would otherwise search git's own folder.
 	'--glob',
 	'!.git',
+	// Windows would print `\`; every path in a `Workspace` is written with `/`.
+	'--path-separator',
+	'/',
 ];
 
 interface RipgrepText {
@@ -70,36 +73,41 @@ export class RipgrepWorkspace extends BoundedWorkspace {
 		pattern: string,
 		ignoreCase: boolean,
 		signal: AbortSignal,
-	): Promise<TextMatch[]> {
-		const { stdout, stderr, exitCode } = await this.ripgrep(
+		keep: (match: TextMatch) => void,
+	): Promise<void> {
+		// A count, not a flag: TypeScript cannot see the callback change it.
+		let found = 0;
+		const { stderr, exitCode } = await this.ripgrep(
 			['--json', ...(ignoreCase ? ['--ignore-case'] : []), '-e', pattern],
 			signal,
+			line => {
+				if (line === '') {
+					return;
+				}
+				const event = JSON.parse(line) as RipgrepEvent;
+				if (event.type === 'match') {
+					found++;
+					keep({
+						path: decode(event.data.path).replace(/^\.\//, ''),
+						line: event.data.line_number,
+						text: decode(event.data.lines).replace(/\r?\n$/, ''),
+					});
+				}
+			},
 		);
-
-		const matches: TextMatch[] = [];
-		for (const line of stdout.split('\n')) {
-			if (line === '') {
-				continue;
-			}
-			const event = JSON.parse(line) as RipgrepEvent;
-			if (event.type === 'match') {
-				matches.push({
-					path: decode(event.data.path).replace(/^\.\//, ''),
-					line: event.data.line_number,
-					text: decode(event.data.lines).replace(/\r?\n$/, ''),
-				});
-			}
-		}
 
 		// 1 means no match. 2 is a failure, such as a pattern that does not compile, unless
 		// matches came back: then only some file could not be read.
-		if (exitCode > 1 && matches.length === 0) {
+		if (exitCode > 1 && found === 0) {
 			throw new Error(`ripgrep could not search for the pattern: ${firstLine(stderr)}`);
 		}
-		return matches;
 	}
 
-	private ripgrep(args: string[], signal: AbortSignal) {
-		return runProcess(this.ripgrepPath, [...sameViewAsGit, ...args], { cwd: this.root, signal });
+	private ripgrep(args: string[], signal: AbortSignal, onLine?: (line: string) => void) {
+		return runProcess(this.ripgrepPath, [...sameViewAsGit, ...args], {
+			cwd: this.root,
+			signal,
+			onLine,
+		});
 	}
 }

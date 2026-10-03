@@ -9,24 +9,25 @@ import { firstLine, runProcess } from './runProcess.ts';
  */
 export class GitWorkspace extends BoundedWorkspace {
 	protected async listCandidates(signal: AbortSignal): Promise<string[]> {
-		// Tracked files, and new ones not yet added; ignored ones are neither.
-		const { stdout, stderr, exitCode } = await this.git(
-			['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
-			signal,
-		);
-		if (exitCode !== 0) {
-			throw new Error(`git could not list the files: ${firstLine(stderr)}`);
-		}
+		// Tracked files and new ones not yet added; then the tracked ones `.gitignore` matches
+		// anyway, such as a `.env` committed before it was ignored. ripgrep hides those, and the
+		// fallback must not show what the preferred implementation hides.
+		const [listed, ignored] = await Promise.all([
+			this.listFiles0(['--cached', '--others', '--exclude-standard'], signal),
+			this.listFiles0(['--cached', '--ignored', '--exclude-standard'], signal),
+		]);
+		const hidden = new Set(ignored);
 
-		return stdout.split('\0').filter(path => path !== '');
+		return listed.filter(path => !hidden.has(path));
 	}
 
 	protected async findMatches(
 		pattern: string,
 		ignoreCase: boolean,
 		signal: AbortSignal,
-	): Promise<TextMatch[]> {
-		const { stdout, stderr, exitCode } = await this.git(
+		keep: (match: TextMatch) => void,
+	): Promise<void> {
+		const { stderr, exitCode } = await this.git(
 			[
 				'grep',
 				// Untracked files too, or the agent could not search a file it has just created.
@@ -44,30 +45,36 @@ export class GitWorkspace extends BoundedWorkspace {
 				pattern,
 			],
 			signal,
+			line => {
+				const [path, number, ...text] = line.split('\0');
+				if (path && number) {
+					keep({ path, line: Number(number), text: text.join('\0').replace(/\r$/, '') });
+				}
+			},
 		);
 		// 1 means no match; anything above is a failure, such as a pattern that does not compile.
 		if (exitCode > 1) {
 			throw new Error(`git could not search for the pattern: ${firstLine(stderr)}`);
 		}
-
-		const matches: TextMatch[] = [];
-		for (const line of stdout.split('\n')) {
-			const [path, number, ...text] = line.split('\0');
-			if (path && number) {
-				matches.push({ path, line: Number(number), text: text.join('\0').replace(/\r$/, '') });
-			}
-		}
-		return matches;
 	}
 
-	private git(args: string[], signal: AbortSignal) {
+	private async listFiles0(options: string[], signal: AbortSignal): Promise<string[]> {
+		const { stdout, stderr, exitCode } = await this.git(['ls-files', '-z', ...options], signal);
+		if (exitCode !== 0) {
+			throw new Error(`git could not list the files: ${firstLine(stderr)}`);
+		}
+
+		return stdout.split('\0').filter(path => path !== '');
+	}
+
+	private git(args: string[], signal: AbortSignal, onLine?: (line: string) => void) {
 		// A user's settings must not change the output this parses: colour codes would end up in
 		// the text, `grep.column` adds a field, and `grep.fullName` makes paths relative to the
 		// repository instead of the root.
 		return runProcess(
 			'git',
 			['-c', 'color.ui=never', '-c', 'grep.column=false', '-c', 'grep.fullName=false', ...args],
-			{ cwd: this.root, signal },
+			{ cwd: this.root, signal, onLine },
 		);
 	}
 }

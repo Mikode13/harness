@@ -16,6 +16,11 @@ const scope = {
 	glob: z.string().nullable().describe('Only paths matching this glob, such as "**/*.ts".'),
 };
 
+/** One line as the model reads it: a minified bundle on a single line would flood its context. */
+function cutLine(text: string): string {
+	return text.length > maxLineLength ? `${text.slice(0, maxLineLength)}…` : text;
+}
+
 function assertPositiveInteger(name: string, value: number): void {
 	if (!Number.isInteger(value) || value < 1) {
 		throw new Error(`${name} must be a whole number of at least 1; got ${String(value)}`);
@@ -75,8 +80,7 @@ export function createWorkspaceTools(workspace: Workspace): Tool[] {
 				}
 
 				const results = matches.map(
-					match =>
-						`${match.path}:${String(match.line)}: ${match.text.length > maxLineLength ? `${match.text.slice(0, maxLineLength)}…` : match.text}`,
+					match => `${match.path}:${String(match.line)}: ${cutLine(match.text)}`,
 				);
 
 				const notice = truncated
@@ -116,11 +120,21 @@ export function createWorkspaceTools(workspace: Workspace): Tool[] {
 					return `No lines from ${String(from)}: the file has ${String(totalLines)} lines.`;
 				}
 
-				const numbered = lines.map((text, index) => `${String(from + index)}: ${text}`);
-				const notice = truncated
-					? `\n[The file has ${String(totalLines)} lines. Read from line ${String(from + lines.length)} to continue.]`
-					: '';
-				return numbered.join('\n') + notice;
+				const numbered = lines.map((text, index) => `${String(from + index)}: ${cutLine(text)}`);
+				const cut = lines.filter(text => text.length > maxLineLength).length;
+				const notices = [
+					...(cut > 0
+						? [
+								`[${String(cut)} lines were longer than ${String(maxLineLength)} characters and were cut.]`,
+							]
+						: []),
+					...(truncated
+						? [
+								`[The file has ${String(totalLines)} lines. Read from line ${String(from + lines.length)} to continue.]`,
+							]
+						: []),
+				];
+				return [...numbered, ...notices].join('\n');
 			},
 		}),
 	];
