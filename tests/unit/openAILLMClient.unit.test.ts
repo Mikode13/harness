@@ -96,6 +96,20 @@ describe('OpenAILLMClient', () => {
 		expect(OpenAI).not.toHaveBeenCalled();
 	});
 
+	it('rejects a reasoning effort OpenAI does not offer before building the SDK', () => {
+		// Codex's catalog lists 'ultra'; the Responses API does not.
+		expect(
+			() =>
+				new OpenAILLMClient({
+					model: 'gpt-5.6-sol',
+					reasoningEffort: 'ultra',
+					systemPrompt: '',
+					logger: { warn: vi.fn() },
+				}),
+		).toThrow(InvalidAgentConfigError);
+		expect(OpenAI).not.toHaveBeenCalled();
+	});
+
 	it('makes an SDK that cannot be built unrecoverable', () => {
 		vi.mocked(OpenAI).mockImplementation(function () {
 			throw new Error('The OPENAI_API_KEY environment variable is missing');
@@ -183,7 +197,7 @@ describe('OpenAILLMClient', () => {
 					{ role: 'user', content: 'third' },
 				],
 				store: false,
-				reasoning: { summary: 'auto' },
+				reasoning: { effort: 'high', summary: 'auto' },
 				include: ['reasoning.encrypted_content'],
 			},
 			{ signal },

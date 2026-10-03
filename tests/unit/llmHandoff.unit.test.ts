@@ -85,7 +85,7 @@ describe('a conversation handed between providers', () => {
 
 	it('lets OpenAI answer from what Claude was told, without Claude reasoning', async () => {
 		claudeAnswering('ok');
-		const claude = new ClaudeLLMClient({ model: 'claude-sonnet-5', systemPrompt: '', logger });
+		const claude = new ClaudeLLMClient({ model: 'sonnet', systemPrompt: '', logger });
 		const introduction = userMessage('My name is Miki.');
 		const heard = await claude.send({ context: [introduction], tools: [] }, signal);
 		const openAICreate = openAIAnswering('Your name is Miki.');
@@ -117,7 +117,7 @@ describe('a conversation handed between providers', () => {
 		const claudeCreate = claudeAnswering('Your name is Miki.');
 
 		const answer = await new LLMAgent({
-			llmClient: new ClaudeLLMClient({ model: 'claude-sonnet-5', systemPrompt: '', logger }),
+			llmClient: new ClaudeLLMClient({ model: 'sonnet', systemPrompt: '', logger }),
 			messages: [introduction, heard.message],
 		}).run('What is my name?', signal, vi.fn());
 
@@ -140,7 +140,7 @@ describe('a conversation handed between providers', () => {
 		const claudeCreate = claudeAnswering('It is sunny in Madrid.');
 
 		await new LLMAgent({
-			llmClient: new ClaudeLLMClient({ model: 'claude-sonnet-5', systemPrompt: '', logger }),
+			llmClient: new ClaudeLLMClient({ model: 'sonnet', systemPrompt: '', logger }),
 			messages: [
 				userMessage('Weather in Madrid?'),
 				{

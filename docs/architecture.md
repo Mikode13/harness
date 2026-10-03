@@ -143,8 +143,13 @@ context server-side. `LLMAgent` is the exception being built for #23: it keeps i
 holds no state. Its adapters are `OpenAILLMClient`, on the OpenAI Responses API with
 `store: false`, and `ClaudeLLMClient`, on the Anthropic Messages API. The internal
 `createLLMAgent` builds one of them and the agent together for a provider, wrapped in retry
-like every other agent, and gives it no tools; it is not exported from `src/index.ts` until
-parity with the Agent SDK engines (#23).
+like every other agent, with the tools it is given. The internal `createLLMOrchestrator` runs
+the planner and reviewer on it, each with its role's instructions as the system prompt and the
+read-only repository tools, and keeps the executor on its Agent SDK, because an agent of ours
+cannot change files yet. `OrchestratorAgent` sends each role only the round's data; an agent
+without a system prompt gets its instructions at the head of every prompt from `InstructedAgent`. Neither is exported from `src/index.ts` until parity with the Agent
+SDK engines (#23). Both paths name a provider by its company, `'anthropic'` or `'openai'`, and
+take the same model and effort names, so one role table serves both.
 
 ## Important flows
 
@@ -217,8 +222,9 @@ each other's.
   WebSocket consumer would call `Agent.run()` per request and want none of it. It stays out of
   the tarball too — `files` lists `dist` only, and `scripts/pack-check.mjs` fails on anything
   else reaching it.
-- **No agent is given tools yet.** The read-only repository tools exist (#25), but
-  `createLLMAgent` gives none; the model-backed orchestrator of #23 is their first consumer.
+- **Only the model-backed planner and reviewer have tools, and they only read.**
+  `createLLMOrchestrator` gives them the repository tools of #25; nothing a model runs can change
+  a file until permissions exist (#43).
 - **An agent reads only what `.gitignore` does not ignore, inside one root.** Ignored files,
   tracked files `.gitignore` names, `.git`, files ripgrep's own `.ignore` would un-ignore, symlinks and paths outside the root do not exist
   for the repository tools, so a secret that is not ignored is visible. A line longer than 300

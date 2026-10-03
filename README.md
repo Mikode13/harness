@@ -111,7 +111,7 @@ factories let you replace through their `logger` option:
 ```ts
 import { createAgent, UnrecoverableError, type ProgressEvent } from '@mikode13/harness';
 
-const agent = createAgent('claude', { model: 'sonnet' });
+const agent = createAgent('anthropic', { model: 'sonnet' });
 const controller = new AbortController();
 
 const render = (event: ProgressEvent) => {
@@ -133,9 +133,9 @@ try {
 consumer's decision, not the harness's. `cli/progressEventFormatter.ts` is one
 terminal-shaped implementation to copy from. New event types can arrive in minor
 releases, so render the ones you know and ignore the rest. Swapping the agent for
-`createAgent('codex')`, or for `createOrchestrator()` and its planner → executor →
+`createAgent('openai')`, or for `createOrchestrator()` and its planner → executor →
 reviewer workflow, changes nothing else in the snippet above.
-`createOrchestrator({ provider: 'claude' })` runs every role on one provider, for
+`createOrchestrator({ provider: 'anthropic' })` runs every role on one provider, for
 example when the other one is out of quota.
 
 Every agent a factory returns already retries recoverable failures. A model or

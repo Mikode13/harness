@@ -1,4 +1,5 @@
 import OpenAI, { APIError } from 'openai';
+import type { ReasoningEffort } from 'openai/resources/shared';
 import type {
 	FunctionTool,
 	Response,
@@ -36,6 +37,16 @@ export const openAIModels = [
 	'gpt-5.6-terra',
 ] as const;
 export type OpenAIModel = (typeof openAIModels)[number];
+
+// The efforts both the Responses API and Codex's model catalog list for the models above.
+export const openAIReasoningEfforts = [
+	'low',
+	'medium',
+	'high',
+	'xhigh',
+	'max',
+] as const satisfies readonly NonNullable<ReasoningEffort>[];
+export type OpenAIReasoningEffort = (typeof openAIReasoningEfforts)[number];
 
 // The request itself is wrong or not allowed, so sending it again cannot succeed.
 const unrecoverableStatuses = [400, 401, 403, 404, 422];
@@ -258,22 +269,31 @@ function classifyOpenAIFailure(error: unknown): Error {
 export class OpenAILLMClient implements LLMClient {
 	private readonly client: OpenAI;
 	private readonly model: OpenAIModel;
+	private readonly reasoningEffort: OpenAIReasoningEffort;
 	private readonly systemPrompt: string;
 	private readonly logger: ILogger;
 
-	// `model` is untyped on purpose: this adapter is the one that knows what OpenAI supports.
+	// `model` and `reasoningEffort` are untyped on purpose: this adapter is the one that knows
+	// what OpenAI supports.
 	constructor({
 		model,
+		reasoningEffort = 'high',
 		systemPrompt,
 		logger,
 	}: {
 		model: string;
+		reasoningEffort?: string;
 		systemPrompt: string;
 		logger: ILogger;
 	}) {
 		if (!isOneOf(openAIModels, model)) {
 			throw new InvalidAgentConfigError(
 				`"${model}" is not an OpenAI model; expected one of: ${openAIModels.join(', ')}`,
+			);
+		}
+		if (!isOneOf(openAIReasoningEfforts, reasoningEffort)) {
+			throw new InvalidAgentConfigError(
+				`"${reasoningEffort}" is not an OpenAI reasoning effort; expected one of: ${openAIReasoningEfforts.join(', ')}`,
 			);
 		}
 
@@ -289,6 +309,7 @@ export class OpenAILLMClient implements LLMClient {
 		}
 
 		this.model = model;
+		this.reasoningEffort = reasoningEffort;
 		this.systemPrompt = systemPrompt;
 		this.logger = logger;
 	}
@@ -308,7 +329,7 @@ export class OpenAILLMClient implements LLMClient {
 					// Left out when empty, so a request without tools stays as it always was.
 					...(tools.length > 0 && { tools: tools.map(toOpenAITool) }),
 					store: false,
-					reasoning: { summary: 'auto' },
+					reasoning: { effort: this.reasoningEffort, summary: 'auto' },
 					// With `store: false` this is the only way to send the reasoning back.
 					include: ['reasoning.encrypted_content'],
 				},

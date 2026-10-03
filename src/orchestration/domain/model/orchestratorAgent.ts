@@ -6,23 +6,31 @@ import type { Validator } from '../interface/validator.ts';
 import type { ILogger } from '#src/shared/domain/logger';
 import { classifyHostFailure, treatErrors } from '#src/agent/domain/providerFailure';
 
+// Each role's standing instructions, kept apart from the data of a round so an agent with a
+// system prompt can hold them there instead of receiving them again in every prompt. An agent
+// without one gets them at the head of each prompt; see `InstructedAgent`.
+export const plannerInstructions =
+	'You are the planner agent. Read the relevant repository code and create a concise, engineering-grade plan for the executor. Cover the requested behaviour, structural issues, affected files or symbols, API contracts and boundaries, important failure paths, and meaningful tests. Keep the plan focused on the current request and do not require an architecture redesign yet.';
+
+export const executorInstructions =
+	"You are the executor agent. Read the relevant repository code and implement the original user request according to the planner's current plan. Preserve contracts and boundaries, handle important failure paths, keep the change focused, and add or update meaningful tests. Inspect and change the code; do not merely describe what should be done.";
+
+export const reviewerInstructions =
+	'You are the reviewer agent. Independently inspect the repository, the current diff, and relevant surrounding code; do not rely on the executor\'s narrative. Evaluate the original request first; plan compliance is secondary and provides supporting context. Check correctness and logic errors, important failure paths, unused or artificial abstractions, races or shared state, API contract breaks, boundary violations, regressions, scope, and test quality. If it is correct, respond with JSON only: {"decision":"approved"}. If it is not correct, respond with JSON only: {"decision":"rejected","feedback":"list concrete, prioritized findings and the required direction for each"}. The feedback must contain actionable engineering findings, not a general summary.';
+
 const getPlannerPrompt = (userPrompt: string, previousFailureReason?: string) => {
 	const feedback = previousFailureReason
 		? `\n\nFeedback from the previous attempt:\n---\n${previousFailureReason}\n---`
 		: '';
 
-	return `You are the planner agent. Read the relevant repository code and create a concise, engineering-grade plan for the executor. Cover the requested behaviour, structural issues, affected files or symbols, API contracts and boundaries, important failure paths, and meaningful tests. Keep the plan focused on the current request and do not require an architecture redesign yet.
-
-Original user request:
+	return `Original user request:
 ---
 ${userPrompt}
 ---${feedback}`;
 };
 
 const getExecutorPrompt = (userPrompt: string, plannerPrompt: string) =>
-	`You are the executor agent. Read the relevant repository code and implement the original user request according to the planner's current plan. Preserve contracts and boundaries, handle important failure paths, keep the change focused, and add or update meaningful tests. Inspect and change the code; do not merely describe what should be done.
-
-Original user request:
+	`Original user request:
 ---
 ${userPrompt}
 ---
@@ -42,9 +50,7 @@ const getReviewerPrompt = (
 		? `\n\nYour previous response could not be used: ${parseFailureReason} Respond with JSON only, matching the schema exactly, with no surrounding text and no markdown code fences.`
 		: '';
 
-	return `You are the reviewer agent. Independently inspect the repository, the current diff, and relevant surrounding code; do not rely on the executor's narrative. Evaluate the original request first; plan compliance is secondary and provides supporting context. Check correctness and logic errors, important failure paths, unused or artificial abstractions, races or shared state, API contract breaks, boundary violations, regressions, scope, and test quality. If it is correct, respond with JSON only: {"decision":"approved"}. If it is not correct, respond with JSON only: {"decision":"rejected","feedback":"list concrete, prioritized findings and the required direction for each"}. The feedback must contain actionable engineering findings, not a general summary.
-
-Original user request:
+	return `Original user request:
 ---
 ${userPrompt}
 ---
