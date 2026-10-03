@@ -200,8 +200,8 @@ Nothing is recorded until the run completes. Then the prompt, every answer and e
 result enter the conversation together, so a failed run leaves it untouched, no tool call is
 kept without its result, and a retry of the same prompt cannot appear twice. Once a call has
 reached an existing tool, a recoverable failure becomes `UnrecoverableError`: `RetryingAgent`
-would run the prompt again and repeat the tool's effects. A call to a missing tool does not
-count, because nothing ran. Text and reasoning are narrated as each answer arrives, as
+would run the prompt again and repeat the tool's effects. A call to a missing tool, or a denied
+one, does not count, because nothing ran. Text and reasoning are narrated as each answer arrives, as
 `agentMessage` and `reasoning`; `providerData` is never narrated. A tool call is narrated as a `tool` event only when it starts,
 and again when it ends, so a call the run never starts is never shown as running. All of it
 goes through `classifyHostFailure`; the response carries the text of the final answer alone. Tokens are

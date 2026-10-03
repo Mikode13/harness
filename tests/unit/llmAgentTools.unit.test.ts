@@ -578,4 +578,63 @@ describe('LLMAgent tool approval', () => {
 			output: 'cannot stat the file',
 		});
 	});
+
+	// Deciding takes an await even when nothing is asked, and the run may be cancelled meanwhile.
+	it('does not start a call the run was cancelled for while it was being judged', async () => {
+		const controller = new AbortController();
+		const tool = fakeTool('delete', undefined, () => {
+			controller.abort();
+			return 'safe';
+		});
+
+		const run = new LLMAgent({ llmClient: answerAfterOneCall(), tools: [tool] }).run('prompt', {
+			signal: controller.signal,
+		});
+
+		await expect(run).rejects.toHaveProperty('name', 'AbortError');
+		expect(tool.execute).not.toHaveBeenCalled();
+	});
+
+	it('treats an approver that throws on a cancellation as a cancellation, not a failure', async () => {
+		const controller = new AbortController();
+		const approve = vi.fn<Approver>(() => {
+			controller.abort();
+			throw new Error('prompt closed');
+		});
+
+		const run = new LLMAgent({ llmClient: answerAfterOneCall(), tools: [destructive()] }).run(
+			'prompt',
+			{ signal: controller.signal, approve },
+		);
+
+		await expect(run).rejects.toHaveProperty('name', 'AbortError');
+	});
+
+	// Nothing ran, so replaying the prompt cannot repeat an effect.
+	it('keeps a later failure retryable when the only call was denied', async () => {
+		const tool = destructive();
+		const llmClient = new FakeLLMClient(
+			assistantResponse([deleteCall]),
+			new RecoverableError('overloaded', { cause: '529' }),
+		);
+
+		const run = new LLMAgent({ llmClient, tools: [tool] }).run('prompt', { signal });
+
+		await expect(run).rejects.toBeInstanceOf(RecoverableError);
+		expect(tool.execute).not.toHaveBeenCalled();
+	});
+
+	it('makes a later failure unrecoverable once an approved call ran', async () => {
+		const llmClient = new FakeLLMClient(
+			assistantResponse([deleteCall]),
+			new RecoverableError('overloaded', { cause: '529' }),
+		);
+
+		const run = new LLMAgent({ llmClient, tools: [destructive()] }).run('prompt', {
+			signal,
+			approve: () => ({ approved: true }),
+		});
+
+		await expect(run).rejects.toBeInstanceOf(UnrecoverableError);
+	});
 });

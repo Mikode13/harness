@@ -47,6 +47,14 @@ function describePart(part: MessagePart): ProgressEvent | undefined {
 	}
 }
 
+/**
+ * Whether a run reached a tool's `execute`. A missing tool or a denied call never does, so it
+ * has no effect a retry could repeat.
+ */
+interface RunEffects {
+	toolRan: boolean;
+}
+
 function narrate(part: MessagePart, callback: Callback): void {
 	const event = describePart(part);
 	if (event) emit(event, callback);
@@ -164,6 +172,8 @@ export class LLMAgent implements Agent {
 		try {
 			decision = await approve({ tool: call.name, input: call.input, risk }, signal);
 		} catch (error) {
+			// An approver that gives up on a cancellation, whatever it throws, did not fail.
+			signal.throwIfAborted();
 			throw classifyHostFailure(error, 'The tool call approver failed');
 		}
 		// The user may cancel the run while they are being asked.
@@ -183,6 +193,7 @@ export class LLMAgent implements Agent {
 		call: ToolCallPart,
 		signal: AbortSignal,
 		approve: Approver | undefined,
+		effects: RunEffects,
 	): Promise<{ result: ToolResultPart; denied: boolean }> {
 		const result = { type: 'toolResult' as const, callId: call.id, name: call.name };
 		const tool = this.tools.get(call.name);
@@ -215,6 +226,10 @@ export class LLMAgent implements Agent {
 			return { result: { ...result, output: denial, isError: true }, denied: true };
 		}
 
+		// Deciding took at least one await, and the run may have been cancelled meanwhile.
+		signal.throwIfAborted();
+		// Set before `execute`, so a tool that fails halfway still counts: it may have had effects.
+		effects.toolRan = true;
 		try {
 			return {
 				result: { ...result, output: await tool.execute(call.input, signal), isError: false },
@@ -233,6 +248,7 @@ export class LLMAgent implements Agent {
 	private async runTools(
 		calls: ToolCallPart[],
 		{ signal, onProgress: callback = ignoreProgress, approve }: RunOptions,
+		effects: RunEffects,
 	): Promise<Message> {
 		const results: MessagePart[] = [];
 		for (const call of calls) {
@@ -241,7 +257,7 @@ export class LLMAgent implements Agent {
 			signal.throwIfAborted();
 			// Announced only as its turn comes, so a consumer never shows a call as running early.
 			narrate(call, callback);
-			const { result, denied } = await this.runTool(call, signal, approve);
+			const { result, denied } = await this.runTool(call, signal, approve, effects);
 			if (denied) emit({ type: 'tool', id: call.id, name: call.name, status: 'denied' }, callback);
 			else narrate(result, callback);
 			results.push(result);
@@ -257,7 +273,8 @@ export class LLMAgent implements Agent {
 		let tokens: Tokens | undefined;
 		// Once one call went unreported the run's total is unknown, however many report later.
 		let unreported = false;
-		let toolRan = false;
+		// Per run, not per instance: what one run executed says nothing about another.
+		const effects: RunEffects = { toolRan: false };
 
 		try {
 			for (let step = 1; step <= this.maxSteps; step++) {
@@ -289,10 +306,7 @@ export class LLMAgent implements Agent {
 
 				// On the last step no call is left to send the results to, so the tools do not run.
 				if (step < this.maxSteps) {
-					// Only a call to a tool the agent has reaches `execute`; a missing one has no
-					// effect a retry could repeat.
-					toolRan ||= calls.some(call => this.tools.has(call.name));
-					runMessages.push(await this.runTools(calls, options));
+					runMessages.push(await this.runTools(calls, options, effects));
 				}
 			}
 
@@ -301,7 +315,7 @@ export class LLMAgent implements Agent {
 			});
 		} catch (error) {
 			let failure = error;
-			if (toolRan && error instanceof RecoverableError) {
+			if (effects.toolRan && error instanceof RecoverableError) {
 				// RetryingAgent would run the whole prompt again, and with it every tool this run
 				// already executed, so a failure after one ran must not invite a retry.
 				const unrecoverable = new UnrecoverableError(error.message, {
