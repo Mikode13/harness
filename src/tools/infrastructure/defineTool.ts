@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { ToolRisk } from '#src/agent/domain/approval';
 import { InvalidAgentConfigError } from '#src/agent/domain/errors';
 import type { JSONSchema } from '#src/llm/domain/tool';
 import type { Tool } from '../domain/tool.ts';
@@ -78,17 +79,23 @@ function assertStrict(schema: unknown, toolName: string): void {
  * model sends, and types the input `execute` receives. Invalid input is rejected with a message
  * naming what is wrong, which the agent hands back to the model as an error result.
  *
+ * `risk` is one level for every call, or a function that judges each call from its validated
+ * input, such as `destructive` only when a file already exists. Input that fails validation
+ * counts as `safe`, because `execute` rejects it before doing anything.
+ *
  * @throws {InvalidAgentConfigError} when the schema falls outside what strict mode supports.
  */
 export function defineTool<Schema extends z.ZodObject>({
 	name,
 	description,
 	input,
+	risk,
 	execute,
 }: {
 	name: string;
 	description: string;
 	input: Schema;
+	risk: ToolRisk | ((input: z.infer<Schema>) => ToolRisk);
 	execute: (input: z.infer<Schema>, signal: AbortSignal) => Promise<string>;
 }): Tool {
 	const inputSchema: Record<string, unknown> = { ...z.toJSONSchema(input) };
@@ -100,6 +107,11 @@ export function defineTool<Schema extends z.ZodObject>({
 		name,
 		description,
 		inputSchema: inputSchema as JSONSchema,
+		risk: raw => {
+			if (typeof risk === 'string') return risk;
+			const parsed = input.safeParse(raw);
+			return parsed.success ? risk(parsed.data) : 'safe';
+		},
 		execute: (raw, signal) => {
 			const parsed = input.safeParse(raw);
 			if (!parsed.success) {

@@ -7,6 +7,7 @@ import type { Thread, ThreadEvent } from '@openai/codex-sdk';
 import OpenAI from 'openai';
 import type { Response } from 'openai/resources/responses/responses';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { InvalidAgentConfigError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
 import {
 	createAgent,
@@ -18,6 +19,7 @@ import {
 	createLLMOrchestrator,
 } from '../../src/factory/infrastructure/agentLLMFactory.ts';
 import type { AgentProvider } from '../../src/factory/infrastructure/types.ts';
+import { defineTool } from '../../src/tools/infrastructure/defineTool.ts';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 vi.mock('@openai/codex-sdk', () => ({ Codex: vi.fn() }));
@@ -281,6 +283,41 @@ describe('createLLMAgent', () => {
 			{ signal },
 		);
 	});
+
+	it.each([
+		[true, 1],
+		[false, 0],
+	])(
+		'runs a destructive call without asking only with autoApprove (%s)',
+		async (autoApprove, runs) => {
+			const create = openAIReplying('done');
+			const answer = await create();
+			create.mockClear();
+			create.mockResolvedValueOnce({
+				...answer,
+				output: [
+					{ type: 'function_call', id: 'fc-1', call_id: 'call-1', name: 'delete', arguments: '{}' },
+				],
+			} as unknown as Response);
+			const execute = vi.fn(() => Promise.resolve('deleted'));
+			const tool = defineTool({
+				name: 'delete',
+				description: '',
+				input: z.object({}),
+				risk: 'destructive',
+				execute,
+			});
+
+			await createLLMAgent('openai', {
+				systemPrompt: '',
+				tools: [tool],
+				autoApprove,
+				logger: createLogger(),
+			}).run('prompt', { signal });
+
+			expect(execute).toHaveBeenCalledTimes(runs);
+		},
+	);
 
 	it('rejects a model the OpenAI client does not support', () => {
 		openAIReplying('hi');
