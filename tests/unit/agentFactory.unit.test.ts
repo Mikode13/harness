@@ -10,12 +10,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { InvalidAgentConfigError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
 import {
 	createAgent,
-	createLLMAgent,
 	createOrchestrator,
 	isAgentProvider,
-	type AgentProvider,
-	type LLMProvider,
 } from '../../src/factory/infrastructure/agentFactory.ts';
+import {
+	createLLMAgent,
+	createLLMOrchestrator,
+} from '../../src/factory/infrastructure/agentLLMFactory.ts';
+import type { AgentProvider } from '../../src/factory/infrastructure/types.ts';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 vi.mock('@openai/codex-sdk', () => ({ Codex: vi.fn() }));
@@ -175,9 +177,10 @@ afterEach(() => {
 
 describe('isAgentProvider', () => {
 	it.each([
-		['claude', true],
-		['codex', true],
-		['astra', false],
+		['anthropic', true],
+		['openai', true],
+		['claude', false],
+		['codex', false],
 	])('recognizes %s as a provider: %s', (value, expected) => {
 		expect(isAgentProvider(value)).toBe(expected);
 	});
@@ -188,8 +191,8 @@ describe('createAgent', () => {
 		const startThread = codexReplying('hi');
 		vi.mocked(query).mockReturnValue(claudeStream([claudeResult('hi')]));
 
-		createAgent('codex', { logger: createLogger() });
-		await createAgent('claude', { logger: createLogger() }).run('prompt', signal, vi.fn());
+		createAgent('openai', { logger: createLogger() });
+		await createAgent('anthropic', { logger: createLogger() }).run('prompt', signal, vi.fn());
 
 		expect(codexModels(startThread)).toEqual(['gpt-5.6-sol']);
 		expect(claudeModels()).toEqual(['opus']);
@@ -198,7 +201,7 @@ describe('createAgent', () => {
 	it('passes the requested model and reasoning effort to the engine', () => {
 		const startThread = codexReplying('hi');
 
-		createAgent('codex', {
+		createAgent('openai', {
 			model: 'gpt-6-astra',
 			reasoningEffort: 'ultra',
 			logger: createLogger(),
@@ -214,15 +217,15 @@ describe('createAgent', () => {
 		const startThread = codexReplying('hi');
 		vi.mocked(query).mockReturnValue(claudeStream([claudeResult('hi')]));
 
-		createAgent('codex', { logger: createLogger() });
-		await createAgent('claude', { logger: createLogger() }).run('prompt', signal, vi.fn());
+		createAgent('openai', { logger: createLogger() });
+		await createAgent('anthropic', { logger: createLogger() }).run('prompt', signal, vi.fn());
 
 		expect(startThread.mock.calls[0]?.[0]).not.toHaveProperty('approvalPolicy');
 		expect(vi.mocked(query).mock.calls[0]?.[0].options).not.toHaveProperty('permissionMode');
 	});
 
 	it('rejects a model the provider does not support', () => {
-		expect(() => createAgent('codex', { model: 'opus', logger: createLogger() })).toThrow(
+		expect(() => createAgent('openai', { model: 'opus', logger: createLogger() })).toThrow(
 			InvalidAgentConfigError,
 		);
 	});
@@ -241,7 +244,7 @@ describe('createAgent', () => {
 			.mockReturnValueOnce(claudeStream([claudeResult('recovered')]));
 		const logger = createLogger();
 
-		const response = await createAgent('claude', { logger }).run('prompt', signal, vi.fn());
+		const response = await createAgent('anthropic', { logger }).run('prompt', signal, vi.fn());
 
 		expect(response.response).toBe('recovered');
 		expect(query).toHaveBeenCalledTimes(2);
@@ -253,7 +256,7 @@ describe('createAgent', () => {
 		vi.mocked(query).mockReturnValue(claudeStream([unknownMessage, claudeResult('hi')]));
 		const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
-		await createAgent('claude').run('prompt', signal, vi.fn());
+		await createAgent('anthropic').run('prompt', signal, vi.fn());
 
 		expect(warn).toHaveBeenCalledWith(unknownMessage, 'Unknown Claude message type');
 	});
@@ -270,7 +273,11 @@ describe('createLLMAgent', () => {
 
 		expect(response.response).toBe('hi');
 		expect(create).toHaveBeenCalledWith(
-			expect.objectContaining({ model: 'gpt-5.6-luna', instructions: 'Be brief.' }),
+			expect.objectContaining({
+				model: 'gpt-5.6-luna',
+				instructions: 'Be brief.',
+				reasoning: { effort: 'high', summary: 'auto' },
+			}),
 			{ signal },
 		);
 	});
@@ -308,14 +315,18 @@ describe('createLLMAgent', () => {
 	it('sends the system prompt with the default Claude model', async () => {
 		const create = claudeAPIReplying('hi');
 
-		const response = await createLLMAgent('claude', {
+		const response = await createLLMAgent('anthropic', {
 			systemPrompt: 'Be brief.',
 			logger: createLogger(),
 		}).run('prompt', signal, vi.fn());
 
 		expect(response.response).toBe('hi');
 		expect(create).toHaveBeenCalledWith(
-			expect.objectContaining({ model: 'claude-sonnet-5', system: 'Be brief.' }),
+			expect.objectContaining({
+				model: 'claude-sonnet-5',
+				system: 'Be brief.',
+				output_config: { effort: 'high' },
+			}),
 			{ signal },
 		);
 	});
@@ -324,13 +335,72 @@ describe('createLLMAgent', () => {
 		claudeAPIReplying('hi');
 
 		expect(() =>
-			createLLMAgent('claude', { model: 'gpt-5.6-luna', systemPrompt: '', logger: createLogger() }),
+			createLLMAgent('anthropic', {
+				model: 'gpt-5.6-luna',
+				systemPrompt: '',
+				logger: createLogger(),
+			}),
+		).toThrow(InvalidAgentConfigError);
+	});
+
+	it('sends the model and reasoning effort it is asked for, by the same names as createAgent', async () => {
+		const openAICreate = openAIReplying('hi');
+		const claudeCreate = claudeAPIReplying('hi');
+
+		await createLLMAgent('openai', {
+			model: 'gpt-5.6-sol',
+			reasoningEffort: 'max',
+			systemPrompt: '',
+			logger: createLogger(),
+		}).run('prompt', signal, vi.fn());
+		await createLLMAgent('anthropic', {
+			model: 'opus',
+			reasoningEffort: 'low',
+			systemPrompt: '',
+			logger: createLogger(),
+		}).run('prompt', signal, vi.fn());
+
+		expect(openAICreate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				model: 'gpt-5.6-sol',
+				reasoning: { effort: 'max', summary: 'auto' },
+			}),
+			{ signal },
+		);
+		// The Messages API takes the full ID behind the alias.
+		expect(claudeCreate).toHaveBeenCalledWith(
+			expect.objectContaining({ model: 'claude-opus-5-5', output_config: { effort: 'low' } }),
+			{ signal },
+		);
+	});
+
+	it.each([
+		['openai', 'ultra'],
+		['anthropic', 'ultra'],
+	] as const)('rejects a reasoning effort the %s client does not support', (provider, effort) => {
+		openAIReplying('hi');
+		claudeAPIReplying('hi');
+
+		expect(() =>
+			createLLMAgent(provider, {
+				reasoningEffort: effort,
+				systemPrompt: '',
+				logger: createLogger(),
+			}),
+		).toThrow(InvalidAgentConfigError);
+	});
+
+	it('rejects haiku, which has no adaptive thinking on the Messages API', () => {
+		claudeAPIReplying('hi');
+
+		expect(() =>
+			createLLMAgent('anthropic', { model: 'haiku', systemPrompt: '', logger: createLogger() }),
 		).toThrow(InvalidAgentConfigError);
 	});
 
 	it('rejects an unknown provider', () => {
 		expect(() =>
-			createLLMAgent('gemini' as LLMProvider, { systemPrompt: '', logger: createLogger() }),
+			createLLMAgent('gemini' as AgentProvider, { systemPrompt: '', logger: createLogger() }),
 		).toThrow(InvalidAgentConfigError);
 	});
 
@@ -346,7 +416,7 @@ describe('createLLMAgent', () => {
 });
 
 describe('createOrchestrator', () => {
-	it('lets Codex plan and execute and Claude review by default', async () => {
+	it('lets OpenAI plan and execute and Anthropic review by default', async () => {
 		const startThread = codexReplying('done');
 		vi.mocked(query).mockReturnValue(claudeStream([claudeResult('{"decision":"approved"}')]));
 
@@ -360,14 +430,14 @@ describe('createOrchestrator', () => {
 		expect(claudeEfforts()).toEqual(['high']);
 	});
 
-	it('runs every role on Claude when asked to', async () => {
+	it('runs every role on Anthropic when asked to', async () => {
 		vi.mocked(query)
 			.mockReturnValueOnce(claudeStream([claudeResult('plan')]))
 			.mockReturnValueOnce(claudeStream([claudeResult('implementation')]))
 			.mockReturnValueOnce(claudeStream([claudeResult('{"decision":"approved"}')]));
 
 		await expect(
-			createOrchestrator({ provider: 'claude', logger: createLogger() }).run(
+			createOrchestrator({ provider: 'anthropic', logger: createLogger() }).run(
 				'ship it',
 				signal,
 				vi.fn(),
@@ -376,13 +446,38 @@ describe('createOrchestrator', () => {
 
 		expect(claudeModels()).toEqual(['opus', 'sonnet', 'opus']);
 		expect(claudeEfforts()).toEqual(['high', 'xhigh', 'high']);
+		// The Agent SDKs take no system prompt, so each role's instructions lead its prompt.
+		expect(vi.mocked(query).mock.calls.map(([params]) => params.prompt)).toEqual([
+			expect.stringMatching(/^You are the planner agent/),
+			expect.stringMatching(/^You are the executor agent/),
+			expect.stringMatching(/^You are the reviewer agent/),
+		]);
 		expect(Codex).not.toHaveBeenCalled();
 	});
 
-	it('runs every role on Codex when asked to', () => {
+	it("puts a caller's own instructions ahead of a role's prompt, and keeps ours for the rest", async () => {
+		vi.mocked(query)
+			.mockReturnValueOnce(claudeStream([claudeResult('plan')]))
+			.mockReturnValueOnce(claudeStream([claudeResult('implementation')]))
+			.mockReturnValueOnce(claudeStream([claudeResult('{"decision":"approved"}')]));
+
+		await createOrchestrator({
+			provider: 'anthropic',
+			systemPrompts: { planner: 'Plan in one line.' },
+			logger: createLogger(),
+		}).run('ship it', signal, vi.fn());
+
+		expect(vi.mocked(query).mock.calls.map(([params]) => params.prompt)).toEqual([
+			expect.stringMatching(/^Plan in one line\.\n\nOriginal user request:/),
+			expect.stringMatching(/^You are the executor agent/),
+			expect.stringMatching(/^You are the reviewer agent/),
+		]);
+	});
+
+	it('runs every role on OpenAI when asked to', () => {
 		const startThread = codexReplying('done');
 
-		createOrchestrator({ provider: 'codex', logger: createLogger() });
+		createOrchestrator({ provider: 'openai', logger: createLogger() });
 
 		expect(codexModels(startThread)).toEqual(['gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.6-sol']);
 		expect(codexEfforts(startThread)).toEqual(['high', 'xhigh', 'high']);
@@ -410,6 +505,158 @@ describe('createOrchestrator', () => {
 
 	it('rejects an unknown provider coming from untyped input', () => {
 		expect(() => createOrchestrator({ provider: 'astra' as AgentProvider })).toThrow(
+			InvalidAgentConfigError,
+		);
+	});
+});
+
+describe('createLLMOrchestrator', () => {
+	it('plans and reviews on the model APIs and executes on the Agent SDK', async () => {
+		const openAICreate = openAIReplying('plan');
+		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
+		const startThread = codexReplying('implementation');
+
+		await expect(
+			(await createLLMOrchestrator({ logger: createLogger() })).run('ship it', signal, vi.fn()),
+		).resolves.toMatchObject({ response: 'All job has finished' });
+
+		expect(openAICreate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				model: 'gpt-5.6-sol',
+				reasoning: { effort: 'high', summary: 'auto' },
+				instructions: expect.stringContaining('AGENTS.md') as unknown,
+			}),
+			{ signal },
+		);
+		expect(codexModels(startThread)).toEqual(['gpt-5.6-luna']);
+		expect(codexEfforts(startThread)).toEqual(['xhigh']);
+		expect(startThread.mock.calls[0]?.[0]).not.toHaveProperty('approvalPolicy');
+		expect(claudeCreate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				model: 'claude-opus-5-5',
+				output_config: { effort: 'high' },
+				system: expect.stringContaining('AGENTS.md') as unknown,
+			}),
+			{ signal },
+		);
+		expect(query).not.toHaveBeenCalled();
+	});
+
+	it('gives the model-backed roles their instructions as the system prompt, with the tools', async () => {
+		const openAICreate = openAIReplying('plan');
+		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
+		const startThread = codexReplying('implementation');
+
+		await (await createLLMOrchestrator({ logger: createLogger() })).run('ship it', signal, vi.fn());
+
+		const plannerRequest = openAICreate.mock.calls[0] as unknown as [
+			{ instructions: string; input: unknown; tools: { name: string }[] },
+		];
+		expect(plannerRequest[0].instructions).toContain('You are the planner agent');
+		expect(JSON.stringify(plannerRequest[0].input)).not.toContain('You are the planner agent');
+		expect(plannerRequest[0].tools.map(tool => tool.name)).toEqual([
+			'listFiles',
+			'searchText',
+			'readFile',
+		]);
+		const reviewerRequest = claudeCreate.mock.calls[0] as unknown as [
+			{ system: string; messages: unknown; tools: unknown[] },
+		];
+		expect(reviewerRequest[0].system).toContain('You are the reviewer agent');
+		expect(JSON.stringify(reviewerRequest[0].messages)).not.toContain('You are the reviewer agent');
+		expect(reviewerRequest[0].tools).toHaveLength(3);
+		// The executor's Agent SDK takes no system prompt, so its instructions lead the prompt.
+		const { runStreamed } = startThread.mock.results[0]?.value as {
+			runStreamed: ReturnType<typeof vi.fn>;
+		};
+		expect(runStreamed.mock.calls[0]?.[0]).toMatch(/^You are the executor agent/);
+	});
+
+	it("uses a caller's own system prompt word for word, and keeps ours for the rest", async () => {
+		const openAICreate = openAIReplying('plan');
+		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
+		const startThread = codexReplying('implementation');
+
+		await (
+			await createLLMOrchestrator({
+				systemPrompts: { reviewer: 'Review strictly.', executor: 'Change only tests.' },
+				logger: createLogger(),
+			})
+		).run('ship it', signal, vi.fn());
+
+		expect(claudeCreate).toHaveBeenCalledWith(
+			expect.objectContaining({ system: 'Review strictly.' }),
+			{ signal },
+		);
+		expect(openAICreate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				instructions: expect.stringMatching(
+					/^You are the planner agent[\s\S]*AGENTS\.md/,
+				) as unknown,
+			}),
+			{ signal },
+		);
+		const { runStreamed } = startThread.mock.results[0]?.value as {
+			runStreamed: ReturnType<typeof vi.fn>;
+		};
+		expect(runStreamed.mock.calls[0]?.[0]).toMatch(
+			/^Change only tests\.\n\nOriginal user request:/,
+		);
+	});
+
+	it('runs every role on Anthropic when asked to', async () => {
+		const claudeCreate = claudeAPIReplying('plan');
+		claudeCreate.mockResolvedValueOnce({
+			stop_reason: 'end_turn',
+			content: [{ type: 'text', text: 'plan', citations: null }],
+			usage: {
+				input_tokens: 1,
+				cache_read_input_tokens: 0,
+				cache_creation_input_tokens: 0,
+				output_tokens: 1,
+			},
+		} as unknown as AnthropicMessage);
+		claudeCreate.mockResolvedValueOnce({
+			stop_reason: 'end_turn',
+			content: [{ type: 'text', text: '{"decision":"approved"}', citations: null }],
+			usage: {
+				input_tokens: 1,
+				cache_read_input_tokens: 0,
+				cache_creation_input_tokens: 0,
+				output_tokens: 1,
+			},
+		} as unknown as AnthropicMessage);
+		vi.mocked(query).mockReturnValue(claudeStream([claudeResult('implementation')]));
+
+		await expect(
+			(await createLLMOrchestrator({ provider: 'anthropic', logger: createLogger() })).run(
+				'ship it',
+				signal,
+				vi.fn(),
+			),
+		).resolves.toMatchObject({ response: 'All job has finished' });
+
+		expect(claudeCreate).toHaveBeenCalledTimes(2);
+		expect(claudeModels()).toEqual(['sonnet']);
+		expect(claudeEfforts()).toEqual(['xhigh']);
+		expect(Codex).not.toHaveBeenCalled();
+		expect(OpenAI).not.toHaveBeenCalled();
+	});
+
+	it('passes autoApprove to the executor alone', async () => {
+		openAIReplying('plan');
+		claudeAPIReplying('{"decision":"approved"}');
+		const startThread = codexReplying('implementation');
+
+		await createLLMOrchestrator({ autoApprove: true, logger: createLogger() });
+
+		expect(startThread.mock.calls).toEqual([
+			[expect.objectContaining({ approvalPolicy: 'never', sandboxMode: 'danger-full-access' })],
+		]);
+	});
+
+	it('rejects an unknown provider coming from untyped input', async () => {
+		await expect(createLLMOrchestrator({ provider: 'astra' as AgentProvider })).rejects.toThrow(
 			InvalidAgentConfigError,
 		);
 	});

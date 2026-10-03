@@ -4,6 +4,7 @@ import type {
 	ContentBlockParam,
 	Message as AnthropicMessage,
 	MessageParam,
+	OutputConfig,
 	RedactedThinkingBlockParam,
 	ThinkingBlockParam,
 	Tool as ClaudeTool,
@@ -29,9 +30,26 @@ import type { LLMClient, LLMResponse, StopReason } from '../domain/llm.ts';
 import type { Message, MessagePart } from '../domain/message.ts';
 import type { ToolDefinition } from '../domain/tool.ts';
 
-// The Messages API takes full model IDs, not the Agent SDK's aliases, so this list is its own.
-export const claudeLLMModels = ['claude-opus-5-5', 'claude-fable-5-1', 'claude-sonnet-5'] as const;
+// The Messages API takes full model IDs. Callers name a model by the Agent SDK's alias, so both
+// paths share one vocabulary; this table pins the ID each alias means here, and moves by hand
+// when Anthropic releases a newer model. Haiku is left out: it has no adaptive thinking.
+export const claudeLLMModels = ['opus', 'fable', 'sonnet'] as const;
 export type ClaudeLLMModel = (typeof claudeLLMModels)[number];
+
+const claudeLLMModelIds = {
+	opus: 'claude-opus-5-5',
+	fable: 'claude-fable-5-1',
+	sonnet: 'claude-sonnet-5',
+} as const satisfies Record<ClaudeLLMModel, string>;
+
+export const claudeLLMReasoningEfforts = [
+	'low',
+	'medium',
+	'high',
+	'xhigh',
+	'max',
+] as const satisfies readonly NonNullable<OutputConfig['effort']>[];
+export type ClaudeLLMReasoningEffort = (typeof claudeLLMReasoningEfforts)[number];
 
 // Adaptive thinking spends from this budget too. Above roughly 21,000 the SDK refuses a request
 // that is not streamed, because it could outlast its ten-minute timeout.
@@ -254,23 +272,32 @@ function classifyClaudeFailure(error: unknown): Error {
  */
 export class ClaudeLLMClient implements LLMClient {
 	private readonly client: Anthropic;
-	private readonly model: ClaudeLLMModel;
+	private readonly model: (typeof claudeLLMModelIds)[ClaudeLLMModel];
+	private readonly reasoningEffort: ClaudeLLMReasoningEffort;
 	private readonly systemPrompt: string;
 	private readonly logger: ILogger;
 
-	// `model` is untyped on purpose: this adapter is the one that knows what Claude supports.
+	// `model` and `reasoningEffort` are untyped on purpose: this adapter is the one that knows
+	// what Claude supports.
 	constructor({
 		model,
+		reasoningEffort = 'high',
 		systemPrompt,
 		logger,
 	}: {
 		model: string;
+		reasoningEffort?: string;
 		systemPrompt: string;
 		logger: ILogger;
 	}) {
 		if (!isOneOf(claudeLLMModels, model)) {
 			throw new InvalidAgentConfigError(
 				`"${model}" is not a Claude API model; expected one of: ${claudeLLMModels.join(', ')}`,
+			);
+		}
+		if (!isOneOf(claudeLLMReasoningEfforts, reasoningEffort)) {
+			throw new InvalidAgentConfigError(
+				`"${reasoningEffort}" is not a Claude API reasoning effort; expected one of: ${claudeLLMReasoningEfforts.join(', ')}`,
 			);
 		}
 
@@ -286,7 +313,8 @@ export class ClaudeLLMClient implements LLMClient {
 			});
 		}
 
-		this.model = model;
+		this.model = claudeLLMModelIds[model];
+		this.reasoningEffort = reasoningEffort;
 		this.systemPrompt = systemPrompt;
 		this.logger = logger;
 	}
@@ -307,6 +335,7 @@ export class ClaudeLLMClient implements LLMClient {
 					// Left out when empty, so a request without tools stays as it always was.
 					...(tools.length > 0 && { tools: tools.map(toClaudeTool) }),
 					thinking: { type: 'adaptive', display: 'summarized' },
+					output_config: { effort: this.reasoningEffort },
 					// Anthropic caches only on request. This marks the last block, so the next call
 					// reads everything before it from the cache instead of paying for it again.
 					cache_control: { type: 'ephemeral' },

@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { OrchestratorAgent } from '../../src/orchestration/domain/model/orchestratorAgent.ts';
+import {
+	executorInstructions,
+	OrchestratorAgent,
+	plannerInstructions,
+	reviewerInstructions,
+} from '../../src/orchestration/domain/model/orchestratorAgent.ts';
 import type { Agent, AgentResponse } from '../../src/agent/domain/agent.ts';
 import type { Tokens } from '../../src/shared/domain/tokens.ts';
 import type { ILogger } from '../../src/shared/domain/logger.ts';
@@ -100,16 +105,6 @@ describe('OrchestratorAgent', () => {
 			signal,
 			callback,
 		);
-		expect(planner.run).toHaveBeenCalledWith(
-			expect.stringContaining('engineering-grade plan'),
-			signal,
-			callback,
-		);
-		expect(planner.run).toHaveBeenCalledWith(
-			expect.stringContaining('do not require an architecture redesign yet'),
-			signal,
-			callback,
-		);
 		expect(executor.run).toHaveBeenCalledWith(
 			expect.stringContaining('Original user request:\n---\nship feature\n---'),
 			signal,
@@ -120,13 +115,32 @@ describe('OrchestratorAgent', () => {
 			signal,
 			callback,
 		);
-		expect(executor.run).toHaveBeenCalledWith(
-			expect.stringContaining('Preserve contracts and boundaries'),
+		expect(reviewer.run).toHaveBeenCalledWith(
+			expect.stringContaining('Original user request:\n---\nship feature\n---'),
 			signal,
 			callback,
 		);
-		expect(reviewer.run).toHaveBeenCalledWith(
-			expect.stringContaining('Original user request:\n---\nship feature\n---'),
+		expect(plannerInstructions).toContain('engineering-grade plan');
+		expect(plannerInstructions).toContain('do not require an architecture redesign yet');
+		expect(executorInstructions).toContain('Preserve contracts and boundaries');
+		expect(reviewerInstructions).toContain('Independently inspect the repository');
+		expect(reviewerInstructions).toContain('plan compliance is secondary');
+		expect(reviewerInstructions).toContain(
+			'{"decision":"rejected","feedback":"list concrete, prioritized findings',
+		);
+		// The instructions are the agent's to hold; each prompt carries only the round's data.
+		expect(planner.run).not.toHaveBeenCalledWith(
+			expect.stringContaining('You are the planner agent'),
+			signal,
+			callback,
+		);
+		expect(executor.run).not.toHaveBeenCalledWith(
+			expect.stringContaining('You are the executor agent'),
+			signal,
+			callback,
+		);
+		expect(reviewer.run).not.toHaveBeenCalledWith(
+			expect.stringContaining('You are the reviewer agent'),
 			signal,
 			callback,
 		);
@@ -138,23 +152,6 @@ describe('OrchestratorAgent', () => {
 		expect(reviewer.run).toHaveBeenCalledWith(
 			expect.stringContaining(
 				'Executor response (context only; verify it independently):\n---\nimplemented changes\n---',
-			),
-			signal,
-			callback,
-		);
-		expect(reviewer.run).toHaveBeenCalledWith(
-			expect.stringContaining('Independently inspect the repository'),
-			signal,
-			callback,
-		);
-		expect(reviewer.run).toHaveBeenCalledWith(
-			expect.stringContaining('plan compliance is secondary'),
-			signal,
-			callback,
-		);
-		expect(reviewer.run).toHaveBeenCalledWith(
-			expect.stringContaining(
-				'{"decision":"rejected","feedback":"list concrete, prioritized findings',
 			),
 			signal,
 			callback,

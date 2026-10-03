@@ -59,7 +59,7 @@ function createSdk(...results: (AnthropicMessage | Error)[]) {
 }
 
 function createClient(logger = { warn: vi.fn() }) {
-	return new ClaudeLLMClient({ model: 'claude-sonnet-5', systemPrompt: 'Be brief.', logger });
+	return new ClaudeLLMClient({ model: 'sonnet', systemPrompt: 'Be brief.', logger });
 }
 
 function apiError(status: number, type: string, message = `${type} happened`): APIError {
@@ -76,10 +76,26 @@ describe('ClaudeLLMClient', () => {
 		vi.clearAllMocks();
 	});
 
-	it('rejects a model the Messages API does not take before building the SDK', () => {
-		// The Agent SDK alias is not a model ID the API accepts.
+	it.each(['haiku', 'claude-opus-5-5'])(
+		'rejects %s, a model it does not take, before building the SDK',
+		model => {
+			// Haiku has no adaptive thinking; a full ID is not one of the aliases callers use.
+			expect(
+				() => new ClaudeLLMClient({ model, systemPrompt: '', logger: { warn: vi.fn() } }),
+			).toThrow(InvalidAgentConfigError);
+			expect(Anthropic).not.toHaveBeenCalled();
+		},
+	);
+
+	it('rejects a reasoning effort the Messages API does not take before building the SDK', () => {
 		expect(
-			() => new ClaudeLLMClient({ model: 'opus', systemPrompt: '', logger: { warn: vi.fn() } }),
+			() =>
+				new ClaudeLLMClient({
+					model: 'opus',
+					reasoningEffort: 'ultra',
+					systemPrompt: '',
+					logger: { warn: vi.fn() },
+				}),
 		).toThrow(InvalidAgentConfigError);
 		expect(Anthropic).not.toHaveBeenCalled();
 	});
@@ -171,6 +187,7 @@ describe('ClaudeLLMClient', () => {
 					{ role: 'user', content: [{ type: 'text', text: 'third' }] },
 				],
 				thinking: { type: 'adaptive', display: 'summarized' },
+				output_config: { effort: 'high' },
 				cache_control: { type: 'ephemeral' },
 			},
 			{ signal },

@@ -1,15 +1,17 @@
 export type { ILogger } from './shared/domain/logger.ts';
 export {
-	agentProviders,
 	createAgent,
 	createOrchestrator,
 	isAgentProvider,
+	type CreateAgentOptions,
+} from './factory/infrastructure/agentFactory.ts';
+export {
+	agentProviders,
 	type AgentModel,
 	type AgentProvider,
-	type CreateAgentOptions,
 	type CreateOrchestratorOptions,
 	type ReasoningEffort,
-} from './factory/infrastructure/agentFactory.ts';
+} from './factory/infrastructure/types.ts';
 export {
 	type Agent,
 	type AgentResponse,

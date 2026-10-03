@@ -11,7 +11,7 @@ The package is a provider-agnostic seam for driving coding agents. It owns one c
 `Agent`, two provider adapters behind it, a model-backed agent that owns its conversation, a retry policy, a planner → executor → reviewer
 workflow, and the classification that keeps every failure crossing the seam legible to its
 consumers. It does not own terminal or network I/O, prompt composition for a consumer's own
-use case, the tools an agent runs, memory, or scheduling.
+use case, tools that change files, memory, or scheduling.
 
 This document covers the published package under `src/`. The `cli/` workspace project in the
 same repository is a development-only consumer and is not part of the published artifact.
@@ -48,7 +48,7 @@ provider: it drives whatever `LLMClient` it is given.
 | `src/llm/`           | `LLMClient`, the stateless model port; `Message` and its parts, including opaque `providerData`; `Conversation`; the `ToolDefinition` a client describes to the model; `MaxContextError`; `OpenAILLMClient`; `ClaudeLLMClient`                                                                                                                                                                                                                                                                                                                                                                                              |
 | `src/tools/`         | `Tool`, a `ToolDefinition` plus the `execute` the agent runs; `defineTool`, which builds one from a Zod schema and rejects a schema strict mode would refuse (an optional field, a numeric or length bound, an object open to any key); `Workspace`, the read-only port to the folder an agent works on, and `createWorkspaceTools`, the `listFiles`, `searchText` and `readFile` tools over it; `createWorkspace`, which picks `RipgrepWorkspace` or falls back to `GitWorkspace`, both enforcing the boundary through `BoundedWorkspace`. It depends on `src/llm/` for the definition; `src/llm/` does not know it exists |
 | `src/factory/`       | Provider selection, default model and reasoning effort per role, and composition with the retry decorator                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `src/orchestration/` | The three role prompts, the attempt loop, per-run usage totals, and the validated reviewer decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `src/orchestration/` | Each role's default instructions and the data each round sends, `InstructedAgent`, the attempt loop, per-run usage totals, and the validated reviewer decision                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `src/retry/`         | The decision to call an inner agent again, and the prompt that carries the previous failure into the next call                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `src/shared/`        | `ILogger` and its stderr implementation, `isAbortError`, `isOneOf`, `Tokens`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
@@ -143,8 +143,13 @@ context server-side. `LLMAgent` is the exception being built for #23: it keeps i
 holds no state. Its adapters are `OpenAILLMClient`, on the OpenAI Responses API with
 `store: false`, and `ClaudeLLMClient`, on the Anthropic Messages API. The internal
 `createLLMAgent` builds one of them and the agent together for a provider, wrapped in retry
-like every other agent, and gives it no tools; it is not exported from `src/index.ts` until
-parity with the Agent SDK engines (#23).
+like every other agent, with the tools it is given. The internal `createLLMOrchestrator` runs
+the planner and reviewer on it, each with its role's instructions, or the caller's, as the system prompt and the
+read-only repository tools, and keeps the executor on its Agent SDK, because an agent of ours
+cannot change files yet. `OrchestratorAgent` sends each role only the round's data; an agent
+without a system prompt gets its instructions at the head of every prompt from `InstructedAgent`. Neither is exported from `src/index.ts` until parity with the Agent
+SDK engines (#23). Both paths name a provider by its company, `'anthropic'` or `'openai'`, and
+take the same model and effort names, so one role table serves both.
 
 ## Important flows
 
@@ -203,10 +208,11 @@ each other's.
 - **Retry wraps an agent, not a workflow.** A transient failure in one role is absorbed where
   it happened, without redoing another role's successful work. The cost is that a workflow has
   no single retry budget: each role carries its own.
-- **The orchestrator's prompts are fixed.** The three role prompts live in
-  `src/orchestration/domain/model/orchestratorAgent.ts` and are not configurable. Nothing has
-  needed to vary them yet, and a configuration seam added before a second caller would be an
-  abstraction without a consumer.
+- **Each role's instructions are a default a caller can replace.** The harness's own live in
+  `src/orchestration/domain/model/orchestratorAgent.ts`, apart from the data each round sends.
+  Both orchestrator factories take `systemPrompts`, per role, and use a replacement word for
+  word; a role left out keeps the default. The reviewer's JSON decision is the one part the
+  workflow depends on, so a replaced reviewer prompt must still ask for it.
 - **The mandatory test suite never contacts a provider.** Both engines and `LLMAgent` with
   both `LLMClient`s are exercised through offline fakes of their SDK surfaces. Provider-boundary correctness — authentication, request
   shape, model availability — is not covered by an automated suite and surfaces through real
@@ -217,8 +223,9 @@ each other's.
   WebSocket consumer would call `Agent.run()` per request and want none of it. It stays out of
   the tarball too — `files` lists `dist` only, and `scripts/pack-check.mjs` fails on anything
   else reaching it.
-- **No agent is given tools yet.** The read-only repository tools exist (#25), but
-  `createLLMAgent` gives none; the model-backed orchestrator of #23 is their first consumer.
+- **Only the model-backed planner and reviewer have tools, and they only read.**
+  `createLLMOrchestrator` gives them the repository tools of #25; nothing a model runs can change
+  a file until permissions exist (#43).
 - **An agent reads only what `.gitignore` does not ignore, inside one root.** Ignored files,
   tracked files `.gitignore` names, `.git`, files ripgrep's own `.ignore` would un-ignore, symlinks and paths outside the root do not exist
   for the repository tools, so a secret that is not ignored is visible. A line longer than 300

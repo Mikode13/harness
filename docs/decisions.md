@@ -754,6 +754,8 @@ A response without usage is reported as missing, not as zero: zeros would presen
 
 tags: #mikode-harness #provider-integration #error-handling #agent-loops
 
+partially superseded by: "Providers are named after the company, and both paths share their names" (below) — the provider is now `'anthropic'`, and the client takes the Agent SDK's aliases.
+
 **Decision:** `ClaudeLLMClient` is the second `LLMClient`, on the Anthropic Messages API, and `createLLMAgent` takes a provider, `'claude'` or `'openai'`, like `createAgent`. It follows the rules the OpenAI client set:
 
 - **Text only is replayed.** Summarized thinking becomes a `reasoning` part and never goes back; redacted thinking is dropped silently. The system prompt goes in the API's `system` field.
@@ -934,3 +936,34 @@ Against plain `grep` ripgrep wins by far, and the 22 extra lines are `node_modul
 **Consequences:** #25 lists optional binaries as runtime dependencies among its non-goals; this is a deliberate exception. Every install grows by 4.5 to 5.7 MB, depending on the platform, including for consumers that only use the Agent SDK engines; the binary arrives as an optional dependency per platform, with no install script, which pnpm would block. A secret that is not ignored is visible to the agent, so `.gitignore` is now a security control as well as a convenience. Scoping a ripgrep search saves no work, only output. The two implementations must be tested against the same boundary cases: an ignored file, an ignored directory, a glob naming an ignored file, a path above the root and a symlink out of it.
 
 **Lesson:** a tool's safe default can stop applying the moment an argument is explicit. When the argument comes from a model, test the explicit case against the real program before trusting the default.
+
+---
+
+## Providers are named after the company, and both paths share their names
+
+tags: #mikode-harness #provider-integration #public-api
+
+**Decision:** `AgentProvider` is `'anthropic' | 'openai'`, for `createAgent`, `createOrchestrator` and `createLLMAgent` alike. A provider is the company that authenticates and bills the call; whether it is reached through its Agent SDK (Claude Code, Codex) or its model API is the factory's choice. The model API clients also take the Agent SDK's names, so one role of the orchestrator's table can run on either path:
+
+- `ClaudeLLMClient` takes `opus`, `fable` and `sonnet`, and sends the ID each one pins: `claude-opus-5-5`, `claude-fable-5-1` and `claude-sonnet-5`. Haiku is left out, because it has no adaptive thinking.
+- Both clients take a `reasoningEffort`, `high` by default as on the engines: `output_config.effort` on Anthropic and `reasoning.effort` on OpenAI. Each validates its own list, from `low` to `max`. Codex's `ultra` has no API equivalent, so the API clients reject it.
+
+**Context:** slice 7 of #23 puts the planner and reviewer on the model APIs, where the provider had been `'openai'` while the SDK path called the same company `'codex'`. Calling both `'codex'` would tell a caller it reaches Codex through a ChatGPT login, when the API path needs `OPENAI_API_KEY` and bills per token. Without an effort, a role on the API path ran at the provider's default and lost the effort its role sets on the SDK path.
+
+**Alternatives considered:** `'codex'` on both paths — rejected for the credential confusion above. `'codex'` on the SDK path and `'openai'` on the API path — rejected: two names for one company, translated in every role table. Full model IDs on the API path, as "The Claude client follows the OpenAI client's rules" decided — superseded: the role table would need a model column per path.
+
+**Consequences:** a breaking change to the public API. `createAgent('claude')` becomes `createAgent('anthropic')`, `'codex'` becomes `'openai'`, and `createOrchestrator`'s `provider` takes the same names. The alias table is kept by hand and pins one model per alias: when Anthropic moves `opus` to a newer model, the Agent SDK follows at once and the API path stays on the pinned ID until the table changes. The lists still live in `src/llm`, so the new path does not import the engine it replaces. Class names stay as they are (`ClaudeAgent`, `CodexAgent`, `ClaudeLLMClient`, `OpenAILLMClient`), because each names what it wraps.
+
+---
+
+## The model-backed orchestrator plans and reviews on the model APIs and executes on the Agent SDK
+
+tags: #mikode-harness #agent-loops #orchestration
+
+**Decision:** `createLLMOrchestrator` runs the same workflow and role table as `createOrchestrator`, with the planner and reviewer from `createLLMAgent` and the read-only repository tools. The executor still comes from `createAgent`, and `autoApprove` reaches only the executor. Each role's instructions move out of the prompts `OrchestratorAgent` writes, which now carry only the round's data: the request, the plan, the executor's answer, the feedback. A model-backed role holds its instructions as its system prompt, followed by a short note on finding its way around the repository: paths are relative to the root, start with `AGENTS.md` and the architecture document it links to, then read only the files the task needs. An Agent SDK role has no system prompt, so `InstructedAgent` puts its instructions at the head of every prompt, which is what it received before. Both orchestrator factories take `systemPrompts`, per role, which replaces the harness's text word for word, repository note included; a role left out keeps the harness's own. The instructions are an opinion of the harness, not part of its contract, so a consumer can replace them without forking it; the reviewer's JSON decision is the one part the workflow depends on, and the option says so.
+
+**Context:** an agent of ours can read the repository (#25) but cannot change it, and approving a change is #43. A conversation owned by MiKode resends every earlier prompt on each call, so instructions inside the prompt were paid for once per round and stood in the conversation as if the user had written them. The system prompt is sent once per call, so it holds only what the role needs on every call; a repository's `AGENTS.md` and architecture document already say where things live, which costs less than searching the whole tree.
+
+**Alternatives considered:** all three roles on `LLMAgent` — rejected: the executor could not write. Keeping the instructions in the prompt and adding only the repository sentence as the system prompt — rejected for the cost and the misattribution above. A flag on `OrchestratorAgent` saying which roles hold their own instructions — rejected: where an agent keeps its instructions is decided when the agent is built, so the factory composes it and the orchestrator stays unaware.
+
+**Consequences:** the planner and reviewer need API keys and bill per token, while the executor keeps the subscription. `createLLMOrchestrator` is asynchronous, because finding the program that reads the repository is, and it reads the current working directory, as the Agent SDK engines do. The model-backed reviewer reads files but cannot run `git diff`, so it judges the code as it stands, not the change. Both factories stay internal; exporting them belongs to the last slice of #23.
