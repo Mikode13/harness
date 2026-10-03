@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
+import type { Approver } from '../../src/agent/domain/approval.ts';
 import {
 	InvalidAgentConfigError,
 	RecoverableError,
@@ -25,15 +26,20 @@ const citySchema = {
 	required: ['city'],
 };
 
-/** A tool whose `execute` is a spy; by default it reports the weather of the city it gets. */
+/**
+ * A tool whose `execute` is a spy; by default it reports the weather of the city it gets, and
+ * every call is `safe`.
+ */
 function fakeTool(
 	name: string,
 	execute: Tool['execute'] = input => Promise.resolve(`${(input as { city: string }).city}: sunny`),
+	risk: Tool['risk'] = () => 'safe',
 ) {
 	return {
 		name,
 		description: `The ${name} tool`,
 		inputSchema: citySchema,
+		risk: vi.fn(risk),
 		execute: vi.fn(execute),
 	};
 }
@@ -431,5 +437,204 @@ describe('LLMAgent with tools', () => {
 			tokens: textResponse('').usage,
 		});
 		expect(weather.execute).not.toHaveBeenCalled();
+	});
+});
+
+describe('LLMAgent tool approval', () => {
+	const deleteCall = toolCall('call-1', 'delete', { city: 'Madrid' });
+	const destructive = () => fakeTool('delete', undefined, () => 'destructive');
+	const answerAfterOneCall = (call = deleteCall) =>
+		new FakeLLMClient(assistantResponse([call]), textResponse('done'));
+
+	it.each(['safe', 'mutating'] as const)('runs a %s call without asking', async risk => {
+		const tool = fakeTool('delete', undefined, () => risk);
+		const approve = vi.fn<Approver>();
+
+		await new LLMAgent({ llmClient: answerAfterOneCall(), tools: [tool] }).run('prompt', {
+			signal,
+			approve,
+		});
+
+		expect(tool.risk).toHaveBeenCalledExactlyOnceWith({ city: 'Madrid' });
+		expect(approve).not.toHaveBeenCalled();
+		expect(tool.execute).toHaveBeenCalledOnce();
+	});
+
+	it('denies a destructive call when the run has no approver, and the run carries on', async () => {
+		const tool = destructive();
+		const llmClient = answerAfterOneCall();
+		const onProgress = vi.fn<(event: ProgressEvent) => void>();
+
+		const response = await new LLMAgent({ llmClient, tools: [tool] }).run('prompt', {
+			signal,
+			onProgress,
+		});
+
+		expect(tool.execute).not.toHaveBeenCalled();
+		const result = llmClient.contexts[1]?.[2]?.content[0];
+		expect(result).toMatchObject({ type: 'toolResult', callId: 'call-1', isError: true });
+		expect(result).toHaveProperty('output', expect.stringContaining('denied'));
+		expect(onProgress).toHaveBeenCalledWith({
+			type: 'tool',
+			id: 'call-1',
+			name: 'delete',
+			status: 'denied',
+		});
+		expect(onProgress).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'error' }));
+		expect(response.response).toBe('done');
+	});
+
+	it('asks the approver about a destructive call and runs it once allowed', async () => {
+		const tool = destructive();
+		const approve = vi.fn<Approver>(() => ({ approved: true }));
+
+		await new LLMAgent({ llmClient: answerAfterOneCall(), tools: [tool] }).run('prompt', {
+			signal,
+			approve,
+		});
+
+		expect(approve).toHaveBeenCalledExactlyOnceWith(
+			{ tool: 'delete', input: { city: 'Madrid' }, risk: 'destructive' },
+			signal,
+		);
+		expect(tool.execute).toHaveBeenCalledOnce();
+	});
+
+	it("tells the model the user denied the call, with the user's reason", async () => {
+		const tool = destructive();
+		const llmClient = answerAfterOneCall();
+		const approve = vi.fn<Approver>(() =>
+			Promise.resolve({ approved: false, reason: 'rename it instead' }),
+		);
+
+		await new LLMAgent({ llmClient, tools: [tool] }).run('prompt', { signal, approve });
+
+		expect(tool.execute).not.toHaveBeenCalled();
+		const result = llmClient.contexts[1]?.[2]?.content[0];
+		expect(result).toMatchObject({ isError: true });
+		expect(result).toHaveProperty('output', expect.stringContaining('rename it instead'));
+	});
+
+	it('runs a destructive call without asking when it was built with autoApprove', async () => {
+		const tool = destructive();
+		const approve = vi.fn<Approver>();
+
+		await new LLMAgent({
+			llmClient: answerAfterOneCall(),
+			tools: [tool],
+			autoApprove: true,
+		}).run('prompt', { signal, approve });
+
+		expect(approve).not.toHaveBeenCalled();
+		expect(tool.execute).toHaveBeenCalledOnce();
+	});
+
+	it('ends the run when the approver throws, without running the call', async () => {
+		const tool = destructive();
+		const approve = vi.fn<Approver>(() => {
+			throw new Error('terminal closed');
+		});
+
+		const run = new LLMAgent({ llmClient: answerAfterOneCall(), tools: [tool] }).run('prompt', {
+			signal,
+			approve,
+		});
+
+		await expect(run).rejects.toBeInstanceOf(UnrecoverableError);
+		await expect(run).rejects.toHaveProperty('cause', 'terminal closed');
+		expect(tool.execute).not.toHaveBeenCalled();
+	});
+
+	it('stops when the run is cancelled while the user is being asked', async () => {
+		const tool = destructive();
+		const controller = new AbortController();
+		const approve = vi.fn<Approver>(() => {
+			controller.abort();
+			return { approved: true };
+		});
+
+		const run = new LLMAgent({ llmClient: answerAfterOneCall(), tools: [tool] }).run('prompt', {
+			signal: controller.signal,
+			approve,
+		});
+
+		await expect(run).rejects.toHaveProperty('name', 'AbortError');
+		expect(tool.execute).not.toHaveBeenCalled();
+	});
+
+	it('answers with an error, without asking or running, when a tool cannot judge its call', async () => {
+		const tool = fakeTool('delete', undefined, () => {
+			throw new Error('cannot stat the file');
+		});
+		const llmClient = answerAfterOneCall();
+		const approve = vi.fn<Approver>();
+
+		await new LLMAgent({ llmClient, tools: [tool] }).run('prompt', { signal, approve });
+
+		expect(approve).not.toHaveBeenCalled();
+		expect(tool.execute).not.toHaveBeenCalled();
+		expect(llmClient.contexts[1]?.[2]?.content[0]).toMatchObject({
+			isError: true,
+			output: 'cannot stat the file',
+		});
+	});
+
+	// Deciding takes an await even when nothing is asked, and the run may be cancelled meanwhile.
+	it('does not start a call the run was cancelled for while it was being judged', async () => {
+		const controller = new AbortController();
+		const tool = fakeTool('delete', undefined, () => {
+			controller.abort();
+			return 'safe';
+		});
+
+		const run = new LLMAgent({ llmClient: answerAfterOneCall(), tools: [tool] }).run('prompt', {
+			signal: controller.signal,
+		});
+
+		await expect(run).rejects.toHaveProperty('name', 'AbortError');
+		expect(tool.execute).not.toHaveBeenCalled();
+	});
+
+	it('treats an approver that throws on a cancellation as a cancellation, not a failure', async () => {
+		const controller = new AbortController();
+		const approve = vi.fn<Approver>(() => {
+			controller.abort();
+			throw new Error('prompt closed');
+		});
+
+		const run = new LLMAgent({ llmClient: answerAfterOneCall(), tools: [destructive()] }).run(
+			'prompt',
+			{ signal: controller.signal, approve },
+		);
+
+		await expect(run).rejects.toHaveProperty('name', 'AbortError');
+	});
+
+	// Nothing ran, so replaying the prompt cannot repeat an effect.
+	it('keeps a later failure retryable when the only call was denied', async () => {
+		const tool = destructive();
+		const llmClient = new FakeLLMClient(
+			assistantResponse([deleteCall]),
+			new RecoverableError('overloaded', { cause: '529' }),
+		);
+
+		const run = new LLMAgent({ llmClient, tools: [tool] }).run('prompt', { signal });
+
+		await expect(run).rejects.toBeInstanceOf(RecoverableError);
+		expect(tool.execute).not.toHaveBeenCalled();
+	});
+
+	it('makes a later failure unrecoverable once an approved call ran', async () => {
+		const llmClient = new FakeLLMClient(
+			assistantResponse([deleteCall]),
+			new RecoverableError('overloaded', { cause: '529' }),
+		);
+
+		const run = new LLMAgent({ llmClient, tools: [destructive()] }).run('prompt', {
+			signal,
+			approve: () => ({ approved: true }),
+		});
+
+		await expect(run).rejects.toBeInstanceOf(UnrecoverableError);
 	});
 });

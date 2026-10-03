@@ -31,6 +31,12 @@ export {
 } from './agent/domain/errors.ts';
 export { isAbortError } from './shared/domain/isAbortError.ts';
 export type { Tokens } from './shared/domain/tokens.ts';
+export type {
+	ApprovalDecision,
+	ApprovalRequest,
+	Approver,
+	ToolRisk,
+} from './agent/domain/approval.ts';
 export type { JSONSchema, ToolDefinition } from './llm/domain/tool.ts';
 export type { Tool } from './tools/domain/tool.ts';
 export type { TextMatch, Workspace } from './tools/domain/workspace.ts';

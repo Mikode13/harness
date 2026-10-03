@@ -196,6 +196,7 @@ const now = defineTool({
 	name: 'now',
 	description: 'The current time, in ISO 8601.',
 	input: z.object({}),
+	risk: 'safe',
 	execute: async () => new Date().toISOString(),
 });
 
@@ -206,8 +207,28 @@ const agent = createLLMAgent('openai', {
 });
 ```
 
-The agent runs every tool it is given, without asking: there is no approval step
-yet, so only give it tools you would let run unattended. `createLLMOrchestrator()`
+Each tool judges the `risk` of each call: `safe` (a read), `mutating` (a change git
+can undo) or `destructive` (one that loses something), as a fixed level or as a
+function of the validated input. Only a `destructive` call is held back. It runs
+when the run's `approve` allows it, or always when the agent was built with
+`autoApprove`, which is meant for CI where nobody can answer:
+
+```ts
+// `ask` stands for however your app asks its user.
+await agent.run('Tidy the docs folder.', {
+	signal: controller.signal,
+	approve: async ({ tool, input }) =>
+		(await ask(tool, input)) ? { approved: true } : { approved: false, reason: 'keep it' },
+});
+```
+
+With no `approve`, a `destructive` call is denied. A denial is not a failure: the
+model receives it, with the reason when there is one, and carries on. Progress
+reports the call with `status: 'denied'`. To stop asking about a call the user
+already allowed, remember the answer in your own `approve`; the harness keeps no
+state between runs.
+
+`createLLMOrchestrator()`
 takes the same options as `createOrchestrator()` and returns a promise; its executor
 still runs on an Agent SDK, because the harness's own tools cannot change files.
 
