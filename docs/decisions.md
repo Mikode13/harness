@@ -51,6 +51,8 @@ tags: #mikode-harness #agent-sdks #streaming
 
 tags: #mikode-harness #agent-sdks #state
 
+partially superseded by: "MiKode owns the conversation on the model APIs, and provider sessions stay the default path" (below) — still true of the Agent SDK path, which remains the default, but no longer the foundation new work builds on.
+
 **Decision:** `ClaudeAgent` captures `session_id` from the first message of a stream and passes it as `resume` on the next call.
 
 **Context:** Codex's `Thread` object gives free conversation continuity just by reusing the same instance across calls. Claude's `query()` does not — a new call starts a fresh conversation unless told otherwise.
@@ -130,6 +132,8 @@ tags: #mikode-harness #scope-discipline #multi-agent
 ## Only the review verdict crosses agent boundaries explicitly
 
 tags: #mikode-harness #multi-agent #context-management
+
+partially superseded by: "MiKode owns the conversation on the model APIs, and provider sessions stay the default path" (below) — `LLMAgent` remembers its own turns too, but in a `Conversation` MiKode keeps, not in a provider session. The orchestrator still moves only the round's data between roles.
 
 **Decision:** the orchestrator doesn't maintain or replay a shared context/history object between planner, executor, and reviewer. It injects exactly one thing across a boundary: the reviewer's feedback, fed to the planner's next call.
 
@@ -967,3 +971,34 @@ tags: #mikode-harness #agent-loops #orchestration
 **Alternatives considered:** all three roles on `LLMAgent` — rejected: the executor could not write. Keeping the instructions in the prompt and adding only the repository sentence as the system prompt — rejected for the cost and the misattribution above. A flag on `OrchestratorAgent` saying which roles hold their own instructions — rejected: where an agent keeps its instructions is decided when the agent is built, so the factory composes it and the orchestrator stays unaware.
 
 **Consequences:** the planner and reviewer need API keys and bill per token, while the executor keeps the subscription. `createLLMOrchestrator` is asynchronous, because finding the program that reads the repository is, and it reads the current working directory, as the Agent SDK engines do. The model-backed reviewer reads files but cannot run `git diff`, so it judges the code as it stands, not the change. Both factories stay internal; exporting them belongs to the last slice of #23.
+
+---
+
+## MiKode owns the conversation on the model APIs, and provider sessions stay the default path
+
+tags: #mikode-harness #agent-loops #state #public-api
+
+**Decision:** the harness has two paths to a provider, and both are public. The Agent SDK path, `createAgent` and `createOrchestrator`, keeps the conversation in the provider's session (Codex's `Thread`, Claude's `session_id`) and stays the default. The model API path, `createLLMAgent` and `createLLMOrchestrator`, keeps it in a `Conversation` that MiKode owns, sends the whole context on every call, and runs MiKode's own tool loop. Work that needs to read or change a conversation builds on the second path. The tool contract is exported with it: `Tool`, `defineTool`, the `Workspace` port, `createWorkspace` and `createWorkspaceTools`. This closes #23.
+
+**Context:** provider sessions were the right choice when "Claude: explicit session continuity" was taken. The harness had two engines and one consumer, and all it did with a conversation was continue it. A session gave that for free, kept both engines identical from outside, and kept the orchestrator small. Its cost was that the conversation lived with the provider, opaque, and only that provider could continue it. The next requirements all need what that cost ruled out:
+
+- persisting and restoring a conversation (#29);
+- handing it to another agent or provider (#17, #22);
+- running tools MiKode defines, and later gates (#25, #43);
+- loading skills into it (#44);
+- compacting it before it outgrows the model (#48).
+
+**Alternatives considered:**
+
+- **Replacing the Agent SDK path now.** Rejected: an agent of ours cannot change files until it has write tools and permissions (#43), so the executor still needs an Agent SDK. The two paths are also billed differently. The Agent SDKs run on the provider's own login, while the model APIs need `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` and bill per token.
+- **Keeping the model API factories internal until the executor moves too.** Rejected: the planner and reviewer already run on that path. A consumer can only use them, or replace their instructions, through the public API.
+
+**Consequences:**
+
+- **Two paths to maintain.** Both are maintained, with one provider naming and one role table. Whether the model API path becomes the default is not decided: that waits for an agent of ours that can write, and for what a run costs per token.
+- **Agent SDK dependencies.** They stay required dependencies. Making them optional waits for a consumer that does not want them.
+- **Zod in the public contract.** `defineTool` takes a Zod 4 schema, so Zod's major version is now part of the public contract.
+- **Tool approval.** `createLLMAgent` runs whatever tools it is given, with no approval step until #43.
+- **Billing.** The Claude Agent SDK authenticates with `ANTHROPIC_API_KEY` whenever the key is set. So a process that sets the key for the model API path also bills its Claude executor through the key, not the subscription.
+
+**Lesson:** a decision that fit its requirements is not undone by new ones; it gets a successor. Keeping the old path as the default, and recording what would move the default, let the replacement ship before it could do everything the original did.

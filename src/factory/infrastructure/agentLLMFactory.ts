@@ -50,11 +50,12 @@ const defaultLLMAgentModels = {
 
 /**
  * Builds an agent whose conversation MiKode owns, on a provider's model API, already wrapped in
- * the harness's retry policy. Internal while #23 reaches parity with the Agent SDK engines: it
- * is not exported from `src/index.ts`. Its tools only read, so it has no `autoApprove`.
+ * the harness's retry policy. It needs the provider's API key and bills per token, where
+ * `createAgent` uses the Agent SDK's login. It has no `autoApprove`: it runs whatever tools it
+ * is given, so a caller who gives it tools that change things owns that decision.
  *
- * @throws {InvalidAgentConfigError} for an unknown provider, or a model or reasoning effort its
- * client does not support.
+ * @throws {InvalidAgentConfigError} for an unknown provider, a model or reasoning effort its
+ * client does not support, or two tools that share a name.
  * @throws {UnrecoverableError} when the client cannot be set up, for example because
  * `OPENAI_API_KEY` is missing. The Anthropic SDK resolves credentials lazily, so a missing
  * `ANTHROPIC_API_KEY` fails the first run instead, with an `UnrecoverableError`.
@@ -108,8 +109,9 @@ const repositoryGuidance =
  * Builds the planner → executor → reviewer workflow with the planner and reviewer on the model
  * APIs, from `createLLMAgent`, each holding its role's instructions, or `systemPrompts`, as its
  * system prompt, with the read-only repository tools for the current working directory. The
- * executor stays on its Agent SDK, from `createAgent`, until an agent of ours can change files; `autoApprove` reaches
- * only it. Asynchronous because finding the program that reads the repository is.
+ * executor stays on its Agent SDK, from `createAgent`, until an agent of ours can change files;
+ * `autoApprove` reaches only it. Asynchronous because finding the program that reads the
+ * repository is.
  *
  * @throws {InvalidAgentConfigError} for an unknown provider.
  * @throws {UnrecoverableError} when a role cannot be set up, for example because
