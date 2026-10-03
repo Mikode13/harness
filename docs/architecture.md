@@ -101,7 +101,8 @@ types, the three error types, `isAbortError`, `isAgentProvider`, `agentProviders
 option and model types. For the model-backed agent's tools it also exports the `Tool`,
 `ToolDefinition`, `JSONSchema`, `Workspace` and `TextMatch` types, `defineTool`,
 `createWorkspace` and `createWorkspaceTools`. `defineTool` takes a Zod 4 schema, so Zod's major
-version is part of the contract. `RetryingAgent`,
+version is part of the contract, and `zod` is a peer dependency, so the consumer's schemas and
+the harness share one copy. `RetryingAgent`,
 `OrchestratorAgent`, `LLMAgent` and both engines are internal — the factories apply retry and the role
 defaults so a consumer never composes them, and a class that is not exported can change shape
 without a major release.

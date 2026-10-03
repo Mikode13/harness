@@ -997,7 +997,7 @@ tags: #mikode-harness #agent-loops #state #public-api
 
 - **Two paths to maintain.** Both are maintained, with one provider naming and one role table. Whether the model API path becomes the default is not decided: that waits for an agent of ours that can write, and for what a run costs per token.
 - **Agent SDK dependencies.** They stay required dependencies. Making them optional waits for a consumer that does not want them.
-- **Zod in the public contract.** `defineTool` takes a Zod 4 schema, so Zod's major version is now part of the public contract.
+- **Zod in the public contract.** `defineTool` takes a Zod 4 schema, so Zod's major version is now part of the public contract. `zod` moves from a dependency to a peer dependency, so the consumer's schemas and the harness share one copy instead of two that may differ.
 - **Tool approval.** `createLLMAgent` runs whatever tools it is given, with no approval step until #43.
 - **Billing.** The Claude Agent SDK authenticates with `ANTHROPIC_API_KEY` whenever the key is set. So a process that sets the key for the model API path also bills its Claude executor through the key, not the subscription.
 

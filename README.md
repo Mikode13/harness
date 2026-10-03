@@ -101,8 +101,11 @@ comment on `Agent` in `src/agent/domain/agent.ts`.
 ## Install
 
 ```sh
-pnpm add @mikode13/harness
+pnpm add @mikode13/harness zod
 ```
+
+`zod` 4 is a peer dependency: `defineTool` takes your Zod schemas, so the harness uses
+your copy rather than bundling its own.
 
 The package is ESM only and runs on Node.js 22 (22.13 or later) or 24. Its type declarations resolve
 internal modules through the `imports` field of its `package.json`, so a TypeScript consumer
