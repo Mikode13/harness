@@ -186,7 +186,11 @@ results. The run ends when an answer calls no tool. After `maxSteps` calls to th
 fails with `UnrecoverableError` instead, without running the last step's calls, because no
 call is left to send their results to. A missing tool, or a tool that throws, becomes an
 error result the model can correct itself from; only a cancellation escapes, whatever error
-the tool turned it into, and a cancelled run neither starts nor announces another tool. A
+the tool turned it into, and a cancelled run neither starts nor announces another tool.
+Before a call runs, its tool judges its risk. Unless the agent was built with `autoApprove`, a
+`destructive` call goes to the run's `approve`, or is denied when the run has none. A denial
+is an error result, narrated with `status: 'denied'`, and the run carries on; a throwing
+approver ends the run, as any host callback does. A
 `refused` or `truncated` stop ends the run with `UnrecoverableError`. Each client maps the
 parts to its provider's shapes and back: Claude's `tool_use` and `tool_result`, with every
 result in one user turn, and OpenAI's `function_call` and `function_call_output`, paired by
@@ -230,11 +234,12 @@ each other's.
   WebSocket consumer would call `Agent.run()` per request and want none of it. It stays out of
   the tarball too — `files` lists `dist` only, and `scripts/pack-check.mjs` fails on anything
   else reaching it.
-- **The harness's own tools only read, and it runs whatever tools it is given.**
+- **The harness's own tools only read, and only a destructive call is held back.**
   `createLLMOrchestrator` gives its planner and reviewer the repository tools of #25, so nothing
-  a model runs there can change a file. `createLLMAgent` runs any `Tool` a caller passes with no
-  approval step, because permissions do not exist yet (#43): a caller who passes a tool that
-  writes owns that decision.
+  a model runs there can change a file. Each tool judges each call `safe`, `mutating` or
+  `destructive`; `LLMAgent` asks the run's `approve` only about a `destructive` one, and denies
+  it when there is none. A `mutating` call runs unasked, because git can undo it, so a tool
+  that changes something git does not track must count as `destructive`.
 - **An API key in the environment can move the Claude executor off the subscription.** The
   Claude Agent SDK authenticates with `ANTHROPIC_API_KEY` when it is set, and the harness does
   not remove it from the environment it inherits. With `provider: 'anthropic'`,

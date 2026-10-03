@@ -1,4 +1,5 @@
 import type { Tokens } from '#src/shared/domain/tokens';
+import type { Approver } from './approval.ts';
 
 /**
  * How a run ended when it did not fail. Every token a run spends travels with its end: here
@@ -24,6 +25,12 @@ export interface RunOptions {
 	signal: AbortSignal;
 	/** Receives the run's live activity. Without it, the run is silent. */
 	onProgress?: Callback | undefined;
+	/**
+	 * Asked before a model-backed agent runs a `destructive` tool call. Without it, such a call
+	 * is denied. An agent built with `autoApprove` never asks, and the Agent SDK engines ignore
+	 * it: their own permission systems decide.
+	 */
+	approve?: Approver | undefined;
 }
 
 /** The `onProgress` of a run that gave none. */
@@ -42,7 +49,13 @@ export type ProgressEvent =
 	| { type: 'mcpTool'; server: string; tool: string; status: string }
 	| { type: 'agentMessage'; message: string }
 	/** `id` pairs a call's end with its start when one step calls the same tool more than once. */
-	| { type: 'tool'; id: string; name: string; status: 'in_progress' | 'completed' | 'error' }
+	| {
+			type: 'tool';
+			id: string;
+			name: string;
+			/** `denied` when the call never ran because no one allowed it. */
+			status: 'in_progress' | 'completed' | 'error' | 'denied';
+	  }
 	| { type: 'todoList'; items: { text: string; completed: boolean }[] }
 	| { type: 'turnStarted' }
 	| { type: 'turnEnded' };

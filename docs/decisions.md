@@ -1027,3 +1027,34 @@ tags: #mikode-harness #public-api #agent-loops
 
 - A breaking change for every consumer of `Agent`. It ships in one major release with the rest of #43, and harness-cli is rewritten once.
 - A field added to `RunOptions` reaches every agent without changing any decorator. That holds only as long as no decorator rebuilds the object, which is why each one has a test for it.
+
+---
+
+## Each tool judges the risk of each call, and only a destructive one waits for a human
+
+tags: #mikode-harness #permissions #agent-loops #public-api
+
+**Decision:** before `LLMAgent` runs a tool call, the tool classifies that call:
+
+- `safe` changes nothing;
+- `mutating` makes a change git can undo;
+- `destructive` loses something.
+
+`risk` is required on `Tool` and on `defineTool`, as a fixed level or as a function of the validated input. Only a `destructive` call is held back: it runs when the run's `approve` allows it, or always when the agent was built with `autoApprove`. With no approver, it is denied. A denial reaches the model as an error result, with the user's reason when one was given. Progress reports it with a new `status: 'denied'`, and the run carries on. A throwing approver ends the run as a host failure.
+
+**Context:** #43, before #52 gives agents tools that write. Its first layer was already in place: an agent runs only the tools it was given. The second layer is each tool's own checks on its arguments, such as the `.gitignore` boundary. This entry is the third layer: asking a human.
+
+**Alternatives considered:**
+
+- **A list of dangerous tool names.** Rejected: the danger is in the call, not in the tool. The same write that creates a file can overwrite one, and only the tool can tell from the input.
+- **Asking about `mutating` calls too.** Rejected: an executor edits constantly, so asking on every edit would make it unusable, and git can undo those edits.
+- **Remembering "allow for the session" in the harness.** Rejected: that is state that outlives a run, which AGENTS.md rules out. The consumer's own approver remembers instead, and it also decides what counts as the same call: the same tool, or the same tool and path.
+- **A per-role policy in the orchestrator.** Rejected: #52 gives each role its own tools, so what a role may do is already decided when it is built.
+
+**Consequences:**
+
+- A tool that changes something git does not track must count as `destructive`, or nothing protects that change.
+- Adding `denied` to an existing event's `status` is breaking for an exhaustive switch, so it ships in #43's major release with the run options.
+- Input that fails validation counts as `safe`, because `execute` rejects it before doing anything.
+- A tool whose `risk` throws is a failing tool: its call does not run, and the model receives the error.
+- The Agent SDK engines ignore `approve`, because their own permission systems decide.
