@@ -1002,3 +1002,28 @@ tags: #mikode-harness #agent-loops #state #public-api
 - **Billing.** The Claude Agent SDK authenticates with `ANTHROPIC_API_KEY` whenever the key is set. So a process that sets the key for the model API path also bills its Claude executor through the key, not the subscription.
 
 **Lesson:** a decision that fit its requirements is not undone by new ones; it gets a successor. Keeping the old path as the default, and recording what would move the default, let the replacement ship before it could do everything the original did.
+
+---
+
+## `run` takes its options as one object, passed on whole
+
+tags: #mikode-harness #public-api #agent-loops
+
+**Decision:** `Agent.run(prompt, signal, callback)` becomes `run(prompt, { signal, onProgress })`.
+
+- The prompt stays positional, because every run needs one.
+- `onProgress`, the former callback, is optional.
+- `RunOptions` is exported.
+- Each decorator (`RetryingAgent`, `InstructedAgent`, `OrchestratorAgent`) passes the object on whole, never a copy it rebuilt, and a test pins that for each one.
+
+**Context:** #43 needs an approval callback, and #52 needs a snapshot of the working tree. Both belong to one run, not to an agent: in a server each request is approved by its own user, and the CLI keeps one orchestrator for a whole session. A fourth optional parameter would have been compatible, but a fifth would follow, and positional parameters only grow.
+
+**Alternatives considered:**
+
+- **A per-run context through `AsyncLocalStorage`.** Rejected: it reaches the tools without touching any signature, but it is a dependency nobody can see.
+- **An optional fourth parameter.** Rejected: it was compatible, but it only postponed this change.
+
+**Consequences:**
+
+- A breaking change for every consumer of `Agent`. It ships in one major release with the rest of #43, and harness-cli is rewritten once.
+- A field added to `RunOptions` reaches every agent without changing any decorator. That holds only as long as no decorator rebuilds the object, which is why each one has a test for it.

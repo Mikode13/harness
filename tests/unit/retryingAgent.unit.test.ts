@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Agent, AgentResponse } from '../../src/agent/domain/agent.ts';
+import type { Agent, AgentResponse, RunOptions } from '../../src/agent/domain/agent.ts';
 import { RecoverableError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
 import { MaxContextError } from '../../src/llm/domain/errors.ts';
 import { RetryingAgent } from '../../src/retry/domain/model/retryingAgent.ts';
@@ -40,6 +40,20 @@ describe('RetryingAgent', () => {
 		vi.restoreAllMocks();
 	});
 
+	// Rebuilding the options would drop any field this decorator does not know about.
+	it('passes the run options on whole to every attempt', async () => {
+		const run = vi
+			.fn<Agent['run']>()
+			.mockRejectedValueOnce(new RecoverableError('1', { cause: 'first failure' }))
+			.mockResolvedValueOnce(okResponse);
+		const options: RunOptions = { signal, onProgress: callback };
+
+		await new RetryingAgent({ inner: { run }, logger }).run('hi', options);
+
+		expect(run).toHaveBeenCalledTimes(2);
+		for (const [, forwarded] of run.mock.calls) expect(forwarded).toBe(options);
+	});
+
 	// The consumer never sees a failure that a later attempt recovered, so the warning is
 	// the only trace of it; the final failure is thrown instead, and logging it too would
 	// report it twice.
@@ -51,7 +65,7 @@ describe('RetryingAgent', () => {
 		);
 		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 2, logger });
 
-		await expect(retryingAgent.run('hi', signal, callback)).rejects.toThrow(
+		await expect(retryingAgent.run('hi', { signal, onProgress: callback })).rejects.toThrow(
 			'Max attempts exhausted',
 		);
 
@@ -72,7 +86,7 @@ describe('RetryingAgent', () => {
 		const retryingAgent = new RetryingAgent({ inner: agent, logger: throwingLogger });
 
 		const failure = await retryingAgent
-			.run('hi', signal, callback)
+			.run('hi', { signal, onProgress: callback })
 			.catch((error: unknown) => error);
 
 		expect(failure).toBeInstanceOf(UnrecoverableError);
@@ -93,7 +107,7 @@ describe('RetryingAgent', () => {
 		const { agent, run } = fakeAgent(okResponse);
 		const retryingAgent = new RetryingAgent({ inner: agent, logger });
 
-		const result = await retryingAgent.run('hi', signal, callback);
+		const result = await retryingAgent.run('hi', { signal, onProgress: callback });
 
 		expect(result).toMatchObject({ response: okResponse.response, tokens: okResponse.tokens });
 		expect(run).toHaveBeenCalledTimes(1);
@@ -108,7 +122,7 @@ describe('RetryingAgent', () => {
 		);
 		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
-		const result = await retryingAgent.run('hi', signal, callback);
+		const result = await retryingAgent.run('hi', { signal, onProgress: callback });
 
 		// okResponse spent 1 input and 1 output token.
 		expect(result.tokens).toEqual({ ...tokens(11), outputTokens: 1 });
@@ -123,7 +137,7 @@ describe('RetryingAgent', () => {
 		});
 		const retryingAgent = new RetryingAgent({ inner: agent, logger });
 
-		const result = await retryingAgent.run('hi', signal, callback);
+		const result = await retryingAgent.run('hi', { signal, onProgress: callback });
 
 		expect(result.duration).toBe(3);
 	});
@@ -136,7 +150,7 @@ describe('RetryingAgent', () => {
 		);
 		const retryingAgent = new RetryingAgent({ inner: agent, logger });
 
-		const result = await retryingAgent.run('hi', signal, callback);
+		const result = await retryingAgent.run('hi', { signal, onProgress: callback });
 
 		expect(result.tokens).toBeUndefined();
 	});
@@ -149,7 +163,7 @@ describe('RetryingAgent', () => {
 		);
 		const retryingAgent = new RetryingAgent({ inner: agent, logger });
 
-		const result = await retryingAgent.run('hi', signal, callback);
+		const result = await retryingAgent.run('hi', { signal, onProgress: callback });
 
 		expect(result.tokens).toBeUndefined();
 	});
@@ -162,7 +176,7 @@ describe('RetryingAgent', () => {
 		});
 		const retryingAgent = new RetryingAgent({ inner: agent, logger });
 
-		const result = await retryingAgent.run('hi', signal, callback);
+		const result = await retryingAgent.run('hi', { signal, onProgress: callback });
 
 		expect(result.tokens).toEqual(tokens(10));
 	});
@@ -174,7 +188,7 @@ describe('RetryingAgent', () => {
 		);
 		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 2, logger });
 
-		await expect(retryingAgent.run('hi', signal, callback)).rejects.toMatchObject({
+		await expect(retryingAgent.run('hi', { signal, onProgress: callback })).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			tokens: undefined,
 			usageUnreported: true,
@@ -192,7 +206,7 @@ describe('RetryingAgent', () => {
 		};
 		const retryingAgent = new RetryingAgent({ inner: agent, logger: throwingLogger });
 
-		await expect(retryingAgent.run('hi', signal, callback)).rejects.toMatchObject({
+		await expect(retryingAgent.run('hi', { signal, onProgress: callback })).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			cause: 'log sink closed',
 			tokens: tokens(4),
@@ -206,7 +220,7 @@ describe('RetryingAgent', () => {
 		);
 		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 2, logger });
 
-		await expect(retryingAgent.run('hi', signal, callback)).rejects.toMatchObject({
+		await expect(retryingAgent.run('hi', { signal, onProgress: callback })).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			tokens: tokens(5),
 		});
@@ -221,7 +235,9 @@ describe('RetryingAgent', () => {
 		);
 		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
-		const failure = await retryingAgent.run('hi', signal, callback).catch((e: unknown) => e);
+		const failure = await retryingAgent
+			.run('hi', { signal, onProgress: callback })
+			.catch((e: unknown) => e);
 
 		expect(failure).toBeInstanceOf(MaxContextError);
 		expect(failure).toMatchObject({ cause: 'limit', tokens: tokens(5), stack: tooLong.stack });
@@ -234,7 +250,7 @@ describe('RetryingAgent', () => {
 		);
 		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
-		await expect(retryingAgent.run('hi', signal, callback)).rejects.toMatchObject({
+		await expect(retryingAgent.run('hi', { signal, onProgress: callback })).rejects.toMatchObject({
 			constructor: UnrecoverableError,
 			message: 'broken',
 			cause: 'fatal',
@@ -250,7 +266,7 @@ describe('RetryingAgent', () => {
 		);
 		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
-		await expect(retryingAgent.run('hi', signal, callback)).rejects.toThrow(
+		await expect(retryingAgent.run('hi', { signal, onProgress: callback })).rejects.toThrow(
 			'Max attempts exhausted',
 		);
 		expect(run).toHaveBeenCalledTimes(3);
@@ -263,7 +279,9 @@ describe('RetryingAgent', () => {
 		);
 		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
-		await expect(retryingAgent.run('hi', signal, callback)).rejects.toThrow('broken');
+		await expect(retryingAgent.run('hi', { signal, onProgress: callback })).rejects.toThrow(
+			'broken',
+		);
 		expect(run).toHaveBeenCalledTimes(1);
 	});
 
@@ -272,7 +290,9 @@ describe('RetryingAgent', () => {
 		const { agent, run } = fakeAgent(abortError, okResponse);
 		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
-		await expect(retryingAgent.run('hi', signal, callback)).rejects.toThrow('aborted');
+		await expect(retryingAgent.run('hi', { signal, onProgress: callback })).rejects.toThrow(
+			'aborted',
+		);
 		expect(run).toHaveBeenCalledTimes(1);
 	});
 
@@ -283,7 +303,7 @@ describe('RetryingAgent', () => {
 		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
 		const failure = await retryingAgent
-			.run('hi', signal, callback)
+			.run('hi', { signal, onProgress: callback })
 			.catch((error: unknown) => error);
 
 		expect(failure).toBe(abortError);
@@ -296,9 +316,9 @@ describe('RetryingAgent', () => {
 		const { agent, run } = fakeAgent(okResponse);
 		const retryingAgent = new RetryingAgent({ inner: agent, logger });
 
-		await retryingAgent.run('hi', signal, callback);
+		await retryingAgent.run('hi', { signal, onProgress: callback });
 
-		expect(run).toHaveBeenNthCalledWith(1, 'hi', signal, callback);
+		expect(run).toHaveBeenNthCalledWith(1, 'hi', { signal, onProgress: callback });
 	});
 
 	// Regression: the retry sent only the failure reason, so an attempt that failed before the
@@ -311,9 +331,9 @@ describe('RetryingAgent', () => {
 		);
 		const retryingAgent = new RetryingAgent({ inner: agent, logger, noteFailures: false });
 
-		await retryingAgent.run('ship the feature', signal, callback);
+		await retryingAgent.run('ship the feature', { signal, onProgress: callback });
 
-		expect(run).toHaveBeenNthCalledWith(2, 'ship the feature', signal, callback);
+		expect(run).toHaveBeenNthCalledWith(2, 'ship the feature', { signal, onProgress: callback });
 	});
 
 	it('retries with the original request and the previous failure reason', async () => {
@@ -323,13 +343,12 @@ describe('RetryingAgent', () => {
 		);
 		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
-		await retryingAgent.run('ship the feature', signal, callback);
+		await retryingAgent.run('ship the feature', { signal, onProgress: callback });
 
 		expect(run).toHaveBeenNthCalledWith(
 			2,
 			'ship the feature\n\nThe previous attempt failed for the following reason: network blip',
-			signal,
-			callback,
+			{ signal, onProgress: callback },
 		);
 	});
 
@@ -341,29 +360,27 @@ describe('RetryingAgent', () => {
 		);
 		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
-		await retryingAgent.run('hi', signal, callback);
+		await retryingAgent.run('hi', { signal, onProgress: callback });
 
-		expect(run).toHaveBeenNthCalledWith(
-			3,
-			expect.stringContaining('second failure'),
+		expect(run).toHaveBeenNthCalledWith(3, expect.stringContaining('second failure'), {
 			signal,
-			callback,
-		);
-		expect(run).toHaveBeenNthCalledWith(
-			3,
-			expect.not.stringContaining('first failure'),
+			onProgress: callback,
+		});
+		expect(run).toHaveBeenNthCalledWith(3, expect.not.stringContaining('first failure'), {
 			signal,
-			callback,
-		);
+			onProgress: callback,
+		});
 	});
 
 	it('does not rewrite the prompt when the failure is unrecoverable', async () => {
 		const { agent, run } = fakeAgent(new UnrecoverableError('broken', { cause: 'fatal' }));
 		const retryingAgent = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
-		await expect(retryingAgent.run('hi', signal, callback)).rejects.toThrow('broken');
+		await expect(retryingAgent.run('hi', { signal, onProgress: callback })).rejects.toThrow(
+			'broken',
+		);
 
-		expect(run).toHaveBeenNthCalledWith(1, 'hi', signal, callback);
+		expect(run).toHaveBeenNthCalledWith(1, 'hi', { signal, onProgress: callback });
 	});
 
 	// Regression: exhaustion reported "max attempts limit reached" and no cause at all.
@@ -375,7 +392,9 @@ describe('RetryingAgent', () => {
 			);
 			const retrying = new RetryingAgent({ inner: agent, maxAttempts: 2, logger });
 
-			const failure = await retrying.run('ping', signal, callback).catch((error: unknown) => error);
+			const failure = await retrying
+				.run('ping', { signal, onProgress: callback })
+				.catch((error: unknown) => error);
 
 			expect(failure).toBeInstanceOf(UnrecoverableError);
 			expect((failure as UnrecoverableError).cause).toContain('rate limited again');
@@ -387,7 +406,9 @@ describe('RetryingAgent', () => {
 			const { agent } = fakeAgent(new Error('socket hang up'), okResponse);
 			const retrying = new RetryingAgent({ inner: agent, maxAttempts: 2, logger });
 
-			const failure = await retrying.run('ping', signal, callback).catch((error: unknown) => error);
+			const failure = await retrying
+				.run('ping', { signal, onProgress: callback })
+				.catch((error: unknown) => error);
 
 			expect(failure).toBeInstanceOf(UnrecoverableError);
 			expect((failure as UnrecoverableError).cause).toContain('socket hang up');
@@ -401,7 +422,7 @@ describe('RetryingAgent', () => {
 			const { agent, run } = fakeAgent(new Error('callback exploded'), okResponse);
 			const retrying = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
-			await expect(retrying.run('hi', signal, callback)).rejects.toThrow(
+			await expect(retrying.run('hi', { signal, onProgress: callback })).rejects.toThrow(
 				'The agent failed without classifying the failure',
 			);
 			expect(run).toHaveBeenCalledTimes(1);
@@ -411,7 +432,9 @@ describe('RetryingAgent', () => {
 			const { agent } = fakeAgent(new Error('callback exploded'));
 			const retrying = new RetryingAgent({ inner: agent, maxAttempts: 3, logger });
 
-			const failure = await retrying.run('hi', signal, callback).catch((error: unknown) => error);
+			const failure = await retrying
+				.run('hi', { signal, onProgress: callback })
+				.catch((error: unknown) => error);
 
 			expect(failure).toBeInstanceOf(UnrecoverableError);
 			expect(failure).toMatchObject({ cause: 'callback exploded' });

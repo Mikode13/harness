@@ -22,6 +22,7 @@ export {
 	type AgentResponse,
 	type Callback,
 	type ProgressEvent,
+	type RunOptions,
 } from './agent/domain/agent.ts';
 export {
 	InvalidAgentConfigError,

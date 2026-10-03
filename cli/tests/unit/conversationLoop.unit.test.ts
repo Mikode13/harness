@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ConversationLoop } from '../../conversationLoop.ts';
-import type { Agent, AgentResponse, ProgressEvent } from '../../../src/agent/domain/agent.ts';
+import type {
+	Agent,
+	AgentResponse,
+	ProgressEvent,
+	RunOptions,
+} from '../../../src/agent/domain/agent.ts';
 import { UnrecoverableError } from '../../../src/agent/domain/errors.ts';
 
 type EmitResult = string | { error: unknown };
@@ -42,8 +47,8 @@ describe('ConversationLoop', () => {
 		const progress: ProgressEvent = { type: 'reasoning', message: 'thinking' };
 		const callback = vi.fn();
 		const agent: Agent = {
-			run: vi.fn((...args: Parameters<Agent['run']>) => {
-				args[2](progress);
+			run: vi.fn((_prompt: string, { onProgress }: RunOptions) => {
+				onProgress?.(progress);
 				return Promise.resolve(response());
 			}),
 		};
