@@ -885,3 +885,51 @@ tags: #mikode-harness #provider-integration #tool-use #agent-loops
 - **Keeping the provider state in the client.** Rejected: the client is stateless, and recreating it would lose the state, which #23 forbids.
 
 **Consequences:** the conversation stores thinking twice, as its summary and inside its block. A schema outside strict mode fails every request with a 400. Claude also allows at most 20 strict tools per request. The provider-state question #23 left open is answered: continuation state lives beside the canonical parts, as parts of its own, and is dropped when a conversation changes provider. Compaction can drop `providerData` first, since only one provider can read it.
+
+---
+
+## `.gitignore` is the boundary of what an agent reads, and ripgrep never receives a path from the model
+
+tags: #mikode-harness #tool-use #security #provider-integration
+
+**Decision:** the read-only repository tools of the first slice of #25 (`listFiles`, `searchText`, `readFile`) see only what `.gitignore` does not ignore, inside one fixed root. The rules, agreed before the implementation:
+
+- **An ignored file does not exist for the agent.** It is not listed, searched or read, and neither is a path outside the root, even through a symlink. The three operations share that boundary behind one port, `Workspace`.
+- **ripgrep first, shipped with the package; git as the fallback.** `@vscode/ripgrep` is a runtime dependency, so every install carries a pinned `rg` for its platform. git covers a platform without a published binary or an install without optional dependencies. With neither available the tool fails with an error; it never falls back to plain `grep`, which knows nothing of `.gitignore`.
+- **ripgrep never receives a path or a glob the model wrote.** It always runs from the root with no path argument, and the scope the model asked for is applied afterwards, to the results.
+- **Patterns are regular expressions**, with case-insensitivity as its own option. The git fallback uses `-P`, because POSIX extended syntax has no `\d`.
+- **Results are bounded and say so.** A result carries what fits, the total and whether it was cut. Counting the total means letting the search finish, so a search that runs out of time fails and asks for a narrower one, instead of reporting a false total.
+
+**Context:** a tool result is sent to the provider, so a `readFile` of `.env` would hand the API keys to OpenAI or Anthropic inside a tool result. The repository already ignores `.env` and `node_modules`, which makes `.gitignore` a boundary that needs no configuration. Both programs were then run against a scratch repository holding an ignored `.env` and an ignored `node_modules`:
+
+| Search for the secret             | ripgrep             | git     |
+| --------------------------------- | ------------------- | ------- |
+| No scope                          | only tracked source | same    |
+| Scoped to the path `.env`         | returns the secret  | nothing |
+| Scoped to the path `node_modules` | searches inside it  | nothing |
+| Scoped with the glob `.env`       | returns the secret  | n/a     |
+
+ripgrep stops applying ignore rules to a path or glob given explicitly, and that scope is exactly what the model writes. `git grep --untracked` and `git ls-files --exclude-standard` keep applying them. ripgrep also skips hidden files and, outside a git repository, ignores `.gitignore` unless told otherwise, so it runs with `--hidden --no-require-git` to see what git sees. On the machine this was tested on, ripgrep was not installed for a spawned process: the `rg` in the terminal is a shell function. That is why it ships with the package.
+
+The three programs were then timed, best of several runs on a 10-core Mac, with ripgrep 15 from `@vscode/ripgrep`:
+
+| Search                                          | `grep -r`          | `git grep` | ripgrep |
+| ----------------------------------------------- | ------------------ | ---------- | ------- |
+| A literal, 25,915 files and 786 MB              | 2.53 s             | 0.94 s     | 0.72 s  |
+| A regular expression, same tree                 | 2.95 s             | 1.00 s     | 0.75 s  |
+| Listing the same tree (`find` for `grep`)       | 0.22 s             | —          | 0.07 s  |
+| A literal in this repository, as an agent would | 3,250 ms, 45 lines | 23 ms      | 10 ms   |
+
+Against plain `grep` ripgrep wins by far, and the 22 extra lines are `node_modules` and `.git`. Against `git grep` the gap is about a quarter, which an agent waiting seconds for a model does not notice. The dependency is therefore not bought for speed today: it buys a pinned version that behaves the same on every machine, search outside a git repository, `--json` output instead of colon-separated text, and a preferred implementation CI can test. The speed gap grows with the repository. When spawned without a path, ripgrep searches its standard input if that is a pipe, so it must be spawned with standard input ignored.
+
+**Alternatives considered:**
+
+- **A deny list of secret file names**, alone or beside `.gitignore`. Rejected for now: it is never complete, and alone it leaves `node_modules` and build output visible. It remains the answer if a secret ever lives in a tracked file.
+- **git first, or git alone, with no new dependency.** It enforces the boundary by itself, needs nothing installed and measured close to ripgrep. Rejected for the pinned behaviour and the work outside git listed above, and for the margin ripgrep gains on large repositories; the cost is that the harness, not the program, enforces the boundary.
+- **ripgrep only when the host has it.** No dependency, but the preferred path would not run on the machine the harness is developed on, nor in CI.
+- **Passing the model's scope to ripgrep after validating it.** Rejected: every validation is a second implementation of `.gitignore`, and one mistake leaks a secret. Filtering results costs nothing, because ripgrep searches a whole repository in milliseconds.
+- **Literal patterns only.** They behave the same on both programs, but cannot express a word boundary or an alternative, which is most of what a code search needs.
+
+**Consequences:** #25 lists optional binaries as runtime dependencies among its non-goals; this is a deliberate exception. Every install grows by 4.5 to 5.7 MB, depending on the platform, including for consumers that only use the Agent SDK engines; the binary arrives as an optional dependency per platform, with no install script, which pnpm would block. A secret that is not ignored is visible to the agent, so `.gitignore` is now a security control as well as a convenience. Scoping a ripgrep search saves no work, only output. The two implementations must be tested against the same boundary cases: an ignored file, an ignored directory, a glob naming an ignored file, a path above the root and a symlink out of it.
+
+**Lesson:** a tool's safe default can stop applying the moment an argument is explicit. When the argument comes from a model, test the explicit case against the real program before trusting the default.
