@@ -38,6 +38,8 @@ let parent: string;
 let repo: string;
 let store: FileRecoveryStore;
 let session: WriteSession;
+// Every session a test opened, so each one's journal is finished and its lock released.
+let sessions: WriteSession[] = [];
 let editor: FileEditor;
 const signal = new AbortController().signal;
 
@@ -51,6 +53,7 @@ function write(path: string, content: string) {
 
 async function makeEditor(recovery: RecoveryStore = store) {
 	session = new WriteSession({ store: recovery });
+	sessions.push(session);
 	const policy = await RootsAccessPolicy.create({
 		roots: [{ path: repo, access: 'write' }],
 		ignoreRules: new GitIgnoreRules(),
@@ -107,7 +110,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-	await session.finish('completed');
+	for (const opened of sessions) await opened.finish('completed');
+	sessions = [];
 	rmSync(parent, { recursive: true, force: true });
 });
 
@@ -409,6 +413,7 @@ describe('WriteSession', () => {
 			ignoreRules: new GitIgnoreRules(),
 		});
 		session = new WriteSession({ store, maxChanges: 1 });
+		sessions.push(session);
 		const limited = new FileEditor({ policy, session });
 		await change({ kind: 'create', path: 'i.ts', content: text('i') }, limited);
 
