@@ -53,7 +53,10 @@ export type ProgressEvent =
 			type: 'tool';
 			id: string;
 			name: string;
-			/** `denied` when the call never ran because no one allowed it. */
+			/**
+			 * `in_progress` only once the call is about to run, after any approval. `denied` when
+			 * it never ran because no one allowed it, with no `in_progress` before it.
+			 */
 			status: 'in_progress' | 'completed' | 'error' | 'denied';
 	  }
 	| { type: 'todoList'; items: { text: string; completed: boolean }[] }

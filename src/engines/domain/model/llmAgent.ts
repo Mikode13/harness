@@ -193,8 +193,7 @@ export class LLMAgent implements Agent {
 	 */
 	private async runTool(
 		call: ToolCallPart,
-		signal: AbortSignal,
-		approve: Approver | undefined,
+		{ signal, onProgress: callback = ignoreProgress, approve }: RunOptions,
 		effects: RunEffects,
 	): Promise<{ result: ToolResultPart; denied: boolean }> {
 		const result = { type: 'toolResult' as const, callId: call.id, name: call.name };
@@ -210,8 +209,6 @@ export class LLMAgent implements Agent {
 			};
 		}
 
-		// Checked again at the last moment: the consumer may cancel on the announcement itself.
-		signal.throwIfAborted();
 		let risk: ToolRisk;
 		try {
 			risk = tool.risk(call.input);
@@ -229,6 +226,10 @@ export class LLMAgent implements Agent {
 		}
 
 		// Deciding took at least one await, and the run may have been cancelled meanwhile.
+		signal.throwIfAborted();
+		// Announced only once it will run: a missing, failing-to-judge or denied call never is.
+		narrate(call, callback);
+		// Checked again at the last moment: the consumer may cancel on the announcement itself.
 		signal.throwIfAborted();
 		// Set before `execute`, so a tool that fails halfway still counts: it may have had effects.
 		effects.toolRan = true;
@@ -249,17 +250,18 @@ export class LLMAgent implements Agent {
 	/** One at a time and in order, so their effects and their narration never interleave. */
 	private async runTools(
 		calls: ToolCallPart[],
-		{ signal, onProgress: callback = ignoreProgress, approve }: RunOptions,
+		options: RunOptions,
 		effects: RunEffects,
 	): Promise<Message> {
+		const { signal, onProgress: callback = ignoreProgress } = options;
 		const results: MessagePart[] = [];
 		for (const call of calls) {
 			// A call before this one may have ignored the cancellation; this one must not start,
 			// nor be announced as running.
 			signal.throwIfAborted();
-			// Announced only as its turn comes, so a consumer never shows a call as running early.
-			narrate(call, callback);
-			const { result, denied } = await this.runTool(call, signal, approve, effects);
+			// `runTool` announces the call only once it is allowed to run, so a consumer never
+			// shows a call as running early, nor while the user is still being asked.
+			const { result, denied } = await this.runTool(call, options, effects);
 			if (denied) emit({ type: 'tool', id: call.id, name: call.name, status: 'denied' }, callback);
 			else narrate(result, callback);
 			results.push(result);

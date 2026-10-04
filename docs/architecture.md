@@ -189,7 +189,10 @@ results. The run ends when an answer calls no tool. After `maxSteps` calls to th
 fails with `UnrecoverableError` instead, without running the last step's calls, because no
 call is left to send their results to. A missing tool, or a tool that throws, becomes an
 error result the model can correct itself from; only a cancellation escapes, whatever error
-the tool turned it into, and a cancelled run neither starts nor announces another tool.
+the tool turned it into, and a cancelled run neither starts nor announces another tool. A
+call is announced as `in_progress` only once it is about to run, after its approval, so a
+call to a missing tool, a call whose risk could not be judged, or a denied call is reported
+only by how it ended.
 Before a call runs, its tool judges its risk. Unless the agent was built with `autoApprove`, a
 `destructive` call goes to the run's `approve`, or is denied when the run has none. A denial
 is an error result, narrated with `status: 'denied'`, and the run carries on; a throwing

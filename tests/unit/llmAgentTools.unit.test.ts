@@ -652,4 +652,42 @@ describe('LLMAgent tool approval', () => {
 
 		expect(tool.execute).toHaveBeenCalledExactlyOnceWith({ city: 'Madrid' }, signal);
 	});
+
+	// A consumer would otherwise show a call as running while the user is still being asked.
+	it('announces a destructive call as running only once it is allowed', async () => {
+		const events: ProgressEvent[] = [];
+		const eventsWhenAsked: ProgressEvent[] = [];
+		const approve = vi.fn<Approver>(() => {
+			eventsWhenAsked.push(...events);
+			return { approved: true };
+		});
+
+		await new LLMAgent({ llmClient: answerAfterOneCall(), tools: [destructive()] }).run('prompt', {
+			signal,
+			approve,
+			onProgress: event => events.push(event),
+		});
+
+		expect(eventsWhenAsked.filter(event => event.type === 'tool')).toEqual([]);
+		expect(events.filter(event => event.type === 'tool')).toEqual([
+			{ type: 'tool', id: 'call-1', name: 'delete', status: 'in_progress' },
+			{ type: 'tool', id: 'call-1', name: 'delete', status: 'completed' },
+		]);
+	});
+
+	it.each([
+		['denied, with no approver', destructive, 'denied'],
+		['to a tool it does not have', () => fakeTool('other'), 'error'],
+	] as const)('never announces a call %s as running', async (_, tool, status) => {
+		const events: ProgressEvent[] = [];
+
+		await new LLMAgent({ llmClient: answerAfterOneCall(), tools: [tool()] }).run('prompt', {
+			signal,
+			onProgress: event => events.push(event),
+		});
+
+		expect(events.filter(event => event.type === 'tool')).toEqual([
+			{ type: 'tool', id: 'call-1', name: 'delete', status },
+		]);
+	});
 });
