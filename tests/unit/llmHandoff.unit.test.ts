@@ -93,7 +93,7 @@ describe('a conversation handed between providers', () => {
 		const answer = await new LLMAgent({
 			llmClient: new OpenAILLMClient({ model: 'gpt-5.6-luna', systemPrompt: '', logger }),
 			messages: [introduction, heard.message],
-		}).run('What is my name?', signal, vi.fn());
+		}).run('What is my name?', { signal });
 
 		expect(heard.message.content).toContainEqual({ type: 'reasoning', text: 'Claude reasoning' });
 		expect(openAICreate).toHaveBeenCalledWith(
@@ -119,7 +119,7 @@ describe('a conversation handed between providers', () => {
 		const answer = await new LLMAgent({
 			llmClient: new ClaudeLLMClient({ model: 'sonnet', systemPrompt: '', logger }),
 			messages: [introduction, heard.message],
-		}).run('What is my name?', signal, vi.fn());
+		}).run('What is my name?', { signal });
 
 		expect(heard.message.content).toContainEqual({ type: 'reasoning', text: 'OpenAI reasoning' });
 		expect(claudeCreate).toHaveBeenCalledWith(
@@ -153,7 +153,7 @@ describe('a conversation handed between providers', () => {
 				toolMessage(toolResult('call_1', 'weather', 'Sunny')),
 				{ role: 'assistant', content: [{ type: 'text', text: 'Sunny.' }] },
 			],
-		}).run('Thanks!', signal, vi.fn());
+		}).run('Thanks!', { signal });
 
 		expect(claudeCreate).toHaveBeenCalledWith(
 			expect.objectContaining({

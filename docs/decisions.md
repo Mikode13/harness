@@ -417,7 +417,7 @@ tags: #mikode-harness #tooling #technical-debt
 
 tags: #mikode-harness #error-handling #contracts
 
-**Decision:** every call into a provider SDK — starting a turn _and_ iterating its event stream — goes through `classifyProviderFailure` (`src/agent/domain/providerFailure.ts`). Anything unclassified becomes a `RecoverableError`; an `AbortError` and an already-classified error pass through untouched.
+**Decision:** every call into a provider SDK — starting a turn _and_ iterating its event stream — goes through `classifyProviderFailure` (`src/shared/domain/providerFailure.ts`). Anything unclassified becomes a `RecoverableError`; an `AbortError` and an already-classified error pass through untouched.
 
 **Context:** the `Agent` docblock has always promised that implementers only ever reject with `RecoverableError` or `UnrecoverableError`, because every consumer branches on exactly that. Neither engine honoured it. `CodexAgent.run()` awaited `thread.runStreamed()` bare, and both engines iterated their stream bare, so a dropped connection or a rejected request escaped as a raw `Error`. `RetryingAgent` then retried it blindly — an unclassified error is not `UnrecoverableError`, so it looked retryable — and on exhaustion replaced it with a generic error that named no cause at all. A promise in a docblock that nothing enforces is not a contract.
 
@@ -1002,3 +1002,61 @@ tags: #mikode-harness #agent-loops #state #public-api
 - **Billing.** The Claude Agent SDK authenticates with `ANTHROPIC_API_KEY` whenever the key is set. So a process that sets the key for the model API path also bills its Claude executor through the key, not the subscription.
 
 **Lesson:** a decision that fit its requirements is not undone by new ones; it gets a successor. Keeping the old path as the default, and recording what would move the default, let the replacement ship before it could do everything the original did.
+
+---
+
+## `run` takes its options as one object, passed on whole
+
+tags: #mikode-harness #public-api #agent-loops
+
+**Decision:** `Agent.run(prompt, signal, callback)` becomes `run(prompt, { signal, onProgress })`.
+
+- The prompt stays positional, because every run needs one.
+- `onProgress`, the former callback, is optional.
+- `RunOptions` is exported.
+- Each decorator (`RetryingAgent`, `InstructedAgent`, `OrchestratorAgent`) passes the object on whole, never a copy it rebuilt, and a test pins that for each one.
+
+**Context:** #43 needs an approval callback, and #52 needs a snapshot of the working tree. Both belong to one run, not to an agent: in a server each request is approved by its own user, and the CLI keeps one orchestrator for a whole session. A fourth optional parameter would have been compatible, but a fifth would follow, and positional parameters only grow.
+
+**Alternatives considered:**
+
+- **A per-run context through `AsyncLocalStorage`.** Rejected: it reaches the tools without touching any signature, but it is a dependency nobody can see.
+- **An optional fourth parameter.** Rejected: it was compatible, but it only postponed this change.
+
+**Consequences:**
+
+- A breaking change for every consumer of `Agent`. It ships in one major release with the rest of #43, and harness-cli is rewritten once.
+- A field added to `RunOptions` reaches every agent without changing any decorator. That holds only as long as no decorator rebuilds the object, which is why each one has a test for it.
+
+---
+
+## Each tool judges the risk of each call, and only a destructive one waits for a human
+
+tags: #mikode-harness #permissions #agent-loops #public-api
+
+**Decision:** before `LLMAgent` runs a tool call, the tool classifies that call:
+
+- `safe` changes nothing;
+- `mutating` makes a change git can undo;
+- `destructive` loses something.
+
+`risk` is required on `Tool` and on `defineTool`, as a fixed level or as a function of the validated input. Only a `destructive` call is held back: it runs when the run's `approve` allows it, or always when the agent was built with `autoApprove`. With no approver, it is denied. A denial reaches the model as an error result, with the user's reason when one was given. Progress reports it with a new `status: 'denied'`, and the run carries on. A throwing approver ends the run as a host failure.
+
+**Context:** #43, before #52 gives agents tools that write. Its first layer was already in place: an agent runs only the tools it was given. The second layer is each tool's own checks on its arguments, such as the `.gitignore` boundary. This entry is the third layer: asking a human.
+
+**Alternatives considered:**
+
+- **A list of dangerous tool names.** Rejected: the danger is in the call, not in the tool. The same write that creates a file can overwrite one, and only the tool can tell from the input.
+- **Asking about `mutating` calls too.** Rejected: an executor edits constantly, so asking on every edit would make it unusable, and git can undo those edits.
+- **Remembering "allow for the session" in the harness.** Rejected: that is state that outlives a run, which AGENTS.md rules out. The consumer's own approver remembers instead, and it also decides what counts as the same call: the same tool, or the same tool and path.
+- **A per-role policy in the orchestrator.** Rejected: #52 gives each role its own tools, so what a role may do is already decided when it is built.
+- **Asking for approval through a `ProgressEvent`.** Rejected: consumers are told to ignore event types they do not know. A consumer that ignored the request would never answer. The run would then wait forever, or need a timeout that decides for the user, and the deny default for "no one can answer" would never apply. Approval needs a callback that returns an answer. Only an `approve` the consumer passed can allow a call, and its absence is itself the signal to deny.
+
+**Consequences:**
+
+- A tool that changes something git does not track must count as `destructive`, or nothing protects that change.
+- Adding `denied` to an existing event's `status` is breaking for an exhaustive switch, so it ships in #43's major release with the run options.
+- Input that fails validation counts as `safe`, because `execute` rejects it before doing anything.
+- A tool whose `risk` throws is a failing tool: its call does not run, and the model receives the error.
+- The Agent SDK engines ignore `approve`, because their own permission systems decide.
+- `rememberApprovals(ask, { key })` is the consumer's memory, offered by the harness so each consumer does not write it again. It allows a call again without asking once `ask` answered `remember`, and never remembers a denial. Its memory lives in the approver it returns, so the consumer chooses its lifetime. The CLI keeps one for the session and asks in the terminal: yes, always, or no with a reason.

@@ -1,4 +1,4 @@
-import type { Agent, AgentResponse, Callback } from '#src/agent/domain/agent';
+import type { Agent, AgentResponse, RunOptions } from '#src/agent/domain/agent';
 
 /**
  * Gives an agent without a system prompt its role's instructions at the head of every prompt.
@@ -14,7 +14,7 @@ export class InstructedAgent implements Agent {
 		this.instructions = instructions;
 	}
 
-	run(prompt: string, signal: AbortSignal, callback: Callback): Promise<AgentResponse> {
-		return this.inner.run(`${this.instructions}\n\n${prompt}`, signal, callback);
+	run(prompt: string, options: RunOptions): Promise<AgentResponse> {
+		return this.inner.run(`${this.instructions}\n\n${prompt}`, options);
 	}
 }

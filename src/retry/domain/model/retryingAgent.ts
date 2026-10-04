@@ -1,10 +1,10 @@
-import type { Agent, AgentResponse, Callback } from '#src/agent/domain/agent';
-import { RecoverableError, UnrecoverableError, withSpentTokens } from '#src/agent/domain/errors';
+import type { Agent, AgentResponse, RunOptions } from '#src/agent/domain/agent';
+import { RecoverableError, UnrecoverableError, withSpentTokens } from '#src/shared/domain/errors';
 import {
 	classifyHostFailure,
 	describeFailure,
 	treatErrors,
-} from '#src/agent/domain/providerFailure';
+} from '#src/shared/domain/providerFailure';
 import { isAbortError } from '#src/shared/domain/isAbortError';
 import type { ILogger } from '#src/shared/domain/logger';
 import { addTokens, type Tokens } from '#src/shared/domain/tokens';
@@ -42,7 +42,7 @@ export class RetryingAgent implements Agent {
 		this.noteFailures = noteFailures;
 	}
 
-	async run(prompt: string, signal: AbortSignal, callback: Callback): Promise<AgentResponse> {
+	async run(prompt: string, options: RunOptions): Promise<AgentResponse> {
 		const start = Date.now();
 		let lastPrompt: string | null = null;
 		// Failed attempts were billed too, so they travel with whichever way the run ends.
@@ -53,7 +53,7 @@ export class RetryingAgent implements Agent {
 		for (let attempt = 1; ; attempt++) {
 			try {
 				const promptToSend = lastPrompt ?? prompt;
-				const response = await this.inner.run(promptToSend, signal, callback);
+				const response = await this.inner.run(promptToSend, options);
 				return {
 					...response,
 					// Any call answered without usage makes the whole count unknown, not partial.

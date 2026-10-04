@@ -7,7 +7,8 @@ import type { Thread, ThreadEvent } from '@openai/codex-sdk';
 import OpenAI from 'openai';
 import type { Response } from 'openai/resources/responses/responses';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { InvalidAgentConfigError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
+import { z } from 'zod';
+import { InvalidAgentConfigError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
 import {
 	createAgent,
 	createOrchestrator,
@@ -18,6 +19,7 @@ import {
 	createLLMOrchestrator,
 } from '../../src/factory/infrastructure/agentLLMFactory.ts';
 import type { AgentProvider } from '../../src/factory/infrastructure/types.ts';
+import { defineTool } from '../../src/tools/infrastructure/defineTool.ts';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 vi.mock('@openai/codex-sdk', () => ({ Codex: vi.fn() }));
@@ -192,7 +194,7 @@ describe('createAgent', () => {
 		vi.mocked(query).mockReturnValue(claudeStream([claudeResult('hi')]));
 
 		createAgent('openai', { logger: createLogger() });
-		await createAgent('anthropic', { logger: createLogger() }).run('prompt', signal, vi.fn());
+		await createAgent('anthropic', { logger: createLogger() }).run('prompt', { signal });
 
 		expect(codexModels(startThread)).toEqual(['gpt-5.6-sol']);
 		expect(claudeModels()).toEqual(['opus']);
@@ -218,7 +220,7 @@ describe('createAgent', () => {
 		vi.mocked(query).mockReturnValue(claudeStream([claudeResult('hi')]));
 
 		createAgent('openai', { logger: createLogger() });
-		await createAgent('anthropic', { logger: createLogger() }).run('prompt', signal, vi.fn());
+		await createAgent('anthropic', { logger: createLogger() }).run('prompt', { signal });
 
 		expect(startThread.mock.calls[0]?.[0]).not.toHaveProperty('approvalPolicy');
 		expect(vi.mocked(query).mock.calls[0]?.[0].options).not.toHaveProperty('permissionMode');
@@ -244,7 +246,7 @@ describe('createAgent', () => {
 			.mockReturnValueOnce(claudeStream([claudeResult('recovered')]));
 		const logger = createLogger();
 
-		const response = await createAgent('anthropic', { logger }).run('prompt', signal, vi.fn());
+		const response = await createAgent('anthropic', { logger }).run('prompt', { signal });
 
 		expect(response.response).toBe('recovered');
 		expect(query).toHaveBeenCalledTimes(2);
@@ -256,7 +258,7 @@ describe('createAgent', () => {
 		vi.mocked(query).mockReturnValue(claudeStream([unknownMessage, claudeResult('hi')]));
 		const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
-		await createAgent('anthropic').run('prompt', signal, vi.fn());
+		await createAgent('anthropic').run('prompt', { signal });
 
 		expect(warn).toHaveBeenCalledWith(unknownMessage, 'Unknown Claude message type');
 	});
@@ -269,7 +271,7 @@ describe('createLLMAgent', () => {
 		const response = await createLLMAgent('openai', {
 			systemPrompt: 'Be brief.',
 			logger: createLogger(),
-		}).run('prompt', signal, vi.fn());
+		}).run('prompt', { signal });
 
 		expect(response.response).toBe('hi');
 		expect(create).toHaveBeenCalledWith(
@@ -281,6 +283,41 @@ describe('createLLMAgent', () => {
 			{ signal },
 		);
 	});
+
+	it.each([
+		[true, 1],
+		[false, 0],
+	])(
+		'runs a destructive call without asking only with autoApprove (%s)',
+		async (autoApprove, runs) => {
+			const create = openAIReplying('done');
+			const answer = await create();
+			create.mockClear();
+			create.mockResolvedValueOnce({
+				...answer,
+				output: [
+					{ type: 'function_call', id: 'fc-1', call_id: 'call-1', name: 'delete', arguments: '{}' },
+				],
+			} as unknown as Response);
+			const execute = vi.fn(() => Promise.resolve('deleted'));
+			const tool = defineTool({
+				name: 'delete',
+				description: '',
+				input: z.object({}),
+				risk: 'destructive',
+				execute,
+			});
+
+			await createLLMAgent('openai', {
+				systemPrompt: '',
+				tools: [tool],
+				autoApprove,
+				logger: createLogger(),
+			}).run('prompt', { signal });
+
+			expect(execute).toHaveBeenCalledTimes(runs);
+		},
+	);
 
 	it('rejects a model the OpenAI client does not support', () => {
 		openAIReplying('hi');
@@ -295,11 +332,9 @@ describe('createLLMAgent', () => {
 		create.mockRejectedValueOnce(new Error('socket hang up'));
 		const logger = createLogger();
 
-		const response = await createLLMAgent('openai', { systemPrompt: '', logger }).run(
-			'prompt',
+		const response = await createLLMAgent('openai', { systemPrompt: '', logger }).run('prompt', {
 			signal,
-			vi.fn(),
-		);
+		});
 
 		expect(response.response).toBe('recovered');
 		expect(create).toHaveBeenCalledTimes(2);
@@ -318,7 +353,7 @@ describe('createLLMAgent', () => {
 		const response = await createLLMAgent('anthropic', {
 			systemPrompt: 'Be brief.',
 			logger: createLogger(),
-		}).run('prompt', signal, vi.fn());
+		}).run('prompt', { signal });
 
 		expect(response.response).toBe('hi');
 		expect(create).toHaveBeenCalledWith(
@@ -352,13 +387,13 @@ describe('createLLMAgent', () => {
 			reasoningEffort: 'max',
 			systemPrompt: '',
 			logger: createLogger(),
-		}).run('prompt', signal, vi.fn());
+		}).run('prompt', { signal });
 		await createLLMAgent('anthropic', {
 			model: 'opus',
 			reasoningEffort: 'low',
 			systemPrompt: '',
 			logger: createLogger(),
-		}).run('prompt', signal, vi.fn());
+		}).run('prompt', { signal });
 
 		expect(openAICreate).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -421,7 +456,7 @@ describe('createOrchestrator', () => {
 		vi.mocked(query).mockReturnValue(claudeStream([claudeResult('{"decision":"approved"}')]));
 
 		await expect(
-			createOrchestrator({ logger: createLogger() }).run('ship it', signal, vi.fn()),
+			createOrchestrator({ logger: createLogger() }).run('ship it', { signal }),
 		).resolves.toMatchObject({ response: 'All job has finished' });
 
 		expect(codexModels(startThread)).toEqual(['gpt-5.6-sol', 'gpt-5.6-luna']);
@@ -437,11 +472,9 @@ describe('createOrchestrator', () => {
 			.mockReturnValueOnce(claudeStream([claudeResult('{"decision":"approved"}')]));
 
 		await expect(
-			createOrchestrator({ provider: 'anthropic', logger: createLogger() }).run(
-				'ship it',
+			createOrchestrator({ provider: 'anthropic', logger: createLogger() }).run('ship it', {
 				signal,
-				vi.fn(),
-			),
+			}),
 		).resolves.toMatchObject({ response: 'All job has finished' });
 
 		expect(claudeModels()).toEqual(['opus', 'sonnet', 'opus']);
@@ -465,7 +498,7 @@ describe('createOrchestrator', () => {
 			provider: 'anthropic',
 			systemPrompts: { planner: 'Plan in one line.' },
 			logger: createLogger(),
-		}).run('ship it', signal, vi.fn());
+		}).run('ship it', { signal });
 
 		expect(vi.mocked(query).mock.calls.map(([params]) => params.prompt)).toEqual([
 			expect.stringMatching(/^Plan in one line\.\n\nOriginal user request:/),
@@ -488,11 +521,9 @@ describe('createOrchestrator', () => {
 		const startThread = codexReplying('done');
 		vi.mocked(query).mockReturnValue(claudeStream([claudeResult('{"decision":"approved"}')]));
 
-		await createOrchestrator({ autoApprove: true, logger: createLogger() }).run(
-			'ship it',
+		await createOrchestrator({ autoApprove: true, logger: createLogger() }).run('ship it', {
 			signal,
-			vi.fn(),
-		);
+		});
 
 		expect(startThread.mock.calls).toEqual([
 			[expect.objectContaining({ approvalPolicy: 'never', sandboxMode: 'danger-full-access' })],
@@ -517,7 +548,7 @@ describe('createLLMOrchestrator', () => {
 		const startThread = codexReplying('implementation');
 
 		await expect(
-			(await createLLMOrchestrator({ logger: createLogger() })).run('ship it', signal, vi.fn()),
+			(await createLLMOrchestrator({ logger: createLogger() })).run('ship it', { signal }),
 		).resolves.toMatchObject({ response: 'All job has finished' });
 
 		expect(openAICreate).toHaveBeenCalledWith(
@@ -547,7 +578,7 @@ describe('createLLMOrchestrator', () => {
 		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
 		const startThread = codexReplying('implementation');
 
-		await (await createLLMOrchestrator({ logger: createLogger() })).run('ship it', signal, vi.fn());
+		await (await createLLMOrchestrator({ logger: createLogger() })).run('ship it', { signal });
 
 		const plannerRequest = openAICreate.mock.calls[0] as unknown as [
 			{ instructions: string; input: unknown; tools: { name: string }[] },
@@ -582,7 +613,7 @@ describe('createLLMOrchestrator', () => {
 				systemPrompts: { reviewer: 'Review strictly.', executor: 'Change only tests.' },
 				logger: createLogger(),
 			})
-		).run('ship it', signal, vi.fn());
+		).run('ship it', { signal });
 
 		expect(claudeCreate).toHaveBeenCalledWith(
 			expect.objectContaining({ system: 'Review strictly.' }),
@@ -631,8 +662,7 @@ describe('createLLMOrchestrator', () => {
 		await expect(
 			(await createLLMOrchestrator({ provider: 'anthropic', logger: createLogger() })).run(
 				'ship it',
-				signal,
-				vi.fn(),
+				{ signal },
 			),
 		).resolves.toMatchObject({ response: 'All job has finished' });
 

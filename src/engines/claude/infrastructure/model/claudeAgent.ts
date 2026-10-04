@@ -8,20 +8,27 @@ import type {
 	SDKResultSuccess,
 	SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
-import type { Agent, AgentResponse, Callback, ProgressEvent } from '#src/agent/domain/agent';
+import {
+	type Agent,
+	type AgentResponse,
+	type Callback,
+	type ProgressEvent,
+	type RunOptions,
+	ignoreProgress,
+} from '#src/agent/domain/agent';
 import {
 	InvalidAgentConfigError,
 	RecoverableError,
 	UnrecoverableError,
 	withSpentTokens,
-} from '#src/agent/domain/errors';
+} from '#src/shared/domain/errors';
 import {
 	classifiedProviderStream,
 	classifyHostFailure,
 	classifyLocalFailure,
 	classifyProviderFailure,
 	treatErrors,
-} from '#src/agent/domain/providerFailure';
+} from '#src/shared/domain/providerFailure';
 import type { ILogger } from '#src/shared/domain/logger';
 import type { Tokens } from '#src/shared/domain/tokens';
 import { isOneOf } from '#src/shared/domain/isOneOf';
@@ -211,7 +218,10 @@ export class ClaudeAgent implements Agent {
 		this.logger = logger;
 	}
 
-	async run(prompt: string, signal: AbortSignal, callback: Callback): Promise<AgentResponse> {
+	async run(
+		prompt: string,
+		{ signal, onProgress: callback = ignoreProgress }: RunOptions,
+	): Promise<AgentResponse> {
 		signal.throwIfAborted();
 		const start = Date.now();
 

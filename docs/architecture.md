@@ -21,7 +21,7 @@ same repository is a development-only consumer and is not part of the published 
 `src/` uses one folder per bounded module, each split into `domain` and `infrastructure`:
 
 ```text
-src/agent/          the seam: Agent, ProgressEvent, errors, provider-failure classification
+src/agent/          the seam: Agent, RunOptions, ProgressEvent, the approval contract
 src/engines/*/      one provider adapter each, infrastructure only
 src/engines/domain/ LLMAgent, the agent that owns its conversation and calls an LLMClient
 src/llm/            the stateless model boundary: LLMClient, Message, Conversation, ToolDefinition
@@ -29,7 +29,7 @@ src/tools/          what an agent can run: Tool, defineTool, and the read-only r
 src/factory/        createAgent, createOrchestrator and their model-API pair, the only public way to build agents
 src/orchestration/  planner -> executor -> reviewer, with a validated reviewer decision
 src/retry/          the retry decorator
-src/shared/         ports and helpers used across modules
+src/shared/         ports, helpers and the failure contract used across modules
 ```
 
 The split is deliberately shallow. `domain` holds what does not know a provider exists —
@@ -41,28 +41,31 @@ provider: it drives whatever `LLMClient` it is given.
 
 ## Responsibilities and boundaries
 
-| Module               | Owns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/agent/`         | `Agent`, `AgentResponse`, `ProgressEvent`, the error types, and the functions that classify a failure                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `src/engines/`       | One adapter per provider: SDK calls, session or thread continuity, and SDK events mapped to `ProgressEvent`; `LLMAgent`, which drives an `LLMClient` and runs the tools it is given                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `src/llm/`           | `LLMClient`, the stateless model port; `Message` and its parts, including opaque `providerData`; `Conversation`; the `ToolDefinition` a client describes to the model; `MaxContextError`; `OpenAILLMClient`; `ClaudeLLMClient`                                                                                                                                                                                                                                                                                                                                                                                              |
-| `src/tools/`         | `Tool`, a `ToolDefinition` plus the `execute` the agent runs; `defineTool`, which builds one from a Zod schema and rejects a schema strict mode would refuse (an optional field, a numeric or length bound, an object open to any key); `Workspace`, the read-only port to the folder an agent works on, and `createWorkspaceTools`, the `listFiles`, `searchText` and `readFile` tools over it; `createWorkspace`, which picks `RipgrepWorkspace` or falls back to `GitWorkspace`, both enforcing the boundary through `BoundedWorkspace`. It depends on `src/llm/` for the definition; `src/llm/` does not know it exists |
-| `src/factory/`       | Provider selection, default model and reasoning effort per role, and composition with the retry decorator                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `src/orchestration/` | Each role's default instructions and the data each round sends, `InstructedAgent`, the attempt loop, per-run usage totals, and the validated reviewer decision                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `src/retry/`         | The decision to call an inner agent again, and the prompt that carries the previous failure into the next call                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `src/shared/`        | `ILogger` and its stderr implementation, `isAbortError`, `isOneOf`, `Tokens`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Module               | Owns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/agent/`         | `Agent`, `RunOptions`, `AgentResponse`, `ProgressEvent`, the approval contract (`ToolRisk`, `Approver`, and `rememberApprovals`, which remembers what an approver allowed). The approval types live here, not in `src/tools`, because `RunOptions` carries the approver and this module depends on nothing but `src/shared`                                                                                                                                                                                                                                                                                                                                    |
+| `src/engines/`       | One adapter per provider: SDK calls, session or thread continuity, and SDK events mapped to `ProgressEvent`; `LLMAgent`, which drives an `LLMClient` and runs the tools it is given                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `src/llm/`           | `LLMClient`, the stateless model port; `Message` and its parts, including opaque `providerData`; `Conversation`; the `ToolDefinition` a client describes to the model; `MaxContextError`; `OpenAILLMClient`; `ClaudeLLMClient`                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `src/tools/`         | `Tool`, a `ToolDefinition` plus the `execute` the agent runs; `defineTool`, which builds one from a Zod schema and rejects a schema strict mode would refuse (an optional field, a numeric or length bound, an object open to any key); `Workspace`, the read-only port to the folder an agent works on, and `createWorkspaceTools`, the `listFiles`, `searchText` and `readFile` tools over it; `createWorkspace`, which picks `RipgrepWorkspace` or falls back to `GitWorkspace`, both enforcing the boundary through `BoundedWorkspace`. It depends on `src/llm/` for the definition and on `src/agent/` for `ToolRisk`; `src/llm/` does not know it exists |
+| `src/factory/`       | Provider selection, default model and reasoning effort per role, and composition with the retry decorator                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `src/orchestration/` | Each role's default instructions and the data each round sends, `InstructedAgent`, the attempt loop, per-run usage totals, and the validated reviewer decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `src/retry/`         | The decision to call an inner agent again, and the prompt that carries the previous failure into the next call                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `src/shared/`        | `ILogger` and its stderr implementation, `isAbortError`, `isOneOf`, `Tokens`, the error types and the functions that classify a failure. The failure contract lives here because the model clients use it as much as the agents do                                                                                                                                                                                                                                                                                                                                                                                                                             |
 
 Two boundaries carry most of the design:
 
 **Everything is an `Agent`.** `ClaudeAgent`, `CodexAgent`, `LLMAgent`, `RetryingAgent` and
-`OrchestratorAgent` all implement `run(prompt, signal, callback)`. A decorator and a whole
-multi-agent workflow are therefore substitutable for a bare engine anywhere, and a consumer's
-loop cannot tell which it is driving.
+`OrchestratorAgent` all implement `run(prompt, options)`, where `options` holds the run's
+`signal`, its optional `onProgress`, and its optional `approve`, asked before a model-backed
+agent runs a `destructive` tool call. A decorator and a whole multi-agent workflow are
+therefore substitutable for a bare engine anywhere, and a consumer's loop cannot tell which it
+is driving. A decorator passes `options` on whole, never rebuilt, so a field added to it
+reaches every agent without each decorator learning about it.
 
 **Nothing escapes an `Agent` unclassified.** Every consumer branches on `RecoverableError`
 versus `UnrecoverableError`, so an unclassified error bypasses that decision entirely: it is
 retried when it should be fatal, or it ends a run a retry would have recovered. The
-classifiers in `src/agent/domain/providerFailure.ts` are the only way a failure crosses the
+classifiers in `src/shared/domain/providerFailure.ts` are the only way a failure crosses the
 seam:
 
 | Helper                     | Applies to                             | Produces                                |
@@ -90,14 +93,16 @@ before either error type.
 ## Dependencies and contracts
 
 Dependencies point inward. `src/engines/` and `src/factory/` depend on `src/agent/`;
-`src/agent/` depends on nothing but `src/shared/`. `src/llm/` depends on `src/agent/` for
-the error types and on `src/shared/` for `Tokens`; only its `infrastructure` imports an SDK. `LLMAgent` depends on
+`src/agent/` depends on nothing but `src/shared/`. `src/llm/` depends only on `src/shared/`,
+for the failure contract and `Tokens`; only its `infrastructure` imports an SDK. `LLMAgent` depends on
 `src/llm/`, and `src/llm/` knows nothing about agents. No module imports `src/factory/`, which is
 why it is the only place that knows every provider.
 
 `src/index.ts` is the public API: `createAgent`, `createOrchestrator`, `createLLMAgent`,
-`createLLMOrchestrator`, the `Agent`, `AgentResponse`, `Callback`, `ProgressEvent` and `Tokens`
-types, the three error types, `isAbortError`, `isAgentProvider`, `agentProviders`, and the
+`createLLMOrchestrator`, the `Agent`, `RunOptions`, `AgentResponse`, `Callback`, `ProgressEvent`
+and `Tokens` types, the approval contract (`rememberApprovals` and the `Approver`,
+`ApprovalRequest`, `ApprovalDecision`, `RememberableDecision` and `ToolRisk` types), the three
+error types, `isAbortError`, `isAgentProvider`, `agentProviders`, and the
 option and model types. For the model-backed agent's tools it also exports the `Tool`,
 `ToolDefinition`, `JSONSchema`, `Workspace` and `TextMatch` types, `defineTool`,
 `createWorkspace` and `createWorkspaceTools`. `defineTool` takes a Zod 4 schema, so Zod's major
@@ -161,7 +166,7 @@ take the same model and effort names, so one role table serves both.
 **A single turn.** `createAgent` returns a `RetryingAgent` wrapping the engine. The engine
 calls its SDK inside `classifyProviderFailure`, then iterates the response stream through
 `classifiedProviderStream`, mapping each SDK event to a `ProgressEvent` and handing it to the
-consumer's callback. On a `RecoverableError` the decorator calls the engine again, with the
+consumer's `onProgress`. On a `RecoverableError` the decorator calls the engine again, with the
 previous failure appended to the original prompt — an attempt that failed before the provider
 registered the turn left no session that remembers it. On exhaustion it throws
 `UnrecoverableError`.
@@ -172,9 +177,9 @@ executor → reviewer. The reviewer is asked for JSON and its answer goes throug
 `{ decision: 'rejected', feedback }` and never free text. An unusable reviewer answer retries
 only the reviewer call, with the parse failure fed back — a malformed decision is not evidence
 that the plan or the implementation were wrong. A rejection starts another round with the
-feedback carried into the planner prompt. All three roles receive the same `AbortSignal` and
-the same callback, so one cancellation stops the whole workflow and progress from every role
-reaches the consumer through one stream.
+feedback carried into the planner prompt. All three roles receive the same run options, so one
+cancellation stops the whole workflow and progress from every role reaches the consumer
+through one stream.
 
 **A model-backed turn.** `LLMAgent.run` sends the stored context, the new prompt and the
 definitions of its tools to its `LLMClient`, inside `classifyProviderFailure`; the client
@@ -185,6 +190,13 @@ fails with `UnrecoverableError` instead, without running the last step's calls, 
 call is left to send their results to. A missing tool, or a tool that throws, becomes an
 error result the model can correct itself from; only a cancellation escapes, whatever error
 the tool turned it into, and a cancelled run neither starts nor announces another tool. A
+call is announced as `in_progress` only once it is about to run, after its approval, so a
+call to a missing tool, a call whose risk could not be judged, or a denied call is reported
+only by how it ended.
+Before a call runs, its tool judges its risk. Unless the agent was built with `autoApprove`, a
+`destructive` call goes to the run's `approve`, or is denied when the run has none. A denial
+is an error result, narrated with `status: 'denied'`, and the run carries on; a throwing
+approver ends the run, as any host callback does. A
 `refused` or `truncated` stop ends the run with `UnrecoverableError`. Each client maps the
 parts to its provider's shapes and back: Claude's `tool_use` and `tool_result`, with every
 result in one user turn, and OpenAI's `function_call` and `function_call_output`, paired by
@@ -194,8 +206,8 @@ Nothing is recorded until the run completes. Then the prompt, every answer and e
 result enter the conversation together, so a failed run leaves it untouched, no tool call is
 kept without its result, and a retry of the same prompt cannot appear twice. Once a call has
 reached an existing tool, a recoverable failure becomes `UnrecoverableError`: `RetryingAgent`
-would run the prompt again and repeat the tool's effects. A call to a missing tool does not
-count, because nothing ran. Text and reasoning are narrated as each answer arrives, as
+would run the prompt again and repeat the tool's effects. A call to a missing tool, or a denied
+one, does not count, because nothing ran. Text and reasoning are narrated as each answer arrives, as
 `agentMessage` and `reasoning`; `providerData` is never narrated. A tool call is narrated as a `tool` event only when it starts,
 and again when it ends, so a call the run never starts is never shown as running. All of it
 goes through `classifyHostFailure`; the response carries the text of the final answer alone. Tokens are
@@ -228,11 +240,12 @@ each other's.
   WebSocket consumer would call `Agent.run()` per request and want none of it. It stays out of
   the tarball too — `files` lists `dist` only, and `scripts/pack-check.mjs` fails on anything
   else reaching it.
-- **The harness's own tools only read, and it runs whatever tools it is given.**
+- **The harness's own tools only read, and only a destructive call is held back.**
   `createLLMOrchestrator` gives its planner and reviewer the repository tools of #25, so nothing
-  a model runs there can change a file. `createLLMAgent` runs any `Tool` a caller passes with no
-  approval step, because permissions do not exist yet (#43): a caller who passes a tool that
-  writes owns that decision.
+  a model runs there can change a file. Each tool judges each call `safe`, `mutating` or
+  `destructive`; `LLMAgent` asks the run's `approve` only about a `destructive` one, and denies
+  it when there is none. A `mutating` call runs unasked, because git can undo it, so a tool
+  that changes something git does not track must count as `destructive`.
 - **An API key in the environment can move the Claude executor off the subscription.** The
   Claude Agent SDK authenticates with `ANTHROPIC_API_KEY` when it is set, and the harness does
   not remove it from the environment it inherits. With `provider: 'anthropic'`,

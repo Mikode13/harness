@@ -34,6 +34,7 @@ export function createWorkspaceTools(workspace: Workspace): Tool[] {
 			name: 'listFiles',
 			description:
 				'Lists the files of the repository, sorted. Ignored files such as dependencies are left out.',
+			risk: 'safe',
 			input: z.object(scope),
 			execute: async ({ path, glob }, signal) => {
 				// The port takes "no scope" as a missing field.
@@ -58,6 +59,7 @@ export function createWorkspaceTools(workspace: Workspace): Tool[] {
 			name: 'searchText',
 			description:
 				'Searches the repository for a regular expression and returns each matching line as path:line: text.',
+			risk: 'safe',
 			input: z.object({
 				pattern: z.string().describe('A regular expression.'),
 				ignoreCase: z.boolean().nullable().describe('Match regardless of case. Defaults to false.'),
@@ -93,6 +95,7 @@ export function createWorkspaceTools(workspace: Workspace): Tool[] {
 		defineTool({
 			name: 'readFile',
 			description: 'Reads lines of a file, each prefixed with its number.',
+			risk: 'safe',
 			input: z.object({
 				path: z.string().describe('The file, relative to the root.'),
 				fromLine: z.number().nullable().describe('The first line to read, from 1. Defaults to 1.'),

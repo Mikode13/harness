@@ -7,7 +7,7 @@ import {
 	InvalidAgentConfigError,
 	RecoverableError,
 	UnrecoverableError,
-} from '../../src/agent/domain/errors.ts';
+} from '../../src/shared/domain/errors.ts';
 import { OrchestratorAgent } from '../../src/orchestration/domain/model/orchestratorAgent.ts';
 import { ReviewerDecisionValidator } from '../../src/orchestration/infrastructure/model/reviewerDecisionValidator.ts';
 
@@ -176,8 +176,7 @@ describe('ClaudeAgent', () => {
 
 		const response = await new ClaudeAgent({ model: 'sonnet', logger: createLogger() }).run(
 			'prompt',
-			new AbortController().signal,
-			event => events.push(event),
+			{ signal: new AbortController().signal, onProgress: event => events.push(event) },
 		);
 
 		expect(events).toEqual([
@@ -221,11 +220,10 @@ describe('ClaudeAgent', () => {
 		const callback = vi.fn();
 		const logger = createLogger();
 
-		const response = await new ClaudeAgent({ model: 'sonnet', logger }).run(
-			'prompt',
-			new AbortController().signal,
-			callback,
-		);
+		const response = await new ClaudeAgent({ model: 'sonnet', logger }).run('prompt', {
+			signal: new AbortController().signal,
+			onProgress: callback,
+		});
 
 		expect(callback).toHaveBeenCalledTimes(1);
 		expect(callback).toHaveBeenCalledWith({ type: 'agentMessage', message: 'visible progress' });
@@ -249,11 +247,9 @@ describe('ClaudeAgent', () => {
 			vi.mocked(query).mockReturnValue(stream([message, result()]));
 			const logger = createLogger();
 
-			const response = await new ClaudeAgent({ model: 'sonnet', logger }).run(
-				'prompt',
-				new AbortController().signal,
-				vi.fn(),
-			);
+			const response = await new ClaudeAgent({ model: 'sonnet', logger }).run('prompt', {
+				signal: new AbortController().signal,
+			});
 
 			expect(logger.warn).toHaveBeenCalledWith(message, warning);
 			expect(response.response).toBe('final answer');
@@ -267,11 +263,10 @@ describe('ClaudeAgent', () => {
 			const logger = createLogger();
 			const callback = vi.fn();
 
-			await new ClaudeAgent({ model: 'sonnet', logger }).run(
-				'prompt',
-				new AbortController().signal,
-				callback,
-			);
+			await new ClaudeAgent({ model: 'sonnet', logger }).run('prompt', {
+				signal: new AbortController().signal,
+				onProgress: callback,
+			});
 
 			expect(logger.warn).toHaveBeenCalledWith(unknownBlock, 'Unknown Claude content block');
 			expect(callback).toHaveBeenCalledWith({ type: 'agentMessage', message: 'hello' });
@@ -284,11 +279,9 @@ describe('ClaudeAgent', () => {
 				vi.mocked(query).mockReturnValue(stream([message, result()]));
 				const logger = createLogger();
 
-				const response = await new ClaudeAgent({ model: 'sonnet', logger }).run(
-					'prompt',
-					new AbortController().signal,
-					vi.fn(),
-				);
+				const response = await new ClaudeAgent({ model: 'sonnet', logger }).run('prompt', {
+					signal: new AbortController().signal,
+				});
 
 				expect(logger.warn).toHaveBeenCalledWith(
 					message,
@@ -304,11 +297,9 @@ describe('ClaudeAgent', () => {
 		vi.mocked(query).mockReturnValue(stream([assistant([{ text: 'partial', type: 'text' }])]));
 		const logger = createLogger();
 
-		const response = await new ClaudeAgent({ model: 'sonnet', logger }).run(
-			'prompt',
-			new AbortController().signal,
-			vi.fn(),
-		);
+		const response = await new ClaudeAgent({ model: 'sonnet', logger }).run('prompt', {
+			signal: new AbortController().signal,
+		});
 
 		expect(response.tokens).toBeUndefined();
 		expect(logger.warn).toHaveBeenCalledWith(
@@ -330,8 +321,8 @@ describe('ClaudeAgent', () => {
 		const signal = new AbortController().signal;
 		const callback = vi.fn();
 
-		await agent.run('first prompt', signal, callback);
-		await agent.run('second prompt', signal, callback);
+		await agent.run('first prompt', { signal, onProgress: callback });
+		await agent.run('second prompt', { signal, onProgress: callback });
 
 		expect(query).toHaveBeenNthCalledWith(2, {
 			prompt: 'second prompt',
@@ -350,11 +341,9 @@ describe('ClaudeAgent', () => {
 	it('keeps permission checks enabled by default', async () => {
 		vi.mocked(query).mockReturnValue(stream([result()]));
 
-		await new ClaudeAgent({ model: 'sonnet', logger: createLogger() }).run(
-			'prompt',
-			new AbortController().signal,
-			vi.fn(),
-		);
+		await new ClaudeAgent({ model: 'sonnet', logger: createLogger() }).run('prompt', {
+			signal: new AbortController().signal,
+		});
 
 		expect(query).toHaveBeenCalledWith({
 			prompt: 'prompt',
@@ -374,11 +363,9 @@ describe('ClaudeAgent', () => {
 			const controller = new AbortController();
 			controller.abort();
 
-			const run = new ClaudeAgent({ model: 'sonnet', logger: createLogger() }).run(
-				'prompt',
-				controller.signal,
-				vi.fn(),
-			);
+			const run = new ClaudeAgent({ model: 'sonnet', logger: createLogger() }).run('prompt', {
+				signal: controller.signal,
+			});
 
 			await expect(run).rejects.toBe(controller.signal.reason);
 			expect(query).not.toHaveBeenCalled();
@@ -388,11 +375,9 @@ describe('ClaudeAgent', () => {
 			const closingStream = quietlyClosingStream();
 			vi.mocked(query).mockReturnValue(closingStream.query);
 			const controller = new AbortController();
-			const run = new ClaudeAgent({ model: 'sonnet', logger: createLogger() }).run(
-				'prompt',
-				controller.signal,
-				vi.fn(),
-			);
+			const run = new ClaudeAgent({ model: 'sonnet', logger: createLogger() }).run('prompt', {
+				signal: controller.signal,
+			});
 
 			await closingStream.readStarted;
 			controller.abort();
@@ -407,11 +392,9 @@ describe('ClaudeAgent', () => {
 			vi.mocked(query).mockReturnValue(completedStream);
 			const controller = new AbortController();
 
-			await new ClaudeAgent({ model: 'sonnet', logger: createLogger() }).run(
-				'prompt',
-				controller.signal,
-				vi.fn(),
-			);
+			await new ClaudeAgent({ model: 'sonnet', logger: createLogger() }).run('prompt', {
+				signal: controller.signal,
+			});
 			controller.abort();
 
 			expect(close).not.toHaveBeenCalled();
@@ -438,7 +421,7 @@ describe('ClaudeAgent', () => {
 				logger,
 			});
 			const controller = new AbortController();
-			const run = orchestrator.run('prompt', controller.signal, vi.fn());
+			const run = orchestrator.run('prompt', { signal: controller.signal });
 
 			await closingStream.readStarted;
 			controller.abort();
@@ -472,11 +455,9 @@ describe('ClaudeAgent', () => {
 		);
 
 		await expect(
-			new ClaudeAgent({ model: 'sonnet', logger: createLogger() }).run(
-				'prompt',
-				new AbortController().signal,
-				vi.fn(),
-			),
+			new ClaudeAgent({ model: 'sonnet', logger: createLogger() }).run('prompt', {
+				signal: new AbortController().signal,
+			}),
 		).rejects.toMatchObject({
 			message: 'Claude sdk error',
 			cause: 'error,temporary failure,rate limited',
@@ -512,7 +493,7 @@ describe('ClaudeAgent', () => {
 			const agent = new ClaudeAgent({ model: 'sonnet', logger: createLogger() });
 
 			const failure = await agent
-				.run('prompt', new AbortController().signal, vi.fn())
+				.run('prompt', { signal: new AbortController().signal })
 				.catch((error: unknown) => error);
 
 			expect(failure).toBeInstanceOf(RecoverableError);
@@ -535,7 +516,7 @@ describe('ClaudeAgent', () => {
 			const agent = new ClaudeAgent({ model: 'sonnet', logger: createLogger() });
 
 			const failure = await agent
-				.run('prompt', new AbortController().signal, vi.fn())
+				.run('prompt', { signal: new AbortController().signal })
 				.catch((error: unknown) => error);
 
 			expect(failure).toBeInstanceOf(RecoverableError);
@@ -553,8 +534,11 @@ describe('ClaudeAgent', () => {
 			const agent = new ClaudeAgent({ model: 'sonnet', logger: createLogger() });
 
 			const failure = await agent
-				.run('prompt', new AbortController().signal, () => {
-					throw thrown;
+				.run('prompt', {
+					signal: new AbortController().signal,
+					onProgress: () => {
+						throw thrown;
+					},
 				})
 				.catch((error: unknown) => error);
 
@@ -578,7 +562,7 @@ describe('ClaudeAgent', () => {
 			const agent = new ClaudeAgent({ model: 'sonnet', logger });
 
 			const failure = await agent
-				.run('prompt', new AbortController().signal, vi.fn())
+				.run('prompt', { signal: new AbortController().signal })
 				.catch((error: unknown) => error);
 
 			expect(failure).toBeInstanceOf(UnrecoverableError);

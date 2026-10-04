@@ -1,5 +1,5 @@
 import type { Agent } from '#src/agent/domain/agent';
-import { InvalidAgentConfigError } from '#src/agent/domain/errors';
+import { InvalidAgentConfigError } from '#src/shared/domain/errors';
 import { ClaudeAgent } from '#src/engines/claude/infrastructure/model/claudeAgent';
 import { CodexAgent } from '#src/engines/codex/infrastructure/model/codexAgent';
 import { InstructedAgent } from '#src/orchestration/domain/model/instructedAgent';

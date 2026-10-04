@@ -2,6 +2,9 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import * as harness from '../../src/index.ts';
 import type {
 	Agent,
+	ApprovalDecision,
+	ApprovalRequest,
+	Approver,
 	AgentModel,
 	AgentProvider,
 	AgentResponse,
@@ -13,10 +16,13 @@ import type {
 	JSONSchema,
 	ProgressEvent,
 	ReasoningEffort,
+	RememberableDecision,
+	RunOptions,
 	TextMatch,
 	Tokens,
 	Tool,
 	ToolDefinition,
+	ToolRisk,
 	Workspace,
 } from '../../src/index.ts';
 
@@ -38,6 +44,7 @@ describe('public API', () => {
 			'defineTool',
 			'isAbortError',
 			'isAgentProvider',
+			'rememberApprovals',
 		]);
 	});
 
@@ -47,6 +54,9 @@ describe('public API', () => {
 		expectTypeOf<
 			[
 				Agent,
+				ApprovalDecision,
+				ApprovalRequest,
+				Approver,
 				AgentModel,
 				AgentProvider,
 				AgentResponse,
@@ -58,10 +68,13 @@ describe('public API', () => {
 				JSONSchema,
 				ProgressEvent,
 				ReasoningEffort,
+				RememberableDecision,
+				RunOptions,
 				TextMatch,
 				Tokens,
 				Tool,
 				ToolDefinition,
+				ToolRisk,
 				Workspace,
 			]
 		>().not.toBeNever();

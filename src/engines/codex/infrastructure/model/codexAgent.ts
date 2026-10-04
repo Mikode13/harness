@@ -10,14 +10,16 @@ import {
 	type Agent,
 	type AgentResponse,
 	type Callback,
+	ignoreProgress,
 	type ProgressEvent,
+	type RunOptions,
 } from '#src/agent/domain/agent';
 import {
 	InvalidAgentConfigError,
 	RecoverableError,
 	UnrecoverableError,
 	withSpentTokens,
-} from '#src/agent/domain/errors';
+} from '#src/shared/domain/errors';
 import {
 	classifiedProviderStream,
 	classifyHostFailure,
@@ -25,7 +27,7 @@ import {
 	classifyProviderFailure,
 	describeFailure,
 	treatErrors,
-} from '#src/agent/domain/providerFailure';
+} from '#src/shared/domain/providerFailure';
 import type { ILogger } from '#src/shared/domain/logger';
 import type { Tokens } from '#src/shared/domain/tokens';
 import { isOneOf } from '#src/shared/domain/isOneOf';
@@ -163,7 +165,10 @@ export class CodexAgent implements Agent {
 		this.logger = logger;
 	}
 
-	async run(prompt: string, signal: AbortSignal, callback: Callback): Promise<AgentResponse> {
+	async run(
+		prompt: string,
+		{ signal, onProgress: callback = ignoreProgress }: RunOptions,
+	): Promise<AgentResponse> {
 		const start = Date.now();
 		let turn: StreamedTurn;
 

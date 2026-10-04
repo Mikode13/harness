@@ -5,10 +5,10 @@ import {
 	plannerInstructions,
 	reviewerInstructions,
 } from '../../src/orchestration/domain/model/orchestratorAgent.ts';
-import type { Agent, AgentResponse } from '../../src/agent/domain/agent.ts';
+import type { Agent, AgentResponse, RunOptions } from '../../src/agent/domain/agent.ts';
 import type { Tokens } from '../../src/shared/domain/tokens.ts';
 import type { ILogger } from '../../src/shared/domain/logger.ts';
-import { RecoverableError, UnrecoverableError } from '../../src/agent/domain/errors.ts';
+import { RecoverableError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
 import { ReviewerDecisionValidator } from '../../src/orchestration/infrastructure/model/reviewerDecisionValidator.ts';
 
 /** Token counts go in flat so the scripted responses stay one line each. */
@@ -47,6 +47,27 @@ describe('OrchestratorAgent', () => {
 	afterEach(() => {
 		vi.clearAllMocks();
 		vi.restoreAllMocks();
+	});
+
+	// Rebuilding the options would drop any field the orchestrator does not know about.
+	it('passes the run options on whole to every role', async () => {
+		const role = (response: string) =>
+			vi.fn<Agent['run']>(() => Promise.resolve(createResponse({ response })));
+		const planner = role('plan');
+		const executor = role('done');
+		const reviewer = role('{"decision":"approved"}');
+		const orchestrator = new OrchestratorAgent({
+			plannerAgent: { run: planner },
+			executorAgent: { run: executor },
+			reviewerAgent: { run: reviewer },
+			reviewerDecisionValidator: new ReviewerDecisionValidator(),
+			logger,
+		});
+		const options: RunOptions = { signal: new AbortController().signal, onProgress: vi.fn() };
+
+		await orchestrator.run('ship feature', options);
+
+		for (const run of [planner, executor, reviewer]) expect(run.mock.calls[0]?.[1]).toBe(options);
 	});
 
 	it('completes the planner, executor, and reviewer flow with forwarded inputs and summed usage', async () => {
@@ -89,7 +110,9 @@ describe('OrchestratorAgent', () => {
 		const signal = new AbortController().signal;
 		const callback = vi.fn();
 
-		await expect(orchestrator.run('ship feature', signal, callback)).resolves.toEqual({
+		await expect(
+			orchestrator.run('ship feature', { signal, onProgress: callback }),
+		).resolves.toEqual({
 			response: 'All job has finished',
 			duration: expect.any(Number) as number,
 			tokens: usage({
@@ -102,23 +125,19 @@ describe('OrchestratorAgent', () => {
 
 		expect(planner.run).toHaveBeenCalledWith(
 			expect.stringContaining('Original user request:\n---\nship feature\n---'),
-			signal,
-			callback,
+			{ signal, onProgress: callback },
 		);
 		expect(executor.run).toHaveBeenCalledWith(
 			expect.stringContaining('Original user request:\n---\nship feature\n---'),
-			signal,
-			callback,
+			{ signal, onProgress: callback },
 		);
 		expect(executor.run).toHaveBeenCalledWith(
 			expect.stringContaining('Current implementation plan:\n---\ndraft plan\n---'),
-			signal,
-			callback,
+			{ signal, onProgress: callback },
 		);
 		expect(reviewer.run).toHaveBeenCalledWith(
 			expect.stringContaining('Original user request:\n---\nship feature\n---'),
-			signal,
-			callback,
+			{ signal, onProgress: callback },
 		);
 		expect(plannerInstructions).toContain('engineering-grade plan');
 		expect(plannerInstructions).toContain('do not require an architecture redesign yet');
@@ -131,30 +150,25 @@ describe('OrchestratorAgent', () => {
 		// The instructions are the agent's to hold; each prompt carries only the round's data.
 		expect(planner.run).not.toHaveBeenCalledWith(
 			expect.stringContaining('You are the planner agent'),
-			signal,
-			callback,
+			{ signal, onProgress: callback },
 		);
 		expect(executor.run).not.toHaveBeenCalledWith(
 			expect.stringContaining('You are the executor agent'),
-			signal,
-			callback,
+			{ signal, onProgress: callback },
 		);
 		expect(reviewer.run).not.toHaveBeenCalledWith(
 			expect.stringContaining('You are the reviewer agent'),
-			signal,
-			callback,
+			{ signal, onProgress: callback },
 		);
 		expect(reviewer.run).toHaveBeenCalledWith(
 			expect.stringContaining("Planner's current plan:\n---\ndraft plan\n---"),
-			signal,
-			callback,
+			{ signal, onProgress: callback },
 		);
 		expect(reviewer.run).toHaveBeenCalledWith(
 			expect.stringContaining(
 				'Executor response (context only; verify it independently):\n---\nimplemented changes\n---',
 			),
-			signal,
-			callback,
+			{ signal, onProgress: callback },
 		);
 	});
 
@@ -181,7 +195,9 @@ describe('OrchestratorAgent', () => {
 		const signal = new AbortController().signal;
 		const callback = vi.fn();
 
-		await expect(orchestrator.run('ship feature', signal, callback)).resolves.toEqual({
+		await expect(
+			orchestrator.run('ship feature', { signal, onProgress: callback }),
+		).resolves.toEqual({
 			response: 'All job has finished',
 			duration: expect.any(Number) as number,
 			tokens: usage({ inputTokens: 6, outputTokens: 6 }),
@@ -190,52 +206,44 @@ describe('OrchestratorAgent', () => {
 		expect(planner.run).toHaveBeenNthCalledWith(
 			1,
 			expect.stringContaining('Original user request:\n---\nship feature\n---'),
-			signal,
-			callback,
+			{ signal, onProgress: callback },
 		);
 		expect(planner.run).toHaveBeenNthCalledWith(
 			2,
 			expect.stringContaining('Original user request:\n---\nship feature\n---'),
-			signal,
-			callback,
+			{ signal, onProgress: callback },
 		);
 		expect(planner.run).toHaveBeenNthCalledWith(
 			2,
 			expect.stringContaining('Feedback from the previous attempt:\n---\nadd coverage\n---'),
-			signal,
-			callback,
+			{ signal, onProgress: callback },
 		);
 		expect(executor.run).toHaveBeenNthCalledWith(
 			2,
 			expect.stringContaining('Original user request:\n---\nship feature\n---'),
-			signal,
-			callback,
+			{ signal, onProgress: callback },
 		);
 		expect(executor.run).toHaveBeenNthCalledWith(
 			2,
 			expect.stringContaining('Current implementation plan:\n---\nrevised plan\n---'),
-			signal,
-			callback,
+			{ signal, onProgress: callback },
 		);
 		expect(reviewer.run).toHaveBeenNthCalledWith(
 			2,
 			expect.stringContaining('Original user request:\n---\nship feature\n---'),
-			signal,
-			callback,
+			{ signal, onProgress: callback },
 		);
 		expect(reviewer.run).toHaveBeenNthCalledWith(
 			2,
 			expect.stringContaining("Planner's current plan:\n---\nrevised plan\n---"),
-			signal,
-			callback,
+			{ signal, onProgress: callback },
 		);
 		expect(reviewer.run).toHaveBeenNthCalledWith(
 			2,
 			expect.stringContaining(
 				'Executor response (context only; verify it independently):\n---\nrevised implementation\n---',
 			),
-			signal,
-			callback,
+			{ signal, onProgress: callback },
 		);
 	});
 
@@ -256,7 +264,9 @@ describe('OrchestratorAgent', () => {
 		const signal = new AbortController().signal;
 		const callback = vi.fn();
 
-		await expect(orchestrator.run('ship feature', signal, callback)).resolves.toMatchObject({
+		await expect(
+			orchestrator.run('ship feature', { signal, onProgress: callback }),
+		).resolves.toMatchObject({
 			response: 'All job has finished',
 		});
 
@@ -266,8 +276,7 @@ describe('OrchestratorAgent', () => {
 		expect(reviewer.run).toHaveBeenNthCalledWith(
 			2,
 			expect.stringContaining('Your previous response could not be used'),
-			signal,
-			callback,
+			{ signal, onProgress: callback },
 		);
 	});
 
@@ -285,7 +294,7 @@ describe('OrchestratorAgent', () => {
 		});
 
 		await expect(
-			orchestrator.run('ship feature', new AbortController().signal, vi.fn()),
+			orchestrator.run('ship feature', { signal: new AbortController().signal }),
 		).rejects.toMatchObject({
 			message: 'Max attempts exhausted',
 			cause: 'Reviewer decision is missing.',
@@ -320,7 +329,7 @@ describe('OrchestratorAgent', () => {
 			});
 
 			await expect(
-				orchestrator.run('ship feature', new AbortController().signal, vi.fn()),
+				orchestrator.run('ship feature', { signal: new AbortController().signal }),
 			).rejects.toMatchObject({
 				message: 'Max attempts exhausted',
 				cause,
@@ -349,7 +358,7 @@ describe('OrchestratorAgent', () => {
 			logger,
 			maxAttempts: 2,
 		});
-		const error = orchestrator.run('ship feature', new AbortController().signal, vi.fn());
+		const error = orchestrator.run('ship feature', { signal: new AbortController().signal });
 
 		await expect(error).rejects.toBeInstanceOf(UnrecoverableError);
 		await expect(error).rejects.toMatchObject({
@@ -376,7 +385,7 @@ describe('OrchestratorAgent', () => {
 				maxAttempts: 1,
 			});
 
-			const error = orchestrator.run('ship feature', new AbortController().signal, vi.fn());
+			const error = orchestrator.run('ship feature', { signal: new AbortController().signal });
 
 			await expect(error).rejects.toBeInstanceOf(UnrecoverableError);
 			await expect(error).rejects.toMatchObject({
@@ -405,7 +414,7 @@ describe('OrchestratorAgent', () => {
 				maxAttempts: 1,
 			});
 
-			const error = orchestrator.run('ship feature', new AbortController().signal, vi.fn());
+			const error = orchestrator.run('ship feature', { signal: new AbortController().signal });
 
 			await expect(error).rejects.toBeInstanceOf(UnrecoverableError);
 			await expect(error).rejects.toMatchObject({
@@ -446,7 +455,9 @@ describe('OrchestratorAgent', () => {
 			logger,
 		});
 
-		const response = await orchestrator.run('ship feature', new AbortController().signal, vi.fn());
+		const response = await orchestrator.run('ship feature', {
+			signal: new AbortController().signal,
+		});
 
 		expect(response.duration).toBe(3.5);
 	});
@@ -461,7 +472,9 @@ describe('OrchestratorAgent', () => {
 			logger,
 		});
 
-		const response = await orchestrator.run('ship feature', new AbortController().signal, vi.fn());
+		const response = await orchestrator.run('ship feature', {
+			signal: new AbortController().signal,
+		});
 
 		expect(response.tokens).toBeUndefined();
 	});
@@ -479,7 +492,7 @@ describe('OrchestratorAgent', () => {
 		});
 
 		await expect(
-			orchestrator.run('ship feature', new AbortController().signal, vi.fn()),
+			orchestrator.run('ship feature', { signal: new AbortController().signal }),
 		).rejects.toMatchObject({ constructor: UnrecoverableError, cause: 'fatal', tokens: undefined });
 	});
 
@@ -498,7 +511,7 @@ describe('OrchestratorAgent', () => {
 		});
 
 		await expect(
-			orchestrator.run('ship feature', new AbortController().signal, vi.fn()),
+			orchestrator.run('ship feature', { signal: new AbortController().signal }),
 		).rejects.toMatchObject({ tokens: undefined, usageUnreported: true });
 	});
 
@@ -531,7 +544,7 @@ describe('OrchestratorAgent', () => {
 			const reviewer = createFakeAgent();
 
 			const failure = await orchestratorWith(planner.agent, executor.agent, reviewer.agent)
-				.run('ship feature', new AbortController().signal, vi.fn())
+				.run('ship feature', { signal: new AbortController().signal })
 				.catch((error: unknown) => error);
 
 			expect(failure).toBe(abort);
@@ -548,7 +561,7 @@ describe('OrchestratorAgent', () => {
 			const reviewer = createFakeAgent();
 
 			const failure = await orchestratorWith(planner.agent, executor.agent, reviewer.agent)
-				.run('ship feature', new AbortController().signal, vi.fn())
+				.run('ship feature', { signal: new AbortController().signal })
 				.catch((error: unknown) => error);
 
 			expect(failure).toBe(abort);
@@ -563,7 +576,7 @@ describe('OrchestratorAgent', () => {
 			const reviewer = createFailingAgent(abort);
 
 			const failure = await orchestratorWith(planner.agent, executor.agent, reviewer.agent)
-				.run('ship feature', new AbortController().signal, vi.fn())
+				.run('ship feature', { signal: new AbortController().signal })
 				.catch((error: unknown) => error);
 
 			expect(failure).toBe(abort);
@@ -595,7 +608,7 @@ describe('OrchestratorAgent', () => {
 				const reviewer = createFakeAgent();
 
 				const failure = await orchestratorWith(planner.agent, executor.agent, reviewer.agent)
-					.run('ship feature', new AbortController().signal, vi.fn())
+					.run('ship feature', { signal: new AbortController().signal })
 					.catch((error: unknown) => error);
 
 				expect(failure).toBeInstanceOf(leafFailure.constructor);
@@ -648,8 +661,8 @@ describe('OrchestratorAgent', () => {
 				tokens: usage({ inputTokens: 30, outputTokens: 6 }),
 			};
 
-			await expect(orchestrator.run('first', signal, vi.fn())).resolves.toEqual(expected);
-			await expect(orchestrator.run('second', signal, vi.fn())).resolves.toEqual(expected);
+			await expect(orchestrator.run('first', { signal })).resolves.toEqual(expected);
+			await expect(orchestrator.run('second', { signal })).resolves.toEqual(expected);
 		});
 
 		it('keeps two concurrent runs from counting each other', async () => {
@@ -673,8 +686,8 @@ describe('OrchestratorAgent', () => {
 			};
 
 			const [first, second] = await Promise.all([
-				orchestrator.run('first', signal, vi.fn()),
-				orchestrator.run('second', signal, vi.fn()),
+				orchestrator.run('first', { signal }),
+				orchestrator.run('second', { signal }),
 			]);
 
 			expect(first).toEqual(expected);
@@ -709,11 +722,11 @@ describe('OrchestratorAgent', () => {
 			});
 			const signal = new AbortController().signal;
 
-			await expect(orchestrator.run('first', signal, vi.fn())).rejects.toBeInstanceOf(
+			await expect(orchestrator.run('first', { signal })).rejects.toBeInstanceOf(
 				UnrecoverableError,
 			);
 
-			await expect(orchestrator.run('second', signal, vi.fn())).resolves.toEqual({
+			await expect(orchestrator.run('second', { signal })).resolves.toEqual({
 				response: 'All job has finished',
 				duration: expect.any(Number) as number,
 				tokens: usage({ inputTokens: 30, outputTokens: 6 }),
@@ -751,7 +764,7 @@ describe('OrchestratorAgent', () => {
 				createFakeAgent(createResponse({ response: 'not json' }), approved()),
 			);
 
-			await orchestrator.run('ship feature', new AbortController().signal, vi.fn());
+			await orchestrator.run('ship feature', { signal: new AbortController().signal });
 
 			expect(logger.warn).toHaveBeenCalledOnce();
 			expect(logger.warn).toHaveBeenCalledWith(
@@ -776,7 +789,7 @@ describe('OrchestratorAgent', () => {
 				),
 			);
 
-			await orchestrator.run('ship feature', new AbortController().signal, vi.fn());
+			await orchestrator.run('ship feature', { signal: new AbortController().signal });
 
 			expect(logger.warn).toHaveBeenCalledOnce();
 			expect(logger.warn).toHaveBeenCalledWith(
@@ -792,7 +805,7 @@ describe('OrchestratorAgent', () => {
 				createFakeAgent(approved()),
 			);
 
-			await orchestrator.run('ship feature', new AbortController().signal, vi.fn());
+			await orchestrator.run('ship feature', { signal: new AbortController().signal });
 
 			expect(logger.warn).toHaveBeenCalledWith(
 				'Attempt 1/3: the planner produced no response; starting another round',
@@ -809,7 +822,7 @@ describe('OrchestratorAgent', () => {
 				createFakeAgent(approved()),
 			);
 
-			await orchestrator.run('ship feature', new AbortController().signal, vi.fn());
+			await orchestrator.run('ship feature', { signal: new AbortController().signal });
 
 			expect(logger.warn).toHaveBeenCalledWith(
 				'Attempt 1/3: the executor produced no response; starting another round',
@@ -825,7 +838,7 @@ describe('OrchestratorAgent', () => {
 			);
 
 			await expect(
-				orchestrator.run('ship feature', new AbortController().signal, vi.fn()),
+				orchestrator.run('ship feature', { signal: new AbortController().signal }),
 			).rejects.toBeInstanceOf(UnrecoverableError);
 
 			expect(logger.warn).not.toHaveBeenCalled();
@@ -846,7 +859,7 @@ describe('OrchestratorAgent', () => {
 			);
 
 			const failure = await orchestrator
-				.run('ship feature', new AbortController().signal, vi.fn())
+				.run('ship feature', { signal: new AbortController().signal })
 				.catch((error: unknown) => error);
 
 			expect(failure).toBeInstanceOf(UnrecoverableError);

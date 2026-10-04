@@ -5,7 +5,7 @@ import {
 	InvalidAgentConfigError,
 	RecoverableError,
 	UnrecoverableError,
-} from '../../src/agent/domain/errors.ts';
+} from '../../src/shared/domain/errors.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import { MaxContextError } from '../../src/llm/domain/errors.ts';
 import { OpenAILLMClient } from '../../src/llm/infrastructure/openAILLMClient.ts';
@@ -133,8 +133,7 @@ describe('OpenAILLMClient', () => {
 		const persisted = [userMessage('My name is Miki.'), first.message];
 		const answer = await new LLMAgent({ llmClient: createClient(), messages: persisted }).run(
 			'What is my name?',
-			signal,
-			vi.fn(),
+			{ signal },
 		);
 
 		expect(OpenAI).toHaveBeenCalledTimes(2);

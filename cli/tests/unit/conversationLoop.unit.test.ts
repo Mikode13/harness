@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ConversationLoop } from '../../conversationLoop.ts';
-import type { Agent, AgentResponse, ProgressEvent } from '../../../src/agent/domain/agent.ts';
-import { UnrecoverableError } from '../../../src/agent/domain/errors.ts';
+import type {
+	Agent,
+	AgentResponse,
+	ProgressEvent,
+	RunOptions,
+} from '../../../src/agent/domain/agent.ts';
+import { UnrecoverableError } from '../../../src/shared/domain/errors.ts';
 
 type EmitResult = string | { error: unknown };
 
@@ -36,14 +41,24 @@ function abortError(): DOMException {
 }
 
 describe('ConversationLoop', () => {
+	it("passes the CLI's approver to every run", async () => {
+		const promptEmitter = createPromptEmitter('hello', { error: abortError() });
+		const run = vi.fn<Agent['run']>(() => Promise.resolve(response()));
+		const approve = vi.fn(() => ({ approved: true as const }));
+
+		await new ConversationLoop({ run }, vi.fn(), promptEmitter, createOutput(), approve).start();
+
+		expect(run.mock.calls[0]?.[1].approve).toBe(approve);
+	});
+
 	it('forwards progress and prints usage for a successful response', async () => {
 		const promptEmitter = createPromptEmitter('hello', { error: abortError() });
 		const output = createOutput();
 		const progress: ProgressEvent = { type: 'reasoning', message: 'thinking' };
 		const callback = vi.fn();
 		const agent: Agent = {
-			run: vi.fn((...args: Parameters<Agent['run']>) => {
-				args[2](progress);
+			run: vi.fn((_prompt: string, { onProgress }: RunOptions) => {
+				onProgress?.(progress);
 				return Promise.resolve(response());
 			}),
 		};

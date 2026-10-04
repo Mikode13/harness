@@ -14,14 +14,14 @@ import {
 	InvalidAgentConfigError,
 	UnrecoverableError,
 	withSpentTokens,
-} from '#src/agent/domain/errors';
+} from '#src/shared/domain/errors';
 import {
 	classifyHostFailure,
 	classifyLocalFailure,
 	classifyProviderFailure,
 	describeFailure,
 	treatErrors,
-} from '#src/agent/domain/providerFailure';
+} from '#src/shared/domain/providerFailure';
 import { isOneOf } from '#src/shared/domain/isOneOf';
 import type { ILogger } from '#src/shared/domain/logger';
 import type { Tokens } from '#src/shared/domain/tokens';

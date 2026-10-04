@@ -1,10 +1,10 @@
-import type { Agent, AgentResponse, Callback } from '#src/agent/domain/agent';
+import type { Agent, AgentResponse, RunOptions } from '#src/agent/domain/agent';
 import { addTokens, type Tokens } from '#src/shared/domain/tokens';
-import { RecoverableError, UnrecoverableError, withSpentTokens } from '#src/agent/domain/errors';
+import { RecoverableError, UnrecoverableError, withSpentTokens } from '#src/shared/domain/errors';
 import type { ReviewerDecision } from './reviewerDecision.ts';
 import type { Validator } from '../interface/validator.ts';
 import type { ILogger } from '#src/shared/domain/logger';
-import { classifyHostFailure, treatErrors } from '#src/agent/domain/providerFailure';
+import { classifyHostFailure, treatErrors } from '#src/shared/domain/providerFailure';
 
 // Each role's standing instructions, kept apart from the data of a round so an agent with a
 // system prompt can hold them there instead of receiving them again in every prompt. An agent
@@ -152,13 +152,13 @@ export class OrchestratorAgent implements Agent {
 		this.logger = logger;
 	}
 
-	async run(prompt: string, signal: AbortSignal, callback: Callback): Promise<AgentResponse> {
+	async run(prompt: string, options: RunOptions): Promise<AgentResponse> {
 		const start = Date.now();
 		// Per invocation, not per instance: the CLI keeps one orchestrator for a whole session.
 		const totals: RunTotals = { tokens: undefined, unreported: false };
 
 		try {
-			await this.runRounds(prompt, signal, callback, totals);
+			await this.runRounds(prompt, options, totals);
 		} catch (error) {
 			// A failing role carries its own tokens; the roles before it are in the totals.
 			throw withSpentTokens(error, totals.tokens, totals.unreported);
@@ -172,12 +172,7 @@ export class OrchestratorAgent implements Agent {
 		};
 	}
 
-	private async runRounds(
-		prompt: string,
-		signal: AbortSignal,
-		callback: Callback,
-		totals: RunTotals,
-	): Promise<void> {
+	private async runRounds(prompt: string, options: RunOptions, totals: RunTotals): Promise<void> {
 		let lastFailureReason: string | undefined;
 
 		for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
@@ -185,8 +180,7 @@ export class OrchestratorAgent implements Agent {
 
 			const plannerResponse = await this.plannerAgent.run(
 				getPlannerPrompt(prompt, lastFailureReason),
-				signal,
-				callback,
+				options,
 			);
 			addToTotals(totals, plannerResponse);
 
@@ -203,8 +197,7 @@ export class OrchestratorAgent implements Agent {
 
 			const executorResponse = await this.executorAgent.run(
 				getExecutorPrompt(prompt, plannerResponse.response),
-				signal,
-				callback,
+				options,
 			);
 			addToTotals(totals, executorResponse);
 
@@ -224,8 +217,7 @@ export class OrchestratorAgent implements Agent {
 				prompt,
 				plannerResponse.response,
 				executorResponse.response,
-				signal,
-				callback,
+				options,
 				totals,
 			);
 
@@ -254,8 +246,7 @@ export class OrchestratorAgent implements Agent {
 		userPrompt: string,
 		plannerPrompt: string,
 		executorResult: string,
-		signal: AbortSignal,
-		callback: Callback,
+		options: RunOptions,
 		totals: RunTotals,
 	): Promise<ReviewerDecision> {
 		let parseFailureReason: string | undefined;
@@ -263,8 +254,7 @@ export class OrchestratorAgent implements Agent {
 		for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
 			const reviewerResponse = await this.reviewerAgent.run(
 				getReviewerPrompt(userPrompt, plannerPrompt, executorResult, parseFailureReason),
-				signal,
-				callback,
+				options,
 			);
 
 			addToTotals(totals, reviewerResponse);

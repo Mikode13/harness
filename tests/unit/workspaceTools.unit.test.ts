@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import type { Tool } from '../../src/tools/domain/tool.ts';
 import { createWorkspaceTools } from '../../src/tools/infrastructure/workspaceTools.ts';
@@ -291,11 +291,7 @@ describe('the workspace tools', () => {
 		);
 		const tools: Tool[] = createWorkspaceTools(workspace);
 
-		const answer = await new LLMAgent({ llmClient, tools }).run(
-			'Where is needle?',
-			signal,
-			vi.fn(),
-		);
+		const answer = await new LLMAgent({ llmClient, tools }).run('Where is needle?', { signal });
 
 		expect(llmClient.tools[0]?.map(tool => tool.name)).toEqual([
 			'listFiles',

@@ -7,7 +7,7 @@ import {
 	InvalidAgentConfigError,
 	RecoverableError,
 	UnrecoverableError,
-} from '../../src/agent/domain/errors.ts';
+} from '../../src/shared/domain/errors.ts';
 
 vi.mock('@openai/codex-sdk', () => ({ Codex: vi.fn() }));
 
@@ -76,8 +76,8 @@ describe('CodexAgent', () => {
 			reasoningEffort: 'low',
 		});
 
-		await agent.run('first prompt', signal, firstCallback);
-		await agent.run('second prompt', signal, secondCallback);
+		await agent.run('first prompt', { signal, onProgress: firstCallback });
+		await agent.run('second prompt', { signal, onProgress: secondCallback });
 
 		expect(Codex).toHaveBeenCalledOnce();
 		expect(startThread).toHaveBeenCalledOnce();
@@ -154,7 +154,10 @@ describe('CodexAgent', () => {
 		const response = await new CodexAgent({
 			model: 'gpt-5.6-sol',
 			logger: createLogger(),
-		}).run('prompt', new AbortController().signal, event => events.push(event));
+		}).run('prompt', {
+			signal: new AbortController().signal,
+			onProgress: event => events.push(event),
+		});
 
 		expect(events).toEqual([
 			{ type: 'agentMessage', message: 'hello' },
@@ -180,11 +183,10 @@ describe('CodexAgent', () => {
 		const logger = createLogger();
 		const events: ProgressEvent[] = [];
 
-		await new CodexAgent({ model: 'gpt-5.6-sol', logger }).run(
-			'prompt',
-			new AbortController().signal,
-			event => events.push(event),
-		);
+		await new CodexAgent({ model: 'gpt-5.6-sol', logger }).run('prompt', {
+			signal: new AbortController().signal,
+			onProgress: event => events.push(event),
+		});
 
 		expect(events).toEqual([]);
 		expect(logger.warn).toHaveBeenCalledWith(unknownItem, 'new type');
@@ -216,8 +218,7 @@ describe('CodexAgent', () => {
 
 		const response = await new CodexAgent({ model: 'gpt-5.6-sol', logger: createLogger() }).run(
 			'prompt',
-			new AbortController().signal,
-			vi.fn(),
+			{ signal: new AbortController().signal },
 		);
 
 		expect(response).toMatchObject({
@@ -231,11 +232,9 @@ describe('CodexAgent', () => {
 		createSdk([completed({ id: 'message-1', text: 'partial', type: 'agent_message' })]);
 		const logger = createLogger();
 
-		const response = await new CodexAgent({ model: 'gpt-5.6-sol', logger }).run(
-			'prompt',
-			new AbortController().signal,
-			vi.fn(),
-		);
+		const response = await new CodexAgent({ model: 'gpt-5.6-sol', logger }).run('prompt', {
+			signal: new AbortController().signal,
+		});
 
 		expect(response.response).toBe('partial');
 		expect(response.tokens).toBeUndefined();
@@ -267,11 +266,9 @@ describe('CodexAgent', () => {
 		createSdk([event]);
 
 		await expect(
-			new CodexAgent({ model: 'gpt-5.6-sol', logger: createLogger() }).run(
-				'prompt',
-				new AbortController().signal,
-				vi.fn(),
-			),
+			new CodexAgent({ model: 'gpt-5.6-sol', logger: createLogger() }).run('prompt', {
+				signal: new AbortController().signal,
+			}),
 		).rejects.toMatchObject({ message, cause });
 	});
 
@@ -292,11 +289,9 @@ describe('CodexAgent', () => {
 		createSdk([event]);
 
 		await expect(
-			new CodexAgent({ model: 'gpt-5.6-sol', logger: createLogger() }).run(
-				'prompt',
-				new AbortController().signal,
-				vi.fn(),
-			),
+			new CodexAgent({ model: 'gpt-5.6-sol', logger: createLogger() }).run('prompt', {
+				signal: new AbortController().signal,
+			}),
 		).rejects.toMatchObject({ message, cause });
 	});
 
@@ -318,14 +313,16 @@ describe('CodexAgent', () => {
 			let captured: unknown;
 			let resolved = false;
 
-			await agent.run('prompt', new AbortController().signal, callback).then(
-				() => {
-					resolved = true;
-				},
-				(error: unknown) => {
-					captured = error;
-				},
-			);
+			await agent
+				.run('prompt', { signal: new AbortController().signal, onProgress: callback })
+				.then(
+					() => {
+						resolved = true;
+					},
+					(error: unknown) => {
+						captured = error;
+					},
+				);
 
 			expect(resolved, 'expected the run to reject').toBe(false);
 
@@ -439,7 +436,7 @@ describe('CodexAgent', () => {
 
 		async function rejectionOfRun(agent: CodexAgent, callback = vi.fn()): Promise<unknown> {
 			return await agent
-				.run('prompt', new AbortController().signal, callback)
+				.run('prompt', { signal: new AbortController().signal, onProgress: callback })
 				.then(() => undefined)
 				.catch((error: unknown) => error);
 		}

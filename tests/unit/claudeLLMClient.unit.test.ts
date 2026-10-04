@@ -8,7 +8,7 @@ import {
 	InvalidAgentConfigError,
 	RecoverableError,
 	UnrecoverableError,
-} from '../../src/agent/domain/errors.ts';
+} from '../../src/shared/domain/errors.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import { MaxContextError } from '../../src/llm/domain/errors.ts';
 import { ClaudeLLMClient } from '../../src/llm/infrastructure/claudeLLMClient.ts';
@@ -123,8 +123,7 @@ describe('ClaudeLLMClient', () => {
 		const persisted = [userMessage('My name is Miki.'), first.message];
 		const answer = await new LLMAgent({ llmClient: createClient(), messages: persisted }).run(
 			'What is my name?',
-			signal,
-			vi.fn(),
+			{ signal },
 		);
 
 		expect(Anthropic).toHaveBeenCalledTimes(2);

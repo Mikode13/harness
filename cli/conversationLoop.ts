@@ -1,4 +1,4 @@
-import type { Agent, Callback, Tokens } from '../src/index.ts';
+import type { Agent, Approver, Callback, Tokens } from '../src/index.ts';
 import { RecoverableError, UnrecoverableError, isAbortError } from '../src/index.ts';
 import type { IOutput } from './output.ts';
 import type { IPromptEmitter } from './promptEmitter.ts';
@@ -9,12 +9,20 @@ export class ConversationLoop {
 	private abortController?: AbortController;
 	private agent: Agent;
 	private callback: Callback;
+	private readonly approve: Approver | undefined;
 
-	constructor(agent: Agent, callback: Callback, promptEmitter: IPromptEmitter, output: IOutput) {
+	constructor(
+		agent: Agent,
+		callback: Callback,
+		promptEmitter: IPromptEmitter,
+		output: IOutput,
+		approve?: Approver,
+	) {
 		this.agent = agent;
 		this.callback = callback;
 		this.promptEmitter = promptEmitter;
 		this.output = output;
+		this.approve = approve;
 	}
 
 	async start(): Promise<void> {
@@ -33,11 +41,11 @@ export class ConversationLoop {
 			this.callback({ type: 'turnStarted' });
 			try {
 				this.abortController = new AbortController();
-				const agentResponse = await this.agent.run(
-					prompt,
-					this.abortController.signal,
-					this.callback,
-				);
+				const agentResponse = await this.agent.run(prompt, {
+					signal: this.abortController.signal,
+					onProgress: this.callback,
+					approve: this.approve,
+				});
 
 				this.output.print('usage:');
 				this.output.print(`duration: ${String(agentResponse.duration)}s`);

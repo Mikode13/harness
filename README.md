@@ -31,7 +31,7 @@ An interactive terminal chat, backed by one `Agent` — a single engine, or a fu
 multi-agent workflow, chosen entirely by what gets wired up in `cli/cli.ts`; the
 chat loop itself never knows the difference.
 
-- **A provider-agnostic `Agent` contract** (`run(prompt, signal, callback)`) with
+- **A provider-agnostic `Agent` contract** (`run(prompt, { signal, onProgress })`) with
   two paths to each provider — swapping one agent for another, anywhere in the
   composition, changes nothing else.
 - **The Agent SDK path, the default**: `CodexAgent` and `ClaudeAgent` drive Codex
@@ -84,7 +84,7 @@ file-based agent registries — each waits for a real need.
 
 A new provider only needs one thing to compose safely into everything above:
 **it must only ever reject with `RecoverableError` or `UnrecoverableError`**
-(`src/agent/domain/errors.ts`), never a raw SDK error. `RetryingAgent` and
+(`src/shared/domain/errors.ts`), never a raw SDK error. `RetryingAgent` and
 `OrchestratorAgent` both decide what to do next by `instanceof`-checking
 against those two types; anything else leaking through is treated as
 unrecoverable and ends the run, because nothing above the adapter can tell
@@ -127,7 +127,10 @@ const render = (event: ProgressEvent) => {
 };
 
 try {
-	const result = await agent.run('Summarize this repository.', controller.signal, render);
+	const result = await agent.run('Summarize this repository.', {
+		signal: controller.signal,
+		onProgress: render,
+	});
 	// `response` is empty when the run produced no text; `tokens` is missing when the provider
 	// reported no usage.
 	console.log(result.duration, result.tokens);
@@ -193,6 +196,7 @@ const now = defineTool({
 	name: 'now',
 	description: 'The current time, in ISO 8601.',
 	input: z.object({}),
+	risk: 'safe',
 	execute: async () => new Date().toISOString(),
 });
 
@@ -203,8 +207,33 @@ const agent = createLLMAgent('openai', {
 });
 ```
 
-The agent runs every tool it is given, without asking: there is no approval step
-yet, so only give it tools you would let run unattended. `createLLMOrchestrator()`
+Each tool judges the `risk` of each call: `safe` (a read), `mutating` (a change git
+can undo) or `destructive` (one that loses something), as a fixed level or as a
+function of the validated input. Only a `destructive` call is held back. It runs
+when the run's `approve` allows it, or always when the agent was built with
+`autoApprove`, which is meant for CI where nobody can answer:
+
+```ts
+// `ask` stands for however your app asks its user.
+await agent.run('Tidy the docs folder.', {
+	signal: controller.signal,
+	approve: async ({ tool, input }) =>
+		(await ask(tool, input)) ? { approved: true } : { approved: false, reason: 'keep it' },
+});
+```
+
+With no `approve`, a `destructive` call is denied. A denial is not a failure: the
+model receives it, with the reason when there is one, and carries on. Progress
+reports the call with `status: 'denied'`.
+
+The harness keeps no state between runs, so "don't ask again" belongs to your
+approver. `rememberApprovals(ask)` builds one: when `ask` answers
+`{ approved: true, remember: true }`, later calls to that tool are allowed without
+asking. Its `key` option decides what counts as the same call, such as the tool and
+its path. The memory lives as long as the approver you created, so create one per
+session, per user or per run.
+
+`createLLMOrchestrator()`
 takes the same options as `createOrchestrator()` and returns a promise; its executor
 still runs on an Agent SDK, because the harness's own tools cannot change files.
 
@@ -232,6 +261,11 @@ The agents work on the repository root, which is the directory the script runs i
 
 Type your prompt at `>`. Press Ctrl+C while idle at the prompt to exit; pressing
 it while an agent is running cancels only that turn and returns to the prompt.
+
+The CLI asks in the terminal before a destructive tool call runs: yes, always for
+that tool until the CLI exits, or no with an optional reason for the model. No
+agent it builds asks yet, because the harness's own tools only read and
+`autoApprove` is on.
 
 `cli/cli.ts` currently enables `autoApprove` for its trusted backend agents.
 This maps to each provider's permission-bypass mode and grants those processes

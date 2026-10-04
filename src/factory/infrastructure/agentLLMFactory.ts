@@ -1,5 +1,5 @@
 import type { Agent } from '#src/agent/domain/agent';
-import { InvalidAgentConfigError } from '#src/agent/domain/errors';
+import { InvalidAgentConfigError } from '#src/shared/domain/errors';
 import { LLMAgent } from '#src/engines/domain/model/llmAgent';
 import type { LLMClient } from '#src/llm/domain/llm';
 import { ClaudeLLMClient } from '#src/llm/infrastructure/claudeLLMClient';
@@ -39,6 +39,11 @@ export interface CreateLLMAgentOptions {
 	systemPrompt: string;
 	/** The tools the model may call. Defaults to none. */
 	tools?: Tool[];
+	/**
+	 * Runs every tool call without asking, `destructive` ones included, for CI where no one can
+	 * answer. Without it, a `destructive` call goes to the run's `approve`, or is denied.
+	 */
+	autoApprove?: boolean;
 	/** Defaults to warnings on stderr. */
 	logger?: ILogger;
 }
@@ -51,8 +56,8 @@ const defaultLLMAgentModels = {
 /**
  * Builds an agent whose conversation MiKode owns, on a provider's model API, already wrapped in
  * the harness's retry policy. It needs the provider's API key and bills per token, where
- * `createAgent` uses the Agent SDK's login. It has no `autoApprove`: it runs whatever tools it
- * is given, so a caller who gives it tools that change things owns that decision.
+ * `createAgent` uses the Agent SDK's login. Each tool judges the risk of each call; a
+ * `destructive` one runs only when the run's `approve` allows it, or with `autoApprove`.
  *
  * @throws {InvalidAgentConfigError} for an unknown provider, a model or reasoning effort its
  * client does not support, or two tools that share a name.
@@ -62,7 +67,14 @@ const defaultLLMAgentModels = {
  */
 export function createLLMAgent(
 	provider: AgentProvider,
-	{ model, reasoningEffort, systemPrompt, tools, logger = new Logger() }: CreateLLMAgentOptions,
+	{
+		model,
+		reasoningEffort,
+		systemPrompt,
+		tools,
+		autoApprove,
+		logger = new Logger(),
+	}: CreateLLMAgentOptions,
 ): Agent {
 	let llmClient: LLMClient;
 
@@ -94,7 +106,7 @@ export function createLLMAgent(
 
 	// LLMAgent records nothing from a failed call, so the original prompt is the whole story.
 	return new RetryingAgent({
-		inner: new LLMAgent({ llmClient, tools }),
+		inner: new LLMAgent({ llmClient, tools, autoApprove }),
 		logger,
 		noteFailures: false,
 	});

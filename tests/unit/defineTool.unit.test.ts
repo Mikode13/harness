@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { InvalidAgentConfigError } from '../../src/agent/domain/errors.ts';
+import { InvalidAgentConfigError } from '../../src/shared/domain/errors.ts';
 import { defineTool } from '../../src/tools/infrastructure/defineTool.ts';
 
 const signal = new AbortController().signal;
@@ -10,6 +10,7 @@ function weatherTool(execute = vi.fn(() => Promise.resolve('sunny'))) {
 		name: 'weather',
 		description: 'Weather in a city.',
 		input: z.object({ city: z.string(), unit: z.enum(['c', 'f']).nullable() }),
+		risk: 'safe',
 		execute,
 	});
 	return { tool, execute };
@@ -49,7 +50,13 @@ describe('defineTool', () => {
 		],
 	])('refuses to define a tool with %s', (_, input) => {
 		expect(() =>
-			defineTool({ name: 'weather', description: '', input, execute: () => Promise.resolve('') }),
+			defineTool({
+				name: 'weather',
+				description: '',
+				input,
+				risk: 'safe',
+				execute: () => Promise.resolve(''),
+			}),
 		).toThrow(InvalidAgentConfigError);
 	});
 
@@ -60,6 +67,7 @@ describe('defineTool', () => {
 				name: 'limits',
 				description: '',
 				input: z.object({ maxLength: z.number().nullable(), minimum: z.string() }),
+				risk: 'safe',
 				execute: () => Promise.resolve(''),
 			}),
 		).not.toThrow();
@@ -93,5 +101,40 @@ describe('defineTool', () => {
 		const { tool } = weatherTool(vi.fn(() => Promise.reject(failure)));
 
 		await expect(tool.execute({ city: 'Oslo', unit: null }, signal)).rejects.toBe(failure);
+	});
+
+	it('judges every call with a fixed risk', () => {
+		expect(weatherTool().tool.risk({ city: 'Madrid', unit: null })).toBe('safe');
+	});
+
+	it('judges each call from its validated input', () => {
+		const judge = vi.fn((input: { path: string }) =>
+			input.path === 'README.md' ? ('destructive' as const) : ('mutating' as const),
+		);
+		const tool = defineTool({
+			name: 'write',
+			description: '',
+			input: z.object({ path: z.string() }),
+			risk: judge,
+			execute: () => Promise.resolve(''),
+		});
+
+		expect(tool.risk({ path: 'README.md' })).toBe('destructive');
+		expect(tool.risk({ path: 'new.md' })).toBe('mutating');
+	});
+
+	// `execute` rejects such input before doing anything, so it cannot do harm.
+	it('counts input that fails validation as safe, without judging it', () => {
+		const judge = vi.fn(() => 'destructive' as const);
+		const tool = defineTool({
+			name: 'write',
+			description: '',
+			input: z.object({ path: z.string() }),
+			risk: judge,
+			execute: () => Promise.resolve(''),
+		});
+
+		expect(tool.risk({ path: 42 })).toBe('safe');
+		expect(judge).not.toHaveBeenCalled();
 	});
 });
