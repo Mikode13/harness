@@ -56,7 +56,8 @@ Two boundaries carry most of the design:
 
 **Everything is an `Agent`.** `ClaudeAgent`, `CodexAgent`, `LLMAgent`, `RetryingAgent` and
 `OrchestratorAgent` all implement `run(prompt, options)`, where `options` holds the run's
-`signal` and its optional `onProgress`. A decorator and a whole multi-agent workflow are
+`signal`, its optional `onProgress`, and its optional `approve`, asked before a model-backed
+agent runs a `destructive` tool call. A decorator and a whole multi-agent workflow are
 therefore substitutable for a bare engine anywhere, and a consumer's loop cannot tell which it
 is driving. A decorator passes `options` on whole, never rebuilt, so a field added to it
 reaches every agent without each decorator learning about it.
@@ -98,8 +99,10 @@ for the failure contract and `Tokens`; only its `infrastructure` imports an SDK.
 why it is the only place that knows every provider.
 
 `src/index.ts` is the public API: `createAgent`, `createOrchestrator`, `createLLMAgent`,
-`createLLMOrchestrator`, the `Agent`, `AgentResponse`, `Callback`, `ProgressEvent` and `Tokens`
-types, the three error types, `isAbortError`, `isAgentProvider`, `agentProviders`, and the
+`createLLMOrchestrator`, the `Agent`, `RunOptions`, `AgentResponse`, `Callback`, `ProgressEvent`
+and `Tokens` types, the approval contract (`rememberApprovals` and the `Approver`,
+`ApprovalRequest`, `ApprovalDecision`, `RememberableDecision` and `ToolRisk` types), the three
+error types, `isAbortError`, `isAgentProvider`, `agentProviders`, and the
 option and model types. For the model-backed agent's tools it also exports the `Tool`,
 `ToolDefinition`, `JSONSchema`, `Workspace` and `TextMatch` types, `defineTool`,
 `createWorkspace` and `createWorkspaceTools`. `defineTool` takes a Zod 4 schema, so Zod's major

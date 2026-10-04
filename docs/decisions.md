@@ -1050,6 +1050,7 @@ tags: #mikode-harness #permissions #agent-loops #public-api
 - **Asking about `mutating` calls too.** Rejected: an executor edits constantly, so asking on every edit would make it unusable, and git can undo those edits.
 - **Remembering "allow for the session" in the harness.** Rejected: that is state that outlives a run, which AGENTS.md rules out. The consumer's own approver remembers instead, and it also decides what counts as the same call: the same tool, or the same tool and path.
 - **A per-role policy in the orchestrator.** Rejected: #52 gives each role its own tools, so what a role may do is already decided when it is built.
+- **Asking for approval through a `ProgressEvent`.** Rejected: consumers are told to ignore event types they do not know. A consumer that ignored the request would never answer. The run would then wait forever, or need a timeout that decides for the user, and the deny default for "no one can answer" would never apply. Approval needs a callback that returns an answer. Only an `approve` the consumer passed can allow a call, and its absence is itself the signal to deny.
 
 **Consequences:**
 
