@@ -11,7 +11,7 @@ export type FileState = { exists: false } | { exists: true; hash: string; mode: 
  */
 export interface JournalEntry {
 	sequence: number;
-	/** Relative to the workspace root, written with `/`. */
+	/** The file's real path, absolute: a run may write to more than one root of its workspace. */
 	path: string;
 	before: FileState;
 	after: FileState;
