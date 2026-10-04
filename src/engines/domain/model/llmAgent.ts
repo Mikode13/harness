@@ -1,4 +1,4 @@
-import type { Approver, ToolRisk } from '#src/agent/domain/approval';
+import type { ApprovalDecision, Approver, ToolRisk } from '#src/agent/domain/approval';
 import {
 	type Agent,
 	type AgentResponse,
@@ -45,6 +45,21 @@ function describePart(part: MessagePart): ProgressEvent | undefined {
 			// Opaque by design: its readable side, if any, arrives as a reasoning part.
 			return undefined;
 	}
+}
+
+/** Only an answer whose `approved` is a boolean is one; anything else is the approver failing. */
+function readDecision(answer: unknown): ApprovalDecision {
+	if (typeof answer !== 'object' || answer === null) {
+		throw new TypeError('The approver answered without a decision');
+	}
+	const { approved, reason } = answer as { approved?: unknown; reason?: unknown };
+	if (typeof approved !== 'boolean') {
+		throw new TypeError('The approver answered without a boolean `approved`');
+	}
+
+	return approved
+		? { approved }
+		: { approved, reason: typeof reason === 'string' ? reason : undefined };
 }
 
 /**
@@ -168,11 +183,13 @@ export class LLMAgent implements Agent {
 			return `The call to "${call.name}" was denied: it is destructive, and no one was asked to allow it. ${retry}`;
 		}
 
-		let decision;
+		let decision: ApprovalDecision;
 		try {
 			// A copy, so what runs and what the conversation keeps is exactly what was approved.
 			const input: unknown = structuredClone(call.input);
-			decision = await approve({ tool: call.name, input, risk }, signal);
+			// Read inside the boundary: an untyped approver can answer anything, and a bad answer
+			// is its failure, which must carry the run's tokens like any other.
+			decision = readDecision(await approve({ tool: call.name, input, risk }, signal));
 		} catch (error) {
 			// An approver that gives up on a cancellation, whatever it throws, did not fail.
 			signal.throwIfAborted();

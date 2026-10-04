@@ -690,4 +690,23 @@ describe('LLMAgent tool approval', () => {
 			{ type: 'tool', id: 'call-1', name: 'delete', status },
 		]);
 	});
+
+	// An untyped approver can answer anything; a bad answer is its failure, not an unclassified one.
+	it.each([
+		['nothing', undefined],
+		['a decision without a boolean approved', { approved: 'yes' }],
+	])('ends the run as an approver failure when it answers %s', async (_, answer) => {
+		const tool = destructive();
+		const llmClient = new FakeLLMClient(
+			assistantResponse([deleteCall], { usage: { inputTokens: 5 } }),
+		);
+		const agent = new LLMAgent({ llmClient, tools: [tool] });
+
+		const run = agent.run('prompt', { signal, approve: (() => answer) as unknown as Approver });
+
+		await expect(run).rejects.toBeInstanceOf(UnrecoverableError);
+		await expect(run).rejects.toHaveProperty('message', 'The tool call approver failed');
+		await expect(run).rejects.toHaveProperty('tokens.inputTokens', 5);
+		expect(tool.execute).not.toHaveBeenCalled();
+	});
 });
