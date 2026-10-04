@@ -15,6 +15,8 @@ export interface JournalEntry {
 	path: string;
 	before: FileState;
 	after: FileState;
+	/** Folders the change creates for a new file, outermost first: undo removes them if empty. */
+	createdFolders?: string[];
 	status: 'prepared' | 'applied' | 'abandoned';
 }
 
@@ -40,7 +42,7 @@ export interface RunJournal {
 	/** Stores `content` and returns the hash that names it. Content stored before is reused. */
 	saveContent(content: Buffer): Promise<string>;
 	/** Records a change about to be made, and returns its sequence number. */
-	prepare(change: { path: string; before: FileState; after: FileState }): Promise<number>;
+	prepare(change: Omit<JournalEntry, 'sequence' | 'status'>): Promise<number>;
 	/** The change was made. */
 	applied(sequence: number): Promise<void>;
 	/** The change was not made, and the file still holds its `before`. */

@@ -4,7 +4,6 @@ import type { FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import {
-	type FileState,
 	type JournalEntry,
 	type RecoveryStore,
 	type RunJournal,
@@ -202,8 +201,15 @@ export class FileRecoveryStore implements RecoveryStore {
 				});
 			}
 			if (line.type === 'prepared') {
-				const { sequence, path, before, after } = line;
-				entries.set(sequence, { sequence, path, before, after, status: 'prepared' });
+				const { sequence, path, before, after, createdFolders } = line;
+				entries.set(sequence, {
+					sequence,
+					path,
+					before,
+					after,
+					...(createdFolders ? { createdFolders } : {}),
+					status: 'prepared',
+				});
 				return;
 			}
 			const entry = entries.get(line.sequence);
@@ -324,7 +330,7 @@ class FileRunJournal implements RunJournal {
 		return hash;
 	}
 
-	async prepare(change: { path: string; before: FileState; after: FileState }): Promise<number> {
+	async prepare(change: Omit<JournalEntry, 'sequence' | 'status'>): Promise<number> {
 		this.assertOpen();
 		const sequence = ++this.sequence;
 		await this.append({ type: 'prepared', sequence, ...change });
