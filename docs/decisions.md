@@ -1060,3 +1060,47 @@ tags: #mikode-harness #permissions #agent-loops #public-api
 - A tool whose `risk` throws is a failing tool: its call does not run, and the model receives the error.
 - The Agent SDK engines ignore `approve`, because their own permission systems decide.
 - `rememberApprovals(ask, { key })` is the consumer's memory, offered by the harness so each consumer does not write it again. It allows a call again without asking once `ask` answered `remember`, and never remembers a denial. Its memory lives in the approver it returns, so the consumer chooses its lifetime. The CLI keeps one for the session and asks in the terminal: yes, always, or no with a reason.
+
+## One access policy decides every path a tool reads or writes
+
+tags: #mikode-harness #tools #filesystem #security
+
+**Decision:** before a tool touches a path, `RootsAccessPolicy` decides, and refuses unless every step allows it:
+
+1. **Location.** The path's real location, every symlink resolved, is inside a declared root. A symlink is followed and judged by where it leads, so `CLAUDE.md → AGENTS.md` works and a link out of the roots does not. A link that leads nowhere is refused, because writing to it would create its target wherever that is.
+2. **Access.** The root allows the access: each root is `read` or `write`, and the most specific root decides.
+3. **Protection.** It is not protected: git's metadata (`.git` as a folder or a worktree's pointer file, under any spelling), and the host's protected paths, such as the recovery store.
+4. **Secrets.** It is not a secret, by the default list and by the paths the host's `protect` adds.
+5. **`.gitignore`.** It does not exclude the path, even one that does not exist yet.
+
+A file the host's `allow` names exactly, for reading or also writing, skips steps 4 and 5. A `.env` is usually both a secret and ignored, and an opening that `.gitignore` still blocked would open nothing. Nothing opens step 3.
+
+**Context:** #52 adds write tools, and the v2 plan asks for one policy on every route instead of a check per tool.
+
+**Details:**
+
+- **Error messages** name only the path the model sent, never a host path. In the research for #52, a host path in an error sent Claude looking for it.
+- **Containment** compares real paths component by component. `fs.promises.realpath` returns the case the disk stores, so a case-insensitive disk needs no lower-casing.
+- **Names are compared without case.** Secret names and `.git` are compared in lower case, because `.ENV` and `.env` are one file on macOS.
+- **The secrets list goes by names and places:**
+  - `.env` and `.env.*`, except `.example`, `.sample` and `.template`;
+  - private key names (`id_rsa`…);
+  - key and state endings (`.pem`, `.key`, `.p12`, `.pfx`, `.jks`, `.keystore`, `.tfstate`);
+  - credential folders and files under the home directory (`~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.npmrc`…).
+- **`.gitignore` is checked with `git check-ignore --no-index`,** which knows every rule source and answers for paths that do not exist yet.
+  - Outside a repository, git uses a private, empty git directory and still reads the folder's `.gitignore` files.
+  - git runs without the host's `GIT_*` variables, which could point it at another repository.
+
+**Alternatives considered:**
+
+- **Refusing every symlink.** Rejected by the user: common setups link `CLAUDE.md` to `AGENTS.md`.
+- **Glob patterns for the secrets list.** Rejected: whether `**` crosses folders whose name starts with a dot is a matcher option. A list of names, endings and home folders is predictable.
+- **Lower-casing every path.** Rejected: on a case-sensitive disk, `/work/Repo` and `/work/repo` are different roots.
+
+**Consequences:**
+
+- **Not a secret detector.** The list catches the usual suspects; a key pasted into an ordinary source file is not found. The host can add paths, and open exact false positives.
+- **Requires git.** The `.gitignore` check needs git, even outside a repository.
+- **One check is not a lock.** The policy answers for one moment, so whoever writes must check again right before writing. A host that races its own agent on the filesystem is outside what it guarantees.
+- **Hard links are not detected.** `realpath` cannot reveal another name of the same file, so a hard link to a file outside the roots passes as an ordinary file.
+- **Not yet used.** The read tools keep their current boundary until the tools move to this policy, later in #52.
