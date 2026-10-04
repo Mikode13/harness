@@ -84,4 +84,24 @@ describe('rememberApprovals', () => {
 
 		expect(ask).toHaveBeenCalledTimes(2);
 	});
+
+	it('forgets an "always" that arrived after the run was cancelled', async () => {
+		const controller = new AbortController();
+		const ask = vi
+			.fn<(request: ApprovalRequest, signal: AbortSignal) => RememberableDecision>()
+			.mockImplementationOnce(() => {
+				controller.abort();
+				return { approved: true, remember: true };
+			})
+			.mockReturnValueOnce({ approved: true });
+		const approve = rememberApprovals(ask);
+
+		await expect(approve(request('delete'), controller.signal)).rejects.toHaveProperty(
+			'name',
+			'AbortError',
+		);
+		await approve(request('delete'), signal);
+
+		expect(ask).toHaveBeenCalledTimes(2);
+	});
 });

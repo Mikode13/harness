@@ -53,6 +53,8 @@ export function rememberApprovals(
 		if (allowed.has(id)) return { approved: true };
 
 		const decision = await ask(request, signal);
+		// The agent discards an answer that arrives after a cancellation, so it must not be kept.
+		signal.throwIfAborted();
 		if (!decision.approved) return decision;
 		if (decision.remember) allowed.add(id);
 		return { approved: true };
