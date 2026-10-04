@@ -224,9 +224,14 @@ await agent.run('Tidy the docs folder.', {
 
 With no `approve`, a `destructive` call is denied. A denial is not a failure: the
 model receives it, with the reason when there is one, and carries on. Progress
-reports the call with `status: 'denied'`. To stop asking about a call the user
-already allowed, remember the answer in your own `approve`; the harness keeps no
-state between runs.
+reports the call with `status: 'denied'`.
+
+The harness keeps no state between runs, so "don't ask again" belongs to your
+approver. `rememberApprovals(ask)` builds one: when `ask` answers
+`{ approved: true, remember: true }`, later calls to that tool are allowed without
+asking. Its `key` option decides what counts as the same call, such as the tool and
+its path. The memory lives as long as the approver you created, so create one per
+session, per user or per run.
 
 `createLLMOrchestrator()`
 takes the same options as `createOrchestrator()` and returns a promise; its executor
@@ -256,6 +261,11 @@ The agents work on the repository root, which is the directory the script runs i
 
 Type your prompt at `>`. Press Ctrl+C while idle at the prompt to exit; pressing
 it while an agent is running cancels only that turn and returns to the prompt.
+
+The CLI asks in the terminal before a destructive tool call runs: yes, always for
+that tool until the CLI exits, or no with an optional reason for the model. No
+agent it builds asks yet, because the harness's own tools only read and
+`autoApprove` is on.
 
 `cli/cli.ts` currently enables `autoApprove` for its trusted backend agents.
 This maps to each provider's permission-bypass mode and grants those processes

@@ -1058,3 +1058,4 @@ tags: #mikode-harness #permissions #agent-loops #public-api
 - Input that fails validation counts as `safe`, because `execute` rejects it before doing anything.
 - A tool whose `risk` throws is a failing tool: its call does not run, and the model receives the error.
 - The Agent SDK engines ignore `approve`, because their own permission systems decide.
+- `rememberApprovals(ask, { key })` is the consumer's memory, offered by the harness so each consumer does not write it again. It allows a call again without asking once `ask` answered `remember`, and never remembers a denial. Its memory lives in the approver it returns, so the consumer chooses its lifetime. The CLI keeps one for the session and asks in the terminal: yes, always, or no with a reason.

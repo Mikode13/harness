@@ -16,6 +16,7 @@ import type {
 	JSONSchema,
 	ProgressEvent,
 	ReasoningEffort,
+	RememberableDecision,
 	RunOptions,
 	TextMatch,
 	Tokens,
@@ -43,6 +44,7 @@ describe('public API', () => {
 			'defineTool',
 			'isAbortError',
 			'isAgentProvider',
+			'rememberApprovals',
 		]);
 	});
 
@@ -66,6 +68,7 @@ describe('public API', () => {
 				JSONSchema,
 				ProgressEvent,
 				ReasoningEffort,
+				RememberableDecision,
 				RunOptions,
 				TextMatch,
 				Tokens,

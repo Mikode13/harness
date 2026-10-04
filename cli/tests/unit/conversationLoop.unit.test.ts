@@ -41,6 +41,16 @@ function abortError(): DOMException {
 }
 
 describe('ConversationLoop', () => {
+	it("passes the CLI's approver to every run", async () => {
+		const promptEmitter = createPromptEmitter('hello', { error: abortError() });
+		const run = vi.fn<Agent['run']>(() => Promise.resolve(response()));
+		const approve = vi.fn(() => ({ approved: true as const }));
+
+		await new ConversationLoop({ run }, vi.fn(), promptEmitter, createOutput(), approve).start();
+
+		expect(run.mock.calls[0]?.[1].approve).toBe(approve);
+	});
+
 	it('forwards progress and prints usage for a successful response', async () => {
 		const promptEmitter = createPromptEmitter('hello', { error: abortError() });
 		const output = createOutput();

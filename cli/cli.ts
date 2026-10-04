@@ -1,12 +1,18 @@
 #!/usr/bin/env node
 
-import { createLLMOrchestrator, createOrchestrator, type ProgressEvent } from '../src/index.ts';
+import {
+	createLLMOrchestrator,
+	createOrchestrator,
+	rememberApprovals,
+	type ProgressEvent,
+} from '../src/index.ts';
 import { ConversationLoop } from './conversationLoop.ts';
 import { formatProgressEvent } from './progressEventFormatter.ts';
 import { clearLine, cursorTo } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { Output } from './adapters/output.ts';
 import { PromptEmitter } from './adapters/promptEmitter.ts';
+import { createTerminalApprover } from './terminalApprover.ts';
 
 const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 let spinnerFrame = 0;
@@ -40,6 +46,18 @@ const orchestratorAgent = flags.llm
 
 let turnActive = false;
 
+// One memory for the whole session: "always" holds until the CLI exits. The spinner would
+// overwrite the question, so it stops while the user answers.
+const askInTerminal = createTerminalApprover(promptEmitter, output);
+const approve = rememberApprovals(async (request, signal) => {
+	stopSpinner();
+	try {
+		return await askInTerminal(request, signal);
+	} finally {
+		startSpinner();
+	}
+});
+
 const loop = new ConversationLoop(
 	orchestratorAgent,
 	(item: ProgressEvent) => {
@@ -63,6 +81,7 @@ const loop = new ConversationLoop(
 	},
 	promptEmitter,
 	output,
+	approve,
 );
 
 const exitConfirmationWindowMs = 3000;

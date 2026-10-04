@@ -31,11 +31,13 @@ export {
 } from './shared/domain/errors.ts';
 export { isAbortError } from './shared/domain/isAbortError.ts';
 export type { Tokens } from './shared/domain/tokens.ts';
-export type {
-	ApprovalDecision,
-	ApprovalRequest,
-	Approver,
-	ToolRisk,
+export {
+	rememberApprovals,
+	type ApprovalDecision,
+	type ApprovalRequest,
+	type Approver,
+	type RememberableDecision,
+	type ToolRisk,
 } from './agent/domain/approval.ts';
 export type { JSONSchema, ToolDefinition } from './llm/domain/tool.ts';
 export type { Tool } from './tools/domain/tool.ts';
