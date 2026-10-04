@@ -104,4 +104,21 @@ describe('rememberApprovals', () => {
 
 		expect(ask).toHaveBeenCalledTimes(2);
 	});
+
+	// An untyped consumer can answer anything, and a truthy string must not become an "always".
+	it.each([
+		['a string approved', { approved: 'false', remember: true }],
+		['a string remember', { approved: true, remember: 'false' }],
+	])('rejects an answer with %s, and remembers nothing', async (_, answer) => {
+		const ask = vi
+			.fn<(request: ApprovalRequest, signal: AbortSignal) => RememberableDecision>()
+			.mockReturnValueOnce(answer as unknown as RememberableDecision)
+			.mockReturnValueOnce({ approved: true });
+		const approve = rememberApprovals(ask);
+
+		await expect(approve(request('delete'), signal)).rejects.toBeInstanceOf(TypeError);
+		await approve(request('delete'), signal);
+
+		expect(ask).toHaveBeenCalledTimes(2);
+	});
 });

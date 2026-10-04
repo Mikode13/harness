@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
-import type { Approver } from '../../src/agent/domain/approval.ts';
+import {
+	rememberApprovals,
+	type Approver,
+	type RememberableDecision,
+} from '../../src/agent/domain/approval.ts';
 import {
 	InvalidAgentConfigError,
 	RecoverableError,
@@ -707,6 +711,32 @@ describe('LLMAgent tool approval', () => {
 		await expect(run).rejects.toBeInstanceOf(UnrecoverableError);
 		await expect(run).rejects.toHaveProperty('message', 'The tool call approver failed');
 		await expect(run).rejects.toHaveProperty('tokens.inputTokens', 5);
+		expect(tool.execute).not.toHaveBeenCalled();
+	});
+
+	it('neither runs nor remembers a call whose remembered answer is malformed', async () => {
+		const tool = destructive();
+		const ask = vi
+			.fn<Parameters<typeof rememberApprovals>[0]>()
+			.mockReturnValueOnce({ approved: 'false', remember: true } as unknown as RememberableDecision)
+			.mockReturnValueOnce({ approved: false });
+		const agent = new LLMAgent({
+			llmClient: new FakeLLMClient(
+				assistantResponse([deleteCall]),
+				assistantResponse([deleteCall]),
+				textResponse('done'),
+			),
+			tools: [tool],
+		});
+		const approve = rememberApprovals(ask);
+
+		await expect(agent.run('first', { signal, approve })).rejects.toHaveProperty(
+			'message',
+			'The tool call approver failed',
+		);
+		await agent.run('second', { signal, approve });
+
+		expect(ask).toHaveBeenCalledTimes(2);
 		expect(tool.execute).not.toHaveBeenCalled();
 	});
 });

@@ -52,11 +52,39 @@ export function rememberApprovals(
 		const id = key(request);
 		if (allowed.has(id)) return { approved: true };
 
-		const decision = await ask(request, signal);
+		const answer = await ask(request, signal);
 		// The agent discards an answer that arrives after a cancellation, so it must not be kept.
 		signal.throwIfAborted();
+		// Read before keeping anything: a truthy `'false'` would otherwise be allowed and remembered.
+		const decision = readDecision(answer);
 		if (!decision.approved) return decision;
-		if (decision.remember) allowed.add(id);
-		return { approved: true };
+		if (readRemember(answer)) allowed.add(id);
+		return decision;
 	};
+}
+
+/**
+ * Reads an approver's answer without trusting its type, since a JavaScript consumer can return
+ * anything: only an `approved` that is a boolean decides, and anything else throws.
+ */
+export function readDecision(answer: unknown): ApprovalDecision {
+	if (typeof answer !== 'object' || answer === null) {
+		throw new TypeError('The approver answered without a decision');
+	}
+	const { approved, reason } = answer as { approved?: unknown; reason?: unknown };
+	if (typeof approved !== 'boolean') {
+		throw new TypeError('The approver answered without a boolean `approved`');
+	}
+
+	return approved
+		? { approved }
+		: { approved, reason: typeof reason === 'string' ? reason : undefined };
+}
+
+function readRemember(answer: unknown): boolean {
+	const { remember } = answer as { remember?: unknown };
+	if (remember !== undefined && typeof remember !== 'boolean') {
+		throw new TypeError('The approver answered without a boolean `remember`');
+	}
+	return remember === true;
 }
