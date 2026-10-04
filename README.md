@@ -224,14 +224,17 @@ await agent.run('Tidy the docs folder.', {
 
 With no `approve`, a `destructive` call is denied. A denial is not a failure: the
 model receives it, with the reason when there is one, and carries on. Progress
-reports the call with `status: 'denied'`.
+reports the call with `status: 'denied'`. An approver that throws, or answers
+anything but a boolean `approved`, ends the run with an `UnrecoverableError`, unless
+the run was cancelled, and the call never runs.
 
 The harness keeps no state between runs, so "don't ask again" belongs to your
 approver. `rememberApprovals(ask)` builds one: when `ask` answers
 `{ approved: true, remember: true }`, later calls to that tool are allowed without
-asking. Its `key` option decides what counts as the same call, such as the tool and
-its path. The memory lives as long as the approver you created, so create one per
-session, per user or per run.
+asking. An answer whose `approved` or `remember` is not a boolean throws, so it is
+neither run nor remembered. Its `key` option decides what counts as the same call,
+such as the tool and its path. The memory lives as long as the approver you created,
+so create one per session, per user or per run.
 
 `createLLMOrchestrator()`
 takes the same options as `createOrchestrator()` and returns a promise; its executor

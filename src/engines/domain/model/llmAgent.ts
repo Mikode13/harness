@@ -1,4 +1,9 @@
-import type { ApprovalDecision, Approver, ToolRisk } from '#src/agent/domain/approval';
+import {
+	type ApprovalDecision,
+	type Approver,
+	type ToolRisk,
+	readDecision,
+} from '#src/agent/domain/approval';
 import {
 	type Agent,
 	type AgentResponse,
@@ -45,21 +50,6 @@ function describePart(part: MessagePart): ProgressEvent | undefined {
 			// Opaque by design: its readable side, if any, arrives as a reasoning part.
 			return undefined;
 	}
-}
-
-/** Only an answer whose `approved` is a boolean is one; anything else is the approver failing. */
-function readDecision(answer: unknown): ApprovalDecision {
-	if (typeof answer !== 'object' || answer === null) {
-		throw new TypeError('The approver answered without a decision');
-	}
-	const { approved, reason } = answer as { approved?: unknown; reason?: unknown };
-	if (typeof approved !== 'boolean') {
-		throw new TypeError('The approver answered without a boolean `approved`');
-	}
-
-	return approved
-		? { approved }
-		: { approved, reason: typeof reason === 'string' ? reason : undefined };
 }
 
 /**
