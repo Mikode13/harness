@@ -170,7 +170,9 @@ export class LLMAgent implements Agent {
 
 		let decision;
 		try {
-			decision = await approve({ tool: call.name, input: call.input, risk }, signal);
+			// A copy, so what runs and what the conversation keeps is exactly what was approved.
+			const input: unknown = structuredClone(call.input);
+			decision = await approve({ tool: call.name, input, risk }, signal);
 		} catch (error) {
 			// An approver that gives up on a cancellation, whatever it throws, did not fail.
 			signal.throwIfAborted();
