@@ -637,4 +637,19 @@ describe('LLMAgent tool approval', () => {
 
 		await expect(run).rejects.toBeInstanceOf(UnrecoverableError);
 	});
+
+	it('runs the call as it was approved, even if the approver changed what it was shown', async () => {
+		const tool = destructive();
+		const approve = vi.fn<Approver>(request => {
+			(request.input as { city: string }).city = 'Oslo';
+			return { approved: true };
+		});
+
+		await new LLMAgent({ llmClient: answerAfterOneCall(), tools: [tool] }).run('prompt', {
+			signal,
+			approve,
+		});
+
+		expect(tool.execute).toHaveBeenCalledExactlyOnceWith({ city: 'Madrid' }, signal);
+	});
 });
