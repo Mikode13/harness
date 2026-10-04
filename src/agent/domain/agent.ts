@@ -65,7 +65,7 @@ export type ProgressEvent =
  * decorator (RetryingAgent, OrchestratorAgent) is built against.
  *
  * Implementers MUST only ever reject with `RecoverableError` or `UnrecoverableError`
- * (see ./errors.ts) — never a raw SDK error, a plain `Error`, or anything else leaked
+ * (see src/shared/domain/errors.ts) — never a raw SDK error, a plain `Error`, or anything else leaked
  * unclassified. Every consumer of `Agent` (RetryingAgent's retry decision,
  * OrchestratorAgent's failure handling) `instanceof`-checks against those two types to
  * decide what to do next; a leaked, unclassified error bypasses that decision
