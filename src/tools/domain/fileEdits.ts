@@ -24,6 +24,11 @@ export interface PreparedEdit {
 	readonly target: AllowedPath;
 	readonly before: FileState;
 	readonly content: Buffer | undefined;
+	/**
+	 * The change can make `.gitignore` hide less, which would open paths to every tool. It
+	 * takes effect only if the user allows it: a tool asks for it as `destructive`.
+	 */
+	readonly widensIgnoreRules: boolean;
 }
 
 /**

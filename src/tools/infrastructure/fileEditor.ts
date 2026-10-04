@@ -16,8 +16,10 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import type { FileState, RunJournal } from '#src/recovery/domain/recoveryStore';
+import type { ToolRisk } from '#src/agent/domain/approval';
 import type { AccessPolicy } from '../domain/accessPolicy.ts';
 import { EditRefusedError, type FileChange, type PreparedEdit } from '../domain/fileEdits.ts';
+import { isIgnoreFile, widensIgnoreRules } from './ignoreFileChanges.ts';
 import type { WriteSession } from './writeSession.ts';
 
 // Larger than any source file a model should rewrite whole, and small enough to keep a copy.
@@ -82,6 +84,15 @@ async function missingFolders(folder: string): Promise<string[]> {
 }
 
 /**
+ * The risk of a prepared change. A change git or the run's record can undo is `mutating`; one
+ * that widens `.gitignore` is `destructive`, so it waits for the user, because it would open
+ * paths that every tool keeps closed.
+ */
+export function editRisk(prepared: PreparedEdit): ToolRisk {
+	return prepared.widensIgnoreRules ? 'destructive' : 'mutating';
+}
+
+/**
  * Makes the changes the edit tools ask for, under the access policy and the run's recovery
  * journal. `prepare` checks a change and fixes what it will do; `apply` makes it, in this order:
  *
@@ -117,7 +128,7 @@ export class FileEditor {
 	async prepare(change: FileChange, signal: AbortSignal): Promise<PreparedEdit> {
 		const { path } = change;
 		const target = await this.policy.check(path, 'write', signal);
-		const { state } = await this.read(target.absolute, path);
+		const { state, content: previous } = await this.read(target.absolute, path);
 
 		if (change.kind === 'create') {
 			if (state.exists) {
@@ -140,7 +151,14 @@ export class FileEditor {
 			throw new EditRefusedError(`"${path}" already holds that content; nothing to change`);
 		}
 
-		return Object.freeze({ kind: change.kind, path, target, before: state, content });
+		return Object.freeze({
+			kind: change.kind,
+			path,
+			target,
+			before: state,
+			content,
+			widensIgnoreRules: isIgnoreFile(target.absolute) && widensIgnoreRules(previous, content),
+		});
 	}
 
 	async apply(prepared: PreparedEdit, signal: AbortSignal): Promise<void> {

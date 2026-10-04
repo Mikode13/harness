@@ -18,7 +18,7 @@ import type { RecoveryStore, RunJournal } from '../../src/recovery/domain/recove
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
 import { AccessDeniedError } from '../../src/tools/domain/accessPolicy.ts';
 import { EditRefusedError, type FileChange } from '../../src/tools/domain/fileEdits.ts';
-import { FileEditor } from '../../src/tools/infrastructure/fileEditor.ts';
+import { editRisk, FileEditor } from '../../src/tools/infrastructure/fileEditor.ts';
 import { GitIgnoreRules } from '../../src/tools/infrastructure/gitIgnoreRules.ts';
 import { RootsAccessPolicy } from '../../src/tools/infrastructure/rootsAccessPolicy.ts';
 import { WriteSession } from '../../src/tools/infrastructure/writeSession.ts';
@@ -204,6 +204,31 @@ describe('FileEditor', () => {
 				encoding: 'utf8',
 			});
 			expect(listing).not.toContain('mikode-tmp');
+		});
+	});
+
+	describe('changes to .gitignore', () => {
+		it('lets a change that only adds rules through as an ordinary edit', async () => {
+			const prepared = await editor.prepare(
+				{ kind: 'replace', path: '.gitignore', content: text('node_modules\ndist\n') },
+				signal,
+			);
+
+			expect(prepared.widensIgnoreRules).toBe(false);
+			expect(editRisk(prepared)).toBe('mutating');
+		});
+
+		// A widened .gitignore would open paths to every tool, so the user decides.
+		it.each([
+			{ kind: 'replace', path: '.gitignore', content: text('node_modules\n!secret.txt\n') },
+			{ kind: 'replace', path: '.gitignore', content: text('') },
+			{ kind: 'delete', path: '.gitignore' },
+			{ kind: 'create', path: 'src/.gitignore', content: text('!*.env\n') },
+		] as const)('waits for the user on a change that widens it: $kind $path', async request => {
+			const prepared = await editor.prepare(request, signal);
+
+			expect(prepared.widensIgnoreRules).toBe(true);
+			expect(editRisk(prepared)).toBe('destructive');
 		});
 	});
 
