@@ -112,6 +112,9 @@ internal modules through the `imports` field of its `package.json`, so a TypeScr
 needs `moduleResolution` set to `node16`, `nodenext` or `bundler`; the legacy `node10`
 resolution cannot read that field.
 
+It supports macOS and Linux. Windows is not supported for now: the tools that write files,
+undo a run and run commands are built and tested on macOS and Linux only.
+
 An agent is built by a factory, then driven. The only output the package produces
 on its own is diagnostic warnings on stderr, from a default logger that both
 factories let you replace through their `logger` option:

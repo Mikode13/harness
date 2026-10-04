@@ -106,7 +106,7 @@ export function createLLMAgent(
 
 	// LLMAgent records nothing from a failed call, so the original prompt is the whole story.
 	return new RetryingAgent({
-		inner: new LLMAgent({ llmClient, tools, autoApprove }),
+		inner: new LLMAgent({ llmClient, tools, autoApprove, logger }),
 		logger,
 		noteFailures: false,
 	});

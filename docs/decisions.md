@@ -1174,3 +1174,35 @@ tags: #mikode-harness #tools #filesystem #recovery
 - **Errors never show host paths.** Every message names the file as the model wrote it, and filesystem errors are reduced to their code, such as `EACCES`, because Node's own messages carry host paths.
 - **The guarantee assumes no concurrent writer.** The file is checked again just before the write, but another program can still change it between that check and the rename.
 - **Replacing a file breaks its hard links,** because a renamed new file is a new inode.
+
+## Every tool call is prepared before it is approved, and a run's context travels under a private symbol
+
+tags: #mikode-harness #tools #agent-loops #permissions
+
+**Decision:** `LLMAgent` runs every tool call through one lifecycle:
+
+1. **Prepare.** The tool checks the call and fixes what it will do. A harness-built tool, a `PreparingTool`, works out the real effect, such as the exact bytes a write will leave, and judges its risk from that. A consumer's `Tool` is brought in by `prepareCall`: its `risk` is judged, and its `execute` later runs on the input as sent. So consumers keep their contract and there is only one engine.
+2. **Approve.** As in #43, only for a `destructive` risk.
+3. **Run.** Only the prepared call runs, so what was approved is what happens. A call that cannot be prepared reaches the model as an error result.
+
+The tools of one top-level run share a `RunContext`. Whatever a tool starts for the run, such as the recovery record of what it writes, registers how to end it. The agent that created the context ends it with the run: completed, failed or cancelled.
+
+- A standalone `LLMAgent` creates its own context for each run.
+- An agent reached by an outer one runs in the context it is given and leaves ending it to that outer agent. An orchestrator will create one context for all its roles and rounds.
+- The context travels in `RunOptions` under a private `Symbol`, so decorators carry it as they carry every option, and consumers never see it.
+- A context that cannot be ended is reported through the logger, and the run keeps its result: the changes it recorded are already on disk.
+
+**Context:** #52's v2 plan asks for one lifecycle for every tool and for one recovery context per top-level run, passed internally and never stored on an instance. The CLI keeps one orchestrator for a whole session, and #29 will run several at once.
+
+**Alternatives considered:**
+
+- **A public field in `RunOptions`.** Rejected by the plan: consumers would see and could set plumbing they must not manage.
+- **`AsyncLocalStorage`.** Rejected: an implicit channel that every async boundary must preserve, harder to test and to follow than an explicit argument.
+- **Building the agents again for each run.** Rejected: each role's conversation lives in its agent, and the CLI's session relies on it surviving from one run to the next.
+- **A context on the agent instance.** Rejected: two runs at once on one agent would share it.
+
+**Consequences:**
+
+- **The symbol property survives because no agent rebuilds `options`.** A decorator that rebuilt them would drop the context silently. The existing tests that check identity forwarding guard this.
+- **`PreparingTool` is internal.** Consumers keep `Tool`, with `risk` and `execute`.
+- **Tools see the context only in `prepare`.** Run-scoped state, such as the `WriteSession` per context in `WorkspaceWrites`, is held in a `WeakMap` keyed by the context, so it goes away with the run.
