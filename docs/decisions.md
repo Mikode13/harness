@@ -1104,3 +1104,32 @@ A file the host's `allow` names exactly, for reading or also writing, skips step
 - **One check is not a lock.** The policy answers for one moment, so whoever writes must check again right before writing. A host that races its own agent on the filesystem is outside what it guarantees.
 - **Hard links are not detected.** `realpath` cannot reveal another name of the same file, so a hard link to a file outside the roots passes as an ordinary file.
 - **Not yet used.** The read tools keep their current boundary until the tools move to this policy, later in #52.
+
+## A writing run records what it will change, outside the repository, before changing it
+
+tags: #mikode-harness #recovery #tools #filesystem
+
+**Decision:** a run that writes to a workspace keeps a recovery record in a store outside the repository, under the platform's state directory (`$XDG_STATE_HOME`, `~/Library/Application Support` on macOS, `~/.local/state` elsewhere), in a private directory per workspace.
+
+- Before a file changes, the run stores the content the change replaces, named by its SHA-256, and appends a `prepared` line to its journal.
+- Only once both are synced to disk is the change made. Afterwards the journal marks it `applied`, or `abandoned` when it never happened.
+- A crash in the middle therefore always leaves a record of what the run may have done.
+- One run writes to a workspace at a time, through a lock that names the run and its process. A lock whose process died is taken over.
+
+**Context:** #52 lets model-backed agents change files, and the user must be able to undo the latest run without losing work that existed before the agent touched it, including uncommitted and untracked work. See the v2 plan in that issue.
+
+**Alternatives considered:**
+
+- **A git snapshot when the run starts** (`git stash create`, or a tree written through a temporary index). Rejected:
+  - `stash create` cannot recover untracked files.
+  - `git add` runs the clean filters a user configured, such as LFS, so taking a snapshot can execute programs.
+  - A snapshot copies the whole repository to protect the few files a run touches.
+- **The store inside `.git/`.** Rejected: it only exists in a git repository, and it would mix the harness's state with git's own.
+- **Memory only.** Rejected: an undo must still work after the process that ran the agent has exited or crashed.
+
+**Consequences:**
+
+- Only what a run touches is copied, and identical content is stored once.
+- The store holds source code, so its directories and files are readable by their owner only, and it must never reach a model, a log or the package.
+- The lock keeps a second run of this harness from writing at the same time. It does not stop an editor or another program, and two processes taking over a dead run's lock in the same instant could both believe they hold it.
+- Retention, quota and undo itself arrive with the recovery service in a later slice of #52.
