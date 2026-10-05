@@ -23,6 +23,7 @@ export interface PreparedEdit {
 	readonly path: string;
 	readonly target: AllowedPath;
 	readonly before: FileState;
+	/** The editor's own copy, taken in `prepare`: changing the caller's buffer later changes nothing. */
 	readonly content: Buffer | undefined;
 	/**
 	 * The change can make `.gitignore` hide less, which would open paths to every tool. It
@@ -38,5 +39,17 @@ export class EditRefusedError extends Error {
 	constructor(message: string, options?: { cause?: unknown }) {
 		super(message, options);
 		this.name = 'EditRefusedError';
+	}
+}
+
+/**
+ * A change the file may hold but the run's record does not confirm, worded for the model: it was
+ * made and could not be recorded as made, or whether it was made cannot be told. The record keeps
+ * the change as prepared, so an undo can still check the file, and writing stops for the run.
+ */
+export class EditUnconfirmedError extends Error {
+	constructor(message: string, options?: { cause?: unknown }) {
+		super(message, options);
+		this.name = 'EditUnconfirmedError';
 	}
 }

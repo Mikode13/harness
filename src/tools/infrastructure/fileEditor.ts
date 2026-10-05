@@ -18,7 +18,12 @@ import { basename, dirname, join } from 'node:path';
 import type { FileState, RunJournal } from '#src/recovery/domain/recoveryStore';
 import type { ToolRisk } from '#src/agent/domain/approval';
 import type { AccessPolicy } from '../domain/accessPolicy.ts';
-import { EditRefusedError, type FileChange, type PreparedEdit } from '../domain/fileEdits.ts';
+import {
+	EditRefusedError,
+	EditUnconfirmedError,
+	type FileChange,
+	type PreparedEdit,
+} from '../domain/fileEdits.ts';
 import { isIgnoreFile, widensIgnoreRules } from './ignoreFileChanges.ts';
 import type { WriteSession } from './writeSession.ts';
 
@@ -102,7 +107,8 @@ export function editRisk(prepared: PreparedEdit): ToolRisk {
  * 3. Write: a new file appears whole and only if nothing took its place meanwhile; a replaced
  *    one is swapped for its new version in one rename; a deleted one is unlinked.
  * 4. Record the change as applied, or as abandoned when the write failed and left the file as
- *    it was. A write whose result cannot be confirmed stops the session.
+ *    it was. A change the record cannot confirm stops the session and throws
+ *    `EditUnconfirmedError`, never a success or a refusal.
  *
  * Every message names the file as the model wrote it, never by its place on the host.
  */
@@ -151,12 +157,13 @@ export class FileEditor {
 			throw new EditRefusedError(`"${path}" already holds that content; nothing to change`);
 		}
 
+		// Copies all the way down: what is approved must not change while the approval waits.
 		return Object.freeze({
 			kind: change.kind,
 			path,
-			target,
-			before: state,
-			content,
+			target: Object.freeze({ ...target }),
+			before: Object.freeze({ ...state }),
+			content: content && Buffer.from(content),
 			widensIgnoreRules: isIgnoreFile(target.absolute) && widensIgnoreRules(previous, content),
 		});
 	}
@@ -211,12 +218,22 @@ export class FileEditor {
 			return;
 		}
 
+		await this.markApplied(journal, sequence, path);
+	}
+
+	/**
+	 * Records a change that was made. If that fails, its prepared line still holds both states, so
+	 * an undo can tell; but the record cannot be trusted to continue, and the caller must know.
+	 */
+	private async markApplied(journal: RunJournal, sequence: number, path: string): Promise<void> {
 		try {
 			await journal.applied(sequence);
-		} catch {
-			// The change was made and its prepared line holds both states, so an undo can still
-			// tell; but the record cannot be trusted to continue.
+		} catch (error) {
 			this.session.stop('Writing stopped: the harness could not record a change it made');
+			throw new EditUnconfirmedError(
+				`"${path}" was changed, but the harness could not record it; writing has stopped for this run`,
+				{ cause: error },
+			);
 		}
 	}
 
@@ -340,9 +357,7 @@ export class FileEditor {
 	}): Promise<void> {
 		const now = await this.read(target, path).catch(() => undefined);
 		if (now && sameState(now.state, after)) {
-			await journal.applied(sequence).catch(() => {
-				this.session.stop('Writing stopped: the harness could not record a change it made');
-			});
+			await this.markApplied(journal, sequence, path);
 			return;
 		}
 		// A link that found the path taken made no change: what is there now is someone else's.
@@ -364,7 +379,7 @@ export class FileEditor {
 		this.session.stop(
 			`Writing stopped: the harness could not tell whether "${path}" was changed; ask the user to check it`,
 		);
-		throw new EditRefusedError(
+		throw new EditUnconfirmedError(
 			`Could not tell whether "${path}" was changed (${code(error)}); writing has stopped for this run`,
 			{ cause: error },
 		);
