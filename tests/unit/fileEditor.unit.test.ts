@@ -22,6 +22,7 @@ import {
 	EditRefusedError,
 	EditUnconfirmedError,
 	type FileChange,
+	type PreparedEdit,
 } from '../../src/tools/domain/fileEdits.ts';
 import { editRisk, FileEditor } from '../../src/tools/infrastructure/fileEditor.ts';
 import { GitIgnoreRules } from '../../src/tools/infrastructure/gitIgnoreRules.ts';
@@ -279,6 +280,21 @@ describe('FileEditor', () => {
 			expect(Object.isFrozen(prepared.before)).toBe(true);
 		});
 
+		it('refuses a prepared change whose own content was changed after it was prepared', async () => {
+			const prepared = await editor.prepare(
+				{ kind: 'replace', path: 'clean.ts', content: text('approved\n') },
+				signal,
+			);
+			prepared.content?.write('mutated!');
+
+			const error = await refusal(editor.apply(prepared, signal));
+
+			expect(error).toBeInstanceOf(EditRefusedError);
+			expect(error.message).toContain('changed after it was prepared');
+			expect(read('clean.ts')).toBe('clean\n');
+			expect(await entries()).toEqual([]);
+		});
+
 		it('refuses a prepared change once the file changed under it', async () => {
 			const prepared = await editor.prepare(
 				{ kind: 'replace', path: 'clean.ts', content: text('agent\n') },
@@ -444,6 +460,27 @@ describe('FileEditor', () => {
 				change({ kind: 'replace', path: 'clean.ts', content: text('agent\n') }, failing),
 				failing,
 			);
+		});
+
+		it('writes the content it checked, even if the prepared buffer changes while it applies', async () => {
+			const approved: { prepared?: PreparedEdit } = {};
+			const mutating = await makeEditor(
+				storeWith(journal => ({
+					prepare: change => {
+						approved.prepared?.content?.write('mutated!');
+						return journal.prepare(change);
+					},
+				})),
+			);
+			const prepared = await mutating.prepare(
+				{ kind: 'replace', path: 'clean.ts', content: text('approved\n') },
+				signal,
+			);
+			approved.prepared = prepared;
+
+			await mutating.apply(prepared, signal);
+
+			expect(read('clean.ts')).toBe('approved\n');
 		});
 
 		it('abandons a change it could not write, and removes the folders it made for it', async () => {

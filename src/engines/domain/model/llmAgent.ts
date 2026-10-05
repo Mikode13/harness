@@ -243,6 +243,9 @@ export class LLMAgent implements Agent {
 			};
 		}
 
+		// Preparing may have finished after a cancellation it did not notice; nobody is asked to
+		// approve a call in a run that has already stopped.
+		signal.throwIfAborted();
 		const denial = await this.denial(call, prepared.risk, signal, approve);
 		if (denial !== undefined) {
 			return { result: { ...result, output: denial, isError: true }, denied: true };
