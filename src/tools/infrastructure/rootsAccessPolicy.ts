@@ -1,4 +1,4 @@
-import { lstat, realpath, stat } from 'node:fs/promises';
+import { lstat, readlink, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { InvalidAgentConfigError } from '#src/shared/domain/errors';
@@ -32,6 +32,11 @@ function withinIgnoringCase(folder: string, path: string): boolean {
 	return within(folder.toLowerCase(), path.toLowerCase()) !== undefined;
 }
 
+/** Whether `path` goes through git's metadata: `.git` as a folder or a worktree's pointer file. */
+function hasGitPart(path: string): boolean {
+	return path.split(sep).some(part => part.toLowerCase() === '.git');
+}
+
 function code(error: unknown): string | undefined {
 	return (error as NodeJS.ErrnoException).code;
 }
@@ -46,7 +51,9 @@ function code(error: unknown): string | undefined {
  * 3. It is not protected: git's own files, and the host's protected paths such as the
  *    recovery store, whatever the model calls them.
  * 4. It is not a secret, by the default list and the host's `protect`.
- * 5. `.gitignore` does not exclude it, whether or not it exists yet.
+ * 5. `.gitignore` does not exclude it, whether or not it exists yet, nor any symlink it goes
+ *    through: git sees a link as an entry of its own, so an ignored link stays closed even when
+ *    it leads somewhere that is not ignored.
  *
  * A file the host's `allow` names exactly skips steps 4 and 5: a `.env` is usually both a
  * secret and ignored, and an opening that `.gitignore` still blocked would open nothing.
@@ -81,7 +88,8 @@ export class RootsAccessPolicy implements AccessPolicy {
 	}
 
 	/**
-	 * @throws {InvalidAgentConfigError} when there is no root, or one is not an existing folder.
+	 * @throws {InvalidAgentConfigError} when there is no root, or one is not an existing folder
+	 *   or is inside git's metadata, which nothing opens.
 	 */
 	static async create({
 		roots,
@@ -107,6 +115,12 @@ export class RootsAccessPolicy implements AccessPolicy {
 				if (!isFolder) {
 					throw new InvalidAgentConfigError(
 						`Workspace root ${root.path} is not an existing folder`,
+					);
+				}
+				// Protection looks for `.git` below a root, so a root inside it would open it.
+				if (hasGitPart(resolve(root.path)) || hasGitPart(real)) {
+					throw new InvalidAgentConfigError(
+						`Workspace root ${root.path} is inside git's metadata, which no tool may reach`,
 					);
 				}
 				return { path: real, access: root.access };
@@ -160,11 +174,10 @@ export class RootsAccessPolicy implements AccessPolicy {
 				`"${path}" may hold secrets, so the harness keeps it closed; ask the user to allow it in the configuration if it is needed`,
 			);
 		}
-		if (
-			relativePath !== '' &&
-			(await this.ignoreRules.isIgnored(root.path, relativePath, signal))
-		) {
-			throw new AccessDeniedError(`"${path}" is excluded by .gitignore`);
+		for (const location of [...(await this.linksAlong(named)), absolute]) {
+			if (await this.isIgnored(location, signal)) {
+				throw new AccessDeniedError(`"${path}" is excluded by .gitignore`);
+			}
 		}
 
 		return { absolute, root: root.path, relative: relativePath };
@@ -204,6 +217,44 @@ export class RootsAccessPolicy implements AccessPolicy {
 		}
 	}
 
+	/**
+	 * Every symlink `named` goes through on the way to its real location, each at its own real
+	 * place. git answers for a link but not for a path beyond one, so each is checked alone.
+	 */
+	private async linksAlong(named: string): Promise<string[]> {
+		const links: string[] = [];
+		let pending = named.split(sep).filter(part => part !== '');
+		let current: string = sep;
+		// `realLocation` already refused a loop; the bound only keeps this walk finite.
+		for (let hops = 0; pending.length > 0 && hops < 40;) {
+			const [name = '', ...rest] = pending;
+			const next = join(current, name);
+			const stats = await lstat(next).catch(() => undefined);
+			// Missing from here on: nothing below can be a link.
+			if (!stats) break;
+			if (stats.isSymbolicLink()) {
+				hops++;
+				links.push(join(await realpath(current), name));
+				const target = resolve(current, await readlink(next));
+				pending = [...target.split(sep).filter(part => part !== ''), ...rest];
+				current = sep;
+			} else {
+				current = next;
+				pending = rest;
+			}
+		}
+		return links;
+	}
+
+	/** Whether `.gitignore` excludes a real location, by the root that holds it. */
+	private async isIgnored(location: string, signal: AbortSignal): Promise<boolean> {
+		const root = this.rootOf(location);
+		const below = root && within(root.path, location);
+		// A root itself, or a link outside every root, has no rule to answer to.
+		if (!root || !below) return false;
+		return this.ignoreRules.isIgnored(root.path, below.split(sep).join('/'), signal);
+	}
+
 	/** The most specific root holding `absolute`, so a folder nested in another has its own say. */
 	private rootOf(absolute: string): WorkspaceRoot | undefined {
 		return this.roots
@@ -216,8 +267,7 @@ export class RootsAccessPolicy implements AccessPolicy {
 		const isGitMetadata = (path: string) => {
 			const root = this.rootOf(path);
 			if (!root) return false;
-			const below = within(root.path, path) ?? '';
-			return below.split(sep).some(part => part.toLowerCase() === '.git');
+			return hasGitPart(within(root.path, path) ?? '');
 		};
 
 		return (
