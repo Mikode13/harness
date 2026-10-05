@@ -1142,7 +1142,7 @@ tags: #mikode-harness #tools #filesystem #recovery
 
 **Decision:** every change a write tool asks for is one of three: create, replace or delete. Each edit format, such as a patch or a text replacement, first works out the whole new content of the file.
 
-- **`FileEditor.prepare`** checks the change: the access policy allows the path, a create finds nothing there, and a replace or delete finds the file. If the caller worked from a version of the file, given by its hash, the file must still hold it. The result is a frozen `PreparedEdit`, so what is approved is exactly what is written.
+- **`FileEditor.prepare`** checks the change: the access policy allows the path, a create finds nothing there, and a replace or delete finds the file. If the caller worked from a version of the file, given by its hash, the file must still hold it. The result is a frozen `PreparedEdit` holding its own copy of the new content, so what is approved is exactly what is written, even if the caller changes its buffer while the approval waits.
 - **`FileEditor.apply`** checks the policy and the file again, then:
   1. stores the content being replaced and the new content;
   2. records the change as prepared;
@@ -1161,6 +1161,8 @@ tags: #mikode-harness #tools #filesystem #recovery
 - If it still holds what it held, the change is abandoned and the folders it created are removed.
 - If it holds the new state, the change counts as applied.
 - Anything else cannot be explained, so the run's `WriteSession` refuses every further write. The journal must stay a complete record of what the run did.
+
+**When the record cannot confirm a change,** because recording it as applied failed or because the file's state cannot be explained, `apply` throws `EditUnconfirmedError`. It never reports a success or a refusal. The change stays in the journal as prepared, with both states, so an undo can still compare the file with them, and the session refuses every further write.
 
 **Context:** #52, whose v2 plan asks for one lifecycle (prepare, approve, apply) and for writes that never land on a version of a file that nobody looked at.
 
