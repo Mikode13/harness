@@ -1135,3 +1135,46 @@ tags: #mikode-harness #recovery #tools #filesystem
 - The store holds source code, so its directories and files are readable by their owner only, and it must never reach a model, a log or the package.
 - The lock keeps a second run of this harness from writing at the same time. It does not stop an editor or another program, and two processes taking over a dead run's lock in the same instant could both believe they hold it.
 - Retention, quota and undo itself arrive with the recovery service in a later slice of #52.
+
+## A file change is prepared, then applied only if the file still holds what was prepared
+
+tags: #mikode-harness #tools #filesystem #recovery
+
+**Decision:** every change a write tool asks for is one of three: create, replace or delete. Each edit format, such as a patch or a text replacement, first works out the whole new content of the file.
+
+- **`FileEditor.prepare`** checks the change: the access policy allows the path, a create finds nothing there, and a replace or delete finds the file. If the caller worked from a version of the file, given by its hash, the file must still hold it. The result is a frozen `PreparedEdit` holding its own copy of the new content and that content's hash. A buffer's bytes cannot be frozen, so `apply` copies the prepared content, refuses it if it no longer matches the hash, and writes the copy: what is approved is exactly what is written, whoever changes a buffer while the approval waits.
+- **`FileEditor.apply`** checks the policy and the file again, then:
+  1. stores the content being replaced and the new content;
+  2. records the change as prepared;
+  3. writes the change;
+  4. records it as applied.
+
+**How each change is written:**
+
+- **Create:** the content goes to a temporary file beside the target, which is then linked into place. `link` fails if something took the path meanwhile, whereas `rename` would silently replace it.
+- **Replace:** the temporary file gets the old file's mode and is renamed over it in one step.
+- **Delete:** the file is unlinked.
+- **After any of them,** the folder is synced. New parent folders are recorded in the journal, so an undo can remove them while they are empty.
+
+**When a write throws,** the editor reads the file again:
+
+- If it still holds what it held, the change is abandoned and the folders it created are removed.
+- If it holds the new state, the change counts as applied.
+- Anything else cannot be explained, so the run's `WriteSession` refuses every further write. The journal must stay a complete record of what the run did.
+
+**When the record cannot confirm a change,** because recording it as applied failed or because the file's state cannot be explained, `apply` throws `EditUnconfirmedError`. It never reports a success or a refusal. The change stays in the journal as prepared, with both states, so an undo can still compare the file with them, and the session refuses every further write.
+
+**Context:** #52, whose v2 plan asks for one lifecycle (prepare, approve, apply) and for writes that never land on a version of a file that nobody looked at.
+
+**Alternatives considered:**
+
+- **Applying edits in place,** for example by splicing a patch into the file. Rejected: a crash halfway leaves half an edit, and the content to restore is not known until after the write.
+- **Reading the umask with `process.umask()`.** Rejected: with no argument it briefly changes the umask for every thread. The mode a new file gets is measured once by creating a probe file in the temporary folder.
+
+**Consequences:**
+
+- **Write sessions start lazily.** A run that only reads never holds the workspace, because the journal starts on its first write.
+- **Default limits:** 5 MB per file and 500 changes per run.
+- **Errors never show host paths.** Every message names the file as the model wrote it, and filesystem errors are reduced to their code, such as `EACCES`, because Node's own messages carry host paths.
+- **The guarantee assumes no concurrent writer.** The file is checked again just before the write, but another program can still change it between that check and the rename.
+- **Replacing a file breaks its hard links,** because a renamed new file is a new inode.
