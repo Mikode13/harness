@@ -103,6 +103,26 @@ describe('LLMAgent with a tool that prepares its calls', () => {
 		// A cancelled call is not a failed one: nothing reports it as an error.
 		expect(onProgress).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'tool' }));
 	});
+
+	// Preparing can await work that never looks at the signal, and still succeed.
+	it('asks nobody about a call prepared after the run was cancelled', async () => {
+		const controller = new AbortController();
+		const prepared = preparedCall('destructive');
+		const approve = vi.fn<Approver>(() => ({ approved: true }));
+		const tool = preparingTool(() => {
+			controller.abort();
+			return Promise.resolve(prepared);
+		});
+
+		await expect(
+			new LLMAgent({ llmClient: oneCall(), tools: [tool] }).run('prompt', {
+				signal: controller.signal,
+				approve,
+			}),
+		).rejects.toHaveProperty('name', 'AbortError');
+		expect(approve).not.toHaveBeenCalled();
+		expect(prepared.run).not.toHaveBeenCalled();
+	});
 });
 
 describe('LLMAgent and the run context', () => {
