@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -282,6 +283,23 @@ describe('FileRecoveryStore', () => {
 
 			await expect(store.startRun()).rejects.toBeInstanceOf(WorkspaceBusyError);
 			expect(statSync(join(workspaceFolder(), 'lock')).size).toBe(0);
+		});
+
+		it('releases a lock it published when it could not make it durable', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const prototype = await fileHandlePrototype();
+			const sync = Reflect.get(prototype, 'sync');
+			// The lock's own content syncs; the folder it was linked into does not.
+			vi.spyOn(prototype, 'sync')
+				.mockImplementationOnce(async function (this: FileHandle) {
+					await Reflect.apply(sync, this, []);
+				})
+				.mockRejectedValueOnce(Object.assign(new Error('input/output error'), { code: 'EIO' }));
+
+			await expect(store.startRun()).rejects.toThrow(/input\/output error/);
+			expect(existsSync(join(workspaceFolder(), 'lock'))).toBe(false);
+			const run = await store.startRun();
+			await run.finish('completed');
 		});
 
 		it('lets two workspaces write at the same time', async () => {

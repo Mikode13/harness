@@ -157,8 +157,10 @@ export class FileRecoveryStore implements RecoveryStore {
 
 	async startRun(): Promise<RunJournal> {
 		const runId = newRunId();
-		await this.lock(runId);
 		try {
+			// Inside, because taking the lock can fail after publishing it. Unlocking removes only a
+			// lock naming this run, never another run's.
+			await this.lock(runId);
 			const runDirectory = join(this.directory, 'runs', runId);
 			await makeDirectory(runDirectory);
 			const record: RunRecord = {
