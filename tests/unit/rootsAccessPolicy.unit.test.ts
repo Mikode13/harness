@@ -48,10 +48,17 @@ beforeAll(() => {
 	standards = join(parent, 'standards');
 	home = join(parent, 'home');
 
-	write(join(repo, '.gitignore'), 'node_modules\n*.log\n.env\n');
+	write(join(repo, '.gitignore'), 'node_modules\n*.log\n.env\nalias.txt\nhidden-src\nchain-b\n');
 	write(join(repo, 'AGENTS.md'), '# agents\n');
 	symlinkSync('AGENTS.md', join(repo, 'CLAUDE.md'));
 	write(join(repo, 'src', 'a.ts'), 'export {};\n');
+	write(join(repo, 'allowed.txt'), 'allowed\n');
+	// Ignored links to paths that are not: git ignores the link itself.
+	symlinkSync('allowed.txt', join(repo, 'alias.txt'));
+	symlinkSync('src', join(repo, 'hidden-src'));
+	symlinkSync('chain-b', join(repo, 'chain-a'));
+	symlinkSync('src', join(repo, 'chain-b'));
+	symlinkSync('src', join(repo, 'src-link'));
 	write(join(repo, '.env'), 'KEY=secret\n');
 	write(join(repo, '.env.example'), 'KEY=\n');
 	write(join(repo, 'config', 'app.pem'), 'key\n');
@@ -266,6 +273,21 @@ describe('RootsAccessPolicy', () => {
 			},
 		);
 
+		// git answers for a link but refuses a path beyond one, so each link is asked about alone.
+		it.each(['alias.txt', 'hidden-src/a.ts', 'chain-a/a.ts'])(
+			'refuses %s, which goes through a link it excludes',
+			async path => {
+				expect(await denial(path, 'read')).toContain('excluded by .gitignore');
+				expect(await denial(path, 'write')).toContain('excluded by .gitignore');
+			},
+		);
+
+		it('allows a path through a link it does not exclude', async () => {
+			const allowed = await (await policy()).check('src-link/a.ts', 'write', signal);
+
+			expect(allowed.relative).toBe('src/a.ts');
+		});
+
 		it('applies it in a root that is not a git repository', async () => {
 			expect(await denial(join(standards, 'drafts', 'next.md'), 'read')).toContain(
 				'excluded by .gitignore',
@@ -304,6 +326,28 @@ describe('RootsAccessPolicy', () => {
 					ignoreRules,
 				}),
 			).rejects.toBeInstanceOf(InvalidAgentConfigError);
+		});
+
+		// Protection looks for `.git` below a root, so a root inside it would open it.
+		it.each([['.git'], ['.git', 'hooks']])(
+			'refuses a root inside git metadata (%j)',
+			async (...parts) => {
+				await expect(
+					RootsAccessPolicy.create({
+						roots: [{ path: join(repo, ...parts), access: 'write' }],
+						ignoreRules,
+					}),
+				).rejects.toThrow(/inside git's metadata/);
+			},
+		);
+
+		it('refuses a root that leads into git metadata through a link', async () => {
+			const link = join(parent, 'git-link');
+			symlinkSync(join(repo, '.git'), link);
+
+			await expect(
+				RootsAccessPolicy.create({ roots: [{ path: link, access: 'read' }], ignoreRules }),
+			).rejects.toThrow(/inside git's metadata/);
 		});
 	});
 });

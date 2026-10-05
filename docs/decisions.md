@@ -1071,7 +1071,7 @@ tags: #mikode-harness #tools #filesystem #security
 2. **Access.** The root allows the access: each root is `read` or `write`, and the most specific root decides.
 3. **Protection.** It is not protected: git's metadata (`.git` as a folder or a worktree's pointer file, under any spelling), and the host's protected paths, such as the recovery store.
 4. **Secrets.** It is not a secret, by the default list and by the paths the host's `protect` adds.
-5. **`.gitignore`.** It does not exclude the path, even one that does not exist yet.
+5. **`.gitignore`.** It does not exclude the path, even one that does not exist yet, nor any symlink the path goes through. git sees a link as an entry of its own, so an ignored link stays closed even when it leads somewhere that is not ignored.
 
 A file the host's `allow` names exactly, for reading or also writing, skips steps 4 and 5. A `.env` is usually both a secret and ignored, and an opening that `.gitignore` still blocked would open nothing. Nothing opens step 3.
 
@@ -1090,6 +1090,8 @@ A file the host's `allow` names exactly, for reading or also writing, skips step
 - **`.gitignore` is checked with `git check-ignore --no-index`,** which knows every rule source and answers for paths that do not exist yet.
   - Outside a repository, git uses a private, empty git directory and still reads the folder's `.gitignore` files.
   - git runs without the host's `GIT_*` variables, which could point it at another repository.
+  - git refuses a path beyond a symlink, so each link on the way is checked alone, at its real place, and then the place the path leads.
+- **A root inside git's metadata is refused when the policy is created.** Protection looks for `.git` below a root, so such a root would open what nothing may open.
 
 **Alternatives considered:**
 
