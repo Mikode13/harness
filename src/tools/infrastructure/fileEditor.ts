@@ -153,12 +153,21 @@ export class FileEditor {
 			target: Object.freeze({ ...target }),
 			before: Object.freeze({ ...state }),
 			content: content && Buffer.from(content),
+			contentHash: content && hashOf(content),
 		});
 	}
 
 	async apply(prepared: PreparedEdit, signal: AbortSignal): Promise<void> {
-		const { path, content } = prepared;
+		const { path } = prepared;
 		signal.throwIfAborted();
+		// A Buffer's bytes cannot be frozen: copied, then checked, so what is written is what was
+		// approved, whatever happens to `prepared.content` from here on.
+		const content = prepared.content && Buffer.from(prepared.content);
+		if ((content && hashOf(content)) !== prepared.contentHash) {
+			throw new EditRefusedError(
+				`The content prepared for "${path}" changed after it was prepared; prepare the change again`,
+			);
+		}
 		const target = await this.policy.check(path, 'write', signal);
 		if (target.absolute !== prepared.target.absolute) {
 			throw new EditRefusedError(`"${path}" now leads somewhere else; prepare the change again`);
@@ -190,7 +199,7 @@ export class FileEditor {
 		}
 
 		try {
-			await this.write(prepared, target.absolute);
+			await this.write(prepared, content, target.absolute);
 		} catch (error) {
 			await this.settleFailedWrite({
 				journal,
@@ -282,7 +291,11 @@ export class FileEditor {
 		}
 	}
 
-	private async write({ kind, before, content }: PreparedEdit, absolute: string): Promise<void> {
+	private async write(
+		{ kind, before }: PreparedEdit,
+		content: Buffer | undefined,
+		absolute: string,
+	): Promise<void> {
 		if (kind === 'delete') {
 			await unlink(absolute);
 			await syncDirectory(dirname(absolute));

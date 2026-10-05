@@ -1142,7 +1142,7 @@ tags: #mikode-harness #tools #filesystem #recovery
 
 **Decision:** every change a write tool asks for is one of three: create, replace or delete. Each edit format, such as a patch or a text replacement, first works out the whole new content of the file.
 
-- **`FileEditor.prepare`** checks the change: the access policy allows the path, a create finds nothing there, and a replace or delete finds the file. If the caller worked from a version of the file, given by its hash, the file must still hold it. The result is a frozen `PreparedEdit` holding its own copy of the new content, so what is approved is exactly what is written, even if the caller changes its buffer while the approval waits.
+- **`FileEditor.prepare`** checks the change: the access policy allows the path, a create finds nothing there, and a replace or delete finds the file. If the caller worked from a version of the file, given by its hash, the file must still hold it. The result is a frozen `PreparedEdit` holding its own copy of the new content and that content's hash. A buffer's bytes cannot be frozen, so `apply` copies the prepared content, refuses it if it no longer matches the hash, and writes the copy: what is approved is exactly what is written, whoever changes a buffer while the approval waits.
 - **`FileEditor.apply`** checks the policy and the file again, then:
   1. stores the content being replaced and the new content;
   2. records the change as prepared;

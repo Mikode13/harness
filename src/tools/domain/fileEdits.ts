@@ -23,8 +23,13 @@ export interface PreparedEdit {
 	readonly path: string;
 	readonly target: AllowedPath;
 	readonly before: FileState;
-	/** The editor's own copy, taken in `prepare`: changing the caller's buffer later changes nothing. */
+	/**
+	 * The editor's own copy, taken in `prepare`, for showing what will be written. Its bytes can
+	 * still be changed, so `apply` writes them only while they match `contentHash`.
+	 */
 	readonly content: Buffer | undefined;
+	/** The SHA-256 of `content` as prepared. */
+	readonly contentHash: string | undefined;
 }
 
 /**
