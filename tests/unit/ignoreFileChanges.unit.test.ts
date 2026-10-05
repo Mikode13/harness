@@ -14,6 +14,8 @@ describe('widensIgnoreRules', () => {
 		['creates a file of plain rules', undefined, file('dist', '*.log')],
 		['deletes a file with no rules', file('# nothing yet'), undefined],
 		['changes nothing but line endings', file('a', 'b'), Buffer.from('a\r\nb\r\n')],
+		['only adds unescaped trailing spaces', file('secret'), file('secret  ')],
+		['keeps an escaped space and drops the plain one after it', file('a \\ '), file('a \\  ')],
 	])('treats a change that %s as narrowing', (_, before, after) => {
 		expect(widensIgnoreRules(before, after)).toBe(false);
 	});
@@ -25,6 +27,10 @@ describe('widensIgnoreRules', () => {
 		['deletes a file with rules', file('dist'), undefined],
 		['reorders rules', file('*.log', '!keep.log'), file('!keep.log', '*.log')],
 		['edits a rule', file('build/'), file('build/tmp/')],
+		// git keeps an escaped trailing space: `secret\ ` ignores the file `secret `.
+		['drops an escaped trailing space', file('secret\\ '), file('secret\\')],
+		// git trims spaces only: `secret<tab>` no longer ignores `secret`.
+		['adds a trailing tab', file('secret'), file('secret\t')],
 	])('treats a change that %s as widening', (_, before, after) => {
 		expect(widensIgnoreRules(before, after)).toBe(true);
 	});

@@ -1,10 +1,29 @@
-/** The rules of an ignore file, in order: no blank lines, no comments. */
+/**
+ * A rule as git reads it: trailing spaces dropped unless a backslash escapes them. Nothing else
+ * is trimmed, so a trailing tab stays part of the pattern, as it does for git.
+ */
+function trimTrailingSpaces(line: string): string {
+	let lastSpace: number | undefined;
+	for (let index = 0; index < line.length; index++) {
+		const character = line[index];
+		if (character === ' ') {
+			lastSpace ??= index;
+		} else {
+			// An escaped character, a space too, is part of the pattern.
+			if (character === '\\') index++;
+			lastSpace = undefined;
+		}
+	}
+	return line.slice(0, lastSpace);
+}
+
+/** The rules of an ignore file, in order, as git reads them: no blank lines, no comments. */
 function rulesOf(content: Buffer | undefined): string[] {
 	if (!content) return [];
 	return content
 		.toString('utf8')
 		.split(/\r?\n/)
-		.map(line => line.trimEnd())
+		.map(trimTrailingSpaces)
 		.filter(line => line !== '' && !line.startsWith('#'));
 }
 
