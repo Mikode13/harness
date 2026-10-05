@@ -9,9 +9,10 @@ import {
 	symlinkSync,
 	writeFileSync,
 } from 'node:fs';
+import { open, type FileHandle } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WorkspaceBusyError } from '../../src/recovery/domain/recoveryStore.ts';
 import {
 	defaultStateDirectory,
@@ -30,6 +31,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	rmSync(parent, { recursive: true, force: true });
 });
 
@@ -39,6 +41,13 @@ const absent = { exists: false } as const;
 function workspaceFolder(): string {
 	const [folder] = readdirSync(join(directory, 'workspaces'));
 	return join(directory, 'workspaces', folder ?? '');
+}
+
+/** The prototype every `FileHandle` shares, to fail or pause one of its calls. */
+async function fileHandlePrototype(): Promise<FileHandle> {
+	const handle = await open(join(parent, 'probe'), 'w');
+	await handle.close();
+	return Object.getPrototypeOf(handle) as FileHandle;
 }
 
 /** The id of a process that has already exited. */
@@ -128,6 +137,35 @@ describe('FileRecoveryStore', () => {
 		});
 	});
 
+	// A full disk can write part of a line and then fail: a line appended after it would be joined
+	// to that part, and the record of a change made after it lost.
+	it('refuses every step after one that failed to reach the journal', async () => {
+		const store = await FileRecoveryStore.open({ root, directory });
+		const run = await store.startRun();
+		const first = await run.prepare({ path: 'a.txt', before: absent, after: absent });
+		vi.spyOn(await fileHandlePrototype(), 'appendFile').mockImplementationOnce(async function (
+			this: FileHandle,
+			data,
+		) {
+			// The journal appends text.
+			await this.write((data as string).slice(0, 15));
+			throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+		});
+
+		await expect(run.applied(first)).rejects.toThrow(/no space left/);
+		await expect(run.prepare({ path: 'b.txt', before: absent, after: absent })).rejects.toThrow(
+			/stopped after a failed write/,
+		);
+		await expect(run.abandoned(first)).rejects.toThrow(/stopped after a failed write/);
+		await run.finish('failed');
+
+		const { record, entries } = await store.readRun(run.runId);
+		expect(record.status).toBe('failed');
+		expect(entries).toEqual([
+			{ sequence: first, path: 'a.txt', before: absent, after: absent, status: 'prepared' },
+		]);
+	});
+
 	it('refuses a journal damaged before its last line', async () => {
 		const store = await FileRecoveryStore.open({ root, directory });
 		const run = await store.startRun();
@@ -199,6 +237,51 @@ describe('FileRecoveryStore', () => {
 
 			const run = await store.startRun();
 			await run.finish('completed');
+		});
+
+		it('lets only one of two runs starting at the same time write', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const prototype = await fileHandlePrototype();
+			const writeFile = Reflect.get(prototype, 'writeFile');
+			let resume = (): void => undefined;
+			const paused = new Promise<void>(resolve => {
+				resume = resolve;
+			});
+			let pausing: () => void = () => undefined;
+			const reached = new Promise<void>(resolve => {
+				pausing = resolve;
+			});
+			// The first run stops in the middle of writing its lock.
+			vi.spyOn(prototype, 'writeFile').mockImplementationOnce(async function (
+				this: FileHandle,
+				...args: Parameters<FileHandle['writeFile']>
+			) {
+				pausing();
+				await paused;
+				await Reflect.apply(writeFile, this, args);
+			});
+
+			const first = store.startRun();
+			await reached;
+			const second = await Promise.allSettled([store.startRun()]);
+			resume();
+			const results = [...(await Promise.allSettled([first])), ...second];
+
+			const started = results.filter(result => result.status === 'fulfilled');
+			const refused = results.filter(result => result.status === 'rejected');
+			expect(started).toHaveLength(1);
+			expect(refused.map(result => result.reason as unknown)).toEqual([
+				expect.any(WorkspaceBusyError),
+			]);
+			await started[0]?.value.finish('completed');
+		});
+
+		it('does not take a lock it cannot read for a dead run', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			writeFileSync(join(workspaceFolder(), 'lock'), '');
+
+			await expect(store.startRun()).rejects.toBeInstanceOf(WorkspaceBusyError);
+			expect(statSync(join(workspaceFolder(), 'lock')).size).toBe(0);
 		});
 
 		it('lets two workspaces write at the same time', async () => {
