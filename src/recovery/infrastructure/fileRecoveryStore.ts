@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdir, open, readFile, realpath, rename, rm, stat, unlink } from 'node:fs/promises';
+import { link, mkdir, open, readFile, realpath, rename, rm, stat, unlink } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
@@ -80,10 +80,15 @@ async function makeDirectory(path: string): Promise<void> {
 }
 
 /**
- * Replaces `path` with `content` all at once: a crash leaves either the old file or the new
- * one, never half of the new one. It returns only once the new file is on disk.
+ * Puts `content` at `path` all at once: a crash leaves either the old file or the new one, never
+ * half of the new one. It returns only once the new file is on disk. With `exclusive`, it fails
+ * with `EEXIST` instead of replacing a file already there.
  */
-async function writeDurably(path: string, content: string | Buffer): Promise<void> {
+async function writeDurably(
+	path: string,
+	content: string | Buffer,
+	{ exclusive = false }: { exclusive?: boolean } = {},
+): Promise<void> {
 	const temporary = `${path}.${randomBytes(6).toString('hex')}.tmp`;
 	try {
 		const handle = await open(temporary, 'wx', privateFile);
@@ -93,10 +98,10 @@ async function writeDurably(path: string, content: string | Buffer): Promise<voi
 		} finally {
 			await handle.close();
 		}
-		await rename(temporary, path);
-	} catch (error) {
+		// A link fails if the path is taken; a rename would replace it.
+		await (exclusive ? link : rename)(temporary, path);
+	} finally {
 		await rm(temporary, { force: true });
-		throw error;
 	}
 	await syncDirectory(dirname(path));
 }
@@ -223,24 +228,24 @@ export class FileRecoveryStore implements RecoveryStore {
 		// Twice at most: once as it is, and once more after clearing a dead run's lock.
 		for (let attempt = 0; attempt < 2; attempt++) {
 			try {
-				const handle = await open(path, 'wx', privateFile);
-				try {
-					await handle.writeFile(JSON.stringify({ runId, pid: process.pid }));
-					await handle.sync();
-				} finally {
-					await handle.close();
-				}
+				// Written whole before it appears, so a lock that exists always names its holder.
+				await writeDurably(path, JSON.stringify({ runId, pid: process.pid }), { exclusive: true });
 				return;
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
 			}
 
 			const holder = await readLock(path);
-			if (holder && isAlive(holder.pid)) throw new WorkspaceBusyError(holder.runId);
+			// Released meanwhile: try again.
+			if (!holder) continue;
+			// A holder that cannot be named cannot be shown to be dead.
+			if (holder.pid === undefined || isAlive(holder.pid)) {
+				throw new WorkspaceBusyError(holder.runId);
+			}
 			// Its process died without releasing it. Read again just before removing, so a lock
 			// another process has just taken is left alone.
 			const again = await readLock(path);
-			if (again?.pid === holder?.pid && again?.runId === holder?.runId) {
+			if (again?.pid === holder.pid && again.runId === holder.runId) {
 				await unlink(path).catch((error: unknown) => {
 					if (!isNotFound(error)) throw error;
 				});
@@ -257,14 +262,25 @@ export class FileRecoveryStore implements RecoveryStore {
 	}
 }
 
-async function readLock(path: string): Promise<{ runId: string; pid: number } | undefined> {
+/**
+ * Who holds the lock, or `undefined` when nobody does. A lock this store did not write whole
+ * has no `pid`, so it is never taken for a dead run's.
+ */
+async function readLock(path: string): Promise<{ runId: string; pid?: number } | undefined> {
+	let text: string;
 	try {
-		return JSON.parse(await readFile(path, 'utf8')) as { runId: string; pid: number };
+		text = await readFile(path, 'utf8');
 	} catch (error) {
-		// Gone, or caught in the middle of being written: either way, nobody can be named.
-		if (isNotFound(error) || error instanceof SyntaxError) return undefined;
+		if (isNotFound(error)) return undefined;
 		throw error;
 	}
+	try {
+		const { runId, pid } = JSON.parse(text) as { runId?: unknown; pid?: unknown };
+		if (typeof runId === 'string' && Number.isInteger(pid)) return { runId, pid: pid as number };
+	} catch {
+		// Not JSON: named below as unknown.
+	}
+	return { runId: 'unknown' };
 }
 
 function contentPath(contentDirectory: string, hash: string): string {
@@ -283,6 +299,9 @@ class FileRunJournal implements RunJournal {
 	// Appends run one after another, so the lines never interleave.
 	private pending: Promise<unknown> = Promise.resolve();
 	private finished = false;
+	// Set when an append fails: it may have left part of a line, and anything after it would be
+	// joined to that part and unreadable.
+	private broken: unknown;
 
 	constructor({
 		record,
@@ -356,10 +375,20 @@ class FileRunJournal implements RunJournal {
 
 	private append(line: JournalLine): Promise<void> {
 		const write = this.pending.then(async () => {
-			await this.journal.appendFile(`${JSON.stringify(line)}\n`);
-			await this.journal.sync();
+			if (this.broken !== undefined) {
+				throw new Error(`The journal of run ${this.runId} stopped after a failed write`, {
+					cause: this.broken,
+				});
+			}
+			try {
+				await this.journal.appendFile(`${JSON.stringify(line)}\n`);
+				await this.journal.sync();
+			} catch (error) {
+				this.broken = error ?? new Error('Unknown write failure');
+				throw error;
+			}
 		});
-		// One failed append must not block the ones after it; its caller still sees the failure.
+		// The chain goes on, so each later append reports the broken journal to its own caller.
 		this.pending = write.catch(() => undefined);
 		return write;
 	}

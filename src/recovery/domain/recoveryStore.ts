@@ -33,7 +33,9 @@ export interface RunRecord {
 
 /**
  * The recovery record of one run that writes. Every method returns only once what it records
- * is on disk: a change is never made before the record that would undo it exists.
+ * is on disk: a change is never made before the record that would undo it exists. Once a step
+ * fails to reach the journal, the journal refuses every later step, because a line written
+ * after a broken one could not be read back.
  */
 export interface RunJournal {
 	readonly runId: string;
