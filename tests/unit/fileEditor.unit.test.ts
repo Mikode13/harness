@@ -11,13 +11,18 @@ import {
 	symlinkSync,
 	writeFileSync,
 } from 'node:fs';
+import { open, type FileHandle } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RecoveryStore, RunJournal } from '../../src/recovery/domain/recoveryStore.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
 import { AccessDeniedError } from '../../src/tools/domain/accessPolicy.ts';
-import { EditRefusedError, type FileChange } from '../../src/tools/domain/fileEdits.ts';
+import {
+	EditRefusedError,
+	EditUnconfirmedError,
+	type FileChange,
+} from '../../src/tools/domain/fileEdits.ts';
 import { FileEditor } from '../../src/tools/infrastructure/fileEditor.ts';
 import { GitIgnoreRules } from '../../src/tools/infrastructure/gitIgnoreRules.ts';
 import { RootsAccessPolicy } from '../../src/tools/infrastructure/rootsAccessPolicy.ts';
@@ -110,6 +115,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+	vi.restoreAllMocks();
 	for (const opened of sessions) await opened.finish('completed');
 	sessions = [];
 	rmSync(parent, { recursive: true, force: true });
@@ -233,6 +239,21 @@ describe('FileEditor', () => {
 			expect(read('clean.ts')).toBe('clean\n');
 		});
 
+		it('writes what was prepared, even if the caller changes its buffer before applying', async () => {
+			const bytes = text('approved\n');
+			const prepared = await editor.prepare(
+				{ kind: 'replace', path: 'clean.ts', content: bytes },
+				signal,
+			);
+			bytes.write('mutated!');
+
+			await editor.apply(prepared, signal);
+
+			expect(read('clean.ts')).toBe('approved\n');
+			expect(Object.isFrozen(prepared.target)).toBe(true);
+			expect(Object.isFrozen(prepared.before)).toBe(true);
+		});
+
 		it('refuses a prepared change once the file changed under it', async () => {
 			const prepared = await editor.prepare(
 				{ kind: 'replace', path: 'clean.ts', content: text('agent\n') },
@@ -341,6 +362,64 @@ describe('FileEditor', () => {
 				expect(read('tracked.ts')).toBe('work in progress\n');
 			},
 		);
+
+		const notRecorded = () => Promise.reject(new Error('disk full'));
+
+		/** Expects a change that was made but not recorded as made: reported, kept, and the end. */
+		async function expectUnconfirmed(apply: Promise<void>, run: FileEditor) {
+			const error = await refusal(apply);
+			expect(error).toBeInstanceOf(EditUnconfirmedError);
+			expect(error.message).toContain(
+				'"clean.ts" was changed, but the harness could not record it',
+			);
+			expect(read('clean.ts')).toBe('agent\n');
+			// Kept as prepared: an undo can still compare the file with both of its states.
+			expect((await entries())[0]?.status).toBe('prepared');
+			expect(
+				(await refusal(change({ kind: 'create', path: 'next.ts', content: text('n') }, run)))
+					.message,
+			).toContain('Writing stopped');
+		}
+
+		it('reports a change it made but could not record as made', async () => {
+			const failing = await makeEditor(storeWith(() => ({ applied: notRecorded })));
+
+			await expectUnconfirmed(
+				change({ kind: 'replace', path: 'clean.ts', content: text('agent\n') }, failing),
+				failing,
+			);
+		});
+
+		it('reports a change a failed write made anyway but could not record as made', async () => {
+			const handle = await open(join(parent, 'probe'), 'w');
+			await handle.close();
+			const prototype = Object.getPrototypeOf(handle) as FileHandle;
+			const sync = Reflect.get(prototype, 'sync');
+			let failFolderSync = false;
+			// The file is renamed into place, then syncing its folder fails.
+			vi.spyOn(prototype, 'sync').mockImplementation(async function (this: FileHandle) {
+				if (failFolderSync && (await this.stat()).isDirectory()) {
+					failFolderSync = false;
+					throw Object.assign(new Error('input/output error'), { code: 'EIO' });
+				}
+				await Reflect.apply(sync, this, []);
+			});
+			const failing = await makeEditor(
+				storeWith(journal => ({
+					prepare: async change => {
+						const sequence = await journal.prepare(change);
+						failFolderSync = true;
+						return sequence;
+					},
+					applied: notRecorded,
+				})),
+			);
+
+			await expectUnconfirmed(
+				change({ kind: 'replace', path: 'clean.ts', content: text('agent\n') }, failing),
+				failing,
+			);
+		});
 
 		it('abandons a change it could not write, and removes the folders it made for it', async () => {
 			mkdirSync(file('locked'));
