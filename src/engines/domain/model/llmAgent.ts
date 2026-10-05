@@ -13,6 +13,12 @@ import {
 	ignoreProgress,
 } from '#src/agent/domain/agent';
 import {
+	type RunEnd,
+	RunContext,
+	runContextOf,
+	withRunContext,
+} from '#src/agent/domain/runContext';
+import {
 	InvalidAgentConfigError,
 	RecoverableError,
 	UnrecoverableError,
@@ -28,7 +34,9 @@ import { Conversation } from '#src/llm/domain/conversation';
 import type { LLMClient, LLMResponse } from '#src/llm/domain/llm';
 import type { Message, MessagePart, ToolCallPart, ToolResultPart } from '#src/llm/domain/message';
 import type { ToolDefinition } from '#src/llm/domain/tool';
-import type { Tool } from '#src/tools/domain/tool';
+import { type AgentTool, type PreparedCall, prepareCall } from '#src/tools/domain/preparedCall';
+import { isAbortError } from '#src/shared/domain/isAbortError';
+import type { ILogger } from '#src/shared/domain/logger';
 import { addTokens, type Tokens } from '#src/shared/domain/tokens';
 
 function describePart(part: MessagePart): ProgressEvent | undefined {
@@ -85,10 +93,11 @@ function emit(event: ProgressEvent, callback: Callback): void {
 export class LLMAgent implements Agent {
 	private readonly llmClient: LLMClient;
 	private readonly conversation: Conversation;
-	private readonly tools: Map<string, Tool>;
+	private readonly tools: Map<string, AgentTool>;
 	private readonly toolDefinitions: ToolDefinition[];
 	private readonly maxSteps: number;
 	private readonly autoApprove: boolean;
+	private readonly logger: ILogger | undefined;
 
 	constructor({
 		llmClient,
@@ -96,14 +105,17 @@ export class LLMAgent implements Agent {
 		tools = [],
 		maxSteps = 25,
 		autoApprove = false,
+		logger,
 	}: {
 		llmClient: LLMClient;
 		messages?: Message[];
-		tools?: Tool[];
+		tools?: AgentTool[];
 		/** How many calls to the model one run may make before it fails. */
 		maxSteps?: number;
 		/** Runs every tool call without asking, `destructive` ones included. Meant for CI. */
 		autoApprove?: boolean;
+		/** Where a failure the agent absorbs is reported. The factories always pass one. */
+		logger?: ILogger;
 	}) {
 		if (!Number.isInteger(maxSteps) || maxSteps < 1) {
 			throw new InvalidAgentConfigError(
@@ -115,6 +127,7 @@ export class LLMAgent implements Agent {
 		this.conversation = new Conversation(messages);
 		this.maxSteps = maxSteps;
 		this.autoApprove = autoApprove;
+		this.logger = logger;
 		this.tools = new Map(tools.map(tool => [tool.name, tool]));
 		if (this.tools.size !== tools.length) {
 			// The model calls tools by name, so a second one with the same name could never run.
@@ -202,6 +215,7 @@ export class LLMAgent implements Agent {
 		call: ToolCallPart,
 		{ signal, onProgress: callback = ignoreProgress, approve }: RunOptions,
 		effects: RunEffects,
+		context: RunContext,
 	): Promise<{ result: ToolResultPart; denied: boolean }> {
 		const result = { type: 'toolResult' as const, callId: call.id, name: call.name };
 		const tool = this.tools.get(call.name);
@@ -216,18 +230,23 @@ export class LLMAgent implements Agent {
 			};
 		}
 
-		let risk: ToolRisk;
+		let prepared: PreparedCall;
 		try {
-			risk = tool.risk(call.input);
+			prepared = await prepareCall(tool, call.input, signal, context);
 		} catch (error) {
-			// A tool that cannot judge its own call is a failing tool, and the call does not run.
+			signal.throwIfAborted();
+			// A call that cannot be prepared, or whose tool cannot judge it, does not run; the
+			// model reads why, such as a refused path, and can correct itself.
 			return {
 				result: { ...result, output: describeFailure(error), isError: true },
 				denied: false,
 			};
 		}
 
-		const denial = await this.denial(call, risk, signal, approve);
+		// Preparing may have finished after a cancellation it did not notice; nobody is asked to
+		// approve a call in a run that has already stopped.
+		signal.throwIfAborted();
+		const denial = await this.denial(call, prepared.risk, signal, approve);
 		if (denial !== undefined) {
 			return { result: { ...result, output: denial, isError: true }, denied: true };
 		}
@@ -242,7 +261,7 @@ export class LLMAgent implements Agent {
 		effects.toolRan = true;
 		try {
 			return {
-				result: { ...result, output: await tool.execute(call.input, signal), isError: false },
+				result: { ...result, output: await prepared.run(signal), isError: false },
 				denied: false,
 			};
 		} catch (error) {
@@ -259,6 +278,7 @@ export class LLMAgent implements Agent {
 		calls: ToolCallPart[],
 		options: RunOptions,
 		effects: RunEffects,
+		context: RunContext,
 	): Promise<Message> {
 		const { signal, onProgress: callback = ignoreProgress } = options;
 		const results: MessagePart[] = [];
@@ -268,7 +288,7 @@ export class LLMAgent implements Agent {
 			signal.throwIfAborted();
 			// `runTool` announces the call only once it is allowed to run, so a consumer never
 			// shows a call as running early, nor while the user is still being asked.
-			const { result, denied } = await this.runTool(call, options, effects);
+			const { result, denied } = await this.runTool(call, options, effects, context);
 			if (denied) emit({ type: 'tool', id: call.id, name: call.name, status: 'denied' }, callback);
 			else narrate(result, callback);
 			results.push(result);
@@ -277,7 +297,51 @@ export class LLMAgent implements Agent {
 		return { role: 'tool', content: results };
 	}
 
+	/**
+	 * Runs inside the context of the run that reached it, or in one of its own that it ends with
+	 * the run: completed, failed or cancelled.
+	 */
 	async run(prompt: string, options: RunOptions): Promise<AgentResponse> {
+		const inherited = runContextOf(options);
+		if (inherited) return this.runSteps(prompt, options, inherited);
+
+		const context = new RunContext();
+		let end: RunEnd = 'failed';
+		try {
+			const response = await this.runSteps(prompt, withRunContext(options, context), context);
+			end = 'completed';
+			return response;
+		} catch (error) {
+			if (isAbortError(error)) end = 'cancelled';
+			throw error;
+		} finally {
+			await this.finishContext(context, end);
+		}
+	}
+
+	/**
+	 * What the run started ends here, but its result stands: the changes it recorded are already
+	 * on disk, so a record that could not be closed is reported, not turned into a failure.
+	 */
+	private async finishContext(context: RunContext, end: RunEnd): Promise<void> {
+		try {
+			await context.finish(end);
+		} catch (error) {
+			treatErrors(
+				() => {
+					this.logger?.warn(`The run could not close its records: ${describeFailure(error)}`);
+				},
+				classifyHostFailure,
+				'LLM agent logger failed',
+			);
+		}
+	}
+
+	private async runSteps(
+		prompt: string,
+		options: RunOptions,
+		context: RunContext,
+	): Promise<AgentResponse> {
 		const { signal, onProgress: callback = ignoreProgress } = options;
 		const start = Date.now();
 		const runMessages: Message[] = [{ role: 'user', content: [{ type: 'text', text: prompt }] }];
@@ -317,7 +381,7 @@ export class LLMAgent implements Agent {
 
 				// On the last step no call is left to send the results to, so the tools do not run.
 				if (step < this.maxSteps) {
-					runMessages.push(await this.runTools(calls, options, effects));
+					runMessages.push(await this.runTools(calls, options, effects, context));
 				}
 			}
 
