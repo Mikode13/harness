@@ -1210,3 +1210,33 @@ The tools of one top-level run share a `RunContext`. Whatever a tool starts for 
 - **The symbol property survives because no agent rebuilds `options`.** A decorator that rebuilt them would drop the context silently. The existing tests that check identity forwarding guard this.
 - **`PreparingTool` is internal.** Consumers keep `Tool`, with `risk` and `execute`.
 - **Tools see the context only in `prepare`.** Run-scoped state, such as the `WriteSession` per context in `WorkspaceWrites`, is held in a `WeakMap` keyed by the context, so it goes away with the run.
+
+## An agent narrows `.gitignore` freely; widening it waits for the user
+
+tags: #mikode-harness #tools #permissions #filesystem
+
+**Decision:** `FileEditor.prepare` marks a change to a `.gitignore` that can make it hide less, and `editRisk` turns that change into a `destructive` one, which the approver must allow. A widening change is one that:
+
+- removes a rule;
+- adds a negation such as `!.env`;
+- reorders rules, because the last match decides;
+- deletes a file that had rules.
+
+Adding plain rules, comments or blank lines narrows the boundary and is an ordinary, recoverable edit. The check reads the text, so a change it cannot prove narrowing counts as widening.
+
+**Context:** `.gitignore` is the boundary of what every tool reads and writes. The v2 plan for #52 lets the agent edit it under normal authorization, with three conditions:
+
+- new exclusions narrow access immediately;
+- a widening takes effect only with explicit authorization;
+- a widening the agent wrote is never activated silently on a later run.
+
+**Alternatives considered:**
+
+- **Freezing the rules a session started with, and evaluating every path against them too.** Rejected for now. A frozen copy needs a mirror of every ignore file and a second `git check-ignore` per path. Without an approval to anchor it, a widening that survives the session would still take effect on the next one.
+- **Forbidding writes to `.gitignore`.** Rejected by the user: adding an ignore rule is ordinary work.
+
+**Consequences:**
+
+- **A widening is authorized when it is written,** by the person who allowed it, so it never takes effect silently.
+- **With `autoApprove`, a widening is allowed.** It is a confirmation, not a block, and `autoApprove` exists for hosts that answer for themselves.
+- **Only `.gitignore` files are watched.** `.git/info/exclude` is protected git metadata, and the read tools never honour ripgrep's own `.ignore` files.
