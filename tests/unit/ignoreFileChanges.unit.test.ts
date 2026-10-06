@@ -5,6 +5,7 @@ import {
 } from '../../src/tools/infrastructure/ignoreFileChanges.ts';
 
 const file = (...lines: string[]) => Buffer.from(lines.map(line => `${line}\n`).join(''));
+const bom = '\uFEFF';
 
 describe('widensIgnoreRules', () => {
 	it.each([
@@ -16,6 +17,9 @@ describe('widensIgnoreRules', () => {
 		['changes nothing but line endings', file('a', 'b'), Buffer.from('a\r\nb\r\n')],
 		['only adds unescaped trailing spaces', file('secret'), file('secret  ')],
 		['keeps an escaped space and drops the plain one after it', file('a \\ '), file('a \\  ')],
+		['adds a byte order mark at the start', file('a'), file(`${bom}a`)],
+		// Past the first line, git reads the mark as part of the pattern, so this is no negation.
+		['adds a rule that starts with a byte order mark later on', file('a'), file('a', `${bom}!a`)],
 	])('treats a change that %s as narrowing', (_, before, after) => {
 		expect(widensIgnoreRules(before, after)).toBe(false);
 	});
@@ -31,6 +35,12 @@ describe('widensIgnoreRules', () => {
 		['drops an escaped trailing space', file('secret\\ '), file('secret\\')],
 		// git trims spaces only: `secret<tab>` no longer ignores `secret`.
 		['adds a trailing tab', file('secret'), file('secret\t')],
+		// git skips the mark at the start of the file, so this line is a negation.
+		[
+			'creates a file whose first rule is a negation after a byte order mark',
+			undefined,
+			file(`${bom}!secret`),
+		],
 	])('treats a change that %s as widening', (_, before, after) => {
 		expect(widensIgnoreRules(before, after)).toBe(true);
 	});

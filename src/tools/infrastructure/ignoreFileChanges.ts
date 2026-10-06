@@ -20,11 +20,15 @@ function trimTrailingSpaces(line: string): string {
 /** The rules of an ignore file, in order, as git reads them: no blank lines, no comments. */
 function rulesOf(content: Buffer | undefined): string[] {
 	if (!content) return [];
-	return content
-		.toString('utf8')
-		.split(/\r?\n/)
-		.map(trimTrailingSpaces)
-		.filter(line => line !== '' && !line.startsWith('#'));
+	return (
+		content
+			.toString('utf8')
+			// git skips a UTF-8 byte order mark at the start of the file, and only there.
+			.replace(/^\uFEFF/, '')
+			.split(/\r?\n/)
+			.map(trimTrailingSpaces)
+			.filter(line => line !== '' && !line.startsWith('#'))
+	);
 }
 
 /**
