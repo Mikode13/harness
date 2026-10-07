@@ -379,6 +379,7 @@ describe('FileEditor', () => {
 					};
 					return { ...wrapped, ...override(wrapped) };
 				},
+				listRuns: () => store.listRuns(),
 				readRun: id => store.readRun(id),
 				readContent: hash => store.readContent(hash),
 			};

@@ -20,12 +20,21 @@ export interface JournalEntry {
 	status: 'prepared' | 'applied' | 'abandoned';
 }
 
-export type RunStatus = 'running' | 'completed' | 'failed' | 'cancelled';
+/**
+ * `interrupted` is a run whose process died while it was writing. The next run to take the
+ * workspace settles each change it left `prepared`, from what the file holds now.
+ */
+export type RunStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 
 export interface RunRecord {
 	runId: string;
 	/** The real path of the workspace root the run wrote to. */
 	root: string;
+	/**
+	 * The run the workspace was at when this one started, so runs form a tree: going back to an
+	 * earlier run and writing again starts a new branch. Absent for the first run.
+	 */
+	parentRunId?: string;
 	startedAt: string;
 	finishedAt?: string;
 	status: RunStatus;
@@ -50,7 +59,7 @@ export interface RunJournal {
 	/** The change was not made, and the file still holds its `before`. */
 	abandoned(sequence: number): Promise<void>;
 	/** Ends the run and releases the workspace for the next writer. */
-	finish(status: Exclude<RunStatus, 'running'>): Promise<void>;
+	finish(status: Exclude<RunStatus, 'running' | 'interrupted'>): Promise<void>;
 }
 
 /**
@@ -59,11 +68,18 @@ export interface RunJournal {
  */
 export interface RecoveryStore {
 	/**
-	 * Starts recording a run and holds the workspace for it until `finish`.
+	 * Starts recording a run and holds the workspace for it until `finish`. The new run's parent
+	 * is the run the workspace is at, and the workspace is at the new run from then on. Runs a
+	 * dead process left `running` are settled first.
 	 *
 	 * @throws {WorkspaceBusyError} when another live run is writing to the workspace.
 	 */
 	startRun(): Promise<RunJournal>;
+	/**
+	 * Every run, oldest first, and the run the workspace is at (`head`), absent before the first.
+	 * A run still recorded as `running` whose process is gone is listed as `interrupted`.
+	 */
+	listRuns(): Promise<{ head?: string; runs: RunRecord[] }>;
 	/** A run's record and its changes, in the order they were prepared. */
 	readRun(runId: string): Promise<{ record: RunRecord; entries: JournalEntry[] }>;
 	/** The bytes a hash names. */

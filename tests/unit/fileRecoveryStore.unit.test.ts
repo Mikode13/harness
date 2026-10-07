@@ -1,9 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
+	readFileSync,
 	realpathSync,
 	rmSync,
 	statSync,
@@ -323,6 +325,112 @@ describe('FileRecoveryStore', () => {
 			(await FileRecoveryStore.open({ root: link, directory })).startRun(),
 		).rejects.toBeInstanceOf(WorkspaceBusyError);
 		await first.finish('completed');
+	});
+
+	describe('history of runs', () => {
+		/** Leaves `run` as a dead process would: still `running`, its lock naming a dead pid. */
+		function kill(runId: string): void {
+			writeFileSync(join(workspaceFolder(), 'lock'), JSON.stringify({ runId, pid: deadPid() }));
+		}
+
+		it('records the run each run started from, and the run the workspace is at', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			await expect(store.listRuns()).resolves.toEqual({ runs: [] });
+
+			const first = await store.startRun();
+			await first.finish('completed');
+			const second = await store.startRun();
+			await second.finish('failed');
+
+			const { head, runs } = await store.listRuns();
+			expect(head).toBe(second.runId);
+			expect(runs).toMatchObject([
+				{ runId: first.runId, status: 'completed' },
+				{ runId: second.runId, parentRunId: first.runId, status: 'failed' },
+			]);
+			expect(runs[0]).not.toHaveProperty('parentRunId');
+		});
+
+		it('lists a run as running only while it holds the workspace and its process lives', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const run = await store.startRun();
+			await expect(store.listRuns()).resolves.toMatchObject({ runs: [{ status: 'running' }] });
+
+			kill(run.runId);
+
+			await expect(store.listRuns()).resolves.toMatchObject({ runs: [{ status: 'interrupted' }] });
+			await expect(store.readRun(run.runId)).resolves.toMatchObject({
+				record: { status: 'interrupted' },
+			});
+		});
+
+		it('settles what an interrupted run left prepared, from what each file holds now', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const dead = await store.startRun();
+			const state = async (content: string) =>
+				({
+					exists: true,
+					hash: await dead.saveContent(Buffer.from(content)),
+					mode: 0o644,
+				}) as const;
+			const file = (name: string, content: string): string => {
+				const path = join(root, name);
+				writeFileSync(path, content);
+				chmodSync(path, 0o644);
+				return path;
+			};
+			const made = file('made.txt', 'new');
+			const notMade = file('not-made.txt', 'old');
+			const changedSince = file('changed-since.txt', 'edited by hand');
+			for (const path of [made, notMade, changedSince]) {
+				await dead.prepare({ path, before: await state('old'), after: await state('new') });
+			}
+			// The process died halfway through appending a line.
+			const journal = join(workspaceFolder(), 'runs', dead.runId, 'journal.jsonl');
+			writeFileSync(journal, '{"type":"appl', { flag: 'a' });
+			kill(dead.runId);
+
+			const next = await store.startRun();
+
+			const { record, entries } = await store.readRun(dead.runId);
+			expect(record.status).toBe('interrupted');
+			expect(
+				JSON.parse(readFileSync(join(workspaceFolder(), 'runs', dead.runId, 'run.json'), 'utf8')),
+			).toMatchObject({ status: 'interrupted' });
+			expect(entries.map(({ path, status }) => [path, status])).toEqual([
+				[made, 'applied'],
+				[notMade, 'abandoned'],
+				[changedSince, 'prepared'],
+			]);
+			await next.finish('completed');
+			await expect(store.listRuns()).resolves.toMatchObject({
+				runs: [{ runId: dead.runId }, { runId: next.runId, parentRunId: dead.runId }],
+			});
+		});
+
+		it('keeps writing after a run that died before opening its journal', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const dead = await store.startRun();
+			rmSync(join(workspaceFolder(), 'runs', dead.runId, 'journal.jsonl'));
+			kill(dead.runId);
+
+			const next = await store.startRun();
+
+			await expect(store.readRun(dead.runId)).resolves.toMatchObject({
+				record: { status: 'interrupted' },
+				entries: [],
+			});
+			await next.finish('completed');
+		});
+
+		it('leaves out a run whose process died before writing its record', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			mkdirSync(join(workspaceFolder(), 'runs', '20261004T000000000Z-000000'));
+
+			await expect(store.listRuns()).resolves.toEqual({ runs: [] });
+			const run = await store.startRun();
+			await run.finish('completed');
+		});
 	});
 });
 

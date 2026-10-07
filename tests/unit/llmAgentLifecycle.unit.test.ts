@@ -388,6 +388,7 @@ describe('LLMAgent writing a real repository through the engine', () => {
 		const llmClient = replacing('tracked.ts', 'agent version\n');
 		const broken: RecoveryStore = {
 			startRun: () => Promise.reject(new Error('read-only disk')),
+			listRuns: () => store.listRuns(),
 			readRun: id => store.readRun(id),
 			readContent: hash => store.readContent(hash),
 		};
