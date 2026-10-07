@@ -51,7 +51,7 @@ export class WriteSession {
 			this.journal = undefined;
 			if (error instanceof WorkspaceBusyError) {
 				throw new EditRefusedError(
-					'Another run is writing to this workspace, so nothing was changed',
+					'Another run, or a move through its history, holds this workspace, so nothing was changed',
 					{
 						cause: error,
 					},

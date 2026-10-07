@@ -386,12 +386,10 @@ describe('LLMAgent writing a real repository through the engine', () => {
 
 	it('writes nothing when the run cannot be recorded', async () => {
 		const llmClient = replacing('tracked.ts', 'agent version\n');
-		const broken: RecoveryStore = {
+		// The real store, except that it cannot start a run.
+		const broken: RecoveryStore = Object.assign(Object.create(store) as RecoveryStore, {
 			startRun: () => Promise.reject(new Error('read-only disk')),
-			listRuns: () => store.listRuns(),
-			readRun: id => store.readRun(id),
-			readContent: hash => store.readContent(hash),
-		};
+		});
 
 		await new LLMAgent({ llmClient, tools: [replaceTool(await writesOver(broken))] }).run(
 			'prompt',

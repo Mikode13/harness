@@ -366,7 +366,7 @@ describe('FileEditor', () => {
 	describe('when recording or writing fails', () => {
 		/** The test store, with some of its journal's steps replaced. */
 		function storeWith(override: (journal: RunJournal) => Partial<RunJournal>): RecoveryStore {
-			return {
+			return Object.assign(Object.create(store) as RecoveryStore, {
 				startRun: async () => {
 					const journal = await store.startRun();
 					const wrapped: RunJournal = {
@@ -379,10 +379,7 @@ describe('FileEditor', () => {
 					};
 					return { ...wrapped, ...override(wrapped) };
 				},
-				listRuns: () => store.listRuns(),
-				readRun: id => store.readRun(id),
-				readContent: hash => store.readContent(hash),
-			};
+			});
 		}
 
 		/** A store whose journal fails at the step named, and works otherwise. */
@@ -545,7 +542,7 @@ describe('WriteSession', () => {
 			change({ kind: 'create', path: 'h.ts', content: text('h') }, second),
 		);
 
-		expect(error.message).toContain('Another run is writing');
+		expect(error.message).toContain('Another run, or a move through its history, holds');
 		expect(existsSync(file('h.ts'))).toBe(false);
 	});
 

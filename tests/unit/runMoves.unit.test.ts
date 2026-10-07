@@ -1,0 +1,311 @@
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+	type FileState,
+	historyStart,
+	NothingToMoveError,
+	type RunJournal,
+	WorkspaceBusyError,
+} from '../../src/recovery/domain/recoveryStore.ts';
+import { UnknownRunError } from '../../src/recovery/domain/runTree.ts';
+import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
+
+let parent: string;
+let root: string;
+let store: FileRecoveryStore;
+
+beforeEach(async () => {
+	parent = realpathSync(mkdtempSync(join(tmpdir(), 'harness-moves-')));
+	root = join(parent, 'repository');
+	mkdirSync(root);
+	store = await FileRecoveryStore.open({ root, directory: join(parent, 'state') });
+});
+
+afterEach(() => {
+	rmSync(parent, { recursive: true, force: true });
+});
+
+function workspaceFolder(): string {
+	const workspaces = join(parent, 'state', 'workspaces');
+	return join(workspaces, readdirSync(workspaces)[0] ?? '');
+}
+
+function read(name: string): string | undefined {
+	const path = join(root, name);
+	return existsSync(path) ? readFileSync(path, 'utf8') : undefined;
+}
+
+async function stateOnDisk(journal: RunJournal, path: string): Promise<FileState> {
+	if (!existsSync(path)) return { exists: false };
+	return {
+		exists: true,
+		hash: await journal.saveContent(readFileSync(path)),
+		mode: statSync(path).mode & 0o7777,
+	};
+}
+
+/** Folders missing above `path`, outermost first, as the editor records them. */
+function missingFolders(path: string): string[] {
+	const folders: string[] = [];
+	for (let folder = dirname(path); !existsSync(folder); folder = dirname(folder)) {
+		folders.unshift(folder);
+	}
+	return folders;
+}
+
+/** A change a run makes: the file's new content, or `undefined` to delete it. */
+type Edit = [name: string, content: string | undefined, mode?: number];
+
+/** Records and makes each edit as a writing run would, then finishes the run. */
+async function run(...edits: Edit[]): Promise<string> {
+	const journal = await store.startRun();
+	for (const [name, content, mode = 0o644] of edits) {
+		const path = join(root, name);
+		const before = await stateOnDisk(journal, path);
+		const after: FileState =
+			content === undefined
+				? { exists: false }
+				: { exists: true, hash: await journal.saveContent(Buffer.from(content)), mode };
+		const createdFolders = content === undefined ? [] : missingFolders(path);
+		const sequence = await journal.prepare({
+			path,
+			before,
+			after,
+			...(createdFolders.length > 0 ? { createdFolders } : {}),
+		});
+		if (content === undefined) {
+			rmSync(path);
+		} else {
+			mkdirSync(dirname(path), { recursive: true });
+			writeFileSync(path, content);
+			chmodSync(path, mode);
+		}
+		await journal.applied(sequence);
+	}
+	await journal.finish('completed');
+	return journal.runId;
+}
+
+describe('moving through the history of runs', () => {
+	it('takes a run back, and forward again', async () => {
+		writeFileSync(join(root, 'kept.txt'), 'one');
+		writeFileSync(join(root, 'gone.txt'), 'old');
+		const first = await run(['kept.txt', 'two'], ['new.txt', 'hello'], ['gone.txt', undefined]);
+
+		const undone = await store.undo();
+
+		expect([read('kept.txt'), read('new.txt'), read('gone.txt')]).toEqual([
+			'one',
+			undefined,
+			'old',
+		]);
+		expect(undone).toMatchObject({ revision: 1, from: first, complete: true, conflicts: [] });
+		expect(undone).not.toHaveProperty('to');
+		await expect(store.listRuns()).resolves.not.toHaveProperty('head');
+
+		const redone = await store.redo();
+
+		expect([read('kept.txt'), read('new.txt'), read('gone.txt')]).toEqual([
+			'two',
+			'hello',
+			undefined,
+		]);
+		expect(redone).toMatchObject({ revision: 2, to: first, complete: true });
+	});
+
+	it('goes to the start and to any run, one run at a time', async () => {
+		const first = await run(['a.txt', '1']);
+		const second = await run(['a.txt', '2']);
+		await run(['a.txt', '3'], ['b.txt', 'x']);
+
+		await store.goTo(historyStart);
+		expect([read('a.txt'), read('b.txt')]).toEqual([undefined, undefined]);
+
+		await store.goTo(second);
+		expect([read('a.txt'), read('b.txt')]).toEqual(['2', undefined]);
+		await expect(store.listRuns()).resolves.toMatchObject({ head: second });
+
+		await store.goTo(first);
+		expect(read('a.txt')).toBe('1');
+	});
+
+	it('starts a branch when a run follows a move back, and redo returns where it was', async () => {
+		const first = await run(['a.txt', '1']);
+		const second = await run(['a.txt', '2']);
+		const third = await run(['a.txt', '3']);
+		await store.goTo(first);
+		const branch = await run(['a.txt', 'other'], ['b.txt', 'branch only']);
+
+		await expect(store.listRuns()).resolves.toMatchObject({
+			runs: [{ runId: first }, { runId: second }, { runId: third }, { parentRunId: first }],
+		});
+		await expect(store.redo()).rejects.toBeInstanceOf(NothingToMoveError);
+
+		await store.undo();
+		await store.redo();
+		expect([read('a.txt'), read('b.txt')]).toEqual(['other', 'branch only']);
+
+		await store.goTo(third);
+		expect([read('a.txt'), read('b.txt')]).toEqual(['3', undefined]);
+		await store.undo();
+		await store.undo();
+		await store.redo();
+		await expect(store.listRuns()).resolves.toMatchObject({ head: second });
+		expect(branch).not.toBe(second);
+	});
+
+	it('leaves a file edited by hand as it is, and reports the move as partial', async () => {
+		const first = await run(['a.txt', 'agent'], ['b.txt', 'agent']);
+		writeFileSync(join(root, 'a.txt'), 'edited by hand');
+
+		const revision = await store.undo();
+
+		expect([read('a.txt'), read('b.txt')]).toEqual(['edited by hand', undefined]);
+		expect(revision).toMatchObject({
+			complete: false,
+			conflicts: [{ path: join(root, 'a.txt'), runId: first }],
+		});
+		await expect(store.listRevisions()).resolves.toMatchObject([{ complete: false }]);
+	});
+
+	it('does not undo a file someone wrote between two of the run changes', async () => {
+		writeFileSync(join(root, 'a.txt'), 'one');
+		const journal = await store.startRun();
+		const state = async (content: string): Promise<FileState> => ({
+			exists: true,
+			hash: await journal.saveContent(Buffer.from(content)),
+			mode: statSync(join(root, 'a.txt')).mode & 0o7777,
+		});
+		const path = join(root, 'a.txt');
+		for (const [before, after] of [
+			['one', 'two'],
+			['edited by hand', 'three'],
+		] as const) {
+			const sequence = await journal.prepare({
+				path,
+				before: await state(before),
+				after: await state(after),
+			});
+			await journal.applied(sequence);
+		}
+		writeFileSync(path, 'three');
+		await journal.finish('completed');
+
+		await expect(store.undo()).resolves.toMatchObject({ complete: false });
+		expect(read('a.txt')).toBe('three');
+	});
+
+	it('removes the folders a run created only while they are empty, and makes them again', async () => {
+		await run(['deep/inner/a.txt', 'a']);
+		writeFileSync(join(root, 'deep', 'mine.txt'), 'the user added this');
+
+		await store.undo();
+
+		expect(existsSync(join(root, 'deep', 'inner'))).toBe(false);
+		expect(read('deep/mine.txt')).toBe('the user added this');
+
+		await store.redo();
+		expect(read('deep/inner/a.txt')).toBe('a');
+	});
+
+	it('restores the mode a run changed', async () => {
+		writeFileSync(join(root, 'run.sh'), 'echo');
+		chmodSync(join(root, 'run.sh'), 0o644);
+		await run(['run.sh', 'echo', 0o755]);
+
+		await store.undo();
+
+		expect(statSync(join(root, 'run.sh')).mode & 0o7777).toBe(0o644);
+	});
+
+	it('does not write through a folder that became a link', async () => {
+		await run(['sub/f.txt', 'agent']);
+		const outside = join(parent, 'outside');
+		mkdirSync(outside);
+		writeFileSync(join(outside, 'f.txt'), 'agent');
+		rmSync(join(root, 'sub'), { recursive: true });
+		symlinkSync(outside, join(root, 'sub'));
+
+		await expect(store.undo()).resolves.toMatchObject({ complete: false });
+		expect(readFileSync(join(outside, 'f.txt'), 'utf8')).toBe('agent');
+	});
+
+	it('records each move with the reason the host gave', async () => {
+		await run(['a.txt', '1']);
+
+		await store.goTo(historyStart, { reason: 'the approach was wrong' });
+		await store.redo();
+
+		await expect(store.listRevisions()).resolves.toMatchObject([
+			{ revision: 1, reason: 'the approach was wrong' },
+			{ revision: 2 },
+		]);
+		expect((await store.listRevisions())[1]).not.toHaveProperty('reason');
+	});
+
+	it('finishes a move its process left halfway before the next run starts', async () => {
+		await run(['a.txt', '1']);
+		const second = await run(['a.txt', '2'], ['b.txt', 'x']);
+		// The process died going to the start, after removing one file of the second run.
+		writeFileSync(
+			join(workspaceFolder(), 'head.json'),
+			JSON.stringify({
+				runId: second,
+				revision: 0,
+				pending: { revision: 1, from: second, conflicts: [] },
+			}),
+		);
+		rmSync(join(root, 'b.txt'));
+
+		const next = await store.startRun();
+		await next.finish('completed');
+
+		expect([read('a.txt'), read('b.txt')]).toEqual([undefined, undefined]);
+		await expect(store.listRevisions()).resolves.toMatchObject([{ revision: 1, complete: true }]);
+		const { runs } = await store.listRuns();
+		expect(runs.at(-1)).not.toHaveProperty('parentRunId');
+	});
+
+	it('records a finished move once, when only clearing it from the head was left', async () => {
+		await run(['a.txt', '1']);
+		const revision = await store.goTo(historyStart);
+		writeFileSync(
+			join(workspaceFolder(), 'head.json'),
+			JSON.stringify({ revision: 0, pending: { ...revision, conflicts: [] } }),
+		);
+		// Half a line a later crash left, which the next append must not join.
+		writeFileSync(join(workspaceFolder(), 'revisions.jsonl'), '{"revis', { flag: 'a' });
+
+		await store.redo();
+
+		await expect(store.listRevisions()).resolves.toMatchObject([{ revision: 1 }, { revision: 2 }]);
+	});
+
+	it('turns a move away while a run writes', async () => {
+		const journal = await store.startRun();
+
+		await expect(store.goTo(historyStart)).rejects.toBeInstanceOf(WorkspaceBusyError);
+		await journal.finish('completed');
+	});
+
+	it('says when there is nothing to undo or redo, or no such run', async () => {
+		await expect(store.undo()).rejects.toBeInstanceOf(NothingToMoveError);
+		await run(['a.txt', '1']);
+		await expect(store.redo()).rejects.toBeInstanceOf(NothingToMoveError);
+		await expect(store.goTo('20260101T000000000Z-000000')).rejects.toBeInstanceOf(UnknownRunError);
+	});
+});

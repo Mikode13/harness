@@ -1285,3 +1285,29 @@ tags: #mikode-harness #recovery #dependencies
 
 - The tests check, over 500 random texts, that each patch rebuilds the new text and that its number of changed lines is the minimum.
 - Git's own heuristics can place a change differently in ambiguous cases, such as a repeated line. The diff is still minimal and correct, but not always identical to `git diff`.
+
+## A move through the history is taken one run at a time, and leaves alone any file the user changed
+
+tags: #mikode-harness #recovery #undo
+
+**Decision:** `goTo(target)` undoes runs one by one back to the closest common ancestor, then redoes runs one by one forward to `target`. `undo()` goes to the parent of the run the workspace is at, `redo()` to its child towards where the workspace was most recently, or the newest branch. `historyStart` is the state before any run. For each file a run changed, from before its first change to after its last:
+
+- a file that already holds the state the step leads to is left alone, so taking a step again is safe;
+- a file that holds the state the step leaves is written;
+- any other file, one under a folder that became a link, or a file someone wrote to between two of the run's changes (when undoing) is left as it is and reported as a conflict.
+
+A move with conflicts is recorded as not `complete`. Each move is appended to `revisions.jsonl` with where it came from, where it went, its conflicts and the reason the host gave. While it runs, `head.json` names the move and the run each step reached, so the next move or run finishes a move whose process stopped.
+
+**Context:** the user chose the stepwise route, in which each run knows how to go forward and back relative to its parent, like a doubly linked list, so undo and redo are the same operation in two directions. They also chose to restore the other files and report a partial move, rather than refusing a move with any conflict. The host asks for the reason when the user goes back; it reaches the model in a later sub-PR.
+
+**Alternatives considered:**
+
+- **The net change of each file across every run crossed**, applied once. Fewer writes, but a different path from undo and redo, and a crash in the middle leaves no run the workspace is at.
+- **Refusing the whole move when any file conflicts**, as v2 planned. Replaced by the user's choice.
+- **`redo` to the newest child always.** Simpler, but after going back from one branch and visiting another, it would not return where the user just was.
+
+**Consequences:**
+
+- A file in conflict when a run is undone is also in conflict for each earlier run that changed it, since it never reaches the state they expect. The user's edit always wins.
+- Moves and runs share the workspace lock, and a move first settles interrupted runs, so it never crosses a change nobody settled.
+- The busy-workspace error a write tool returns now says that a move may hold the workspace too.
