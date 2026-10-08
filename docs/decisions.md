@@ -1240,3 +1240,49 @@ Adding plain rules, comments or blank lines narrows the boundary and is an ordin
 - **A widening is authorized when it is written,** by the person who allowed it, so it never takes effect silently.
 - **With `autoApprove`, a widening is allowed.** It is a confirmation, not a block, and `autoApprove` exists for hosts that answer for themselves.
 - **Only `.gitignore` files are watched.** `.git/info/exclude` is protected git metadata, and the read tools never honour ripgrep's own `.ignore` files.
+
+## Runs form a tree, so the user can go back to any of them and forward again
+
+tags: #mikode-harness #recovery #undo
+
+**Decision:** the recovery store keeps the runs that write to a workspace as a tree, like commits:
+
+- each run records the run the workspace was at when it started (`parentRunId`);
+- the store records the run the workspace is at now (`head.json`);
+- going back deletes nothing, so a run that was undone can be redone, and writing after going back starts a new branch.
+
+A run whose process died while `running` is `interrupted`. The next run to take the workspace settles each change it left `prepared` from what the file holds now: its after-state means the change was made, its before-state that it was not, and anything else leaves it `prepared`. Until then, `listRuns` and `readRun` already report it as `interrupted`.
+
+**Context:** the v2 plan for #52 offered an undo of the latest run only. The user wants to go back to any earlier point, for example after run 2 when runs 3 to 5 went wrong, then tell the model to carry on from there, and to be able to change their mind. The user also decided that per-file conflicts make a move partial instead of refusing it, that retention keeps 25 runs, and that the conversation is cut back with a summary of what was undone. The [amendment to the v2 plan](https://github.com/Mikode13/harness/issues/52#issuecomment-6048362400) on #52 records these decisions.
+
+**Alternatives considered:**
+
+- **Undo of the latest run only**, as v2 planned. Replaced by the user's idea of a history: with it, going back past several bad runs takes several undos, and nothing can be redone.
+- **Going back without redo.** The user chose redo too. It needs no more data, since the journal already holds every change's before-state and after-state. It only needs a head that is not always the newest run.
+- **Treating a dead run as `failed`**, with no new status. The user chose a status of its own, so `listRuns` tells a run that failed from one whose process vanished.
+
+**Consequences:**
+
+- Moving between runs (sub-PR 2b) undoes runs back to the common ancestor, then redoes runs forward to the target, checking each file's state on the way.
+- The head is written after the new run's record, so it never names a run that does not exist.
+- The v2 byte quota is replaced by retention by number of runs (sub-PR 2c).
+
+## Diffs come from our own Myers implementation, kept free of the harness
+
+tags: #mikode-harness #recovery #dependencies
+
+**Decision:** `showChanges` renders a run's effects as a git-style diff per file, with hunks from `unifiedDiff` in `src/diff/`, our own implementation of Myers' algorithm. The module imports nothing, so it can move to a package of its own unchanged.
+
+- The shared start and end of the two texts are cut off first, since most edits leave most of a file alone.
+- Beyond 1,000 differing lines, the search stops and the differing middle is shown as removed, then added. Memory grows with the square of that distance.
+- Lines are compared whole, a `\r` included, and a missing final newline is marked as git marks it.
+- Content with a NUL byte near its start, as git tests it, or that is not valid UTF-8 is shown as binary. Decoding invalid UTF-8 would replace its bytes, so two different files could otherwise show no difference.
+
+**Context:** the user chose a unified diff as the format of `showChanges`, both for the consumer and for the planner and reviewer tools. The package had no diff dependency.
+
+**Alternatives considered:** the `diff` package (jsdiff), the standard and well-tested choice. The user chose our own implementation for now, as a candidate to publish later as a package of our own. It also avoids a new production dependency in the published package.
+
+**Consequences:**
+
+- The tests check, over 500 random texts, that each patch rebuilds the new text and that its number of changed lines is the minimum.
+- Git's own heuristics can place a change differently in ambiguous cases, such as a repeated line. The diff is still minimal and correct, but not always identical to `git diff`.

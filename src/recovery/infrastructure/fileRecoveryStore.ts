@@ -1,9 +1,23 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { link, mkdir, open, readFile, realpath, rename, rm, stat, unlink } from 'node:fs/promises';
+import {
+	link,
+	lstat,
+	mkdir,
+	open,
+	readdir,
+	readFile,
+	realpath,
+	rename,
+	rm,
+	stat,
+	truncate,
+	unlink,
+} from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import {
+	type FileState,
 	type JournalEntry,
 	type RecoveryStore,
 	type RunJournal,
@@ -16,6 +30,10 @@ const appName = 'mikode-harness';
 // The store holds source code the agent touched: only its owner may read it.
 const privateDirectory = 0o700;
 const privateFile = 0o600;
+
+// Far above the largest file the editor changes, so settling never reads a file whole only to
+// find it differs.
+const maxRecordedBytes = 64 * 1024 * 1024;
 
 const runIdPattern = /^\d{8}T\d{9}Z-[0-9a-f]{6}$/;
 const hashPattern = /^[0-9a-f]{64}$/;
@@ -40,6 +58,27 @@ function newRunId(): string {
 
 function hashOf(content: Buffer): string {
 	return createHash('sha256').update(content).digest('hex');
+}
+
+function sameState(a: FileState, b: FileState): boolean {
+	if (!a.exists || !b.exists) return a.exists === b.exists;
+	return a.hash === b.hash && a.mode === b.mode;
+}
+
+/**
+ * What `path` holds now, or `undefined` when it is something no recorded change leaves: a
+ * folder, or a file larger than any change records, which is not read.
+ */
+async function currentState(path: string): Promise<FileState | undefined> {
+	let stats;
+	try {
+		stats = await lstat(path);
+	} catch (error) {
+		if (isNotFound(error)) return { exists: false };
+		throw error;
+	}
+	if (!stats.isFile() || stats.size > maxRecordedBytes) return undefined;
+	return { exists: true, hash: hashOf(await readFile(path)), mode: stats.mode & 0o7777 };
 }
 
 function isNotFound(error: unknown): boolean {
@@ -117,6 +156,7 @@ type JournalLine =
  * <directory>/workspaces/<hash of the root>/
  *   workspace.json            the root it belongs to
  *   lock                      the run writing now, if any
+ *   head.json                 the run the workspace is at
  *   content/<ab>/<hash>       file contents, named by their SHA-256
  *   runs/<runId>/run.json     the run's record
  *   runs/<runId>/journal.jsonl  its changes, one line per step, appended and synced
@@ -160,16 +200,21 @@ export class FileRecoveryStore implements RecoveryStore {
 			// Inside, because taking the lock can fail after publishing it. Unlocking removes only a
 			// lock naming this run, never another run's.
 			await this.lock(runId);
+			await this.settleInterrupted(runId);
+			const parentRunId = await this.readHead();
 			const runDirectory = join(this.directory, 'runs', runId);
 			await makeDirectory(runDirectory);
 			const record: RunRecord = {
 				runId,
 				root: this.root,
+				...(parentRunId ? { parentRunId } : {}),
 				startedAt: new Date().toISOString(),
 				status: 'running',
 				pid: process.pid,
 			};
 			await writeDurably(join(runDirectory, 'run.json'), JSON.stringify(record));
+			// After the record, so the head never names a run that does not exist.
+			await writeDurably(join(this.directory, 'head.json'), JSON.stringify({ runId }));
 			const journal = await open(join(runDirectory, 'journal.jsonl'), 'a', privateFile);
 			await syncDirectory(runDirectory);
 
@@ -186,12 +231,102 @@ export class FileRecoveryStore implements RecoveryStore {
 		}
 	}
 
+	async listRuns(): Promise<{ head?: string; runs: RunRecord[] }> {
+		const ids = (await readdir(join(this.directory, 'runs'))).filter(id => runIdPattern.test(id));
+		const holder = await readLock(join(this.directory, 'lock'));
+		const runs: RunRecord[] = [];
+		for (const runId of ids.sort()) {
+			const record = await this.readRecord(runId).catch((error: unknown) => {
+				// A crash between creating a run's folder and writing its record leaves the folder
+				// empty: that run never changed anything.
+				if (isNotFound(error)) return undefined;
+				throw error;
+			});
+			if (record) runs.push(withLiveStatus(record, holder));
+		}
+		const head = await this.readHead();
+
+		return { ...(head ? { head } : {}), runs };
+	}
+
 	async readRun(runId: string): Promise<{ record: RunRecord; entries: JournalEntry[] }> {
+		// The lock first: a run that finishes between the two reads then shows as finished, not as
+		// a `running` record nobody holds.
+		const holder = await readLock(join(this.directory, 'lock'));
+		const record = withLiveStatus(await this.readRecord(runId), holder);
+		return { record, entries: await this.readEntries(runId) };
+	}
+
+	private async readRecord(runId: string): Promise<RunRecord> {
+		return JSON.parse(
+			await readFile(join(this.runDirectory(runId), 'run.json'), 'utf8'),
+		) as RunRecord;
+	}
+
+	private runDirectory(runId: string): string {
 		// The id names a folder, so it must never be a path of its own.
 		if (!runIdPattern.test(runId)) throw new Error(`Not a run id: ${runId}`);
-		const runDirectory = join(this.directory, 'runs', runId);
-		const record = JSON.parse(await readFile(join(runDirectory, 'run.json'), 'utf8')) as RunRecord;
-		const lines = (await readFile(join(runDirectory, 'journal.jsonl'), 'utf8')).split('\n');
+		return join(this.directory, 'runs', runId);
+	}
+
+	private async readHead(): Promise<string | undefined> {
+		try {
+			const { runId } = JSON.parse(await readFile(join(this.directory, 'head.json'), 'utf8')) as {
+				runId: string;
+			};
+			return runId;
+		} catch (error) {
+			if (isNotFound(error)) return undefined;
+			throw error;
+		}
+	}
+
+	/**
+	 * Marks every other run still recorded as `running` as `interrupted`: this run holds the lock,
+	 * so their processes are gone. Each change one left `prepared` is settled from what its file
+	 * holds now: its `after` means it was made, its `before` that it was not. A file that holds
+	 * neither stays `prepared`, because nothing tells whether the change reached it.
+	 */
+	private async settleInterrupted(ownRunId: string): Promise<void> {
+		const ids = (await readdir(join(this.directory, 'runs'))).filter(
+			id => runIdPattern.test(id) && id !== ownRunId,
+		);
+		for (const runId of ids) {
+			const record = await this.readRecord(runId).catch((error: unknown) => {
+				if (isNotFound(error)) return undefined;
+				throw error;
+			});
+			if (record?.status !== 'running') continue;
+
+			const settled: JournalLine[] = [];
+			for (const entry of await this.readEntries(runId)) {
+				if (entry.status !== 'prepared' || !isAbsolute(entry.path)) continue;
+				const state = await currentState(entry.path);
+				if (state && sameState(state, entry.after)) {
+					settled.push({ type: 'applied', sequence: entry.sequence });
+				} else if (state && sameState(state, entry.before)) {
+					settled.push({ type: 'abandoned', sequence: entry.sequence });
+				}
+			}
+			await appendSettled(join(this.runDirectory(runId), 'journal.jsonl'), settled);
+			// Last, so a crash before it leaves a run that is settled again, and settling is idempotent.
+			await writeDurably(
+				join(this.runDirectory(runId), 'run.json'),
+				JSON.stringify({ ...record, status: 'interrupted' } satisfies RunRecord),
+			);
+		}
+	}
+
+	private async readEntries(runId: string): Promise<JournalEntry[]> {
+		let text: string;
+		try {
+			text = await readFile(join(this.runDirectory(runId), 'journal.jsonl'), 'utf8');
+		} catch (error) {
+			// A run that stopped before opening its journal never changed anything.
+			if (isNotFound(error)) return [];
+			throw error;
+		}
+		const lines = text.split('\n');
 
 		const entries = new Map<number, JournalEntry>();
 		lines.forEach((text, index) => {
@@ -223,7 +358,7 @@ export class FileRecoveryStore implements RecoveryStore {
 			if (entry) entry.status = line.type;
 		});
 
-		return { record, entries: [...entries.values()] };
+		return [...entries.values()];
 	}
 
 	async readContent(hash: string): Promise<Buffer> {
@@ -267,6 +402,51 @@ export class FileRecoveryStore implements RecoveryStore {
 		const path = join(this.directory, 'lock');
 		// Only its own lock: one cleared as stale and taken by another run is not this run's.
 		if ((await readLock(path))?.runId === runId) await unlink(path);
+	}
+}
+
+/**
+ * A run recorded as `running` only runs while it holds the lock and its process lives. Any
+ * other is reported as `interrupted`, before the next run settles it.
+ */
+function withLiveStatus(
+	record: RunRecord,
+	holder: { runId: string; pid?: number } | undefined,
+): RunRecord {
+	if (record.status !== 'running') return record;
+	const live = holder?.runId === record.runId && holder.pid !== undefined && isAlive(holder.pid);
+	return live ? record : { ...record, status: 'interrupted' };
+}
+
+/**
+ * Appends `lines` to a dead run's journal. A crash may have left its last line without a
+ * newline. A whole line, which `readEntries` already counts, is kept and ended. Half a line
+ * would join the first new line, so it is cut off: its step never returned.
+ */
+async function appendSettled(path: string, lines: JournalLine[]): Promise<void> {
+	if (lines.length === 0) return;
+	const text = await readFile(path, 'utf8');
+	const last = text.slice(text.lastIndexOf('\n') + 1);
+	let separator = '';
+	if (last !== '') {
+		if (isWholeLine(last)) separator = '\n';
+		else await truncate(path, Buffer.byteLength(text) - Buffer.byteLength(last));
+	}
+	const journal = await open(path, 'a');
+	try {
+		await journal.appendFile(separator + lines.map(line => `${JSON.stringify(line)}\n`).join(''));
+		await journal.sync();
+	} finally {
+		await journal.close();
+	}
+}
+
+function isWholeLine(text: string): boolean {
+	try {
+		JSON.parse(text);
+		return true;
+	} catch {
+		return false;
 	}
 }
 
@@ -368,7 +548,7 @@ class FileRunJournal implements RunJournal {
 		return this.append({ type: 'abandoned', sequence });
 	}
 
-	async finish(status: Exclude<RunStatus, 'running'>): Promise<void> {
+	async finish(status: Exclude<RunStatus, 'running' | 'interrupted'>): Promise<void> {
 		this.assertOpen();
 		this.finished = true;
 		try {

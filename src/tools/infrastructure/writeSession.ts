@@ -78,7 +78,7 @@ export class WriteSession {
 	}
 
 	/** Ends the run's record and releases the workspace. A run that never wrote has nothing to end. */
-	async finish(status: Exclude<RunStatus, 'running'>): Promise<void> {
+	async finish(status: Exclude<RunStatus, 'running' | 'interrupted'>): Promise<void> {
 		const journal = await this.journal?.catch(() => undefined);
 		this.journal = undefined;
 		if (journal) await journal.finish(status);
