@@ -266,7 +266,9 @@ describe('moving through the history of runs', () => {
 		writeFileSync(join(root, 'secret.txt'), 'token');
 		chmodSync(join(root, 'secret.txt'), 0o600);
 		await run(['secret.txt', 'changed', 0o600]);
-		const prototype = Object.getPrototypeOf(await open(join(parent, 'probe'), 'w')) as FileHandle;
+		const probe = await open(join(parent, 'probe'), 'w');
+		await probe.close();
+		const prototype = Object.getPrototypeOf(probe) as FileHandle;
 		const writeFile = Reflect.get(prototype, 'writeFile');
 		const modes: number[] = [];
 		vi.spyOn(prototype, 'writeFile').mockImplementation(async function (
