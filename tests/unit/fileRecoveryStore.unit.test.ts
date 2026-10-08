@@ -408,6 +408,44 @@ describe('FileRecoveryStore', () => {
 			});
 		});
 
+		it('keeps a whole last line a crash left without its newline when it settles a run', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const dead = await store.startRun();
+			const state = async (content: string) =>
+				({
+					exists: true,
+					hash: await dead.saveContent(Buffer.from(content)),
+					mode: 0o644,
+				}) as const;
+			const first = join(root, 'first.txt');
+			const second = join(root, 'second.txt');
+			const one = await dead.prepare({
+				path: first,
+				before: await state('old'),
+				after: await state('new'),
+			});
+			await dead.prepare({ path: second, before: await state('old'), after: await state('new') });
+			// `applied(1)` reached the disk, but its newline did not. The first file has changed
+			// again since, so only the journal says the change was made.
+			const journal = join(workspaceFolder(), 'runs', dead.runId, 'journal.jsonl');
+			writeFileSync(journal, JSON.stringify({ type: 'applied', sequence: one }), { flag: 'a' });
+			writeFileSync(first, 'edited by hand');
+			chmodSync(first, 0o644);
+			writeFileSync(second, 'new');
+			chmodSync(second, 0o644);
+			kill(dead.runId);
+
+			const next = await store.startRun();
+
+			await expect(store.readRun(dead.runId)).resolves.toMatchObject({
+				entries: [
+					{ path: first, status: 'applied' },
+					{ path: second, status: 'applied' },
+				],
+			});
+			await next.finish('completed');
+		});
+
 		it('keeps writing after a run that died before opening its journal', async () => {
 			const store = await FileRecoveryStore.open({ root, directory });
 			const dead = await store.startRun();

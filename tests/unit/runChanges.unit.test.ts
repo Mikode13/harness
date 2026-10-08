@@ -99,6 +99,42 @@ describe('showChanges', () => {
 		await run.finish('completed');
 	});
 
+	it('shows content that is not UTF-8 as binary, so a change in it never vanishes', async () => {
+		await change(
+			'latin1.txt',
+			await state(Buffer.from([0xff, 0x0a])),
+			await state(Buffer.from([0xfe, 0x0a])),
+		);
+
+		await expect(showChanges(store, run.runId)).resolves.toBe(
+			[
+				'diff --git a/latin1.txt b/latin1.txt',
+				'Binary files a/latin1.txt and b/latin1.txt differ',
+			].join('\n'),
+		);
+		await run.finish('completed');
+	});
+
+	it('does not show a change a live run has prepared but not made', async () => {
+		await change('a.txt', await state('1\n'), await state('2\n'));
+		await change('a.txt', await state('2\n'), await state('3\n'), 'prepared');
+		await change('b.txt', await state(undefined), await state('maybe\n'), 'prepared');
+
+		await expect(showChanges(store, run.runId)).resolves.toBe(
+			[
+				'# a.txt: the run is changing this file now; that change is not shown',
+				'diff --git a/a.txt b/a.txt',
+				'--- a/a.txt',
+				'+++ b/a.txt',
+				'@@ -1 +1 @@',
+				'-1',
+				'+2',
+				'# b.txt: the run is changing this file now; that change is not shown',
+			].join('\n'),
+		);
+		await run.finish('completed');
+	});
+
 	it('shows each file once, from before its first change to after its last', async () => {
 		await change('a.txt', await state('1\n'), await state('2\n'));
 		await change('a.txt', await state('2\n'), await state('3\n'));

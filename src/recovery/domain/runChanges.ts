@@ -1,7 +1,6 @@
 import { unifiedDiff } from '#src/diff/domain/unifiedDiff';
 import type { FileState, JournalEntry, RecoveryStore } from './recoveryStore.ts';
 
-// Git's test: a NUL byte near the start means the file is not text.
 const binaryProbeBytes = 8000;
 
 export interface ShowChangesOptions {
@@ -17,13 +16,16 @@ interface FileChange {
 	after: FileState;
 	/** The run died while changing this file, and the file held neither state afterwards. */
 	uncertain: boolean;
+	/** The run is changing this file now: the change is recorded but may not be made. */
+	pending: boolean;
 }
 
 /**
  * What a run changed, as a git-style diff per file, in the order the run first touched each one.
  * It shows each file from before the run's first change to after its last, so a file the run
- * created and then deleted does not appear. It reports the run's recorded effects, not a
- * comparison of the whole repository.
+ * created and then deleted does not appear. A change a live run has prepared but not made yet
+ * is named, not shown. It reports the run's recorded effects, not a comparison of the whole
+ * repository.
  */
 export async function showChanges(
 	store: RecoveryStore,
@@ -63,22 +65,27 @@ function netChanges(entries: JournalEntry[], stopped: boolean): FileChange[] {
 		// Never made, so not a change.
 		if (entry.status === 'abandoned') continue;
 		const uncertain = stopped && entry.status === 'prepared';
+		// A live run's prepared change may still be abandoned, so its after-state is not shown.
+		const pending = !stopped && entry.status === 'prepared';
+		const after = pending ? undefined : entry.after;
 		const known = byPath.get(entry.path);
 		if (known) {
-			known.after = entry.after;
+			if (after) known.after = after;
 			known.uncertain ||= uncertain;
+			known.pending ||= pending;
 		} else {
 			byPath.set(entry.path, {
 				path: entry.path,
 				before: entry.before,
-				after: entry.after,
+				after: after ?? entry.before,
 				uncertain,
+				pending,
 			});
 		}
 	}
 
 	return [...byPath.values()].filter(
-		change => change.uncertain || !sameState(change.before, change.after),
+		change => change.uncertain || change.pending || !sameState(change.before, change.after),
 	);
 }
 
@@ -91,6 +98,10 @@ async function renderFile(
 	const lines: string[] = [];
 	if (change.uncertain) {
 		lines.push(`# ${name}: the run stopped while changing this file; it may not hold this change`);
+	}
+	if (change.pending) {
+		lines.push(`# ${name}: the run is changing this file now; that change is not shown`);
+		if (sameState(before, after)) return lines;
 	}
 	lines.push(`diff --git a/${name} b/${name}`);
 	if (!before.exists && after.exists) lines.push(`new file mode ${gitMode(after.mode)}`);
@@ -105,7 +116,7 @@ async function renderFile(
 	const oldName = before.exists ? `a/${name}` : '/dev/null';
 	const newName = after.exists ? `b/${name}` : '/dev/null';
 
-	if (isBinary(oldContent) || isBinary(newContent)) {
+	if (!isText(oldContent) || !isText(newContent)) {
 		lines.push(`Binary files ${oldName} and ${newName} differ`);
 		return lines;
 	}
@@ -120,8 +131,13 @@ function sameState(a: FileState, b: FileState): boolean {
 	return a.hash === b.hash && a.mode === b.mode;
 }
 
-function isBinary(content: Buffer): boolean {
-	return content.subarray(0, binaryProbeBytes).includes(0);
+/**
+ * Git's test, a NUL byte near the start, plus content that is not valid UTF-8: decoding would
+ * replace its bytes, and two different files could then show no difference.
+ */
+function isText(content: Buffer): boolean {
+	if (content.subarray(0, binaryProbeBytes).includes(0)) return false;
+	return Buffer.from(content.toString('utf8'), 'utf8').equals(content);
 }
 
 /** A regular file's mode as git writes it, such as `100644`. */

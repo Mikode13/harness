@@ -419,21 +419,34 @@ function withLiveStatus(
 }
 
 /**
- * Appends `lines` to a dead run's journal. A crash may have left half a line at its end, which
- * would join the first new line, so it is cut off first: its step never returned.
+ * Appends `lines` to a dead run's journal. A crash may have left its last line without a
+ * newline. A whole line, which `readEntries` already counts, is kept and ended. Half a line
+ * would join the first new line, so it is cut off: its step never returned.
  */
 async function appendSettled(path: string, lines: JournalLine[]): Promise<void> {
 	if (lines.length === 0) return;
 	const text = await readFile(path, 'utf8');
-	if (text !== '' && !text.endsWith('\n')) {
-		await truncate(path, Buffer.byteLength(text.slice(0, text.lastIndexOf('\n') + 1)));
+	const last = text.slice(text.lastIndexOf('\n') + 1);
+	let separator = '';
+	if (last !== '') {
+		if (isWholeLine(last)) separator = '\n';
+		else await truncate(path, Buffer.byteLength(text) - Buffer.byteLength(last));
 	}
 	const journal = await open(path, 'a');
 	try {
-		await journal.appendFile(lines.map(line => `${JSON.stringify(line)}\n`).join(''));
+		await journal.appendFile(separator + lines.map(line => `${JSON.stringify(line)}\n`).join(''));
 		await journal.sync();
 	} finally {
 		await journal.close();
+	}
+}
+
+function isWholeLine(text: string): boolean {
+	try {
+		JSON.parse(text);
+		return true;
+	} catch {
+		return false;
 	}
 }
 
