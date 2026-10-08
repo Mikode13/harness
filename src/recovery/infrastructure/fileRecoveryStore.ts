@@ -28,7 +28,8 @@ import {
 	type RunStatus,
 	WorkspaceBusyError,
 } from '../domain/recoveryStore.ts';
-import { redoTarget, route } from '../domain/runTree.ts';
+import { chainEntries, nextPruneStep } from '../domain/retention.ts';
+import { HistoryExpiredError, redoTarget, route } from '../domain/runTree.ts';
 import {
 	currentState,
 	hasRealParents,
@@ -43,6 +44,11 @@ const appName = 'mikode-harness';
 // The store holds source code the agent touched: only its owner may read it.
 const privateDirectory = 0o700;
 const privateFile = 0o600;
+
+const firstJournal = 'journal.jsonl';
+
+// A run is roughly one prompt: enough to go back through a working session, not a project's life.
+const defaultKeepRuns = 25;
 
 const runIdPattern = /^\d{8}T\d{9}Z-[0-9a-f]{6}$/;
 const hashPattern = /^[0-9a-f]{64}$/;
@@ -181,16 +187,27 @@ export class FileRecoveryStore implements RecoveryStore {
 	private constructor(
 		private readonly root: string,
 		private readonly directory: string,
+		private readonly keepRuns: number,
 	) {}
 
 	static async open({
 		root,
 		directory = defaultStateDirectory(),
+		keepRuns = defaultKeepRuns,
 	}: {
 		root: string;
 		/** Defaults to the platform's state directory. */
 		directory?: string;
+		/**
+		 * The most runs kept per workspace, the one being recorded included. Defaults to 25. At
+		 * least 3: the run the workspace is at is never removed, and the last run of its line has
+		 * no next run to be chained into, so pruning can leave two runs besides the new one.
+		 */
+		keepRuns?: number;
 	}): Promise<FileRecoveryStore> {
+		if (!Number.isInteger(keepRuns) || keepRuns < 3) {
+			throw new RangeError(`keepRuns must be an integer of at least 3; got ${String(keepRuns)}`);
+		}
 		// Two spellings of one folder, such as a symlinked path, are one workspace.
 		const realRoot = await realpath(root);
 		const workspace = join(
@@ -202,7 +219,7 @@ export class FileRecoveryStore implements RecoveryStore {
 		await makeDirectory(join(workspace, 'content'));
 		await writeDurably(join(workspace, 'workspace.json'), JSON.stringify({ root: realRoot }));
 
-		return new FileRecoveryStore(realRoot, workspace);
+		return new FileRecoveryStore(realRoot, workspace, keepRuns);
 	}
 
 	async startRun(): Promise<RunJournal> {
@@ -214,6 +231,9 @@ export class FileRecoveryStore implements RecoveryStore {
 			await this.settleInterrupted(runId);
 			// A run starts where the user last sent the workspace.
 			await this.finishPendingMove();
+			// Before the new run exists, so it is never pruned, and after the move, so no run on its
+			// route is.
+			await this.prune();
 			const head = await this.readHead();
 			const parentRunId = head.runId;
 			const runDirectory = join(this.directory, 'runs', runId);
@@ -229,7 +249,7 @@ export class FileRecoveryStore implements RecoveryStore {
 			await writeDurably(join(runDirectory, 'run.json'), JSON.stringify(record));
 			// After the record, so the head never names a run that does not exist.
 			await this.writeHead({ runId, revision: head.revision });
-			const journal = await open(join(runDirectory, 'journal.jsonl'), 'a', privateFile);
+			const journal = await open(join(runDirectory, firstJournal), 'a', privateFile);
 			await syncDirectory(runDirectory);
 
 			return new FileRunJournal({
@@ -258,17 +278,25 @@ export class FileRecoveryStore implements RecoveryStore {
 			});
 			if (record) runs.push(withLiveStatus(record, holder));
 		}
+		// A run chained into a later one, whose folder a crash left behind, is not in the history.
+		const absorbed = new Set(runs.flatMap(run => run.absorbed ?? []));
 		const { runId: head } = await this.readHead();
 
-		return { ...(head ? { head } : {}), runs };
+		return { ...(head ? { head } : {}), runs: runs.filter(run => !absorbed.has(run.runId)) };
 	}
 
 	async readRun(runId: string): Promise<{ record: RunRecord; entries: JournalEntry[] }> {
 		// The lock first: a run that finishes between the two reads then shows as finished, not as
 		// a `running` record nobody holds.
 		const holder = await readLock(join(this.directory, 'lock'));
-		const record = withLiveStatus(await this.readRecord(runId), holder);
-		return { record, entries: await this.readEntries(runId) };
+		let record: RunRecord;
+		try {
+			record = withLiveStatus(await this.readRecord(runId), holder);
+		} catch (error) {
+			if (isNotFound(error)) await this.assertNotAbsorbed(runId);
+			throw error;
+		}
+		return { record, entries: await this.readEntries(runId, record.journal) };
 	}
 
 	private async readRecord(runId: string): Promise<RunRecord> {
@@ -359,6 +387,9 @@ export class FileRecoveryStore implements RecoveryStore {
 			const head = await this.readHead();
 			const { runs } = await this.listRuns();
 			const to = resolve({ runs, head: head.runId, revisions: await this.listRevisions() });
+			if (to !== undefined && !runs.some(run => run.runId === to)) {
+				await this.assertNotAbsorbed(to);
+			}
 
 			return await this.takeSteps(head, runs, {
 				revision: head.revision + 1,
@@ -502,6 +533,132 @@ export class FileRecoveryStore implements RecoveryStore {
 		return true;
 	}
 
+	/** Throws `HistoryExpiredError` if retention removed `runId` or chained it into a later run. */
+	private async assertNotAbsorbed(runId: string): Promise<void> {
+		const { runs } = await this.listRuns();
+		const keptIn = runs.find(run => run.absorbed?.includes(runId));
+		if (keptIn) throw new HistoryExpiredError(runId, keptIn.runId);
+		if ((await this.listPruned()).includes(runId)) throw new HistoryExpiredError(runId);
+	}
+
+	private async listPruned(): Promise<string[]> {
+		try {
+			const text = await readFile(join(this.directory, 'pruned.jsonl'), 'utf8');
+			return text.split('\n').flatMap(line => {
+				try {
+					return [JSON.parse(line) as string];
+				} catch {
+					// Half a line a crash left, whose removal never happened.
+					return [];
+				}
+			});
+		} catch (error) {
+			if (isNotFound(error)) return [];
+			throw error;
+		}
+	}
+
+	/**
+	 * Brings the history down to `keepRuns - 1`, so the run about to start makes `keepRuns`, then
+	 * frees the contents no run kept refers to.
+	 */
+	private async prune(): Promise<void> {
+		await this.finishChains();
+		const revisions = await this.listRevisions();
+		for (;;) {
+			const { head, runs } = await this.listRuns();
+			const step = nextPruneStep(runs, revisions, head, this.keepRuns - 1);
+			if (!step) break;
+			if (step.kind === 'remove') await this.removeRun(step.runId);
+			else await this.chain(step.runId, step.into);
+		}
+		await this.collectContent();
+	}
+
+	/**
+	 * Chains the changes of `older` into `newer`, its child: `newer` then hangs from `older`'s
+	 * parent and goes back to where `older` started. The new record is the commit point. Before
+	 * it, the history is as it was; after it, `finishChains` removes what is left of `older`.
+	 */
+	private async chain(older: string, newer: string): Promise<void> {
+		const olderRecord = await this.readRecord(older);
+		const newerRecord = await this.readRecord(newer);
+		const entries = chainEntries(
+			await this.readEntries(older, olderRecord.journal),
+			await this.readEntries(newer, newerRecord.journal),
+		);
+		const journal = `journal-${randomBytes(4).toString('hex')}.jsonl`;
+		const lines = entries.flatMap(({ status, sequence, ...change }): JournalLine[] => [
+			{ type: 'prepared', sequence, ...change },
+			...(status === 'prepared' ? [] : [{ type: status, sequence } as const]),
+		]);
+		await writeDurably(
+			join(this.runDirectory(newer), journal),
+			lines.map(line => `${JSON.stringify(line)}\n`).join(''),
+		);
+
+		const record: RunRecord = {
+			...newerRecord,
+			absorbed: [...(olderRecord.absorbed ?? []), older, ...(newerRecord.absorbed ?? [])],
+			journal,
+		};
+		// It now hangs where `older` did: from its parent, or from the start.
+		if (olderRecord.parentRunId) record.parentRunId = olderRecord.parentRunId;
+		else delete record.parentRunId;
+		await writeDurably(join(this.runDirectory(newer), 'run.json'), JSON.stringify(record));
+		await this.finishChains();
+	}
+
+	/**
+	 * Removes what a chain or a removal a crash interrupted left behind: the folders of runs a
+	 * kept run absorbed, and journals a run no longer reads.
+	 */
+	private async finishChains(): Promise<void> {
+		const { runs } = await this.listRuns();
+		for (const run of runs) {
+			for (const absorbed of run.absorbed ?? []) {
+				await rm(this.runDirectory(absorbed), { recursive: true, force: true });
+			}
+			const current = run.journal ?? firstJournal;
+			for (const name of await readdir(this.runDirectory(run.runId))) {
+				if (name.startsWith('journal') && name.endsWith('.jsonl') && name !== current) {
+					await rm(join(this.runDirectory(run.runId), name), { force: true });
+				}
+			}
+		}
+	}
+
+	/**
+	 * Removes a run whole, recording its id first so a move to it reports an expired history.
+	 * Its record goes next, so a crash halfway leaves no run behind.
+	 */
+	private async removeRun(runId: string): Promise<void> {
+		await appendWhole(join(this.directory, 'pruned.jsonl'), [runId]);
+		await rm(join(this.runDirectory(runId), 'run.json'), { force: true });
+		await syncDirectory(this.runDirectory(runId));
+		await rm(this.runDirectory(runId), { recursive: true, force: true });
+	}
+
+	/** Removes the stored contents no kept run refers to. */
+	private async collectContent(): Promise<void> {
+		const referenced = new Set<string>();
+		for (const run of (await this.listRuns()).runs) {
+			for (const entry of await this.readEntries(run.runId, run.journal)) {
+				for (const state of [entry.before, entry.after]) {
+					if (state.exists) referenced.add(state.hash);
+				}
+			}
+		}
+		const contentDirectory = join(this.directory, 'content');
+		for (const prefix of await readdir(contentDirectory)) {
+			for (const hash of await readdir(join(contentDirectory, prefix))) {
+				if (hashPattern.test(hash) && !referenced.has(hash)) {
+					await rm(join(contentDirectory, prefix, hash), { force: true });
+				}
+			}
+		}
+	}
+
 	private async appendRevision(revision: Revision): Promise<void> {
 		await appendWhole(join(this.directory, 'revisions.jsonl'), [revision]);
 		await syncDirectory(this.directory);
@@ -525,7 +682,7 @@ export class FileRecoveryStore implements RecoveryStore {
 			if (record?.status !== 'running') continue;
 
 			const settled: JournalLine[] = [];
-			for (const entry of await this.readEntries(runId)) {
+			for (const entry of await this.readEntries(runId, record.journal)) {
 				if (entry.status !== 'prepared' || !isAbsolute(entry.path)) continue;
 				const state = await currentState(entry.path);
 				if (state && sameState(state, entry.after)) {
@@ -534,7 +691,7 @@ export class FileRecoveryStore implements RecoveryStore {
 					settled.push({ type: 'abandoned', sequence: entry.sequence });
 				}
 			}
-			await appendWhole(join(this.runDirectory(runId), 'journal.jsonl'), settled);
+			await appendWhole(join(this.runDirectory(runId), record.journal ?? firstJournal), settled);
 			// Last, so a crash before it leaves a run that is settled again, and settling is idempotent.
 			await writeDurably(
 				join(this.runDirectory(runId), 'run.json'),
@@ -543,10 +700,10 @@ export class FileRecoveryStore implements RecoveryStore {
 		}
 	}
 
-	private async readEntries(runId: string): Promise<JournalEntry[]> {
+	private async readEntries(runId: string, journal = firstJournal): Promise<JournalEntry[]> {
 		let text: string;
 		try {
-			text = await readFile(join(this.runDirectory(runId), 'journal.jsonl'), 'utf8');
+			text = await readFile(join(this.runDirectory(runId), journal), 'utf8');
 		} catch (error) {
 			// A run that stopped before opening its journal never changed anything.
 			if (isNotFound(error)) return [];

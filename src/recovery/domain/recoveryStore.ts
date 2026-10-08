@@ -35,6 +35,13 @@ export interface RunRecord {
 	 * earlier run and writing again starts a new branch. Absent for the first run.
 	 */
 	parentRunId?: string;
+	/**
+	 * Runs whose changes retention chained into this one, oldest first. They are no longer in
+	 * the history: this run now goes back to where the oldest of them started.
+	 */
+	absorbed?: string[];
+	/** The journal file that holds the run's changes. Absent while it is the first one written. */
+	journal?: string;
 	startedAt: string;
 	finishedAt?: string;
 	status: RunStatus;
@@ -127,6 +134,7 @@ export interface RecoveryStore {
 	 *
 	 * @throws {WorkspaceBusyError} when a run or another move holds the workspace.
 	 * @throws {UnknownRunError} when `target` is not in the history.
+	 * @throws {HistoryExpiredError} when retention chained `target` into a later run.
 	 */
 	goTo(target: string, options?: { reason?: string }): Promise<Revision>;
 	/**

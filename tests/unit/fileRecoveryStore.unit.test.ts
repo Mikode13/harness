@@ -16,7 +16,7 @@ import { open, type FileHandle } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { WorkspaceBusyError } from '../../src/recovery/domain/recoveryStore.ts';
+import { type RunJournal, WorkspaceBusyError } from '../../src/recovery/domain/recoveryStore.ts';
 import {
 	defaultStateDirectory,
 	FileRecoveryStore,
@@ -328,10 +328,21 @@ describe('FileRecoveryStore', () => {
 	});
 
 	describe('history of runs', () => {
+		const killed: RunJournal[] = [];
+
 		/** Leaves `run` as a dead process would: still `running`, its lock naming a dead pid. */
-		function kill(runId: string): void {
-			writeFileSync(join(workspaceFolder(), 'lock'), JSON.stringify({ runId, pid: deadPid() }));
+		function kill(run: RunJournal): void {
+			killed.push(run);
+			writeFileSync(
+				join(workspaceFolder(), 'lock'),
+				JSON.stringify({ runId: run.runId, pid: deadPid() }),
+			);
 		}
+
+		// A dead process's journal is never finished; this one's file is still open, so close it.
+		afterEach(async () => {
+			for (const run of killed.splice(0)) await run.finish('failed').catch(() => undefined);
+		});
 
 		it('records the run each run started from, and the run the workspace is at', async () => {
 			const store = await FileRecoveryStore.open({ root, directory });
@@ -356,7 +367,7 @@ describe('FileRecoveryStore', () => {
 			const run = await store.startRun();
 			await expect(store.listRuns()).resolves.toMatchObject({ runs: [{ status: 'running' }] });
 
-			kill(run.runId);
+			kill(run);
 
 			await expect(store.listRuns()).resolves.toMatchObject({ runs: [{ status: 'interrupted' }] });
 			await expect(store.readRun(run.runId)).resolves.toMatchObject({
@@ -388,7 +399,7 @@ describe('FileRecoveryStore', () => {
 			// The process died halfway through appending a line.
 			const journal = join(workspaceFolder(), 'runs', dead.runId, 'journal.jsonl');
 			writeFileSync(journal, '{"type":"appl', { flag: 'a' });
-			kill(dead.runId);
+			kill(dead);
 
 			const next = await store.startRun();
 
@@ -433,7 +444,7 @@ describe('FileRecoveryStore', () => {
 			chmodSync(first, 0o644);
 			writeFileSync(second, 'new');
 			chmodSync(second, 0o644);
-			kill(dead.runId);
+			kill(dead);
 
 			const next = await store.startRun();
 
@@ -450,7 +461,7 @@ describe('FileRecoveryStore', () => {
 			const store = await FileRecoveryStore.open({ root, directory });
 			const dead = await store.startRun();
 			rmSync(join(workspaceFolder(), 'runs', dead.runId, 'journal.jsonl'));
-			kill(dead.runId);
+			kill(dead);
 
 			const next = await store.startRun();
 

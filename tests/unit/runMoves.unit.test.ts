@@ -13,17 +13,17 @@ import {
 } from 'node:fs';
 import { type FileHandle, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	type FileState,
 	historyStart,
 	NothingToMoveError,
-	type RunJournal,
 	WorkspaceBusyError,
 } from '../../src/recovery/domain/recoveryStore.ts';
 import { UnknownRunError } from '../../src/recovery/domain/runTree.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
+import { type Edit, readUnder, recordRun } from '../support/recordedRuns.ts';
 
 let parent: string;
 let root: string;
@@ -47,59 +47,12 @@ function workspaceFolder(): string {
 }
 
 function read(name: string): string | undefined {
-	const path = join(root, name);
-	return existsSync(path) ? readFileSync(path, 'utf8') : undefined;
+	return readUnder(root, name);
 }
-
-async function stateOnDisk(journal: RunJournal, path: string): Promise<FileState> {
-	if (!existsSync(path)) return { exists: false };
-	return {
-		exists: true,
-		hash: await journal.saveContent(readFileSync(path)),
-		mode: statSync(path).mode & 0o7777,
-	};
-}
-
-/** Folders missing above `path`, outermost first, as the editor records them. */
-function missingFolders(path: string): string[] {
-	const folders: string[] = [];
-	for (let folder = dirname(path); !existsSync(folder); folder = dirname(folder)) {
-		folders.unshift(folder);
-	}
-	return folders;
-}
-
-/** A change a run makes: the file's new content, or `undefined` to delete it. */
-type Edit = [name: string, content: string | undefined, mode?: number];
 
 /** Records and makes each edit as a writing run would, then finishes the run. */
-async function run(...edits: Edit[]): Promise<string> {
-	const journal = await store.startRun();
-	for (const [name, content, mode = 0o644] of edits) {
-		const path = join(root, name);
-		const before = await stateOnDisk(journal, path);
-		const after: FileState =
-			content === undefined
-				? { exists: false }
-				: { exists: true, hash: await journal.saveContent(Buffer.from(content)), mode };
-		const createdFolders = content === undefined ? [] : missingFolders(path);
-		const sequence = await journal.prepare({
-			path,
-			before,
-			after,
-			...(createdFolders.length > 0 ? { createdFolders } : {}),
-		});
-		if (content === undefined) {
-			rmSync(path);
-		} else {
-			mkdirSync(dirname(path), { recursive: true });
-			writeFileSync(path, content);
-			chmodSync(path, mode);
-		}
-		await journal.applied(sequence);
-	}
-	await journal.finish('completed');
-	return journal.runId;
+function run(...edits: Edit[]): Promise<string> {
+	return recordRun(store, root, edits);
 }
 
 describe('moving through the history of runs', () => {

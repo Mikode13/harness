@@ -1314,3 +1314,32 @@ A move with conflicts is recorded as not `complete`. Each move is appended to `r
 - The busy-workspace error a write tool returns now says that a move may hold the workspace too.
 - A restored file is built in a hidden temporary beside it, created readable by its owner only and given the file's mode once whole. The temporary has a random name, recorded in the pending move before it is created, so finishing a move after a crash removes that temporary and never a file of the user's with a similar name.
 - The folders above a file are checked before anything else, so a file reached through a folder that became a link is never read, removed or counted as already moved.
+
+## Retention keeps 25 runs and never loses the start of the history
+
+tags: #mikode-harness #recovery #undo
+
+**Decision:** before a run starts, the store brings its history down so that, with the new run, it holds at most 25 runs per workspace (`keepRuns`). Each step removes one run:
+
+- **an abandoned branch first**, a leaf at a time, oldest first, removed whole since nothing depends on it;
+- **then the oldest run on the current line**, other than the run the workspace is at, **chained into the next run**. The current line runs from the start to the run the workspace is at, then on through what `redo` would take.
+
+Chaining works like removing a node of a doubly linked list. The next run now hangs from the removed run's parent and carries both runs' changes. Each file's chain is reduced to its net, from before its first change to after its last. A break, where someone wrote to the file between two changes, is kept as a second change. The new record is the commit point. A crash before it leaves the history as it was, and one after it is cleaned up before the next prune. Contents no kept run refers to are then freed.
+
+A move to a run that is gone reports `HistoryExpiredError`, naming the run that now holds its changes when it was chained.
+
+**Context:** the user chose this when asked what going back to the start should mean once the start of the current path had been pruned. The two options offered were the start of what is kept, or an error. The user answered that the start must never be removed and that removal must chain the changes, like a linked list. 25 runs is the user's "reasonable number on the short side"; a run is roughly one prompt. It replaces v2's byte quota.
+
+**Alternatives considered:**
+
+- **The start of what is kept**, the state before the oldest run kept. Rejected by the user: the original state would be lost after a long session.
+- **An expired-history error for the start.** Rejected by the user for the same reason.
+- **Keeping the chained runs' journals whole**, under the run that absorbed them. That is simpler and crash-safe by renaming folders, but it never frees the intermediate contents, and freeing disk is what retention is for.
+
+**Consequences:**
+
+- `historyStart` always restores the state before the agent's first run. Only the intermediate states are lost.
+- Going back past a break in a chained file leaves that file as it is: the state between the two runs, which would have restored the user's edit, is gone.
+- Chaining reads and rewrites at most two journals, and collecting contents reads every kept journal. Both stay small with 25 runs.
+- `keepRuns` must be at least 3. The run the workspace is at is never removed, and the last run of its line has no next run to be chained into, so two runs can remain besides the new one.
+- Retention is expected to move to the session manager (#29).
