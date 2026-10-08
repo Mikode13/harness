@@ -2,7 +2,6 @@ import { unifiedDiff } from '#src/diff/domain/unifiedDiff';
 import { type FileChange, fileChanges, sameState } from './fileChanges.ts';
 import type { RecoveryStore } from './recoveryStore.ts';
 
-// Git's test: a NUL byte near the start means the file is not text.
 const binaryProbeBytes = 8000;
 
 export interface ShowChangesOptions {
@@ -15,8 +14,9 @@ export interface ShowChangesOptions {
 /**
  * What a run changed, as a git-style diff per file, in the order the run first touched each one.
  * It shows each file from before the run's first change to after its last, so a file the run
- * created and then deleted does not appear. It reports the run's recorded effects, not a
- * comparison of the whole repository.
+ * created and then deleted does not appear. A change a live run has prepared but not made yet
+ * is named, not shown. It reports the run's recorded effects, not a comparison of the whole
+ * repository.
  */
 export async function showChanges(
 	store: RecoveryStore,
@@ -26,7 +26,7 @@ export async function showChanges(
 	const { record, entries } = await store.readRun(runId);
 	// A file left as it was, such as one the run created and then deleted, is not a change.
 	const changes = fileChanges(entries, record.status !== 'running').filter(
-		change => change.uncertain || !sameState(change.before, change.after),
+		change => change.uncertain || change.pending || !sameState(change.before, change.after),
 	);
 	const output: string[] = [];
 
@@ -62,6 +62,10 @@ async function renderFile(
 	if (change.uncertain) {
 		lines.push(`# ${name}: the run stopped while changing this file; it may not hold this change`);
 	}
+	if (change.pending) {
+		lines.push(`# ${name}: the run is changing this file now; that change is not shown`);
+		if (sameState(before, after)) return lines;
+	}
 	lines.push(`diff --git a/${name} b/${name}`);
 	if (!before.exists && after.exists) lines.push(`new file mode ${gitMode(after.mode)}`);
 	if (before.exists && !after.exists) lines.push(`deleted file mode ${gitMode(before.mode)}`);
@@ -75,7 +79,7 @@ async function renderFile(
 	const oldName = before.exists ? `a/${name}` : '/dev/null';
 	const newName = after.exists ? `b/${name}` : '/dev/null';
 
-	if (isBinary(oldContent) || isBinary(newContent)) {
+	if (!isText(oldContent) || !isText(newContent)) {
 		lines.push(`Binary files ${oldName} and ${newName} differ`);
 		return lines;
 	}
@@ -85,8 +89,13 @@ async function renderFile(
 	return lines;
 }
 
-function isBinary(content: Buffer): boolean {
-	return content.subarray(0, binaryProbeBytes).includes(0);
+/**
+ * Git's test, a NUL byte near the start, plus content that is not valid UTF-8: decoding would
+ * replace its bytes, and two different files could then show no difference.
+ */
+function isText(content: Buffer): boolean {
+	if (content.subarray(0, binaryProbeBytes).includes(0)) return false;
+	return Buffer.from(content.toString('utf8'), 'utf8').equals(content);
 }
 
 /** A regular file's mode as git writes it, such as `100644`. */

@@ -13,6 +13,11 @@ export interface FileChange {
 	continuous: boolean;
 	/** The run stopped while changing this file, and the file held neither state afterwards. */
 	uncertain: boolean;
+	/**
+	 * The run is changing this file now: that change is recorded but may still be abandoned, so
+	 * `after` leaves it out.
+	 */
+	pending: boolean;
 	/** Folders the run created for this file, outermost first. */
 	createdFolders: string[];
 }
@@ -32,9 +37,14 @@ export function fileChanges(entries: JournalEntry[], stopped: boolean): FileChan
 	for (const entry of entries) {
 		if (entry.status === 'abandoned') continue;
 		const uncertain = stopped && entry.status === 'prepared';
+		const pending = !stopped && entry.status === 'prepared';
 		const folders = entry.createdFolders ?? [];
 		const known = byPath.get(entry.path);
 		if (known) {
+			if (pending) {
+				known.pending = true;
+				continue;
+			}
 			known.continuous &&= sameState(known.after, entry.before);
 			known.after = entry.after;
 			known.uncertain ||= uncertain;
@@ -45,9 +55,10 @@ export function fileChanges(entries: JournalEntry[], stopped: boolean): FileChan
 			byPath.set(entry.path, {
 				path: entry.path,
 				before: entry.before,
-				after: entry.after,
+				after: pending ? entry.before : entry.after,
 				continuous: true,
 				uncertain,
+				pending,
 				createdFolders: [...folders],
 			});
 		}

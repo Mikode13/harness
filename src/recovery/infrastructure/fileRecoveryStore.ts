@@ -607,8 +607,9 @@ function withLiveStatus(
 
 /**
  * Appends `lines`, as JSON, to a file of one line each, created private if missing. A crash may
- * have left half a line at its end, which would join the first new line, so it is cut off
- * first: whatever was writing it never returned.
+ * have left its last line without a newline. A whole line, which the readers already count, is
+ * kept and ended. Half a line would join the first new line, so it is cut off: whatever was
+ * writing it never returned.
  */
 async function appendWhole(path: string, lines: unknown[]): Promise<void> {
 	if (lines.length === 0) return;
@@ -618,15 +619,27 @@ async function appendWhole(path: string, lines: unknown[]): Promise<void> {
 	} catch (error) {
 		if (!isNotFound(error)) throw error;
 	}
-	if (text !== '' && !text.endsWith('\n')) {
-		await truncate(path, Buffer.byteLength(text.slice(0, text.lastIndexOf('\n') + 1)));
+	const last = text.slice(text.lastIndexOf('\n') + 1);
+	let separator = '';
+	if (last !== '') {
+		if (isWholeLine(last)) separator = '\n';
+		else await truncate(path, Buffer.byteLength(text) - Buffer.byteLength(last));
 	}
 	const journal = await open(path, 'a', privateFile);
 	try {
-		await journal.appendFile(lines.map(line => `${JSON.stringify(line)}\n`).join(''));
+		await journal.appendFile(separator + lines.map(line => `${JSON.stringify(line)}\n`).join(''));
 		await journal.sync();
 	} finally {
 		await journal.close();
+	}
+}
+
+function isWholeLine(text: string): boolean {
+	try {
+		JSON.parse(text);
+		return true;
+	} catch {
+		return false;
 	}
 }
 

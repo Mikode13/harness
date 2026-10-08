@@ -1276,6 +1276,7 @@ tags: #mikode-harness #recovery #dependencies
 - The shared start and end of the two texts are cut off first, since most edits leave most of a file alone.
 - Beyond 1,000 differing lines, the search stops and the differing middle is shown as removed, then added. Memory grows with the square of that distance.
 - Lines are compared whole, a `\r` included, and a missing final newline is marked as git marks it.
+- Content with a NUL byte near its start, as git tests it, or that is not valid UTF-8 is shown as binary. Decoding invalid UTF-8 would replace its bytes, so two different files could otherwise show no difference.
 
 **Context:** the user chose a unified diff as the format of `showChanges`, both for the consumer and for the planner and reviewer tools. The package had no diff dependency.
 
