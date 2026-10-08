@@ -1,5 +1,6 @@
 import { unifiedDiff } from '#src/diff/domain/unifiedDiff';
-import type { FileState, JournalEntry, RecoveryStore } from './recoveryStore.ts';
+import { type FileChange, fileChanges, sameState } from './fileChanges.ts';
+import type { RecoveryStore } from './recoveryStore.ts';
 
 const binaryProbeBytes = 8000;
 
@@ -8,16 +9,6 @@ export interface ShowChangesOptions {
 	 * The most lines of diff shown. What does not fit is named instead, in at most two more lines.
 	 */
 	maxLines?: number;
-}
-
-interface FileChange {
-	path: string;
-	before: FileState;
-	after: FileState;
-	/** The run died while changing this file, and the file held neither state afterwards. */
-	uncertain: boolean;
-	/** The run is changing this file now: the change is recorded but may not be made. */
-	pending: boolean;
 }
 
 /**
@@ -33,7 +24,10 @@ export async function showChanges(
 	{ maxLines = 1000 }: ShowChangesOptions = {},
 ): Promise<string> {
 	const { record, entries } = await store.readRun(runId);
-	const changes = netChanges(entries, record.status !== 'running');
+	// A file left as it was, such as one the run created and then deleted, is not a change.
+	const changes = fileChanges(entries, record.status !== 'running').filter(
+		change => change.uncertain || change.pending || !sameState(change.before, change.after),
+	);
 	const output: string[] = [];
 
 	for (const [index, change] of changes.entries()) {
@@ -56,37 +50,6 @@ export async function showChanges(
 	}
 
 	return output.join('\n');
-}
-
-/** One change per path: from the first recorded change's before to the last one's after. */
-function netChanges(entries: JournalEntry[], stopped: boolean): FileChange[] {
-	const byPath = new Map<string, FileChange>();
-	for (const entry of entries) {
-		// Never made, so not a change.
-		if (entry.status === 'abandoned') continue;
-		const uncertain = stopped && entry.status === 'prepared';
-		// A live run's prepared change may still be abandoned, so its after-state is not shown.
-		const pending = !stopped && entry.status === 'prepared';
-		const after = pending ? undefined : entry.after;
-		const known = byPath.get(entry.path);
-		if (known) {
-			if (after) known.after = after;
-			known.uncertain ||= uncertain;
-			known.pending ||= pending;
-		} else {
-			byPath.set(entry.path, {
-				path: entry.path,
-				before: entry.before,
-				after: after ?? entry.before,
-				uncertain,
-				pending,
-			});
-		}
-	}
-
-	return [...byPath.values()].filter(
-		change => change.uncertain || change.pending || !sameState(change.before, change.after),
-	);
 }
 
 async function renderFile(
@@ -124,11 +87,6 @@ async function renderFile(
 	// An empty file created or deleted has no hunks, as in git.
 	if (hunks !== '') lines.push(`--- ${oldName}`, `+++ ${newName}`, ...hunks.split('\n'));
 	return lines;
-}
-
-function sameState(a: FileState, b: FileState): boolean {
-	if (!a.exists || !b.exists) return a.exists === b.exists;
-	return a.hash === b.hash && a.mode === b.mode;
 }
 
 /**

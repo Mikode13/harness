@@ -62,6 +62,43 @@ export interface RunJournal {
 	finish(status: Exclude<RunStatus, 'running' | 'interrupted'>): Promise<void>;
 }
 
+/** The point before any run: going there takes the workspace back to how it was. */
+export const historyStart = 'start';
+
+/** A file a move left as it was, because it did not hold what the history expected there. */
+export interface MoveConflict {
+	path: string;
+	/** The run whose change could not be undone or redone. */
+	runId: string;
+}
+
+/**
+ * One move of the workspace through its history, kept so an agent that runs next can tell
+ * that its conversation is about a state the workspace has left.
+ */
+export interface Revision {
+	/** Counts the moves of this workspace, from 1. */
+	revision: number;
+	/** The run the workspace was at; absent for the start of the history. */
+	from?: string;
+	/** The run the workspace is at now; absent for the start of the history. */
+	to?: string;
+	at: string;
+	/** Why the user went there, when the host asked. */
+	reason?: string;
+	/** Every file reached the state the history expected. Otherwise `conflicts` names those that did not. */
+	complete: boolean;
+	conflicts: MoveConflict[];
+}
+
+/** There is nothing to undo at the start of the history, or nothing to redo at its tip. */
+export class NothingToMoveError extends Error {
+	constructor(direction: 'undo' | 'redo') {
+		super(direction === 'undo' ? 'There is no run to undo' : 'There is no run to redo');
+		this.name = 'NothingToMoveError';
+	}
+}
+
 /**
  * Where the runs that write to one workspace keep what is needed to undo them, outside the
  * workspace itself. Only one run writes to a workspace at a time.
@@ -80,6 +117,33 @@ export interface RecoveryStore {
 	 * A run still recorded as `running` whose process is gone is listed as `interrupted`.
 	 */
 	listRuns(): Promise<{ head?: string; runs: RunRecord[] }>;
+	/**
+	 * Moves the workspace to the state right after `target`, or to how it was before any run
+	 * with `historyStart`. It undoes runs one by one back to the closest common ancestor, then
+	 * redoes runs one by one forward to `target`. Each file is written only if it holds the
+	 * state the history expects there; one that does not is left as it is and reported, and the
+	 * move is then not `complete`. A move the process did not finish is finished by the next
+	 * move or run.
+	 *
+	 * @throws {WorkspaceBusyError} when a run or another move holds the workspace.
+	 * @throws {UnknownRunError} when `target` is not in the history.
+	 */
+	goTo(target: string, options?: { reason?: string }): Promise<Revision>;
+	/**
+	 * Moves the workspace to the run before the one it is at.
+	 *
+	 * @throws {NothingToMoveError} at the start of the history.
+	 */
+	undo(options?: { reason?: string }): Promise<Revision>;
+	/**
+	 * Moves the workspace to the next run: towards where it was most recently, or the newest
+	 * branch.
+	 *
+	 * @throws {NothingToMoveError} when no run follows the one it is at.
+	 */
+	redo(options?: { reason?: string }): Promise<Revision>;
+	/** Every move of the workspace, oldest first. */
+	listRevisions(): Promise<Revision[]>;
 	/** A run's record and its changes, in the order they were prepared. */
 	readRun(runId: string): Promise<{ record: RunRecord; entries: JournalEntry[] }>;
 	/** The bytes a hash names. */
@@ -88,7 +152,7 @@ export interface RecoveryStore {
 
 export class WorkspaceBusyError extends Error {
 	constructor(readonly runId: string) {
-		super(`Another run (${runId}) is writing to this workspace`);
+		super(`The workspace is busy: ${runId} is writing to it`);
 		this.name = 'WorkspaceBusyError';
 	}
 }

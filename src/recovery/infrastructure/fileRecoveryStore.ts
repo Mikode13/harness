@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import {
 	link,
-	lstat,
 	mkdir,
 	open,
 	readdir,
@@ -16,24 +15,34 @@ import {
 import type { FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
+import { type FileChange, fileChanges, sameState } from '../domain/fileChanges.ts';
 import {
-	type FileState,
+	historyStart,
 	type JournalEntry,
+	type MoveConflict,
+	NothingToMoveError,
+	type Revision,
 	type RecoveryStore,
 	type RunJournal,
 	type RunRecord,
 	type RunStatus,
 	WorkspaceBusyError,
 } from '../domain/recoveryStore.ts';
+import { redoTarget, route } from '../domain/runTree.ts';
+import {
+	currentState,
+	hasRealParents,
+	removeEmptyFolders,
+	removeFile,
+	removeTemporary,
+	temporaryPath,
+	writeFileState,
+} from './workspaceFiles.ts';
 
 const appName = 'mikode-harness';
 // The store holds source code the agent touched: only its owner may read it.
 const privateDirectory = 0o700;
 const privateFile = 0o600;
-
-// Far above the largest file the editor changes, so settling never reads a file whole only to
-// find it differs.
-const maxRecordedBytes = 64 * 1024 * 1024;
 
 const runIdPattern = /^\d{8}T\d{9}Z-[0-9a-f]{6}$/;
 const hashPattern = /^[0-9a-f]{64}$/;
@@ -58,27 +67,6 @@ function newRunId(): string {
 
 function hashOf(content: Buffer): string {
 	return createHash('sha256').update(content).digest('hex');
-}
-
-function sameState(a: FileState, b: FileState): boolean {
-	if (!a.exists || !b.exists) return a.exists === b.exists;
-	return a.hash === b.hash && a.mode === b.mode;
-}
-
-/**
- * What `path` holds now, or `undefined` when it is something no recorded change leaves: a
- * folder, or a file larger than any change records, which is not read.
- */
-async function currentState(path: string): Promise<FileState | undefined> {
-	let stats;
-	try {
-		stats = await lstat(path);
-	} catch (error) {
-		if (isNotFound(error)) return { exists: false };
-		throw error;
-	}
-	if (!stats.isFile() || stats.size > maxRecordedBytes) return undefined;
-	return { exists: true, hash: hashOf(await readFile(path)), mode: stats.mode & 0o7777 };
 }
 
 function isNotFound(error: unknown): boolean {
@@ -144,6 +132,28 @@ async function writeDurably(
 	await syncDirectory(dirname(path));
 }
 
+/** A move not finished yet: the next move or run finishes it before anything else. */
+interface PendingMove {
+	revision: number;
+	from?: string;
+	to?: string;
+	reason?: string;
+	/** Found by the steps already taken. */
+	conflicts: MoveConflict[];
+	/**
+	 * The temporary a file is being restored through, named before it is created, so finishing
+	 * the move removes this one and no file of the user's.
+	 */
+	temporary?: string;
+}
+
+/** `head.json`: the run the workspace is at, the moves made so far, and one in progress. */
+interface Head {
+	runId?: string;
+	revision: number;
+	pending?: PendingMove;
+}
+
 type JournalLine =
 	| ({ type: 'prepared'; sequence: number } & Omit<JournalEntry, 'sequence' | 'status'>)
 	| { type: 'applied' | 'abandoned'; sequence: number };
@@ -156,7 +166,8 @@ type JournalLine =
  * <directory>/workspaces/<hash of the root>/
  *   workspace.json            the root it belongs to
  *   lock                      the run writing now, if any
- *   head.json                 the run the workspace is at
+ *   head.json                 the run the workspace is at, and a move in progress
+ *   revisions.jsonl           every move of the workspace through its history
  *   content/<ab>/<hash>       file contents, named by their SHA-256
  *   runs/<runId>/run.json     the run's record
  *   runs/<runId>/journal.jsonl  its changes, one line per step, appended and synced
@@ -201,7 +212,10 @@ export class FileRecoveryStore implements RecoveryStore {
 			// lock naming this run, never another run's.
 			await this.lock(runId);
 			await this.settleInterrupted(runId);
-			const parentRunId = await this.readHead();
+			// A run starts where the user last sent the workspace.
+			await this.finishPendingMove();
+			const head = await this.readHead();
+			const parentRunId = head.runId;
 			const runDirectory = join(this.directory, 'runs', runId);
 			await makeDirectory(runDirectory);
 			const record: RunRecord = {
@@ -214,7 +228,7 @@ export class FileRecoveryStore implements RecoveryStore {
 			};
 			await writeDurably(join(runDirectory, 'run.json'), JSON.stringify(record));
 			// After the record, so the head never names a run that does not exist.
-			await writeDurably(join(this.directory, 'head.json'), JSON.stringify({ runId }));
+			await this.writeHead({ runId, revision: head.revision });
 			const journal = await open(join(runDirectory, 'journal.jsonl'), 'a', privateFile);
 			await syncDirectory(runDirectory);
 
@@ -244,7 +258,7 @@ export class FileRecoveryStore implements RecoveryStore {
 			});
 			if (record) runs.push(withLiveStatus(record, holder));
 		}
-		const head = await this.readHead();
+		const { runId: head } = await this.readHead();
 
 		return { ...(head ? { head } : {}), runs };
 	}
@@ -269,16 +283,228 @@ export class FileRecoveryStore implements RecoveryStore {
 		return join(this.directory, 'runs', runId);
 	}
 
-	private async readHead(): Promise<string | undefined> {
+	private async readHead(): Promise<Head> {
 		try {
-			const { runId } = JSON.parse(await readFile(join(this.directory, 'head.json'), 'utf8')) as {
-				runId: string;
-			};
-			return runId;
+			const head = JSON.parse(
+				await readFile(join(this.directory, 'head.json'), 'utf8'),
+			) as Partial<Head>;
+			return { ...head, revision: head.revision ?? 0 };
 		} catch (error) {
-			if (isNotFound(error)) return undefined;
+			if (isNotFound(error)) return { revision: 0 };
 			throw error;
 		}
+	}
+
+	private async writeHead(head: Head): Promise<void> {
+		await writeDurably(join(this.directory, 'head.json'), JSON.stringify(head));
+	}
+
+	goTo(target: string, { reason }: { reason?: string } = {}): Promise<Revision> {
+		return this.move(() => (target === historyStart ? undefined : target), reason);
+	}
+
+	undo({ reason }: { reason?: string } = {}): Promise<Revision> {
+		return this.move(({ runs, head }) => {
+			if (head === undefined) throw new NothingToMoveError('undo');
+			return runs.find(run => run.runId === head)?.parentRunId;
+		}, reason);
+	}
+
+	redo({ reason }: { reason?: string } = {}): Promise<Revision> {
+		return this.move(({ runs, head, revisions }) => {
+			const target = redoTarget(runs, revisions, head);
+			if (target === undefined) throw new NothingToMoveError('redo');
+			return target;
+		}, reason);
+	}
+
+	async listRevisions(): Promise<Revision[]> {
+		let text: string;
+		try {
+			text = await readFile(join(this.directory, 'revisions.jsonl'), 'utf8');
+		} catch (error) {
+			if (isNotFound(error)) return [];
+			throw error;
+		}
+		const lines = text.split('\n');
+		return lines.flatMap((line, index) => {
+			if (line === '') return [];
+			try {
+				return [JSON.parse(line) as Revision];
+			} catch (error) {
+				// A crash in the middle of an append leaves half a line, always the last one. Its
+				// move is still pending, and finishing it records it again.
+				if (index === lines.length - 1) return [];
+				throw new Error(`The history of this workspace is corrupt at line ${String(index + 1)}`, {
+					cause: error,
+				});
+			}
+		});
+	}
+
+	/** Holds the workspace like a run does, then moves it to the run `resolve` picks. */
+	private async move(
+		resolve: (history: {
+			runs: RunRecord[];
+			head: string | undefined;
+			revisions: Revision[];
+		}) => string | undefined,
+		reason: string | undefined,
+	): Promise<Revision> {
+		const moveId = `move-${newRunId()}`;
+		try {
+			await this.lock(moveId);
+			await this.settleInterrupted(moveId);
+			await this.finishPendingMove();
+			const head = await this.readHead();
+			const { runs } = await this.listRuns();
+			const to = resolve({ runs, head: head.runId, revisions: await this.listRevisions() });
+
+			return await this.takeSteps(head, runs, {
+				revision: head.revision + 1,
+				...(head.runId ? { from: head.runId } : {}),
+				...(to ? { to } : {}),
+				...(reason === undefined ? {} : { reason }),
+				conflicts: [],
+			});
+		} finally {
+			await this.unlock(moveId);
+		}
+	}
+
+	/** Finishes a move whose process stopped halfway, from the run its last step reached. */
+	private async finishPendingMove(): Promise<void> {
+		const head = await this.readHead();
+		const { pending } = head;
+		if (!pending) return;
+		// It was recorded, and only clearing it from the head was missing.
+		if ((await this.listRevisions()).some(revision => revision.revision === pending.revision)) {
+			await this.writeHead({
+				...(pending.to ? { runId: pending.to } : {}),
+				revision: pending.revision,
+			});
+			return;
+		}
+		await this.takeSteps(head, (await this.listRuns()).runs, pending);
+	}
+
+	/**
+	 * Undoes, then redoes, one run at a time from where the head is to `pending.to`. After each
+	 * step the head names the run reached, with the move still pending, so a crash loses at
+	 * most the step in progress, and that step is safe to take again.
+	 */
+	private async takeSteps(head: Head, runs: RunRecord[], pending: PendingMove): Promise<Revision> {
+		const { undo, redo } = route(runs, head.runId, pending.to);
+		const parents = new Map(runs.map(run => [run.runId, run.parentRunId]));
+		let reached = head.runId;
+		const save = () =>
+			this.writeHead({ ...(reached ? { runId: reached } : {}), revision: head.revision, pending });
+
+		// What a write the crash interrupted left beside its file.
+		if (pending.temporary) {
+			await removeTemporary(pending.temporary);
+			delete pending.temporary;
+		}
+		await save();
+		const announce = async (temporary: string | undefined) => {
+			if (temporary === undefined) delete pending.temporary;
+			else pending.temporary = temporary;
+			await save();
+		};
+		for (const runId of undo) {
+			pending.conflicts.push(...(await this.step(runId, 'undo', announce)));
+			reached = parents.get(runId);
+			await save();
+		}
+		for (const runId of redo) {
+			pending.conflicts.push(...(await this.step(runId, 'redo', announce)));
+			reached = runId;
+			await save();
+		}
+
+		// Every write that started has finished, so no temporary is left to name.
+		delete pending.temporary;
+		const { conflicts, ...rest } = pending;
+		const revision: Revision = {
+			...rest,
+			at: new Date().toISOString(),
+			complete: conflicts.length === 0,
+			conflicts,
+		};
+		await this.appendRevision(revision);
+		await this.writeHead({
+			...(pending.to ? { runId: pending.to } : {}),
+			revision: pending.revision,
+		});
+		return revision;
+	}
+
+	/** Takes one run's changes back to its parent, or forward again, file by file. */
+	private async step(
+		runId: string,
+		direction: 'undo' | 'redo',
+		announce: (temporary: string | undefined) => Promise<void>,
+	): Promise<MoveConflict[]> {
+		const { entries } = await this.readRun(runId);
+		const changes = fileChanges(entries, true);
+		const conflicts: MoveConflict[] = [];
+		// Undone newest first, so a folder the run created is empty by the time its file goes.
+		for (const change of direction === 'undo' ? changes.reverse() : changes) {
+			if (!(await this.moveFile(change, direction, announce))) {
+				conflicts.push({ path: change.path, runId });
+			}
+		}
+		return conflicts;
+	}
+
+	/**
+	 * Writes the state the step leads to, only if the file holds the state it leaves. A file
+	 * already there is left alone, so taking a step again is safe. Returns whether the file
+	 * ends where the step leads.
+	 */
+	private async moveFile(
+		change: FileChange,
+		direction: 'undo' | 'redo',
+		announce: (temporary: string | undefined) => Promise<void>,
+	): Promise<boolean> {
+		const [source, destination] =
+			direction === 'undo' ? [change.after, change.before] : [change.before, change.after];
+		// First, so a file reached through a folder that became a link is never taken for the
+		// destination, and nothing is read or removed through it.
+		if (!(await hasRealParents(change.path))) return false;
+		const current = await currentState(change.path);
+
+		if (current && sameState(current, destination)) {
+			if (direction === 'undo' && !destination.exists) {
+				await removeEmptyFolders(change.createdFolders);
+			}
+			return true;
+		}
+		if (!current || !sameState(current, source)) return false;
+		// Someone wrote to the file between two of the run's changes, and going back to before
+		// the first would discard that.
+		if (direction === 'undo' && !change.continuous) return false;
+
+		if (destination.exists) {
+			const temporary = temporaryPath(change.path);
+			await announce(temporary);
+			await writeFileState(
+				change.path,
+				await this.readContent(destination.hash),
+				destination.mode,
+				temporary,
+			);
+			await announce(undefined);
+		} else {
+			await removeFile(change.path);
+			if (direction === 'undo') await removeEmptyFolders(change.createdFolders);
+		}
+		return true;
+	}
+
+	private async appendRevision(revision: Revision): Promise<void> {
+		await appendWhole(join(this.directory, 'revisions.jsonl'), [revision]);
+		await syncDirectory(this.directory);
 	}
 
 	/**
@@ -308,7 +534,7 @@ export class FileRecoveryStore implements RecoveryStore {
 					settled.push({ type: 'abandoned', sequence: entry.sequence });
 				}
 			}
-			await appendSettled(join(this.runDirectory(runId), 'journal.jsonl'), settled);
+			await appendWhole(join(this.runDirectory(runId), 'journal.jsonl'), settled);
 			// Last, so a crash before it leaves a run that is settled again, and settling is idempotent.
 			await writeDurably(
 				join(this.runDirectory(runId), 'run.json'),
@@ -419,20 +645,26 @@ function withLiveStatus(
 }
 
 /**
- * Appends `lines` to a dead run's journal. A crash may have left its last line without a
- * newline. A whole line, which `readEntries` already counts, is kept and ended. Half a line
- * would join the first new line, so it is cut off: its step never returned.
+ * Appends `lines`, as JSON, to a file of one line each, created private if missing. A crash may
+ * have left its last line without a newline. A whole line, which the readers already count, is
+ * kept and ended. Half a line would join the first new line, so it is cut off: whatever was
+ * writing it never returned.
  */
-async function appendSettled(path: string, lines: JournalLine[]): Promise<void> {
+async function appendWhole(path: string, lines: unknown[]): Promise<void> {
 	if (lines.length === 0) return;
-	const text = await readFile(path, 'utf8');
+	let text = '';
+	try {
+		text = await readFile(path, 'utf8');
+	} catch (error) {
+		if (!isNotFound(error)) throw error;
+	}
 	const last = text.slice(text.lastIndexOf('\n') + 1);
 	let separator = '';
 	if (last !== '') {
 		if (isWholeLine(last)) separator = '\n';
 		else await truncate(path, Buffer.byteLength(text) - Buffer.byteLength(last));
 	}
-	const journal = await open(path, 'a');
+	const journal = await open(path, 'a', privateFile);
 	try {
 		await journal.appendFile(separator + lines.map(line => `${JSON.stringify(line)}\n`).join(''));
 		await journal.sync();
