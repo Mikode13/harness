@@ -278,24 +278,24 @@ export class FileRecoveryStore implements RecoveryStore {
 			});
 			if (record) runs.push(withLiveStatus(record, holder));
 		}
-		// A run chained into a later one, whose folder a crash left behind, is not in the history.
-		const absorbed = new Set(runs.flatMap(run => run.absorbed ?? []));
+		// A run retention removed or chained into a later one, whose folder a crash left behind, is
+		// not in the history.
+		const gone = new Set([
+			...runs.flatMap(run => run.absorbed ?? []),
+			...(await this.listPruned()),
+		]);
 		const { runId: head } = await this.readHead();
 
-		return { ...(head ? { head } : {}), runs: runs.filter(run => !absorbed.has(run.runId)) };
+		return { ...(head ? { head } : {}), runs: runs.filter(run => !gone.has(run.runId)) };
 	}
 
 	async readRun(runId: string): Promise<{ record: RunRecord; entries: JournalEntry[] }> {
 		// The lock first: a run that finishes between the two reads then shows as finished, not as
 		// a `running` record nobody holds.
 		const holder = await readLock(join(this.directory, 'lock'));
-		let record: RunRecord;
-		try {
-			record = withLiveStatus(await this.readRecord(runId), holder);
-		} catch (error) {
-			if (isNotFound(error)) await this.assertNotAbsorbed(runId);
-			throw error;
-		}
+		// Before the record: a crash can leave the folder of a run retention already took.
+		await this.assertNotAbsorbed(runId);
+		const record = withLiveStatus(await this.readRecord(runId), holder);
 		return { record, entries: await this.readEntries(runId, record.journal) };
 	}
 
@@ -610,10 +610,13 @@ export class FileRecoveryStore implements RecoveryStore {
 	}
 
 	/**
-	 * Removes what a chain or a removal a crash interrupted left behind: the folders of runs a
-	 * kept run absorbed, and journals a run no longer reads.
+	 * Removes what a chain or a removal a crash interrupted left behind: the folders of runs
+	 * pruned or absorbed by a kept run, and journals a run no longer reads.
 	 */
 	private async finishChains(): Promise<void> {
+		for (const runId of await this.listPruned()) {
+			await rm(this.runDirectory(runId), { recursive: true, force: true });
+		}
 		const { runs } = await this.listRuns();
 		for (const run of runs) {
 			for (const absorbed of run.absorbed ?? []) {
@@ -634,6 +637,8 @@ export class FileRecoveryStore implements RecoveryStore {
 	 */
 	private async removeRun(runId: string): Promise<void> {
 		await appendWhole(join(this.directory, 'pruned.jsonl'), [runId]);
+		// The log may be new: its entry in the folder must last before the run it names goes.
+		await syncDirectory(this.directory);
 		await rm(join(this.runDirectory(runId), 'run.json'), { force: true });
 		await syncDirectory(this.runDirectory(runId));
 		await rm(this.runDirectory(runId), { recursive: true, force: true });

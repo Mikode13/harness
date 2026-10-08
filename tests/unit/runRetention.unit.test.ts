@@ -188,6 +188,35 @@ describe('keeping a bounded history of runs', () => {
 		expect(existsSync(join(runs, keeper, 'journal-deadbeef.jsonl'))).toBe(false);
 	});
 
+	it('does not read a run retention took, even when a crash left its folder', async () => {
+		const first = await run(['a.txt', '1']);
+		const abandoned = await run(['a.txt', '2']);
+		await store.goTo(first);
+		await run(['a.txt', 'branch']);
+		await run(['a.txt', 'branch again']);
+		await run(['a.txt', 'and again']);
+		// The process died after recording each removal, before the folders went.
+		const runs = join(workspaceFolder(), 'runs');
+		for (const runId of [first, abandoned]) {
+			mkdirSync(join(runs, runId));
+			writeFileSync(
+				join(runs, runId, 'run.json'),
+				JSON.stringify({ runId, root, startedAt: '', status: 'completed', pid: 1 }),
+			);
+		}
+
+		await expect(store.readRun(first)).rejects.toBeInstanceOf(HistoryExpiredError);
+		await expect(store.readRun(abandoned)).rejects.toBeInstanceOf(HistoryExpiredError);
+		expect(await runIds()).not.toContain(abandoned);
+
+		const next = await store.startRun();
+		await next.finish('completed');
+		expect([existsSync(join(runs, first)), existsSync(join(runs, abandoned))]).toEqual([
+			false,
+			false,
+		]);
+	});
+
 	it('refuses a limit it could not keep', async () => {
 		for (const keepRuns of [0, 2, 3.5]) {
 			await expect(
