@@ -11,9 +11,10 @@ import {
 	symlinkSync,
 	writeFileSync,
 } from 'node:fs';
+import { type FileHandle, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	type FileState,
 	historyStart,
@@ -36,6 +37,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	rmSync(parent, { recursive: true, force: true });
 });
 
@@ -242,6 +244,73 @@ describe('moving through the history of runs', () => {
 
 		await expect(store.undo()).resolves.toMatchObject({ complete: false });
 		expect(readFileSync(join(outside, 'f.txt'), 'utf8')).toBe('agent');
+	});
+
+	it('does not take a file behind a folder that became a link for one already moved', async () => {
+		await run(['sub/f.txt', 'old']);
+		await run(['sub/f.txt', 'new']);
+		// What undoing the second run leads to, but outside the workspace.
+		const outside = join(parent, 'outside');
+		mkdirSync(outside);
+		writeFileSync(join(outside, 'f.txt'), 'old');
+		rmSync(join(root, 'sub'), { recursive: true });
+		symlinkSync(outside, join(root, 'sub'));
+
+		await expect(store.undo()).resolves.toMatchObject({
+			complete: false,
+			conflicts: [{ path: join(root, 'sub', 'f.txt') }],
+		});
+	});
+
+	it('builds a restored file in a temporary only its owner can read', async () => {
+		writeFileSync(join(root, 'secret.txt'), 'token');
+		chmodSync(join(root, 'secret.txt'), 0o600);
+		await run(['secret.txt', 'changed', 0o600]);
+		const prototype = Object.getPrototypeOf(await open(join(parent, 'probe'), 'w')) as FileHandle;
+		const writeFile = Reflect.get(prototype, 'writeFile');
+		const modes: number[] = [];
+		vi.spyOn(prototype, 'writeFile').mockImplementation(async function (
+			this: FileHandle,
+			...args: Parameters<FileHandle['writeFile']>
+		) {
+			modes.push((await this.stat()).mode & 0o777);
+			await Reflect.apply(writeFile, this, args);
+		});
+
+		await store.undo();
+
+		// The store's own files are private too, so every file written to must be.
+		expect(new Set(modes)).toEqual(new Set([0o600]));
+		expect(read('secret.txt')).toBe('token');
+	});
+
+	it('clears the temporary a crash left when it finishes the move, even for a file it leaves', async () => {
+		await run(['a.txt', '1']);
+		const second = await run(['a.txt', '2']);
+		// The process died going back, while it was writing the first run's content, and the
+		// user edited the file before the move was finished: nothing writes it again.
+		const temporary = join(root, '.a.txt.mikode-harness-tmp');
+		writeFileSync(temporary, '1');
+		writeFileSync(join(root, 'a.txt'), 'edited by hand');
+		writeFileSync(
+			join(workspaceFolder(), 'head.json'),
+			JSON.stringify({
+				runId: second,
+				revision: 0,
+				pending: {
+					revision: 1,
+					from: second,
+					to: (await store.listRuns()).runs[0]?.runId,
+					conflicts: [],
+				},
+			}),
+		);
+
+		const next = await store.startRun();
+		await next.finish('completed');
+
+		expect(existsSync(temporary)).toBe(false);
+		expect(read('a.txt')).toBe('edited by hand');
 	});
 
 	it('records each move with the reason the host gave', async () => {

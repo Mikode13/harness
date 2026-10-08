@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
 	lstat,
 	mkdir,
@@ -10,7 +10,7 @@ import {
 	rmdir,
 	unlink,
 } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import type { FileState } from '../domain/recoveryStore.ts';
 
 // Far above the largest file the editor changes, so the history never reads a file whole only
@@ -62,9 +62,13 @@ export async function hasRealParents(path: string): Promise<boolean> {
  */
 export async function writeFileState(path: string, content: Buffer, mode: number): Promise<void> {
 	await mkdir(dirname(path), { recursive: true });
-	const temporary = `${path}.${randomBytes(6).toString('hex')}.harness-tmp`;
+	const temporary = temporaryPath(path);
+	// One a crash left behind, still to be cleared if nothing cleared it yet.
+	await rm(temporary, { force: true });
 	try {
-		const handle = await open(temporary, 'wx');
+		// Private while it holds content of a file that may be private too; the file's own mode
+		// is set only once it is whole.
+		const handle = await open(temporary, 'wx', 0o600);
 		try {
 			await handle.writeFile(content);
 			// Set on the open file, so the umask does not change it.
@@ -78,6 +82,19 @@ export async function writeFileState(path: string, content: Buffer, mode: number
 		await rm(temporary, { force: true });
 	}
 	await syncFolder(dirname(path));
+}
+
+/**
+ * Where `writeFileState` builds the new content of `path`: one name per file, next to it and
+ * hidden, so a step taken again finds and removes what a crash left there.
+ */
+function temporaryPath(path: string): string {
+	return join(dirname(path), `.${basename(path)}.mikode-harness-tmp`);
+}
+
+/** Removes what a write to `path` that a crash interrupted left beside it. */
+export async function removeTemporary(path: string): Promise<void> {
+	await rm(temporaryPath(path), { force: true });
 }
 
 export async function removeFile(path: string): Promise<void> {

@@ -34,6 +34,7 @@ import {
 	hasRealParents,
 	removeEmptyFolders,
 	removeFile,
+	removeTemporary,
 	writeFileState,
 } from './workspaceFiles.ts';
 
@@ -440,6 +441,10 @@ export class FileRecoveryStore implements RecoveryStore {
 	private async moveFile(change: FileChange, direction: 'undo' | 'redo'): Promise<boolean> {
 		const [source, destination] =
 			direction === 'undo' ? [change.after, change.before] : [change.before, change.after];
+		// First, so a file reached through a folder that became a link is never taken for the
+		// destination, and nothing is read or removed through it.
+		if (!(await hasRealParents(change.path))) return false;
+		await removeTemporary(change.path);
 		const current = await currentState(change.path);
 
 		if (current && sameState(current, destination)) {
@@ -452,7 +457,6 @@ export class FileRecoveryStore implements RecoveryStore {
 		// Someone wrote to the file between two of the run's changes, and going back to before
 		// the first would discard that.
 		if (direction === 'undo' && !change.continuous) return false;
-		if (!(await hasRealParents(change.path))) return false;
 
 		if (destination.exists) {
 			await writeFileState(change.path, await this.readContent(destination.hash), destination.mode);
