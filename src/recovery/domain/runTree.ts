@@ -15,6 +15,25 @@ export class UnknownRunError extends Error {
 }
 
 /**
+ * Retention removed a run: an abandoned one whole, or one on the current line by chaining its
+ * changes into the next run. Either way the state right after it is gone.
+ */
+export class HistoryExpiredError extends Error {
+	constructor(
+		readonly runId: string,
+		/** The run that now holds its changes, when it was chained rather than removed. */
+		readonly keptIn?: string,
+	) {
+		super(
+			keptIn
+				? `Run ${runId} is no longer kept: its changes are now part of run ${keptIn}`
+				: `Run ${runId} is no longer kept`,
+		);
+		this.name = 'HistoryExpiredError';
+	}
+}
+
+/**
  * The runs from `from` to `to` through their closest common ancestor. `undefined` is the start
  * of the history, before any run.
  */
