@@ -1312,5 +1312,5 @@ A move with conflicts is recorded as not `complete`. Each move is appended to `r
 - A file in conflict when a run is undone is also in conflict for each earlier run that changed it, since it never reaches the state they expect. The user's edit always wins.
 - Moves and runs share the workspace lock, and a move first settles interrupted runs, so it never crosses a change nobody settled.
 - The busy-workspace error a write tool returns now says that a move may hold the workspace too.
-- A restored file is built in a hidden temporary beside it, `.<name>.mikode-harness-tmp`, created readable by its owner only and given the file's mode once whole. Each step clears that temporary before looking at the file, so finishing a move after a crash leaves no copy behind.
+- A restored file is built in a hidden temporary beside it, created readable by its owner only and given the file's mode once whole. The temporary has a random name, recorded in the pending move before it is created, so finishing a move after a crash removes that temporary and never a file of the user's with a similar name.
 - The folders above a file are checked before anything else, so a file reached through a folder that became a link is never read, removed or counted as already moved.

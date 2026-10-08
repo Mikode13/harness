@@ -286,12 +286,12 @@ describe('moving through the history of runs', () => {
 		expect(read('secret.txt')).toBe('token');
 	});
 
-	it('clears the temporary a crash left when it finishes the move, even for a file it leaves', async () => {
+	it('removes the temporary a crash left when it finishes the move, even for a file it leaves', async () => {
 		await run(['a.txt', '1']);
 		const second = await run(['a.txt', '2']);
 		// The process died going back, while it was writing the first run's content, and the
 		// user edited the file before the move was finished: nothing writes it again.
-		const temporary = join(root, '.a.txt.mikode-harness-tmp');
+		const temporary = join(root, '.a.txt.0123456789ab.mikode-harness-tmp');
 		writeFileSync(temporary, '1');
 		writeFileSync(join(root, 'a.txt'), 'edited by hand');
 		writeFileSync(
@@ -304,6 +304,7 @@ describe('moving through the history of runs', () => {
 					from: second,
 					to: (await store.listRuns()).runs[0]?.runId,
 					conflicts: [],
+					temporary,
 				},
 			}),
 		);
@@ -313,6 +314,18 @@ describe('moving through the history of runs', () => {
 
 		expect(existsSync(temporary)).toBe(false);
 		expect(read('a.txt')).toBe('edited by hand');
+	});
+
+	it('leaves alone a file of the user that looks like a temporary', async () => {
+		await run(['a.txt', '1']);
+		for (const name of ['.a.txt.mikode-harness-tmp', '.a.txt.0123456789ab.mikode-harness-tmp']) {
+			writeFileSync(join(root, name), 'the user wrote this');
+		}
+
+		await expect(store.undo()).resolves.toMatchObject({ complete: true });
+
+		expect(read('.a.txt.mikode-harness-tmp')).toBe('the user wrote this');
+		expect(read('.a.txt.0123456789ab.mikode-harness-tmp')).toBe('the user wrote this');
 	});
 
 	it('records each move with the reason the host gave', async () => {

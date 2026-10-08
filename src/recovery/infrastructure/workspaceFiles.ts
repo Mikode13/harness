@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
 	lstat,
 	mkdir,
@@ -60,11 +60,13 @@ export async function hasRealParents(path: string): Promise<boolean> {
  * Puts `content` at `path` with `mode`, all at once: a crash leaves the old file or the new one.
  * Missing folders above it are created.
  */
-export async function writeFileState(path: string, content: Buffer, mode: number): Promise<void> {
+export async function writeFileState(
+	path: string,
+	content: Buffer,
+	mode: number,
+	temporary: string,
+): Promise<void> {
 	await mkdir(dirname(path), { recursive: true });
-	const temporary = temporaryPath(path);
-	// One a crash left behind, still to be cleared if nothing cleared it yet.
-	await rm(temporary, { force: true });
 	try {
 		// Private while it holds content of a file that may be private too; the file's own mode
 		// is set only once it is whole.
@@ -85,16 +87,22 @@ export async function writeFileState(path: string, content: Buffer, mode: number
 }
 
 /**
- * Where `writeFileState` builds the new content of `path`: one name per file, next to it and
- * hidden, so a step taken again finds and removes what a crash left there.
+ * A new, hidden name beside `path` to build its content in. It is random, so it never names a
+ * file of the user's, and the caller records it before the write so a crash can be cleaned up.
  */
-function temporaryPath(path: string): string {
-	return join(dirname(path), `.${basename(path)}.mikode-harness-tmp`);
+export function temporaryPath(path: string): string {
+	return join(
+		dirname(path),
+		`.${basename(path)}.${randomBytes(6).toString('hex')}.mikode-harness-tmp`,
+	);
 }
 
-/** Removes what a write to `path` that a crash interrupted left beside it. */
-export async function removeTemporary(path: string): Promise<void> {
-	await rm(temporaryPath(path), { force: true });
+/**
+ * Removes a temporary `temporaryPath` named, which a write a crash interrupted left behind.
+ * Nothing is removed through a folder that became a link.
+ */
+export async function removeTemporary(temporary: string): Promise<void> {
+	if (await hasRealParents(temporary)) await rm(temporary, { force: true });
 }
 
 export async function removeFile(path: string): Promise<void> {

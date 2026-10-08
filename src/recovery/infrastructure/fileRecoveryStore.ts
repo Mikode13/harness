@@ -35,6 +35,7 @@ import {
 	removeEmptyFolders,
 	removeFile,
 	removeTemporary,
+	temporaryPath,
 	writeFileState,
 } from './workspaceFiles.ts';
 
@@ -139,6 +140,11 @@ interface PendingMove {
 	reason?: string;
 	/** Found by the steps already taken. */
 	conflicts: MoveConflict[];
+	/**
+	 * The temporary a file is being restored through, named before it is created, so finishing
+	 * the move removes this one and no file of the user's.
+	 */
+	temporary?: string;
 }
 
 /** `head.json`: the run the workspace is at, the moves made so far, and one in progress. */
@@ -394,18 +400,30 @@ export class FileRecoveryStore implements RecoveryStore {
 		const save = () =>
 			this.writeHead({ ...(reached ? { runId: reached } : {}), revision: head.revision, pending });
 
+		// What a write the crash interrupted left beside its file.
+		if (pending.temporary) {
+			await removeTemporary(pending.temporary);
+			delete pending.temporary;
+		}
 		await save();
+		const announce = async (temporary: string | undefined) => {
+			if (temporary === undefined) delete pending.temporary;
+			else pending.temporary = temporary;
+			await save();
+		};
 		for (const runId of undo) {
-			pending.conflicts.push(...(await this.step(runId, 'undo')));
+			pending.conflicts.push(...(await this.step(runId, 'undo', announce)));
 			reached = parents.get(runId);
 			await save();
 		}
 		for (const runId of redo) {
-			pending.conflicts.push(...(await this.step(runId, 'redo')));
+			pending.conflicts.push(...(await this.step(runId, 'redo', announce)));
 			reached = runId;
 			await save();
 		}
 
+		// Every write that started has finished, so no temporary is left to name.
+		delete pending.temporary;
 		const { conflicts, ...rest } = pending;
 		const revision: Revision = {
 			...rest,
@@ -422,13 +440,19 @@ export class FileRecoveryStore implements RecoveryStore {
 	}
 
 	/** Takes one run's changes back to its parent, or forward again, file by file. */
-	private async step(runId: string, direction: 'undo' | 'redo'): Promise<MoveConflict[]> {
+	private async step(
+		runId: string,
+		direction: 'undo' | 'redo',
+		announce: (temporary: string | undefined) => Promise<void>,
+	): Promise<MoveConflict[]> {
 		const { entries } = await this.readRun(runId);
 		const changes = fileChanges(entries, true);
 		const conflicts: MoveConflict[] = [];
 		// Undone newest first, so a folder the run created is empty by the time its file goes.
 		for (const change of direction === 'undo' ? changes.reverse() : changes) {
-			if (!(await this.moveFile(change, direction))) conflicts.push({ path: change.path, runId });
+			if (!(await this.moveFile(change, direction, announce))) {
+				conflicts.push({ path: change.path, runId });
+			}
 		}
 		return conflicts;
 	}
@@ -438,13 +462,16 @@ export class FileRecoveryStore implements RecoveryStore {
 	 * already there is left alone, so taking a step again is safe. Returns whether the file
 	 * ends where the step leads.
 	 */
-	private async moveFile(change: FileChange, direction: 'undo' | 'redo'): Promise<boolean> {
+	private async moveFile(
+		change: FileChange,
+		direction: 'undo' | 'redo',
+		announce: (temporary: string | undefined) => Promise<void>,
+	): Promise<boolean> {
 		const [source, destination] =
 			direction === 'undo' ? [change.after, change.before] : [change.before, change.after];
 		// First, so a file reached through a folder that became a link is never taken for the
 		// destination, and nothing is read or removed through it.
 		if (!(await hasRealParents(change.path))) return false;
-		await removeTemporary(change.path);
 		const current = await currentState(change.path);
 
 		if (current && sameState(current, destination)) {
@@ -459,7 +486,15 @@ export class FileRecoveryStore implements RecoveryStore {
 		if (direction === 'undo' && !change.continuous) return false;
 
 		if (destination.exists) {
-			await writeFileState(change.path, await this.readContent(destination.hash), destination.mode);
+			const temporary = temporaryPath(change.path);
+			await announce(temporary);
+			await writeFileState(
+				change.path,
+				await this.readContent(destination.hash),
+				destination.mode,
+				temporary,
+			);
+			await announce(undefined);
 		} else {
 			await removeFile(change.path);
 			if (direction === 'undo') await removeEmptyFolders(change.createdFolders);
