@@ -26,6 +26,7 @@ import {
 } from '#src/shared/domain/errors';
 import {
 	classifyHostFailure,
+	classifyLocalFailure,
 	classifyProviderFailure,
 	describeFailure,
 	treatErrors,
@@ -38,6 +39,13 @@ import { type AgentTool, type PreparedCall, prepareCall } from '#src/tools/domai
 import { isAbortError } from '#src/shared/domain/isAbortError';
 import type { ILogger } from '#src/shared/domain/logger';
 import { addTokens, type Tokens } from '#src/shared/domain/tokens';
+import {
+	type Followed,
+	followHistory,
+	type HistoryReader,
+	transcriptOf,
+	undoNote,
+} from './historyFollower.ts';
 
 function describePart(part: MessagePart): ProgressEvent | undefined {
 	switch (part.type) {
@@ -98,6 +106,10 @@ export class LLMAgent implements Agent {
 	private readonly maxSteps: number;
 	private readonly autoApprove: boolean;
 	private readonly logger: ILogger | undefined;
+	private readonly history: HistoryReader | undefined;
+	private readonly summarizer: LLMClient | undefined;
+	// The latest move through the history this conversation has followed.
+	private seenRevision = 0;
 
 	constructor({
 		llmClient,
@@ -106,6 +118,8 @@ export class LLMAgent implements Agent {
 		maxSteps = 25,
 		autoApprove = false,
 		logger,
+		history,
+		summarizer,
 	}: {
 		llmClient: LLMClient;
 		messages?: Message[];
@@ -116,6 +130,17 @@ export class LLMAgent implements Agent {
 		autoApprove?: boolean;
 		/** Where a failure the agent absorbs is reported. The factories always pass one. */
 		logger?: ILogger;
+		/**
+		 * The history of the workspace this agent writes to. With it, each run first follows the
+		 * moves the user made through that history: the conversation goes back with the
+		 * workspace, and the model is told what was undone.
+		 */
+		history?: HistoryReader;
+		/**
+		 * A cheap model that summarizes what the undone turns tried and what went wrong. Without
+		 * one, the model is told what those turns asked, word for word.
+		 */
+		summarizer?: LLMClient;
 	}) {
 		if (!Number.isInteger(maxSteps) || maxSteps < 1) {
 			throw new InvalidAgentConfigError(
@@ -128,6 +153,8 @@ export class LLMAgent implements Agent {
 		this.maxSteps = maxSteps;
 		this.autoApprove = autoApprove;
 		this.logger = logger;
+		this.history = history;
+		this.summarizer = summarizer;
 		this.tools = new Map(tools.map(tool => [tool.name, tool]));
 		if (this.tools.size !== tools.length) {
 			// The model calls tools by name, so a second one with the same name could never run.
@@ -141,13 +168,73 @@ export class LLMAgent implements Agent {
 		}));
 	}
 
-	private async llmCall(runMessages: Message[], signal: AbortSignal): Promise<LLMResponse> {
+	private async followHistory(history: HistoryReader): Promise<Followed> {
+		try {
+			return await followHistory(this.conversation, history, this.seenRevision);
+		} catch (error) {
+			throw classifyLocalFailure(error, 'The workspace history could not be read');
+		}
+	}
+
+	/**
+	 * Asks the summarizer what the undone turns tried and what went wrong. A summary is a help,
+	 * not a need: one that fails is reported and the plain note is used instead.
+	 */
+	private async summarizeUndone(
+		followed: Followed,
+		signal: AbortSignal,
+	): Promise<{ text?: string; usage?: Tokens; called: boolean }> {
+		if (!this.summarizer) return { called: false };
+		const reasons = followed.revisions.flatMap(revision =>
+			revision.reason ? [revision.reason] : [],
+		);
+		const prompt = [
+			'The user undid the work in the conversation below and moved the workspace back to before it.',
+			reasons.length > 0 ? `Their reason: ${reasons.map(reason => `«${reason}»`).join(' ')}` : '',
+			'In at most five short lines, say what was tried, why it went wrong or why the user went back, and what could be done better. Plain text, no preamble.',
+			'',
+			transcriptOf(this.conversation, followed.undone),
+		].join('\n');
+
+		try {
+			const response = await this.summarizer.send(
+				{ context: [{ role: 'user', content: [{ type: 'text', text: prompt }] }], tools: [] },
+				signal,
+			);
+			const text = response.message.content
+				.filter(part => part.type === 'text')
+				.map(part => part.text)
+				.join('\n')
+				.trim();
+			return {
+				...(text ? { text } : {}),
+				...(response.usage ? { usage: response.usage } : {}),
+				called: true,
+			};
+		} catch (error) {
+			if (isAbortError(error)) throw error;
+			treatErrors(
+				() => {
+					this.logger?.warn(`The summary of the undone turns failed: ${describeFailure(error)}`);
+				},
+				classifyHostFailure,
+				'LLM agent logger failed',
+			);
+			return { called: true };
+		}
+	}
+
+	private async llmCall(
+		runMessages: Message[],
+		after: number | undefined,
+		signal: AbortSignal,
+	): Promise<LLMResponse> {
 		let response: LLMResponse;
 		try {
 			// Sent as a copy, so what the run records is what the agent built, whatever the client does.
 			response = await this.llmClient.send(
 				{
-					context: [...this.conversation.getContext(), ...structuredClone(runMessages)],
+					context: [...this.conversation.contextAfter(after), ...structuredClone(runMessages)],
 					tools: this.toolDefinitions,
 				},
 				signal,
@@ -350,10 +437,32 @@ export class LLMAgent implements Agent {
 		let unreported = false;
 		// Per run, not per instance: what one run executed says nothing about another.
 		const effects: RunEffects = { toolRan: false };
+		// The turn this one follows: the last recorded, unless the workspace moved since.
+		let after = this.conversation.currentTurn;
+		let followed: Followed | undefined;
 
 		try {
+			if (this.history) {
+				followed = await this.followHistory(this.history);
+				after = followed.turn;
+				if (followed.undone.length > 0) {
+					const summary = await this.summarizeUndone(followed, signal);
+					tokens = addTokens(tokens, summary.usage);
+					unreported ||= summary.called && !summary.usage;
+					const note = await undoNote({
+						conversation: this.conversation,
+						history: this.history,
+						followed,
+						...(summary.text ? { summary: summary.text } : {}),
+					}).catch((error: unknown) => {
+						throw classifyLocalFailure(error, 'The workspace history could not be read');
+					});
+					runMessages[0]?.content.unshift({ type: 'text', text: note });
+				}
+			}
+
 			for (let step = 1; step <= this.maxSteps; step++) {
-				const response = await this.llmCall(runMessages, signal);
+				const response = await this.llmCall(runMessages, after, signal);
 				tokens = addTokens(tokens, response.usage);
 				unreported ||= !response.usage;
 				runMessages.push(response.message);
@@ -365,8 +474,10 @@ export class LLMAgent implements Agent {
 
 				const calls = response.message.content.filter(part => part.type === 'toolCall');
 				if (calls.length === 0) {
-					// Recorded only now, so a failed run leaves no tool call without its result.
-					this.conversation.addRun(runMessages);
+					// Recorded only now, so a failed run leaves no tool call without its result, and a
+					// note about what was undone is given again to the next run.
+					this.conversation.addRunAfter(after, runMessages, context.historyRun);
+					if (followed) this.seenRevision = followed.latestRevision;
 
 					return {
 						// Only the final answer: text from earlier steps was narrated as it came.

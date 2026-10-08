@@ -23,7 +23,13 @@ export class WorkspaceWrites {
 	editorFor(context: RunContext): FileEditor {
 		let session = this.sessions.get(context);
 		if (!session) {
-			const created = new WriteSession({ store: this.store });
+			const created = new WriteSession({
+				store: this.store,
+				// So every turn of the run, in every role, can be tied to what it wrote.
+				onStart: runId => {
+					context.historyRun.runId = runId;
+				},
+			});
 			context.onFinish(end => created.finish(end));
 			this.sessions.set(context, created);
 			session = created;

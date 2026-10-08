@@ -13,6 +13,12 @@ export type RunEnd = 'completed' | 'failed' | 'cancelled';
 export class RunContext {
 	private readonly finishers: ((end: RunEnd) => Promise<void>)[] = [];
 
+	/**
+	 * The run the workspace's history recorded for this run, once it first wrote. The object is
+	 * shared, not copied: a turn recorded before the first write still learns its run.
+	 */
+	readonly historyRun: { runId?: string } = {};
+
 	/** Ends something the run started, when the run ends. */
 	onFinish(finisher: (end: RunEnd) => Promise<void>): void {
 		this.finishers.push(finisher);
