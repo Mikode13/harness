@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type RunJournal, WorkspaceBusyError } from '../../src/recovery/domain/recoveryStore.ts';
+import { UnknownRunError } from '../../src/recovery/domain/runTree.ts';
 import {
 	defaultStateDirectory,
 	FileRecoveryStore,
@@ -208,7 +209,7 @@ describe('FileRecoveryStore', () => {
 	it.each(['../outside', 'runs/../../x', ''])('refuses %j as a run id', async runId => {
 		const store = await FileRecoveryStore.open({ root, directory });
 
-		await expect(store.readRun(runId)).rejects.toThrow(/Not a run id/);
+		await expect(store.readRun(runId)).rejects.toBeInstanceOf(UnknownRunError);
 	});
 
 	it('refuses to read content by anything but a hash', async () => {

@@ -495,6 +495,7 @@ export class LLMAgent implements Agent {
 							.join('\n'),
 						tokens: unreported ? undefined : tokens,
 						duration: (Date.now() - start) / 1000,
+						...(context.historyRun.runId ? { runId: context.historyRun.runId } : {}),
 					};
 				}
 

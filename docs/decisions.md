@@ -1374,3 +1374,37 @@ tags: #mikode-harness #recovery #undo #llm
 - In the orchestrator, the planner and reviewer turns follow the executor's run only once the three roles share one run context. Today each role starts its own; #71 makes it one.
 - The factory turns this on with the workspace in #71, where it also gives the summarizer, Haiku or `gpt-5.6-luna` at high effort.
 - A conversation that was compacted cannot be cut back past the compaction; #48 decides what a move behind it does.
+
+## The history is a public object beside `Agent`, and a run names what it recorded
+
+tags: #mikode-harness #recovery #undo #api
+
+**Decision:** a consumer reaches the history of a workspace through `createHistory({ root })`, not through `Agent`:
+
+- **`History`** has `list()`, `changes(runId)`, `goTo(runId | historyStart)`, `undo()` and `redo()`. Each move takes an optional `reason`.
+- **`list()`** gives each run with its parent, status, times and the files it changed. It gives no label: a host that wants one names the run itself.
+- **A move** returns where it came from and went, whether it was `complete`, and the files it left. Paths are relative to the root, as in `changes`.
+- **`AgentResponse.runId`** names the run a writing run recorded. A run that wrote nothing, and the Agent SDK engines, leave it out.
+- The errors a consumer branches on are exported: `WorkspaceBusyError`, `NothingToMoveError`, `UnknownRunError` and `HistoryExpiredError`. An id that is not one, or that this workspace never had, is an `UnknownRunError`.
+
+**Context:** #69. The user decided several points:
+
+- methods do not repeat the noun: `list`, not `listRuns`, and `goTo`;
+- `Agent` keeps only `run()`, and `runId` is an optional field of `AgentResponse`;
+- the Agent SDK engines offer no history, because their changes are not inferred afterwards;
+- `changes` is shown whole to the consumer;
+- `list()` carries each run's files, for the host to show or not, and no label.
+
+The user delegated the remaining names to me.
+
+**Alternatives considered:**
+
+- **Methods on `Agent`**, such as `agent.undo()`. Rejected by the user: every engine would have to answer them, and the Agent SDK engines have no history to give.
+- **A label per run**: the prompt cut short, or a name the consumer passes in `RunOptions`. The user chose none for now. The files and the diff identify a run, and either label can be added later without breaking anything.
+- **Exporting `RecoveryStore` itself.** It also exposes the journal, the content hashes and the store's own records, which would all become public API.
+
+**Consequences:**
+
+- A history opened beside a writing agent is a second view of the same files on disk. The workspace lock keeps them apart, so a move during a run fails with `WorkspaceBusyError`.
+- `list()` reads every kept run's journal, at most 25.
+- The write tools that record these runs are not exported yet, and the orchestrator's response has no `runId` until its roles share one run context. #71 does both.

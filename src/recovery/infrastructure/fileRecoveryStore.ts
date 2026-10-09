@@ -29,7 +29,7 @@ import {
 	WorkspaceBusyError,
 } from '../domain/recoveryStore.ts';
 import { chainEntries, nextPruneStep } from '../domain/retention.ts';
-import { HistoryExpiredError, redoTarget, route } from '../domain/runTree.ts';
+import { HistoryExpiredError, redoTarget, route, UnknownRunError } from '../domain/runTree.ts';
 import {
 	currentState,
 	hasRealParents,
@@ -290,13 +290,23 @@ export class FileRecoveryStore implements RecoveryStore {
 	}
 
 	async readRun(runId: string): Promise<{ record: RunRecord; entries: JournalEntry[] }> {
+		// An id from outside is checked before it names a folder.
+		if (!runIdPattern.test(runId)) throw new UnknownRunError(runId);
 		// The lock first: a run that finishes between the two reads then shows as finished, not as
 		// a `running` record nobody holds.
 		const holder = await readLock(join(this.directory, 'lock'));
 		// Before the record: a crash can leave the folder of a run retention already took.
 		await this.assertNotAbsorbed(runId);
-		const record = withLiveStatus(await this.readRecord(runId), holder);
-		return { record, entries: await this.readEntries(runId, record.journal) };
+		const record = await this.readRecord(runId).catch(async (error: unknown) => {
+			if (!isNotFound(error)) throw error;
+			// Retention may have taken it since the check above.
+			await this.assertNotAbsorbed(runId);
+			throw new UnknownRunError(runId);
+		});
+		return {
+			record: withLiveStatus(record, holder),
+			entries: await this.readEntries(runId, record.journal),
+		};
 	}
 
 	private async readRecord(runId: string): Promise<RunRecord> {

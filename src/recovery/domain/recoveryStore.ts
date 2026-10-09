@@ -152,7 +152,12 @@ export interface RecoveryStore {
 	redo(options?: { reason?: string }): Promise<Revision>;
 	/** Every move of the workspace, oldest first. */
 	listRevisions(): Promise<Revision[]>;
-	/** A run's record and its changes, in the order they were prepared. */
+	/**
+	 * A run's record and its changes, in the order they were prepared.
+	 *
+	 * @throws {UnknownRunError} when `runId` was never a run of this workspace.
+	 * @throws {HistoryExpiredError} when retention removed `runId` or chained it into a later run.
+	 */
 	readRun(runId: string): Promise<{ record: RunRecord; entries: JournalEntry[] }>;
 	/** The bytes a hash names. */
 	readContent(hash: string): Promise<Buffer>;

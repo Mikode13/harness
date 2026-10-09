@@ -45,3 +45,12 @@ export type { TextMatch, Workspace } from './tools/domain/workspace.ts';
 export { defineTool } from './tools/infrastructure/defineTool.ts';
 export { createWorkspace } from './tools/infrastructure/createWorkspace.ts';
 export { createWorkspaceTools } from './tools/infrastructure/workspaceTools.ts';
+export { createHistory } from './recovery/infrastructure/createHistory.ts';
+export type { History, HistoryRun, Move } from './recovery/domain/history.ts';
+export {
+	historyStart,
+	NothingToMoveError,
+	WorkspaceBusyError,
+	type RunStatus,
+} from './recovery/domain/recoveryStore.ts';
+export { HistoryExpiredError, UnknownRunError } from './recovery/domain/runTree.ts';
