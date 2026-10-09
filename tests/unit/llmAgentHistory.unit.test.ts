@@ -3,11 +3,14 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { HistoryReader } from '../../src/engines/domain/model/historyFollower.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import type { LLMClient, LLMResponse } from '../../src/llm/domain/llm.ts';
 import type { Message } from '../../src/llm/domain/message.ts';
 import { historyStart } from '../../src/recovery/domain/recoveryStore.ts';
+import { HistoryExpiredError } from '../../src/recovery/domain/runTree.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
+import { UnrecoverableError } from '../../src/shared/domain/errors.ts';
 import type { ILogger } from '../../src/shared/domain/logger.ts';
 import {
 	assistantResponse,
@@ -15,6 +18,7 @@ import {
 	textResponse,
 	toolCall,
 } from '../support/fakeLlmClient.ts';
+import { recordRun } from '../support/recordedRuns.ts';
 import { replaceTool, writesOver } from '../support/replaceTool.ts';
 
 const signal = new AbortController().signal;
@@ -79,7 +83,7 @@ class ScriptedModel implements LLMClient {
 
 async function agentOver(
 	model: ScriptedModel,
-	options: { summarizer?: LLMClient; logger?: ILogger } = {},
+	options: { summarizer?: LLMClient; logger?: ILogger; history?: HistoryReader } = {},
 ): Promise<LLMAgent> {
 	return new LLMAgent({
 		llmClient: model,
@@ -215,6 +219,37 @@ describe('LLMAgent following moves through the workspace history', () => {
 		);
 	});
 
+	it('names the files of an undone run retention chained, from the run that holds them', async () => {
+		const model = new ScriptedModel().writes('a.txt', 'one').answers('ok');
+		const agent = await agentOver(model, { history: readRunOf(store, chainedInto) });
+		await agent.run('first', { signal });
+		await store.undo();
+		const keeper = await recordRun(store, repo, [['kept.txt', 'kept']]);
+		await store.goTo(historyStart);
+
+		await agent.run('next', { signal });
+
+		expect(prompt(model.firstContexts[1])[0]).toContain('Files those runs had changed: kept.txt');
+
+		/** Every run but `keeper` reads as chained into it, which is then off the line too. */
+		function chainedInto(runId: string): undefined {
+			if (runId !== keeper) throw new HistoryExpiredError(runId, keeper);
+			return undefined;
+		}
+	});
+
+	it('fails the run, classified, when the history cannot be read', async () => {
+		const model = new ScriptedModel().writes('a.txt', 'one').answers('ok');
+		const denied = (): never => {
+			throw new Error('EACCES: permission denied');
+		};
+		const agent = await agentOver(model, { history: readRunOf(store, denied) });
+		await agent.run('first', { signal });
+		await store.undo();
+
+		await expect(agent.run('next', { signal })).rejects.toBeInstanceOf(UnrecoverableError);
+	});
+
 	it('gives the note again to the next run when the run that carried it failed', async () => {
 		const model = new ScriptedModel()
 			.writes('a.txt', 'one')
@@ -268,4 +303,44 @@ describe('LLMAgent following moves through the workspace history', () => {
 			'The summary of the undone turns failed: quota exceeded',
 		);
 	});
+
+	it.each(['refused', 'truncated'] as const)(
+		'does not take a %s summary for one, and still counts its tokens',
+		async stopReason => {
+			const model = new ScriptedModel().writes('a.txt', 'one').answers('ok');
+			const logger: ILogger = { warn: vi.fn() };
+			const summarizer = new FakeLLMClient(
+				textResponse('I cannot help with that.', {
+					usage: { inputTokens: 100, outputTokens: 10 },
+					stopReason,
+				}),
+			);
+			const agent = await agentOver(model, { summarizer, logger });
+			await agent.run('rewrite a.txt', { signal });
+			await store.undo();
+
+			const response = await agent.run('next', { signal });
+
+			const note = prompt(model.firstContexts[1])[0];
+			expect(note).toContain('«rewrite a.txt»');
+			expect(note).not.toContain('I cannot help with that.');
+			expect(logger.warn).toHaveBeenCalledWith(
+				`The summary of the undone turns failed: the model stopped with "${stopReason}"`,
+			);
+			expect(response.tokens?.inputTokens).toBe(101);
+		},
+	);
 });
+
+/**
+ * The store's history, with `readRun` going through `override` first: whatever it throws is
+ * thrown, and when it returns, the store answers.
+ */
+function readRunOf(history: HistoryReader, override: (runId: string) => undefined): HistoryReader {
+	return Object.assign(Object.create(history) as HistoryReader, {
+		readRun: async (runId: string) => {
+			override(runId);
+			return history.readRun(runId);
+		},
+	});
+}

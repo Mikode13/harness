@@ -1,6 +1,7 @@
 import type { Conversation } from '#src/llm/domain/conversation';
 import type { Message } from '#src/llm/domain/message';
 import type { RecoveryStore, Revision } from '#src/recovery/domain/recoveryStore';
+import { HistoryExpiredError } from '#src/recovery/domain/runTree';
 
 /** What an agent reads of its workspace's history. */
 export type HistoryReader = Pick<RecoveryStore, 'listRuns' | 'listRevisions' | 'readRun'>;
@@ -121,8 +122,7 @@ export async function undoNote({
 			.flatMap(turn => (turn.runId ? [turn.runId] : [])),
 	);
 	for (const runId of runs) {
-		// A run retention took no longer names its files; the others still do.
-		const record = await history.readRun(runId).catch(() => undefined);
+		const record = await changesOf(history, runId);
 		if (!record) continue;
 		root = record.record.root;
 		for (const entry of record.entries) files.add(entry.path);
@@ -185,6 +185,28 @@ export function transcriptOf(
 	}
 	const text = lines.join('\n');
 	return text.length <= maxChars ? text : `${text.slice(0, maxChars)}\n[the rest was cut]`;
+}
+
+/**
+ * A run's record and changes. A run retention chained into a later one is read from the run that
+ * holds its changes now, which names that run's own files too: they were undone with it, since a
+ * run is only off the line when the run that holds it is. A run retention removed names nothing.
+ */
+async function changesOf(
+	history: HistoryReader,
+	runId: string,
+): Promise<Awaited<ReturnType<HistoryReader['readRun']>> | undefined> {
+	const tried = new Set<string>();
+	for (let id: string | undefined = runId; id !== undefined && !tried.has(id);) {
+		tried.add(id);
+		try {
+			return await history.readRun(id);
+		} catch (error) {
+			if (!(error instanceof HistoryExpiredError)) throw error;
+			id = error.keptIn;
+		}
+	}
+	return undefined;
 }
 
 /** The prompt of a turn: its first message's last text, after any note the harness put first. */

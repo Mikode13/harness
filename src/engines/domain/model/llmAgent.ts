@@ -196,32 +196,40 @@ export class LLMAgent implements Agent {
 			transcriptOf(this.conversation, followed.undone),
 		].join('\n');
 
+		let response: LLMResponse;
 		try {
-			const response = await this.summarizer.send(
+			response = await this.summarizer.send(
 				{ context: [{ role: 'user', content: [{ type: 'text', text: prompt }] }], tools: [] },
 				signal,
 			);
-			const text = response.message.content
-				.filter(part => part.type === 'text')
-				.map(part => part.text)
-				.join('\n')
-				.trim();
-			return {
-				...(text ? { text } : {}),
-				...(response.usage ? { usage: response.usage } : {}),
-				called: true,
-			};
 		} catch (error) {
 			if (isAbortError(error)) throw error;
-			treatErrors(
-				() => {
-					this.logger?.warn(`The summary of the undone turns failed: ${describeFailure(error)}`);
-				},
-				classifyHostFailure,
-				'LLM agent logger failed',
-			);
+			this.warnSummaryFailed(describeFailure(error));
 			return { called: true };
 		}
+
+		const usage = response.usage ? { usage: response.usage } : {};
+		// A refused or cut summary is not one: the model would read it as what was tried.
+		if (response.stopReason !== 'completed') {
+			this.warnSummaryFailed(`the model stopped with "${response.stopReason}"`);
+			return { ...usage, called: true };
+		}
+		const text = response.message.content
+			.filter(part => part.type === 'text')
+			.map(part => part.text)
+			.join('\n')
+			.trim();
+		return { ...(text ? { text } : {}), ...usage, called: true };
+	}
+
+	private warnSummaryFailed(why: string): void {
+		treatErrors(
+			() => {
+				this.logger?.warn(`The summary of the undone turns failed: ${why}`);
+			},
+			classifyHostFailure,
+			'LLM agent logger failed',
+		);
 	}
 
 	private async llmCall(
