@@ -1343,3 +1343,34 @@ A move to a run that is gone reports `HistoryExpiredError`, naming the run that 
 - Chaining reads and rewrites at most two journals, and collecting contents reads every kept journal. Both stay small with 25 runs.
 - `keepRuns` must be at least 3. The run the workspace is at is never removed, and the last run of its line has no next run to be chained into, so two runs can remain besides the new one.
 - Retention is expected to move to the session manager (#29).
+
+## The conversation follows the workspace through its history
+
+tags: #mikode-harness #recovery #undo #llm
+
+**Decision:** an `LLMAgent` given the workspace's history (`history`) follows the user's moves through it before each run.
+
+- **A conversation is a tree of turns.** A turn that wrote is tied to the history run it wrote in. The tie lives in an object the run's context shares, so a turn recorded before the run first wrote still learns it. A turn that wrote nothing belongs to the run of the turn it followed.
+- **Which turn to continue from:** among the turns whose run is on the line from the start to the head, the one nearest the head, and of those the newest. A run chained into a later one counts as that one, and a run retention removed is off every line.
+- **Nothing is deleted.** The context is the path to that turn, and the turns left behind stay in the tree, so a redo brings them back.
+- **The note:** turns whose run left the line were undone. The next run's prompt starts with a note naming them:
+  - what they asked, or a summary from a `summarizer` (a cheap model);
+  - the files those runs had changed;
+  - the files a move left as they were;
+  - the user's reasons since the conversation last looked.
+- **A failed run records nothing**, so the next run gives the note again.
+
+**Context:** #68, under the history the user chose for #52. The user decided that the conversation is cut back and keeps what was cut, that only turns which wrote are tied to a run (a read-only turn goes with the one before it), and that the summary comes from the cheap model of the agent's own provider. The orchestrator uses the planner's provider. The note is deterministic by default.
+
+**Alternatives considered:**
+
+- **A notice in place of the turns**, keeping the conversation whole. That was v2's plan for undo of the latest run. The model would still reason over work the user threw away.
+- **Deleting the undone turns.** Simpler, but a redo could not bring them back.
+- **A note message of its own**, between turns. Some providers want turns to alternate. Folding the note into the next prompt keeps the context valid, and ties the note to the turn that read it.
+
+**Consequences:**
+
+- A turn left on another branch whose run is still on the line, such as a question asked while the workspace was back, is hidden after a redo but not counted as undone, so no note is given.
+- In the orchestrator, the planner and reviewer turns follow the executor's run only once the three roles share one run context. Today each role starts its own; #71 makes it one.
+- The factory turns this on with the workspace in #71, where it also gives the summarizer, Haiku or `gpt-5.6-luna` at high effort.
+- A conversation that was compacted cannot be cut back past the compaction; #48 decides what a move behind it does.

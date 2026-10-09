@@ -18,6 +18,7 @@ const defaultMaxChanges = 500;
 export class WriteSession {
 	private readonly store: RecoveryStore;
 	private readonly maxChanges: number;
+	private readonly onStart: ((runId: string) => void) | undefined;
 	private journal: Promise<RunJournal> | undefined;
 	private changes = 0;
 	private stopped: string | undefined;
@@ -25,12 +26,16 @@ export class WriteSession {
 	constructor({
 		store,
 		maxChanges = defaultMaxChanges,
+		onStart,
 	}: {
 		store: RecoveryStore;
 		maxChanges?: number;
+		/** Told the run's id once its journal has started, before its first change is recorded. */
+		onStart?: (runId: string) => void;
 	}) {
 		this.store = store;
 		this.maxChanges = maxChanges;
+		this.onStart = onStart;
 	}
 
 	/** The journal for one more change, counted against the run's limit. */
@@ -42,7 +47,10 @@ export class WriteSession {
 			);
 		}
 
-		this.journal ??= this.store.startRun();
+		this.journal ??= this.store.startRun().then(started => {
+			this.onStart?.(started.runId);
+			return started;
+		});
 		let journal: RunJournal;
 		try {
 			journal = await this.journal;

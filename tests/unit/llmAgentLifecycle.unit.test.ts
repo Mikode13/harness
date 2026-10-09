@@ -11,15 +11,13 @@ import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecover
 import { UnrecoverableError } from '../../src/shared/domain/errors.ts';
 import type { ILogger } from '../../src/shared/domain/logger.ts';
 import type { PreparedCall, PreparingTool } from '../../src/tools/domain/preparedCall.ts';
-import { GitIgnoreRules } from '../../src/tools/infrastructure/gitIgnoreRules.ts';
-import { RootsAccessPolicy } from '../../src/tools/infrastructure/rootsAccessPolicy.ts';
-import { WorkspaceWrites } from '../../src/tools/infrastructure/workspaceWrites.ts';
 import {
 	assistantResponse,
 	FakeLLMClient,
 	textResponse,
 	toolCall,
 } from '../support/fakeLlmClient.ts';
+import { replaceTool, writesOver as writesOverRoot } from '../support/replaceTool.ts';
 
 const signal = new AbortController().signal;
 const schema = { type: 'object' as const, properties: {}, required: [] };
@@ -238,33 +236,6 @@ describe('LLMAgent and the run context', () => {
 	});
 });
 
-/** A minimal write tool on the real engine: replaces a whole file. The real ones arrive later. */
-function replaceTool(
-	writes: WorkspaceWrites,
-	risk: PreparedCall['risk'] = 'mutating',
-): PreparingTool {
-	return {
-		name: 'replace',
-		description: 'Replaces a file',
-		inputSchema: schema,
-		prepare: async (input, prepareSignal, context) => {
-			const { path, content } = input as { path: string; content: string };
-			const editor = writes.editorFor(context);
-			const edit = await editor.prepare(
-				{ kind: 'replace', path, content: Buffer.from(content) },
-				prepareSignal,
-			);
-			return {
-				risk,
-				run: async runSignal => {
-					await editor.apply(edit, runSignal);
-					return `Changed ${path}`;
-				},
-			};
-		},
-	};
-}
-
 describe('LLMAgent writing a real repository through the engine', () => {
 	let parent: string;
 	let repo: string;
@@ -272,14 +243,8 @@ describe('LLMAgent writing a real repository through the engine', () => {
 
 	const read = (path: string) => readFileSync(join(repo, path), 'utf8');
 
-	async function writesOver(recovery: RecoveryStore = store) {
-		return new WorkspaceWrites({
-			policy: await RootsAccessPolicy.create({
-				roots: [{ path: repo, access: 'write' }],
-				ignoreRules: new GitIgnoreRules(),
-			}),
-			store: recovery,
-		});
+	function writesOver(recovery: RecoveryStore = store) {
+		return writesOverRoot(repo, recovery);
 	}
 
 	/** The model replaces `path` with `content`, then answers. */
