@@ -1,16 +1,18 @@
 import type { AccessPolicy } from '../domain/accessPolicy.ts';
 import type { TextMatch, Workspace } from '../domain/workspace.ts';
 
-// Everything the inner workspace found, so a secret is taken out before the page is cut. It
-// gathers every result before slicing anyway; only the page is cut here.
-const everything = Number.MAX_SAFE_INTEGER;
-
 /**
- * The read `Workspace` with the access policy's word on every path it returns: a secret the
- * policy closes is neither listed, nor searched, nor read, even where `.gitignore` lets it
- * through. It is taken out of the whole result before the page is cut, so neither the page nor
- * `total` reveals it: a count that included its matches would answer whether a guess at its
- * contents was right.
+ * The read `Workspace` of the file tools, under their access policy.
+ *
+ * `listFiles` and `searchText` rely on the workspace beneath, which is built with the policy's
+ * `hidesFromReading` as its `hidden` filter. That filter leaves out a protected file, or a secret
+ * the host did not open, before anything is counted or stored, so no page, total, limit or error
+ * can tell that one matched. Its candidates are already free of what `.gitignore` excludes, are
+ * inside the root, and are never reached through a link: the program that lists them does not
+ * follow links, and links are not regular files. Running the whole policy on every path a
+ * listing returns would add nothing for these paths, and would cost one `git check-ignore` each.
+ *
+ * `readFile` is given a path by the model, which can be anything, so the whole policy decides it.
  */
 export class PolicyWorkspace implements Workspace {
 	private readonly inner: Workspace;
@@ -21,30 +23,18 @@ export class PolicyWorkspace implements Workspace {
 		this.policy = policy;
 	}
 
-	async listFiles(
+	listFiles(
 		query: { path?: string; glob?: string; limit: number },
 		signal: AbortSignal,
 	): Promise<{ files: string[]; total: number; truncated: boolean }> {
-		const { files } = await this.inner.listFiles({ ...query, limit: everything }, signal);
-		const open = await this.readable(files, file => file, signal);
-		return {
-			files: open.slice(0, query.limit),
-			total: open.length,
-			truncated: open.length > query.limit,
-		};
+		return this.inner.listFiles(query, signal);
 	}
 
-	async searchText(
+	searchText(
 		query: { pattern: string; ignoreCase: boolean; path?: string; glob?: string; limit: number },
 		signal: AbortSignal,
 	): Promise<{ matches: TextMatch[]; total: number; truncated: boolean }> {
-		const { matches } = await this.inner.searchText({ ...query, limit: everything }, signal);
-		const open = await this.readable(matches, match => match.path, signal);
-		return {
-			matches: open.slice(0, query.limit),
-			total: open.length,
-			truncated: open.length > query.limit,
-		};
+		return this.inner.searchText(query, signal);
 	}
 
 	async readFile(
@@ -53,28 +43,5 @@ export class PolicyWorkspace implements Workspace {
 	): Promise<{ lines: string[]; totalLines: number; truncated: boolean }> {
 		await this.policy.check(query.path, 'read', signal);
 		return this.inner.readFile(query, signal);
-	}
-
-	/** The items whose path the policy lets this agent read. */
-	private async readable<Item>(
-		items: Item[],
-		pathOf: (item: Item) => string,
-		signal: AbortSignal,
-	): Promise<Item[]> {
-		const verdicts = new Map<string, boolean>();
-		const open: Item[] = [];
-		for (const item of items) {
-			const path = pathOf(item);
-			let allowed = verdicts.get(path);
-			if (allowed === undefined) {
-				allowed = await this.policy.check(path, 'read', signal).then(
-					() => true,
-					() => false,
-				);
-				verdicts.set(path, allowed);
-			}
-			if (allowed) open.push(item);
-		}
-		return open;
 	}
 }
