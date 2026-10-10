@@ -1469,3 +1469,43 @@ Messages name a file only as the model wrote it.
   - **A filesystem error the policy or a read does not expect,** such as a loop of links or a file it may not open, is named by the model's path and its error code only.
 - The tracked `readFile` splits lines as the diff of an edit does: on `\n`, dropping a `\r` before it. The line numbers of a read and of an edit's response always agree. A lone `\r` stays inside its line.
 - The path convention is unchanged: a path is relative to the first root, or absolute for a file in another root. Tool responses, `showChanges` and the undo note already follow it. The system prompt that tells the model the roots arrives with the factories (#81).
+
+## Each provider edits in its native format, on the one edit engine
+
+tags: #mikode-harness #tools #llm
+
+**Decision:** an editing agent writes files with the tool its provider's models were trained on:
+
+- **OpenAI's `apply_patch`**: one `create_file`, `update_file` or `delete_file` operation per call, with V4A diffs.
+- **Claude's text editor** (`text_editor_20250728`): `view`, `str_replace`, `create` and `insert`, plus our own `delete_file`.
+
+Both formats become the same internal operations through `prepareTrackedEdit`, so the access policy, the recovery journal and the read checks apply the same way whatever the provider.
+
+- **Declaring a native tool is internal.** A symbol on the definition (`asNative`) marks it, so `ToolDefinition` is unchanged for consumers and none of their tools can claim to be native. A client declares the tools it `supportsNative`. `LLMAgent` refuses one its client cannot declare when it is built, not on the first call.
+- **OpenAI's items.** `apply_patch_call` becomes a tool call whose input is the operation. It goes back as the same item, and its result as `apply_patch_call_output`, `failed` when the call failed.
+- **Claude's tool blocks.** The text editor's calls and results are ordinary `tool_use` and `tool_result` blocks, under the name Anthropic fixes, `str_replace_based_edit_tool`.
+- **The V4A applier is ours** (`applyUpdate`). It applies each hunk after the one before it.
+  - It finds a hunk's lines exactly, then ignoring trailing whitespace, then ignoring whitespace at either end, as Codex does.
+  - Unlike Codex, which takes the first match, the lines must appear once in the part of the file the hunk searches. When they do not, the error asks for an `@@` line naming the function, or more context.
+  - An `@@` anchor is found first. `*** End of File` ties a hunk to the end of the file.
+  - A kept line stays as the file has it, even where the patch copied it with a space lost.
+  - The file keeps its CRLF endings, and its final newline or lack of one.
+  - A diff larger than 512 KB, or one with more than 500 hunks, is refused.
+- **The text editor:**
+  - `view` reads through the access policy and counts as a read. On a folder it lists the files in it through the read `Workspace`, so ignored files stay hidden.
+  - `str_replace` needs the old text to appear exactly once. In a CRLF file, text the model sends with `\n` is matched and written with CRLF.
+  - `create` makes only a file that does not exist. Anthropic's reference implementation overwrites, but here a file is changed only from a version the conversation read.
+
+**Context:** #80, the second part of #71. The [v2 plan](https://github.com/Mikode13/harness/issues/52#issuecomment-5984397266) for #52 decided the native formats, that both translate into the same operations, that the V4A applier is ours, and that native declarations stay internal. `examples/edit-tools-wire-smoke.ts` verified both formats live with `gpt-5.6-luna` and `claude-sonnet-5`.
+
+**Alternatives considered:**
+
+- **One function-call edit tool for both providers.** Simpler, but the models are trained on their own tools, and the v2 plan chose the native formats.
+- **A field `native` on `ToolDefinition`.** That type is public, so consumers could declare a native tool and receive provider operations in their own `execute`.
+- **Applying a hunk at its first match**, as Codex does. That is more forgiving, but a context that appears twice can land the change in the wrong place without any error.
+
+**Consequences:**
+
+- An OpenAI executor has `readFile` beside `apply_patch`, because `apply_patch` cannot read. A Claude executor reads with `view`.
+- A conversation that moves between providers keeps each call under its tool's name. A patch call sent to a client that does not offer `apply_patch` goes as a plain function call, and an `apply_patch_call` from a response that offered no such tool is logged and dropped.
+- Which tools each role gets, and the system prompt that names the roots, come with the factories in #81.
