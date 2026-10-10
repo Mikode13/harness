@@ -1464,7 +1464,8 @@ Messages name a file only as the model wrote it.
 - Each role keeps its own registry, so a file the planner read is not read for the executor.
 - Reads follow the policy's rules for every path, and the review of #82 tightened two of them.
   - **A path below a secret name inside a root is a secret.** `.env/x` used to be refused for running through `.env` when that file existed, and read as missing when it did not. Folders above the root do not count, so a workspace inside `.env.d` stays open.
-  - **A path that runs through a file** gets the answer its name gets.
+    - This also closes a whole folder with a secret name, such as a Python virtual environment named `.env/`. Such a folder is usually ignored by git anyway. `allow` opens exact files only, so a host cannot open the folder whole.
+  - **A path that runs through a file** is judged from where that file really is. Its links are resolved first, so it goes through the same outside, protected, secret and ignore checks as any other path. It is refused for running through a file only when nothing else refuses it. A path through a link out of the workspace, or into `.git`, gets the same answer whether its names exist or not.
   - **A filesystem error the policy or a read does not expect,** such as a loop of links or a file it may not open, is named by the model's path and its error code only.
 - The tracked `readFile` splits lines as the diff of an edit does: on `\n`, dropping a `\r` before it. The line numbers of a read and of an edit's response always agree. A lone `\r` stays inside its line.
 - The path convention is unchanged: a path is relative to the first root, or absolute for a file in another root. Tool responses, `showChanges` and the undo note already follow it. The system prompt that tells the model the roots arrives with the factories (#81).

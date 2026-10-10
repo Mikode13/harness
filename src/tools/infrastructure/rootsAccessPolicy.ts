@@ -43,8 +43,10 @@ function secretRefusal(path: string): AccessDeniedError {
 	);
 }
 
-/** A path that runs through a file as if it were a folder. Internal to `check`. */
-class NotAFolderError extends Error {}
+/** A path the filesystem would not resolve, named only as the model wrote it. */
+function unreachable(shown: string, error: unknown): AccessDeniedError {
+	return new AccessDeniedError(`Could not reach "${shown}" (${code(error) ?? 'unknown error'})`);
+}
 
 function code(error: unknown): string | undefined {
 	return (error as NodeJS.ErrnoException).code;
@@ -163,16 +165,14 @@ export class RootsAccessPolicy implements AccessPolicy {
 			throw new AccessDeniedError(`"${path}" is not a valid path`);
 		}
 		const named = resolve(this.base, path);
-		let absolute: string;
-		try {
-			absolute = await this.realLocation(named, path);
-		} catch (error) {
-			if (!(error instanceof NotAFolderError)) throw error;
-			// It runs through a file: answered as its name would be, or the answer would tell
-			// whether a file the policy hides exists, such as `.env` in `.env/x`.
-			await this.refuseByName(named, path, access, signal);
-			throw new AccessDeniedError(`"${path}" treats a file as a folder`);
-		}
+		const { absolute, throughFile } = await this.realLocation(named, path);
+		// A path that runs through a file is judged like any other first, from where that file
+		// really is, and refused for it only if nothing else refuses it. Otherwise the answer
+		// would tell whether a file the policy hides exists, such as `.env` in `.env/x`.
+		const allowed = (found: AllowedPath): AllowedPath => {
+			if (throughFile) throw new AccessDeniedError(`"${path}" treats a file as a folder`);
+			return found;
+		};
 
 		const root = this.rootOf(absolute);
 		if (!root) throw new AccessDeniedError(`"${path}" is outside the workspace`);
@@ -185,7 +185,7 @@ export class RootsAccessPolicy implements AccessPolicy {
 			throw new AccessDeniedError(`"${path}" is protected by the harness`);
 		}
 		if (this.isOpened(absolute, access)) {
-			return { absolute, root: root.path, relative: relativePath };
+			return allowed({ absolute, root: root.path, relative: relativePath });
 		}
 		if (this.isSecret(named, absolute)) {
 			throw secretRefusal(path);
@@ -196,7 +196,7 @@ export class RootsAccessPolicy implements AccessPolicy {
 			}
 		}
 
-		return { absolute, root: root.path, relative: relativePath };
+		return allowed({ absolute, root: root.path, relative: relativePath });
 	}
 
 	private get base(): string {
@@ -208,21 +208,20 @@ export class RootsAccessPolicy implements AccessPolicy {
 	 * folder, resolved, plus the missing names. A link that leads nowhere is refused: writing to
 	 * it would create whatever it points at, wherever that is.
 	 */
-	private async realLocation(named: string, shown: string): Promise<string> {
+	private async realLocation(
+		named: string,
+		shown: string,
+	): Promise<{ absolute: string; throughFile: boolean }> {
 		const missing: string[] = [];
 		let existing = named;
 		for (;;) {
 			try {
-				return join(await realpath(existing), ...missing);
+				return { absolute: join(await realpath(existing), ...missing), throughFile: false };
 			} catch (error) {
-				if (code(error) === 'ENOTDIR') throw new NotAFolderError();
+				if (code(error) === 'ENOTDIR') return this.throughFile(existing, missing, shown);
 				// Such as a loop of links, or a folder it may not enter. Its own message would
 				// name the host path.
-				if (code(error) !== 'ENOENT') {
-					throw new AccessDeniedError(
-						`Could not reach "${shown}" (${code(error) ?? 'unknown error'})`,
-					);
-				}
+				if (code(error) !== 'ENOENT') throw unreachable(shown, error);
 			}
 			const isLink = await lstat(existing).then(
 				stats => stats.isSymbolicLink(),
@@ -238,29 +237,29 @@ export class RootsAccessPolicy implements AccessPolicy {
 	}
 
 	/**
-	 * Refuses `named`, which could not be resolved, for what its name alone says: outside the
-	 * workspace, read-only, protected, a secret, or ignored. Returns when nothing does.
+	 * Where a path that runs through a file would be: the deepest part of it that exists, which is
+	 * that file, resolved, plus the names after it.
 	 */
-	private async refuseByName(
+	private async throughFile(
 		named: string,
-		path: string,
-		access: Access,
-		signal: AbortSignal,
-	): Promise<void> {
-		const root = this.rootOf(named);
-		if (!root) throw new AccessDeniedError(`"${path}" is outside the workspace`);
-		if (access === 'write' && root.access === 'read') {
-			throw new AccessDeniedError(`"${path}" is in a read-only folder of the workspace`);
+		missing: string[],
+		shown: string,
+	): Promise<{ absolute: string; throughFile: boolean }> {
+		const after = [...missing];
+		let existing = named;
+		while (
+			!(await lstat(existing).then(
+				() => true,
+				() => false,
+			))
+		) {
+			after.unshift(basename(existing));
+			existing = dirname(existing);
 		}
-		if (this.isProtected(named, named)) {
-			throw new AccessDeniedError(`"${path}" is protected by the harness`);
-		}
-		if (this.isOpened(named, access)) return;
-		if (this.isSecret(named, named)) {
-			throw secretRefusal(path);
-		}
-		if (await this.isIgnored(named, signal)) {
-			throw new AccessDeniedError(`"${path}" is excluded by .gitignore`);
+		try {
+			return { absolute: join(await realpath(existing), ...after), throughFile: true };
+		} catch (error) {
+			throw unreachable(shown, error);
 		}
 	}
 
