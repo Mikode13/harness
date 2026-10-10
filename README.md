@@ -272,8 +272,20 @@ A move writes a file only if it still holds what the history expects. A file you
 changed since is left as it is and named in the move's `conflicts`, and the move is
 then not `complete`. The reason is kept with the move.
 
-A consumer branches on four errors: `WorkspaceBusyError` while a run or another move
-holds the workspace, `NothingToMoveError` with nothing to undo or redo,
+A move can be tied to where the workspace is. Pass `from`, a run or `historyStart`, and
+the move happens only if the workspace is still there; otherwise it fails with
+`WorkspaceMovedError` and changes nothing. Pass it when you showed the user what a move
+will do, so a run that ends while they answer cannot make it do something else:
+
+```ts
+const { head } = await history.list();
+// … show the user what undoing `head` does, and wait for a yes …
+await history.undo({ from: head ?? historyStart, reason });
+```
+
+A consumer branches on five errors: `WorkspaceBusyError` while a run or another move
+holds the workspace, `WorkspaceMovedError` when it is not at `from`,
+`NothingToMoveError` with nothing to undo or redo,
 `UnknownRunError` for a run the workspace never had, and `HistoryExpiredError` for one
 retention took. The history keeps 25 runs per workspace. Older runs are chained into
 the next, so `historyStart` always restores the original state. For a chained run,
@@ -310,8 +322,27 @@ The agents work on the repository root, which is the directory the script runs i
 Type your prompt at `>`. Press Ctrl+C while idle at the prompt to exit; pressing
 it while an agent is running cancels only that turn and returns to the prompt.
 
+A line that starts with `/` is a command for the CLI, not a prompt. Four commands
+move through the [history of what the agents wrote](#going-back-through-what-an-agent-wrote),
+without the model:
+
+- `/history` shows the tree of runs and marks where the workspace is.
+  `/history --files` adds the files each run changed.
+- `/undo` goes back to the run before the current one.
+- `/redo` goes forward again.
+- `/goto <run | start>` goes to a run, named by its id or its last six characters, or
+  to `start`, before any run.
+
+Each move says what it will do and changes nothing until you answer `y`. It then
+asks why, and records the reason, if you give one, with the move. A move that left
+files as they were, because they changed since, names them. None of the agents the
+CLI builds records runs yet, because none of them writes through the harness's tools.
+
 The CLI asks in the terminal before a destructive tool call runs: yes, always for
-that tool until the CLI exits, or no with an optional reason for the model. No
+that tool until the CLI exits, or no with an optional reason for the model. With
+piped input nobody can answer, so such a call is denied: a line written for a later
+question never approves one. Piped lines answer the prompt and the history commands in
+order. No
 agent it builds asks yet, because the harness's own tools only read and
 `autoApprove` is on.
 

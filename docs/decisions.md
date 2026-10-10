@@ -1382,11 +1382,12 @@ tags: #mikode-harness #recovery #undo #api
 **Decision:** a consumer reaches the history of a workspace through `createHistory({ root })`, not through `Agent`:
 
 - **`History`** has `list()`, `changes(runId)`, `goTo(runId | historyStart)`, `undo()` and `redo()`. Each move takes an optional `reason`.
+- **A move can be conditional.** With `from`, the store checks where the workspace is under the lock. If it is elsewhere, the move fails with `WorkspaceMovedError` and changes nothing. A host that showed the user what a move will do passes where the workspace was, so a run that ends while the user answers cannot turn the confirmed move into another.
 - **`list()`** gives each run with its parent, status, times and the files it changed. It gives no label: a host that wants one names the run itself.
 - **A move** returns where it came from and went, whether it was `complete`, and the files it left. Paths are relative to the root, as in `changes`.
 - **`AgentResponse.runId`** names the run a writing run recorded. A run that wrote nothing, and the Agent SDK engines, leave it out.
 - **A run that changed nothing leaves the history.** That is a run whose every prepared change was abandoned, or that prepared none. When it finishes, the store points the workspace back at its parent, then removes the run. The response then has no `runId`, and the run's turns count as turns that wrote nothing.
-- The errors a consumer branches on are exported: `WorkspaceBusyError`, `NothingToMoveError`, `UnknownRunError` and `HistoryExpiredError`. An id that is not one, or that this workspace never had, is an `UnknownRunError`.
+- The errors a consumer branches on are exported: `WorkspaceBusyError`, `WorkspaceMovedError`, `NothingToMoveError`, `UnknownRunError` and `HistoryExpiredError`. An id that is not one, or that this workspace never had, is an `UnknownRunError`.
 
 **Context:** #69. The user decided several points:
 
@@ -1404,6 +1405,7 @@ The user delegated the remaining names to me.
 - **Methods on `Agent`**, such as `agent.undo()`. Rejected by the user: every engine would have to answer them, and the Agent SDK engines have no history to give.
 - **A label per run**: the prompt cut short, or a name the consumer passes in `RunOptions`. The user chose none for now. The files and the diff identify a run, and either label can be added later without breaking anything.
 - **Keeping a run that changed nothing**, with no `runId` in the response. Smaller, but `/history` would show empty runs, and an undo would step through them doing nothing. Rejected by the user.
+- **Checking in the CLI alone**, by reading the head again after the user answers. It needs no new API, but a run can still end between that read and the move. The user chose the conditional move. The review of #70 found the case: `/undo` described undoing one run, and undid the run that ended during the confirmation.
 - **Exporting `RecoveryStore` itself.** It also exposes the journal, the content hashes and the store's own records, which would all become public API.
 
 **Consequences:**

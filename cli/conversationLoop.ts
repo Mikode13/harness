@@ -3,6 +3,12 @@ import { RecoverableError, UnrecoverableError, isAbortError } from '../src/index
 import type { IOutput } from './output.ts';
 import type { IPromptEmitter } from './promptEmitter.ts';
 
+/** Lines the user types that are commands for the CLI, not prompts for the agent. */
+export interface Commands {
+	handles(line: string): boolean;
+	run(line: string, signal: AbortSignal): Promise<void>;
+}
+
 export class ConversationLoop {
 	private readonly promptEmitter: IPromptEmitter;
 	private readonly output: IOutput;
@@ -10,6 +16,7 @@ export class ConversationLoop {
 	private agent: Agent;
 	private callback: Callback;
 	private readonly approve: Approver | undefined;
+	private readonly commands: Commands | undefined;
 
 	constructor(
 		agent: Agent,
@@ -17,12 +24,14 @@ export class ConversationLoop {
 		promptEmitter: IPromptEmitter,
 		output: IOutput,
 		approve?: Approver,
+		commands?: Commands,
 	) {
 		this.agent = agent;
 		this.callback = callback;
 		this.promptEmitter = promptEmitter;
 		this.output = output;
 		this.approve = approve;
+		this.commands = commands;
 	}
 
 	async start(): Promise<void> {
@@ -38,6 +47,17 @@ export class ConversationLoop {
 				continue;
 			}
 
+			if (this.commands?.handles(prompt)) {
+				try {
+					// Under the prompt's signal: a command waits on the user, as the prompt did.
+					await this.commands.run(prompt, this.abortController.signal);
+				} catch (e) {
+					if (isAbortError(e)) break;
+					this.output.printError(e);
+				}
+				continue;
+			}
+
 			this.callback({ type: 'turnStarted' });
 			try {
 				this.abortController = new AbortController();
@@ -47,6 +67,7 @@ export class ConversationLoop {
 					approve: this.approve,
 				});
 
+				if (agentResponse.runId) this.output.print(`run: ${agentResponse.runId}`);
 				this.output.print('usage:');
 				this.output.print(`duration: ${String(agentResponse.duration)}s`);
 				this.printTokens(agentResponse.tokens);
