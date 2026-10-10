@@ -400,6 +400,32 @@ describe("Claude's text editor on the shared edit engine", () => {
 		expect(onDisk('mixed.txt')).toBe('a\r\nafter a\r\nB\nC\n');
 	});
 
+	it('ends the lines a one-line replacement adds like the line it replaces', async () => {
+		writeFileSync(join(root, 'win.txt'), 'one\r\ntwo\r\n');
+		writeFileSync(join(root, 'mixed.txt'), 'a\r\nb\nc\n');
+		const { agent } = await agentOver(
+			claudeResponse(
+				editor('t1', { command: 'view', path: 'win.txt' }),
+				editor('t2', { command: 'view', path: 'mixed.txt' }),
+			),
+			claudeResponse(
+				editor('t3', {
+					command: 'str_replace',
+					path: 'win.txt',
+					old_str: 'one',
+					new_str: 'one\nextra',
+				}),
+				editor('t4', { command: 'str_replace', path: 'mixed.txt', old_str: 'b', new_str: 'b\nb2' }),
+			),
+			claudeResponse(done()),
+		);
+
+		await agent.run('extend', { signal });
+
+		expect(onDisk('win.txt')).toBe('one\r\nextra\r\ntwo\r\n');
+		expect(onDisk('mixed.txt')).toBe('a\r\nb\nb2\nc\n');
+	});
+
 	it('cannot be offered to OpenAI', () => {
 		vi.mocked(OpenAI).mockImplementation(function () {
 			return { responses: { create: vi.fn() } } as unknown as OpenAI;

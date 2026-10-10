@@ -219,16 +219,25 @@ export function applyUpdate(content: string, diff: string, path: string): string
 					: `Hunk ${String(n)} of the patch for "${path}" matches ${String(at.places)} places; add an "@@" line naming the function or more context`,
 			);
 		}
-		// A kept line stays as the file has it, even where the patch copied it with a space lost.
+		// A kept line stays as the file has it, even where the patch copied it with a space lost. An
+		// added line that takes a removed one's place takes its ending too.
 		const replacement: Line[] = [];
+		const replaced: Line[] = [];
 		let offset = 0;
 		for (const step of hunk.steps) {
 			if (step.kind === 'remove') {
-				offset++;
+				const removed = lines[at + offset++];
+				if (removed) replaced.push(removed);
 				continue;
 			}
-			const kept = step.kind === 'keep' ? lines[at + offset++] : undefined;
-			replacement.push(kept ?? addedLine(step.text, replacement.at(-1) ?? lines[at - 1], text.eol));
+			if (step.kind === 'keep') {
+				replaced.length = 0;
+				const kept = lines[at + offset++];
+				replacement.push(kept ?? addedLine(step.text, replacement.at(-1), text.eol));
+				continue;
+			}
+			const before = replaced.shift() ?? replacement.at(-1) ?? lines[at - 1];
+			replacement.push(addedLine(step.text, before, text.eol));
 		}
 		lines.splice(at, old.length, ...replacement);
 		cursor = at + replacement.length;

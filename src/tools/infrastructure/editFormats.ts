@@ -148,8 +148,18 @@ function replaceOnce(source: string, oldText: string, newText: string, path: str
 			`old_str appears ${String(count)} times in "${path}"; include more of the lines around it so it appears once`,
 		);
 	}
-	// A function, so `$&` and the like in the new text are written as they are.
-	return source.replace(from, () => to);
+	const at = source.indexOf(from);
+	// New lines end like the line where the text sits, so a CRLF line gains no bare `\n`.
+	const ending = endingAt(source, at + from.length);
+	const written = to.replace(/(?<!\r)\n/g, ending);
+	return source.slice(0, at) + written + source.slice(at + from.length);
+}
+
+/** The ending of the line holding `index`, or the text's usual one for a last line without. */
+function endingAt(source: string, index: number): '\n' | '\r\n' {
+	const newline = source.indexOf('\n', index);
+	if (newline === -1) return splitLines(source).eol;
+	return source[newline - 1] === '\r' ? '\r\n' : '\n';
 }
 
 /**

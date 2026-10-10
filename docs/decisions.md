@@ -1490,11 +1490,11 @@ Both formats become the same internal operations through `prepareTrackedEdit`, s
   - An `@@` anchor is found first, and must appear once. Each nested `@@` after it, and the hunk's lines, are the first match that follows, as in Codex: the anchor already says where. So `@@ class B:` then `@@ def __init__(self):` reaches B's method even when C has the same one.
   - `*** End of File` ties a hunk to the end of the file, and nothing may follow it in that hunk.
   - A kept line stays as the file has it, even where the patch copied it with a space lost.
-  - Every line the patch does not change keeps its own ending, so a file that mixes `\n` and `\r\n` is not rewritten. An added line ends like the line before it. The file keeps its final newline, or its lack of one.
+  - Every line the patch does not change keeps its own ending, so a file that mixes `\n` and `\r\n` is not rewritten. An added line ends like the removed line whose place it takes, or else like the line before it. The file keeps its final newline, or its lack of one.
   - A diff larger than 512 KB, or one with more than 500 hunks, is refused.
 - **The text editor:**
   - `view` reads through the access policy and counts as a read. On a folder it lists the files in it through the read `Workspace`, so ignored files stay hidden.
-  - `str_replace` needs the old text to appear exactly once. It is tried as sent first. Only when that finds nothing is text sent with `\n` tried with CRLF, and written with CRLF.
+  - `str_replace` needs the old text to appear exactly once. It is tried as sent first. Only when that finds nothing is text sent with `\n` tried with CRLF. Each bare `\n` in the new text is written with the ending of the line where the match sits, so a CRLF line gains no bare `\n`.
   - `create` makes only a file that does not exist. Anthropic's reference implementation overwrites, but here a file is changed only from a version the conversation read.
 
 **Context:** #80, the second part of #71. The [v2 plan](https://github.com/Mikode13/harness/issues/52#issuecomment-5984397266) for #52 decided the native formats, that both translate into the same operations, that the V4A applier is ours, and that native declarations stay internal. `examples/edit-tools-wire-smoke.ts` verified both formats live with `gpt-5.6-luna` and `claude-sonnet-5`.

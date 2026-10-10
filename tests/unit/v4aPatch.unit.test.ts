@@ -121,6 +121,11 @@ describe('applying a V4A update', () => {
 		expect(applyUpdate('a\nb\r\nc\n', '@@\n b\n+added\n c', 'a.txt')).toBe('a\nb\r\nadded\r\nc\n');
 	});
 
+	it("gives a line that takes a removed one's place that line's ending", () => {
+		expect(applyUpdate('x\na\r\nb\n', '@@\n-a\n+A', 'a.txt')).toBe('x\nA\r\nb\n');
+		expect(applyUpdate('x\na\r\nb\n', '@@\n-a\n+A\n+A2', 'a.txt')).toBe('x\nA\r\nA2\r\nb\n');
+	});
+
 	it('refuses lines after *** End of File', () => {
 		expect(() => applyUpdate('a\n', '@@\n-a\n+b\n*** End of File\n+c', 'a.txt')).toThrow(
 			'Line 5 of the patch for "a.txt" follows "*** End of File", which ends its hunk; start another hunk with "@@"',
