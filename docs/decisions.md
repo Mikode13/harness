@@ -1534,7 +1534,9 @@ Without a `write` root they only read. `WorkspaceOptions` lists the roots, each 
   - The summary comes from the planner's provider.
 - **`OrchestratorAgent` creates one `RunContext` for a whole run.** That makes every round's writes one run of the history, and ties the planner's and reviewer's turns to it. It ends the context with the run, and its response names the run.
 - **Every path the file tools touch goes through the access policy.**
-  - `PolicyWorkspace` filters what `listFiles` and `searchText` return, so a secret that `.gitignore` lets through is neither listed nor searched. It filters the whole result before the page is cut, so a secret never counts in `total`, which would otherwise answer whether a guess at its contents was right.
+  - **Closed files are hidden by name before a search counts anything.** A secret that `.gitignore` lets through is neither listed nor searched. The read workspace leaves out every file the policy closes by name (`hidesFromReading`: protected, or a secret the host did not open) before it stores or counts a match. So neither the page, nor `total`, nor the error at the 50,000 stored matches can answer whether a guess at a secret's contents was right.
+    - The check is by name and synchronous: the candidates are already free of ignored files, and running the whole policy, with git, on every file would be too slow.
+    - `PolicyWorkspace` then runs the whole policy on every path a result names, as a second layer.
   - The history's folder is made, then resolved to one real path, before the policy is built. The store and the policy name the same folder even when it is given through a link or as a relative path, and no tool reaches it when it lies inside a root.
   - `showChanges` for the model shows only what the role may read, and counts the rest.
 - **The tool event narrates changes.** A tool call that changed a file reports the change as a unified `diff` on its `completed` event, and the CLI prints it.

@@ -83,6 +83,28 @@ describe('the read workspace under the access policy, past one page', () => {
 	});
 });
 
+describe('the read side of an opened workspace, at the stored-match limit', () => {
+	it('answers a right and a wrong guess at a secret the same way', async () => {
+		writeFileSync(join(root, '.envrc'), 'TOKEN=hunter2\n');
+		// Exactly the most matches a search stores: one more would fail the search.
+		writeFileSync(join(root, 'decoy.txt'), 'x\n'.repeat(50_000));
+		const { read } = await openWorkspace(
+			{ roots: [{ path: root, access: 'write' }], stateDirectory: join(parent, 'state') },
+			{ warn: () => undefined },
+		);
+		const answer = (pattern: string) =>
+			read
+				.searchText({ pattern, ignoreCase: false, glob: '{decoy.txt,.envrc}', limit: 100 }, signal)
+				.then(
+					({ total }) => `total ${String(total)}`,
+					(error: unknown) => (error as Error).message,
+				);
+
+		await expect(answer('^x$|TOKEN=hun')).resolves.toBe('total 50000');
+		await expect(answer('^x$|TOKEN=zzz')).resolves.toBe('total 50000');
+	});
+});
+
 describe('the history of an opened workspace', () => {
 	it.each([
 		[

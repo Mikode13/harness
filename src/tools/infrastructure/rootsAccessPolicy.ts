@@ -199,6 +199,16 @@ export class RootsAccessPolicy implements AccessPolicy {
 		return allowed({ absolute, root: root.path, relative: relativePath });
 	}
 
+	/**
+	 * Whether the policy closes a file to reading by its path alone: protected, or a secret the
+	 * host did not open. Synchronous, so a search can leave such a file out before it counts a
+	 * match; `check` still decides each path a tool is given. `absolute` is a real path.
+	 */
+	hidesFromReading(absolute: string): boolean {
+		if (this.isProtected(absolute, absolute)) return true;
+		return !this.isOpened(absolute, 'read') && this.isSecret(absolute, absolute);
+	}
+
 	private get base(): string {
 		return this.roots[0]?.path ?? '';
 	}

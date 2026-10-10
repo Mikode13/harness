@@ -1,5 +1,5 @@
 import { mkdir, realpath } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { ToolDefinition } from '#src/llm/domain/tool';
 import type { RecoveryStore } from '#src/recovery/domain/recoveryStore';
 import {
@@ -12,7 +12,7 @@ import { describeFailure } from '#src/shared/domain/providerFailure';
 import type { AccessPolicy, WorkspaceRoot } from '../domain/accessPolicy.ts';
 import type { AgentTool } from '../domain/preparedCall.ts';
 import type { Workspace } from '../domain/workspace.ts';
-import { createWorkspace } from './createWorkspace.ts';
+import { chooseWorkspace } from './createWorkspace.ts';
 import { createApplyPatchTool, createDeleteFileTool, createTextEditorTool } from './editFormats.ts';
 import { GitIgnoreRules } from './gitIgnoreRules.ts';
 import { PolicyWorkspace } from './policyWorkspace.ts';
@@ -110,8 +110,16 @@ export async function openWorkspace(
 		protectedPaths: [stateDirectory],
 	});
 	const store = await openStore(workspace, stateDirectory);
-	const root = resolve(roots[0]?.path ?? '.');
-	const read = new PolicyWorkspace({ inner: await createWorkspace({ root, logger }), policy });
+	// Real, as the policy's paths are, so a file's path can be judged by name.
+	const root = await realpath(resolve(roots[0]?.path ?? '.'));
+	const inner = await chooseWorkspace({
+		root,
+		logger,
+		// Left out before a search counts or stores a match, so no total, limit or error can tell
+		// that a secret matched. The policy still decides each path after it.
+		hidden: path => policy.hidesFromReading(join(root, path)),
+	});
+	const read = new PolicyWorkspace({ inner, policy });
 	return {
 		roots,
 		policy,
