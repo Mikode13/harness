@@ -1,13 +1,14 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { RunContext } from '../../src/agent/domain/runContext.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
 import { ReadRegistry } from '../../src/tools/domain/readRegistry.ts';
 import { createWorkspace } from '../../src/tools/infrastructure/createWorkspace.ts';
 import { GitIgnoreRules } from '../../src/tools/infrastructure/gitIgnoreRules.ts';
+import { openWorkspace } from '../../src/tools/infrastructure/fileTools.ts';
 import { PolicyWorkspace } from '../../src/tools/infrastructure/policyWorkspace.ts';
 import { RootsAccessPolicy } from '../../src/tools/infrastructure/rootsAccessPolicy.ts';
 import { createShowChangesTool } from '../../src/tools/infrastructure/showChangesTool.ts';
@@ -59,6 +60,50 @@ describe('the read workspace under the access policy', () => {
 		await expect(
 			read.readFile({ path: '.envrc', fromLine: 1, lineCount: 10 }, signal),
 		).rejects.toThrow(/may hold secrets/);
+	});
+});
+
+describe('the read workspace under the access policy, past one page', () => {
+	it('gives the same total for a right and a wrong guess at a secret', async () => {
+		writeFileSync(join(root, '.envrc'), 'TOKEN=hunter2\n');
+		// Sorts before the secret, and fills the first page.
+		writeFileSync(join(root, '.cfg'), 'x\n'.repeat(100));
+		const read = new PolicyWorkspace({ inner: await createWorkspace({ root }), policy });
+		const total = async (pattern: string) =>
+			(await read.searchText({ pattern, ignoreCase: false, limit: 100 }, signal)).total;
+
+		await expect(total('^x$|TOKEN=hun')).resolves.toBe(100);
+		await expect(total('^x$|TOKEN=zzz')).resolves.toBe(100);
+		const { matches, truncated } = await read.searchText(
+			{ pattern: '^x$|TOKEN', ignoreCase: false, limit: 100 },
+			signal,
+		);
+		expect(matches.every(match => match.path !== '.envrc')).toBe(true);
+		expect(truncated).toBe(true);
+	});
+});
+
+describe('the history of an opened workspace', () => {
+	it.each([
+		[
+			'given through a link',
+			() => {
+				symlinkSync(root, join(parent, 'link'));
+				return join(parent, 'link', 'state');
+			},
+		],
+		['given relative to the working directory', () => relative(process.cwd(), join(root, 'state'))],
+	])('stays closed to every tool when it lies in a root, %s', async (_, stateDirectory) => {
+		const opened = await openWorkspace(
+			{ roots: [{ path: root, access: 'write' }], stateDirectory: stateDirectory() },
+			{ warn: () => undefined },
+		);
+
+		for (const access of ['read', 'write'] as const) {
+			await expect(opened.policy.check('state/workspaces', access, signal)).rejects.toThrow(
+				/protected by the harness/,
+			);
+		}
 	});
 });
 

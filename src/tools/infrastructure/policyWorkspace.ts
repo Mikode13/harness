@@ -1,10 +1,16 @@
 import type { AccessPolicy } from '../domain/accessPolicy.ts';
 import type { TextMatch, Workspace } from '../domain/workspace.ts';
 
+// Everything the inner workspace found, so a secret is taken out before the page is cut. It
+// gathers every result before slicing anyway; only the page is cut here.
+const everything = Number.MAX_SAFE_INTEGER;
+
 /**
  * The read `Workspace` with the access policy's word on every path it returns: a secret the
  * policy closes is neither listed, nor searched, nor read, even where `.gitignore` lets it
- * through. What it leaves out is not counted either, so `total` never reveals it.
+ * through. It is taken out of the whole result before the page is cut, so neither the page nor
+ * `total` reveals it: a count that included its matches would answer whether a guess at its
+ * contents was right.
  */
 export class PolicyWorkspace implements Workspace {
 	private readonly inner: Workspace;
@@ -19,18 +25,26 @@ export class PolicyWorkspace implements Workspace {
 		query: { path?: string; glob?: string; limit: number },
 		signal: AbortSignal,
 	): Promise<{ files: string[]; total: number; truncated: boolean }> {
-		const { files, total, truncated } = await this.inner.listFiles(query, signal);
+		const { files } = await this.inner.listFiles({ ...query, limit: everything }, signal);
 		const open = await this.readable(files, file => file, signal);
-		return { files: open, total: total - (files.length - open.length), truncated };
+		return {
+			files: open.slice(0, query.limit),
+			total: open.length,
+			truncated: open.length > query.limit,
+		};
 	}
 
 	async searchText(
 		query: { pattern: string; ignoreCase: boolean; path?: string; glob?: string; limit: number },
 		signal: AbortSignal,
 	): Promise<{ matches: TextMatch[]; total: number; truncated: boolean }> {
-		const { matches, total, truncated } = await this.inner.searchText(query, signal);
+		const { matches } = await this.inner.searchText({ ...query, limit: everything }, signal);
 		const open = await this.readable(matches, match => match.path, signal);
-		return { matches: open, total: total - (matches.length - open.length), truncated };
+		return {
+			matches: open.slice(0, query.limit),
+			total: open.length,
+			truncated: open.length > query.limit,
+		};
 	}
 
 	async readFile(

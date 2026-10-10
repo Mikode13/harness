@@ -1,3 +1,4 @@
+import { mkdir, realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { ToolDefinition } from '#src/llm/domain/tool';
 import type { RecoveryStore } from '#src/recovery/domain/recoveryStore';
@@ -5,7 +6,9 @@ import {
 	defaultStateDirectory,
 	FileRecoveryStore,
 } from '#src/recovery/infrastructure/fileRecoveryStore';
+import { InvalidAgentConfigError, UnrecoverableError } from '#src/shared/domain/errors';
 import type { ILogger } from '#src/shared/domain/logger';
+import { describeFailure } from '#src/shared/domain/providerFailure';
 import type { AccessPolicy, WorkspaceRoot } from '../domain/accessPolicy.ts';
 import type { AgentTool } from '../domain/preparedCall.ts';
 import type { Workspace } from '../domain/workspace.ts';
@@ -27,7 +30,10 @@ export interface WorkspaceOptions {
 	roots: WorkspaceRoot[];
 	/** More files to keep closed as secrets, and exact files to open. */
 	secrets?: SecretRules;
-	/** Where the history of runs is kept. Defaults to the platform's state directory. */
+	/**
+	 * Where the history of runs is kept, relative to the working directory if not absolute.
+	 * Defaults to the platform's state directory. No tool may reach it, even inside a root.
+	 */
 	stateDirectory?: string;
 }
 
@@ -50,12 +56,52 @@ export interface OpenedWorkspace {
 	readonly writable: boolean;
 }
 
+/**
+ * Where a workspace's history is kept, as one real path: made if missing, then resolved, links
+ * included. The store and the access policy must name the same folder, or a tool could reach the
+ * history the policy means to protect. A relative path is from the working directory.
+ *
+ * @throws {UnrecoverableError} when the folder cannot be made or reached.
+ */
+export async function stateDirectoryOf({ stateDirectory }: WorkspaceOptions): Promise<string> {
+	const directory = resolve(stateDirectory ?? defaultStateDirectory());
+	try {
+		await mkdir(directory, { recursive: true, mode: 0o700 });
+		return await realpath(directory);
+	} catch (error) {
+		throw new UnrecoverableError('The folder for the workspace history could not be made', {
+			cause: describeFailure(error),
+		});
+	}
+}
+
+/**
+ * The recovery store of a workspace, at its first root.
+ *
+ * @throws {InvalidAgentConfigError} when the workspace has no root.
+ * @throws {UnrecoverableError} when the store cannot be opened.
+ */
+export async function openStore(
+	workspace: WorkspaceOptions,
+	directory: string,
+): Promise<RecoveryStore> {
+	const [first] = workspace.roots;
+	if (!first) throw new InvalidAgentConfigError('A workspace needs at least one root');
+	try {
+		return await FileRecoveryStore.open({ root: resolve(first.path), directory });
+	} catch (error) {
+		throw new UnrecoverableError('The workspace history could not be opened', {
+			cause: describeFailure(error),
+		});
+	}
+}
+
 export async function openWorkspace(
-	{ roots, secrets, stateDirectory = defaultStateDirectory() }: WorkspaceOptions,
+	workspace: WorkspaceOptions,
 	logger: ILogger,
 ): Promise<OpenedWorkspace> {
-	// Checked here so the error names the option, not a policy built from it.
-	const [first] = roots;
+	const { roots, secrets } = workspace;
+	const stateDirectory = await stateDirectoryOf(workspace);
 	const policy = await RootsAccessPolicy.create({
 		roots,
 		...(secrets ? { secrets } : {}),
@@ -63,8 +109,8 @@ export async function openWorkspace(
 		// The history holds the source a run replaced: no tool may read or write it.
 		protectedPaths: [stateDirectory],
 	});
-	const root = resolve(first?.path ?? '.');
-	const store = await FileRecoveryStore.open({ root, directory: stateDirectory });
+	const store = await openStore(workspace, stateDirectory);
+	const root = resolve(roots[0]?.path ?? '.');
 	const read = new PolicyWorkspace({ inner: await createWorkspace({ root, logger }), policy });
 	return {
 		roots,

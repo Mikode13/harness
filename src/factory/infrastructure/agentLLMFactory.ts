@@ -13,10 +13,6 @@ import {
 } from '#src/orchestration/domain/model/orchestratorAgent';
 import { ReviewerDecisionValidator } from '#src/orchestration/infrastructure/model/reviewerDecisionValidator';
 import type { RecoveryStore } from '#src/recovery/domain/recoveryStore';
-import {
-	defaultStateDirectory,
-	FileRecoveryStore,
-} from '#src/recovery/infrastructure/fileRecoveryStore';
 import { RetryingAgent } from '#src/retry/domain/model/retryingAgent';
 import { InvalidAgentConfigError } from '#src/shared/domain/errors';
 import type { ILogger } from '#src/shared/domain/logger';
@@ -28,7 +24,9 @@ import {
 	type FileTool,
 	fileToolsFor,
 	type OpenedWorkspace,
+	openStore,
 	openWorkspace,
+	stateDirectoryOf,
 	type WorkspaceOptions,
 } from '#src/tools/infrastructure/fileTools';
 import { createShowChangesTool } from '#src/tools/infrastructure/showChangesTool';
@@ -157,16 +155,22 @@ function summarizerFor(provider: AgentProvider, logger: ILogger): LLMClient {
  * The workspace's history, opened on first use, so a factory that builds an agent stays
  * synchronous. Every agent and every file tool of one workspace reads the same files on disk.
  */
-function historyOf({
-	roots,
-	stateDirectory = defaultStateDirectory(),
-}: WorkspaceOptions): HistoryReader {
+function historyOf(workspace: WorkspaceOptions): HistoryReader {
+	// Checked now: an agent with no root to follow is a setup error, not a first-run one.
+	if (workspace.roots.length === 0) {
+		throw new InvalidAgentConfigError('A workspace needs at least one root');
+	}
 	let store: Promise<RecoveryStore> | undefined;
-	const open = () =>
-		(store ??= FileRecoveryStore.open({
-			root: resolve(roots[0]?.path ?? '.'),
-			directory: stateDirectory,
-		}));
+	const open = () => {
+		store ??= stateDirectoryOf(workspace)
+			.then(directory => openStore(workspace, directory))
+			.catch((error: unknown) => {
+				// Not kept: the next run tries again, as one whose disk was full for a moment.
+				store = undefined;
+				throw error;
+			});
+		return store;
+	};
 	return {
 		listRuns: async () => (await open()).listRuns(),
 		listRevisions: async () => (await open()).listRevisions(),
@@ -351,9 +355,12 @@ export async function createLLMOrchestrator({
 	const guidance = workspaceGuidance(workspace.roots);
 	const summarizer = summarizeUndone ? summarizerFor(roles.planner.provider, logger) : undefined;
 	const shared = { history: opened.store, ...(summarizer ? { summarizer } : {}), logger };
-	// A caller's own prompt replaces the whole of ours, guidance included.
+	// A caller's own prompt replaces our instructions and guidance, not the workspace: the model
+	// needs the roots to name a file, as `createLLMAgent` gives them.
 	const prompt = (own: string | undefined, instructions: string) =>
-		own ?? withGuidance(instructions, `${guidance}\n${repositoryGuidance}`);
+		own === undefined
+			? withGuidance(instructions, `${guidance}\n${repositoryGuidance}`)
+			: withGuidance(own, guidance);
 	const reader = ({ provider, model, reasoningEffort }: Role, systemPrompt: string) =>
 		buildLLMAgent(provider, {
 			model,

@@ -1534,7 +1534,8 @@ Without a `write` root they only read. `WorkspaceOptions` lists the roots, each 
   - The summary comes from the planner's provider.
 - **`OrchestratorAgent` creates one `RunContext` for a whole run.** That makes every round's writes one run of the history, and ties the planner's and reviewer's turns to it. It ends the context with the run, and its response names the run.
 - **Every path the file tools touch goes through the access policy.**
-  - `PolicyWorkspace` filters what `listFiles` and `searchText` return, so a secret that `.gitignore` lets through is neither listed nor searched, and it does not count in `total`.
+  - `PolicyWorkspace` filters what `listFiles` and `searchText` return, so a secret that `.gitignore` lets through is neither listed nor searched. It filters the whole result before the page is cut, so a secret never counts in `total`, which would otherwise answer whether a guess at its contents was right.
+  - The history's folder is made, then resolved to one real path, before the policy is built. The store and the policy name the same folder even when it is given through a link or as a relative path, and no tool reaches it when it lies inside a root.
   - `showChanges` for the model shows only what the role may read, and counts the rest.
 - **The tool event narrates changes.** A tool call that changed a file reports the change as a unified `diff` on its `completed` event, and the CLI prints it.
 - **The CLI's `--llm`** works on the current directory with a `write` root, and leaves `autoApprove` off. Its Agent SDK path keeps the permission bypass, because nobody answers those engines' own prompts there.
@@ -1562,3 +1563,11 @@ Without a `write` root they only read. `WorkspaceOptions` lists the roots, each 
 - **Reading covers the first root.** `listFiles` and `searchText` read the first root only; a file in another root is read by its full path. A folder `view` in another root lists nothing.
 - **Extra files in the state directory.** A workspace with no `write` root still opens its store, which creates its folder in the state directory.
 - **Paid models.** The executor bills per token, like the other model API roles. `createOrchestrator` stays the Agent SDK path on the provider's login.
+- **A breaking change to `createLLMOrchestrator`.** With the same options, its executor now:
+  - bills per token through the model API;
+  - writes nothing until a `write` root is given;
+  - takes `autoApprove` as the harness's own approval, no longer as an Agent SDK permission bypass.
+
+  The release needs `feat!:` and a `BREAKING CHANGE:` note, as #50 did when the planner and reviewer moved.
+
+- **A caller's own role prompt** replaces our instructions and guidance, but is still followed by the workspace's roots, as in `createLLMAgent`. The model needs them to name a file.
