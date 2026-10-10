@@ -1486,14 +1486,15 @@ Both formats become the same internal operations through `prepareTrackedEdit`, s
 - **Claude's tool blocks.** The text editor's calls and results are ordinary `tool_use` and `tool_result` blocks, under the name Anthropic fixes, `str_replace_based_edit_tool`.
 - **The V4A applier is ours** (`applyUpdate`). It applies each hunk after the one before it.
   - It finds a hunk's lines exactly, then ignoring trailing whitespace, then ignoring whitespace at either end, as Codex does.
-  - Unlike Codex, which takes the first match, the lines must appear once in the part of the file the hunk searches. When they do not, the error asks for an `@@` line naming the function, or more context.
-  - An `@@` anchor is found first. `*** End of File` ties a hunk to the end of the file.
+  - Without an anchor, Codex takes the first match; here a hunk's lines must appear once in the part of the file it searches. When they do not, the error asks for an `@@` line naming the function, or more context.
+  - An `@@` anchor is found first, and must appear once. Each nested `@@` after it, and the hunk's lines, are the first match that follows, as in Codex: the anchor already says where. So `@@ class B:` then `@@ def __init__(self):` reaches B's method even when C has the same one.
+  - `*** End of File` ties a hunk to the end of the file, and nothing may follow it in that hunk.
   - A kept line stays as the file has it, even where the patch copied it with a space lost.
-  - The file keeps its CRLF endings, and its final newline or lack of one.
+  - Every line the patch does not change keeps its own ending, so a file that mixes `\n` and `\r\n` is not rewritten. An added line ends like the line before it. The file keeps its final newline, or its lack of one.
   - A diff larger than 512 KB, or one with more than 500 hunks, is refused.
 - **The text editor:**
   - `view` reads through the access policy and counts as a read. On a folder it lists the files in it through the read `Workspace`, so ignored files stay hidden.
-  - `str_replace` needs the old text to appear exactly once. In a CRLF file, text the model sends with `\n` is matched and written with CRLF.
+  - `str_replace` needs the old text to appear exactly once. It is tried as sent first. Only when that finds nothing is text sent with `\n` tried with CRLF, and written with CRLF.
   - `create` makes only a file that does not exist. Anthropic's reference implementation overwrites, but here a file is changed only from a version the conversation read.
 
 **Context:** #80, the second part of #71. The [v2 plan](https://github.com/Mikode13/harness/issues/52#issuecomment-5984397266) for #52 decided the native formats, that both translate into the same operations, that the V4A applier is ours, and that native declarations stay internal. `examples/edit-tools-wire-smoke.ts` verified both formats live with `gpt-5.6-luna` and `claude-sonnet-5`.
@@ -1509,3 +1510,4 @@ Both formats become the same internal operations through `prepareTrackedEdit`, s
 - An OpenAI executor has `readFile` beside `apply_patch`, because `apply_patch` cannot read. A Claude executor reads with `view`.
 - A conversation that moves between providers keeps each call under its tool's name. A patch call sent to a client that does not offer `apply_patch` goes as a plain function call, and an `apply_patch_call` from a response that offered no such tool is logged and dropped.
 - Which tools each role gets, and the system prompt that names the roots, come with the factories in #81.
+- A folder `view` lists through the read `Workspace`, which covers the first root. #81 decides what a folder in another root shows.

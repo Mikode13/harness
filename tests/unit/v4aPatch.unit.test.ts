@@ -70,6 +70,63 @@ describe('applying a V4A update', () => {
 		expect(applyUpdate(text, diff, 'a.ts')).toBe(text.replace(/return 1;\n}\n$/, 'return 2;\n}\n'));
 	});
 
+	describe('when the same lines appear after the anchor', () => {
+		const classes = ['A', 'B', 'C']
+			.flatMap(name => [`class ${name}:`, '    def __init__(self):', '        self.x = 1', ''])
+			.join('\n');
+		const inB = (text: string) => {
+			const lines = classes.split('\n');
+			lines[6] = text;
+			return lines.join('\n');
+		};
+
+		it('finds the change after nested anchors, at the first match', () => {
+			const diff = [
+				'@@ class B:',
+				'@@     def __init__(self):',
+				'-        self.x = 1',
+				'+        self.x = 2',
+			];
+
+			expect(applyUpdate(classes, diff.join('\n'), 'a.py')).toBe(inB('        self.x = 2'));
+		});
+
+		it('finds the change at the first match after one anchor', () => {
+			const diff = [
+				'@@ class B:',
+				'     def __init__(self):',
+				'-        self.x = 1',
+				'+        self.x = 2',
+			];
+
+			expect(applyUpdate(classes, diff.join('\n'), 'a.py')).toBe(inB('        self.x = 2'));
+		});
+
+		it('refuses a first anchor that appears more than once, and says to name what holds it', () => {
+			expect(() =>
+				applyUpdate(
+					classes,
+					'@@     def __init__(self):\n-        self.x = 1\n+        self.x = 2',
+					'a.py',
+				),
+			).toThrow(
+				'Hunk 1 of the patch for "a.py" names "@@ def __init__(self):", which appears 3 times; name a line that appears once, or put an "@@" line before it naming what holds it',
+			);
+		});
+	});
+
+	it('writes every line it does not change back with its own ending, in a file that mixes them', () => {
+		expect(applyUpdate('a\nb\r\nc\nd\n', '@@\n-a\n+A', 'a.txt')).toBe('A\nb\r\nc\nd\n');
+		// An added line ends like the line before it.
+		expect(applyUpdate('a\nb\r\nc\n', '@@\n b\n+added\n c', 'a.txt')).toBe('a\nb\r\nadded\r\nc\n');
+	});
+
+	it('refuses lines after *** End of File', () => {
+		expect(() => applyUpdate('a\n', '@@\n-a\n+b\n*** End of File\n+c', 'a.txt')).toThrow(
+			'Line 5 of the patch for "a.txt" follows "*** End of File", which ends its hunk; start another hunk with "@@"',
+		);
+	});
+
 	it('refuses lines that appear twice without an anchor, and changes nothing', () => {
 		const text = ['a', 'same', 'b', 'same', ''].join('\n');
 

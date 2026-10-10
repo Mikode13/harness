@@ -1,5 +1,5 @@
 import { EditRefusedError } from './fileEdits.ts';
-import { joinLines, splitLines } from './textLines.ts';
+import { addedLine, joinLines, type Line, splitLines, textsOf } from './textLines.ts';
 
 // A patch is a few changes, not a file: one far larger is more likely a mistake.
 const maxDiffBytes = 512 * 1024;
@@ -65,6 +65,11 @@ function parseHunks(diff: string, path: string): Hunk[] {
 			if (current) current.atEnd = true;
 			continue;
 		}
+		if (current?.atEnd) {
+			throw new EditRefusedError(
+				`Line ${String(index + 1)} of the patch for "${path}" follows "*** End of File", which ends its hunk; start another hunk with "@@"`,
+			);
+		}
 		// A diff may open with its first change, without `@@`.
 		if (!current) {
 			current = { anchor: undefined, steps: [], atEnd: false };
@@ -106,13 +111,13 @@ const passes: ((line: string) => string)[] = [
 
 /**
  * Where `pattern` starts in `lines`, at or after `from`, by the first pass that finds it. `null`
- * when no pass does, and the number of places when the first pass that matches finds several.
+ * when no pass does. With `once`, the first pass that matches must find one place, or the number
+ * of places is returned; without it, the first place is taken.
  */
 function seek(
 	lines: string[],
 	pattern: string[],
-	from: number,
-	atEnd: boolean,
+	{ from, atEnd, once }: { from: number; atEnd: boolean; once: boolean },
 ): number | null | { places: number } {
 	const last = lines.length - pattern.length;
 	for (const normalize of passes) {
@@ -124,7 +129,11 @@ function seek(
 			continue;
 		}
 		const found: number[] = [];
-		for (let start = from; start <= last; start++) if (matchesAt(start)) found.push(start);
+		for (let start = from; start <= last; start++) {
+			if (!matchesAt(start)) continue;
+			if (!once) return start;
+			found.push(start);
+		}
 		if (found.length === 1) return found[0] ?? null;
 		if (found.length > 1) return { places: found.length };
 	}
@@ -151,16 +160,20 @@ function near(lines: string[], hunk: Hunk): string {
 	return `\nThe file has, near line ${String(at + 1)}:\n${shown.join('\n')}`;
 }
 
-/** Where a hunk's anchor lines are, one after another, so its change is found after them. */
+/**
+ * Where a hunk's anchor lines are, one after another, so its change is found after them. The
+ * first must appear once; each one after it is the first that follows the one before, as V4A
+ * reads `@@ class B:` then `@@ def __init__(self):`.
+ */
 function seekAnchor(lines: string[], hunk: Hunk, from: number, path: string, n: number): number {
 	let cursor = from;
-	for (const anchor of hunk.anchor?.split('\n') ?? []) {
-		const at = seek(lines, [anchor], cursor, false);
+	for (const [index, anchor] of (hunk.anchor?.split('\n') ?? []).entries()) {
+		const at = seek(lines, [anchor], { from: cursor, atEnd: false, once: index === 0 });
 		if (typeof at !== 'number') {
 			throw new EditRefusedError(
 				at === null
 					? `Hunk ${String(n)} of the patch for "${path}" names "@@ ${anchor}", which is not in the file after the hunks before it`
-					: `Hunk ${String(n)} of the patch for "${path}" names "@@ ${anchor}", which appears ${String(at.places)} times; name a line that appears once`,
+					: `Hunk ${String(n)} of the patch for "${path}" names "@@ ${anchor}", which appears ${String(at.places)} times; name a line that appears once, or put an "@@" line before it naming what holds it`,
 			);
 		}
 		cursor = at + 1;
@@ -170,44 +183,52 @@ function seekAnchor(lines: string[], hunk: Hunk, from: number, path: string, n: 
 
 /**
  * Applies the hunks of a V4A `update_file` diff to `content`, in order, each after the one before
- * it. Each hunk's expected lines must appear exactly once in the part of the file it searches,
- * or nothing is changed: a hunk is never applied where the model did not mean it. The text keeps
- * its line endings and its final newline, or lack of one.
+ * it. A hunk with no anchor must match exactly once in the part of the file it searches, or
+ * nothing is changed: a hunk is never applied where the model did not mean it. After an anchor,
+ * it is the first match: the anchor already says where. Each line the hunk does not change is
+ * written back as it was, ending included, and an added line ends like the line before it.
  *
  * @throws {EditRefusedError} naming the hunk, what it expected and what the file has near it.
  */
 export function applyUpdate(content: string, diff: string, path: string): string {
 	checkSize(diff, path);
 	const text = splitLines(content);
-	const lines = [...text.lines];
+	const lines: Line[] = [...text.lines];
 	let cursor = 0;
 	for (const [index, hunk] of parseHunks(diff, path).entries()) {
 		const n = index + 1;
-		const from = seekAnchor(lines, hunk, cursor, path, n);
+		const texts = textsOf(lines);
+		const from = seekAnchor(texts, hunk, cursor, path, n);
 		const old = expected(hunk);
-		const added = hunk.steps.filter(step => step.kind === 'add').map(step => step.text);
 		if (old.length === 0) {
 			// Only added lines: after the anchor, or at the end.
 			const at = hunk.anchor === undefined || hunk.atEnd ? lines.length : from;
+			const added: Line[] = [];
+			for (const step of hunk.steps) {
+				added.push(addedLine(step.text, added.at(-1) ?? lines[at - 1], text.eol));
+			}
 			lines.splice(at, 0, ...added);
 			cursor = at + added.length;
 			continue;
 		}
-		const at = seek(lines, old, from, hunk.atEnd);
+		const at = seek(texts, old, { from, atEnd: hunk.atEnd, once: hunk.anchor === undefined });
 		if (typeof at !== 'number') {
 			throw new EditRefusedError(
 				at === null
-					? `Hunk ${String(n)} of the patch for "${path}" does not match the file. It expected:\n${quote(old)}${near(lines, hunk)}`
+					? `Hunk ${String(n)} of the patch for "${path}" does not match the file. It expected:\n${quote(old)}${near(texts, hunk)}`
 					: `Hunk ${String(n)} of the patch for "${path}" matches ${String(at.places)} places; add an "@@" line naming the function or more context`,
 			);
 		}
 		// A kept line stays as the file has it, even where the patch copied it with a space lost.
-		const replacement: string[] = [];
+		const replacement: Line[] = [];
 		let offset = 0;
 		for (const step of hunk.steps) {
-			if (step.kind === 'add') replacement.push(step.text);
-			else if (step.kind === 'keep') replacement.push(lines[at + offset++] ?? step.text);
-			else offset++;
+			if (step.kind === 'remove') {
+				offset++;
+				continue;
+			}
+			const kept = step.kind === 'keep' ? lines[at + offset++] : undefined;
+			replacement.push(kept ?? addedLine(step.text, replacement.at(-1) ?? lines[at - 1], text.eol));
 		}
 		lines.splice(at, old.length, ...replacement);
 		cursor = at + replacement.length;
@@ -231,5 +252,9 @@ export function createdContent(diff: string, path: string): string {
 			);
 		}
 	}
-	return joinLines({ lines: lines.map(line => line.slice(1)), eol: '\n', finalNewline: true });
+	return joinLines({
+		lines: lines.map(line => ({ text: line.slice(1), end: '\n' })),
+		eol: '\n',
+		finalNewline: true,
+	});
 }

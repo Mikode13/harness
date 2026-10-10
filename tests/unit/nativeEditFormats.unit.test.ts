@@ -367,6 +367,39 @@ describe("Claude's text editor on the shared edit engine", () => {
 		expect(onDisk('win.txt')).toBe('1\r\n2\r\nthree\r\n');
 	});
 
+	it('matches text as sent in a file that mixes endings, inserts like its neighbours, and names a bad view_range', async () => {
+		writeFileSync(join(root, 'mixed.txt'), 'a\r\nb\nc\n');
+		const { agent, create } = await agentOver(
+			claudeResponse(
+				editor('t1', { command: 'view', path: 'mixed.txt' }),
+				editor('t2', { command: 'view', path: 'mixed.txt', view_range: [0, 5] }),
+			),
+			claudeResponse(
+				editor('t3', {
+					command: 'str_replace',
+					path: 'mixed.txt',
+					old_str: 'b\nc',
+					new_str: 'B\nC',
+				}),
+				editor('t4', {
+					command: 'insert',
+					path: 'mixed.txt',
+					insert_line: 1,
+					insert_text: 'after a',
+				}),
+			),
+			claudeResponse(done()),
+		);
+
+		await agent.run('change it', { signal });
+
+		expect(results(create, 1)[1]).toEqual({
+			content: 'view_range starts at line 0; lines count from 1',
+			isError: true,
+		});
+		expect(onDisk('mixed.txt')).toBe('a\r\nafter a\r\nB\nC\n');
+	});
+
 	it('cannot be offered to OpenAI', () => {
 		vi.mocked(OpenAI).mockImplementation(function () {
 			return { responses: { create: vi.fn() } } as unknown as OpenAI;

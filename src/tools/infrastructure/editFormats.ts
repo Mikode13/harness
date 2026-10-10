@@ -5,7 +5,7 @@ import type { AccessPolicy } from '../domain/accessPolicy.ts';
 import { EditRefusedError } from '../domain/fileEdits.ts';
 import type { PreparedCall, PreparingTool } from '../domain/preparedCall.ts';
 import type { ToolCallContext } from '../domain/readRegistry.ts';
-import { joinLines, splitLines } from '../domain/textLines.ts';
+import { addedLine, joinLines, type Line, splitLines, textsOf } from '../domain/textLines.ts';
 import { applyUpdate, createdContent } from '../domain/v4aPatch.ts';
 import type { Workspace } from '../domain/workspace.ts';
 import { definePreparingTool } from './defineTool.ts';
@@ -125,17 +125,19 @@ function occurrences(source: string, text: string): number {
 }
 
 /**
- * Replaces the one place `oldText` appears. The model writes `\n`, so in a CRLF file its text
- * is matched, and written, with CRLF.
+ * Replaces the one place `oldText` appears. The model writes `\n`: when the text as sent is not
+ * in the file, it is tried with CRLF too, so a CRLF file can be edited, and written with CRLF.
  */
 function replaceOnce(source: string, oldText: string, newText: string, path: string): string {
-	if (oldText === '')
+	if (oldText === '') {
 		throw new EditRefusedError(`old_str is empty; copy the text to replace from "${path}"`);
-	const crlf = source.includes('\r\n') && !oldText.includes('\r\n');
-	const [from, to] = crlf
-		? [oldText.replaceAll('\n', '\r\n'), newText.replaceAll('\n', '\r\n')]
-		: [oldText, newText];
-	const count = occurrences(source, from);
+	}
+	let [from, to] = [oldText, newText];
+	let count = occurrences(source, from);
+	if (count === 0 && !oldText.includes('\r\n') && oldText.includes('\n')) {
+		[from, to] = [oldText.replaceAll('\n', '\r\n'), newText.replaceAll('\n', '\r\n')];
+		count = occurrences(source, from);
+	}
 	if (count === 0) {
 		throw new EditRefusedError(
 			`old_str is not in "${path}"; view the file and copy the text exactly, whitespace included`,
@@ -150,7 +152,10 @@ function replaceOnce(source: string, oldText: string, newText: string, path: str
 	return source.replace(from, () => to);
 }
 
-/** Puts `text` after line `after` of `source`, 0 being before the first. */
+/**
+ * Puts `text` after line `after` of `source`, 0 being before the first. The lines inserted end
+ * like the line before them, and every other line is written back as it was.
+ */
 function insertAfter(source: string, after: number, text: string, path: string): string {
 	const file = splitLines(source);
 	if (after < 0 || after > file.lines.length) {
@@ -158,9 +163,13 @@ function insertAfter(source: string, after: number, text: string, path: string):
 			`insert_line must be between 0 and ${String(file.lines.length)}, the number of lines in "${path}"`,
 		);
 	}
-	const inserted = splitLines(text).lines;
+	const texts = textsOf(splitLines(text).lines);
+	const inserted: Line[] = [];
+	for (const line of texts.length > 0 ? texts : ['']) {
+		inserted.push(addedLine(line, inserted.at(-1) ?? file.lines[after - 1], file.eol));
+	}
 	const lines = [...file.lines];
-	lines.splice(after, 0, ...(inserted.length > 0 ? inserted : ['']));
+	lines.splice(after, 0, ...inserted);
 	return joinLines({ ...file, lines, finalNewline: file.finalNewline || file.lines.length === 0 });
 }
 
@@ -206,6 +215,9 @@ export function createTextEditorTool({
 			switch (command.command) {
 				case 'view': {
 					const [start, end] = command.view_range ?? [1, -1];
+					if (start < 1) {
+						throw new Error(`view_range starts at line ${String(start)}; lines count from 1`);
+					}
 					if (end !== -1 && end < start) {
 						throw new Error(`view_range ends before it starts: [${String(start)}, ${String(end)}]`);
 					}
