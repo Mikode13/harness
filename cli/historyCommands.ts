@@ -102,7 +102,7 @@ export class HistoryCommands {
 			}
 			if (error instanceof WorkspaceMovedError) {
 				this.output.print(
-					`${error.message}, since a run ended while you were answering. Nothing was changed; see /history.`,
+					`${error.message}: it moved while you were answering, so this move did not run. See /history.`,
 				);
 				return;
 			}

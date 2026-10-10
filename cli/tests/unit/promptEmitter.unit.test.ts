@@ -21,6 +21,44 @@ describe('PromptEmitter', () => {
 		prompts.close();
 	});
 
+	it('answers later questions with the piped lines that arrived before them, then stops', async () => {
+		const { input, prompts } = emitter();
+		input.end('/history\n/undo\n');
+		// Let readline read it all while no question is asked.
+		await new Promise(resolve => setImmediate(resolve));
+
+		await expect(prompts.emit('> ', signal)).resolves.toBe('/history');
+		await expect(prompts.emit('> ', signal)).resolves.toBe('/undo');
+		await expect(prompts.emit('> ', signal)).rejects.toSatisfy(isAbortError);
+	});
+
+	it('drops what a terminal typed while no question was asked', async () => {
+		const input = Object.assign(new PassThrough(), { isTTY: true });
+		const prompts = new PromptEmitter({ input, output: new PassThrough() });
+		input.write('y\n');
+		await new Promise(resolve => setImmediate(resolve));
+
+		const answer = prompts.emit('Allow it? ', signal);
+		input.write('n\n');
+
+		await expect(answer).resolves.toBe('n');
+		prompts.close();
+	});
+
+	it('withdraws a question when its signal aborts, and keeps answering later ones', async () => {
+		const { input, prompts } = emitter();
+		const controller = new AbortController();
+		const withdrawn = prompts.emit('> ', controller.signal);
+
+		controller.abort();
+		await expect(withdrawn).rejects.toSatisfy(isAbortError);
+		const next = prompts.emit('> ', signal);
+		input.write('hello\n');
+
+		await expect(next).resolves.toBe('hello');
+		prompts.close();
+	});
+
 	it('stops the question it is asking when the input ends, as the user stopping', async () => {
 		const { input, prompts } = emitter();
 		const answer = prompts.emit('> ', signal);

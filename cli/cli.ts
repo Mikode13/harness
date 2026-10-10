@@ -37,7 +37,6 @@ function stopSpinner(): void {
 const autoApprove = true;
 
 const output = new Output();
-const promptEmitter = new PromptEmitter();
 
 // `--llm` plans and reviews on the model APIs, which need ANTHROPIC_API_KEY and OPENAI_API_KEY.
 const { values: flags } = parseArgs({ options: { llm: { type: 'boolean', default: false } } });
@@ -45,6 +44,12 @@ const { values: flags } = parseArgs({ options: { llm: { type: 'boolean', default
 const orchestratorAgent = flags.llm
 	? await createLLMOrchestrator({ autoApprove })
 	: createOrchestrator({ autoApprove });
+// The history of what the harness's own write tools changed in this folder.
+const history = await createHistory({ root: process.cwd() });
+
+// After every await: readline reads its input as soon as it exists, and a line that arrives
+// before the first question is asked is lost.
+const promptEmitter = new PromptEmitter();
 
 let turnActive = false;
 
@@ -84,8 +89,7 @@ const loop = new ConversationLoop(
 	promptEmitter,
 	output,
 	approve,
-	// The history of what the harness's own write tools changed in this folder.
-	new HistoryCommands(await createHistory({ root: process.cwd() }), promptEmitter, output),
+	new HistoryCommands(history, promptEmitter, output),
 );
 
 const exitConfirmationWindowMs = 3000;

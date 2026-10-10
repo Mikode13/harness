@@ -189,7 +189,7 @@ describe('the history commands', () => {
 			await cli.run(command);
 
 			expect(cli.printed.at(-1)).toBe(
-				`The workspace is no longer at run ${at}: it is at run ${third}, since a run ended while you were answering. Nothing was changed; see /history.`,
+				`The workspace is no longer at run ${at}: it is at run ${third}: it moved while you were answering, so this move did not run. See /history.`,
 			);
 			expect(readUnder(root, 'a.txt')).toBe('three');
 			await expect(store.listRevisions()).resolves.toHaveLength(command === '/redo' ? 1 : 0);
