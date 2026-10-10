@@ -1412,4 +1412,5 @@ The user delegated the remaining names to me.
 - `list()` reads every kept run's journal, at most 25.
 - A change counts while it may have reached its file: it is prepared and its abandonment was not recorded.
 - Whether a run changed nothing is read from its journal, not from a removal that succeeded. The response leaves out its `runId` even when the removal fails. `list()` hides a dead run that changed nothing, and moves the head to its parent. The next run or move then finishes the removal under the lock. This covers a failed removal, a crash, and a run that died having changed nothing.
+- A run counts as live only while its process holds the lock and, in that process, the run has not ended. A lock left behind because releasing it failed names a run this process has ended. That lock is stale, like a dead process's: the run is listed as `interrupted`, and the next run or move takes the workspace over without waiting for the process to exit.
 - The write tools that record these runs are not exported yet, and the orchestrator's response has no `runId` until its roles share one run context. #71 does both.

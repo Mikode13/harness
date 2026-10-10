@@ -79,6 +79,21 @@ function isNotFound(error: unknown): boolean {
 	return (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
+/**
+ * The runs and moves this process holds a workspace lock for and has not ended. A lock naming
+ * this process and none of these was left by one whose release failed: it is as stale as a dead
+ * process's, which a process that lives on would otherwise keep until it exits.
+ */
+const heldHere = new Set<string>();
+
+/** Whether the holder of a lock is still at work. */
+function isLiveHolder(holder: { runId: string; pid?: number }): boolean {
+	// A holder that cannot be named cannot be shown to be gone.
+	if (holder.pid === undefined) return true;
+	if (holder.pid === process.pid) return heldHere.has(holder.runId);
+	return isAlive(holder.pid);
+}
+
 /** Whether a process still exists. One we may not signal exists too. */
 function isAlive(pid: number): boolean {
 	try {
@@ -805,6 +820,7 @@ export class FileRecoveryStore implements RecoveryStore {
 			try {
 				// Written whole before it appears, so a lock that exists always names its holder.
 				await writeDurably(path, JSON.stringify({ runId, pid: process.pid }), { exclusive: true });
+				heldHere.add(runId);
 				return;
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
@@ -813,14 +829,11 @@ export class FileRecoveryStore implements RecoveryStore {
 			const holder = await readLock(path);
 			// Released meanwhile: try again.
 			if (!holder) continue;
-			// A holder that cannot be named cannot be shown to be dead.
-			if (holder.pid === undefined || isAlive(holder.pid)) {
-				throw new WorkspaceBusyError(holder.runId);
-			}
-			// Its process died without releasing it. Read again just before removing, so a lock
-			// another process has just taken is left alone.
+			if (isLiveHolder(holder)) throw new WorkspaceBusyError(holder.runId);
+			// Its process died, or its run ended, without releasing it. Read again just before
+			// removing, so a lock another run has just taken is left alone.
 			const again = await readLock(path);
-			if (again?.pid === holder.pid && again.runId === holder.runId) {
+			if (again !== undefined && again.pid === holder.pid && again.runId === holder.runId) {
 				await unlink(path).catch((error: unknown) => {
 					if (!isNotFound(error)) throw error;
 				});
@@ -831,6 +844,8 @@ export class FileRecoveryStore implements RecoveryStore {
 	}
 
 	private async unlock(runId: string): Promise<void> {
+		// First: the run has ended even if removing its lock fails, so that lock is stale.
+		heldHere.delete(runId);
 		const path = join(this.directory, 'lock');
 		// Only its own lock: one cleared as stale and taken by another run is not this run's.
 		if ((await readLock(path))?.runId === runId) await unlink(path);
@@ -843,15 +858,16 @@ function changedNothing(entries: JournalEntry[]): boolean {
 }
 
 /**
- * A run recorded as `running` only runs while it holds the lock and its process lives. Any
- * other is reported as `interrupted`, before the next run settles it.
+ * A run recorded as `running` only runs while it holds the lock, its process lives, and, in this
+ * process, it has not ended. Any other is reported as `interrupted`, before the next run settles
+ * it.
  */
 function withLiveStatus(
 	record: RunRecord,
 	holder: { runId: string; pid?: number } | undefined,
 ): RunRecord {
 	if (record.status !== 'running') return record;
-	const live = holder?.runId === record.runId && holder.pid !== undefined && isAlive(holder.pid);
+	const live = holder?.runId === record.runId && holder.pid !== undefined && isLiveHolder(holder);
 	return live ? record : { ...record, status: 'interrupted' };
 }
 

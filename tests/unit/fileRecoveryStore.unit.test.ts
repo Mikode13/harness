@@ -558,6 +558,50 @@ describe('FileRecoveryStore', () => {
 			expect((await store.listRuns()).runs.at(-1)).toMatchObject({ parentRunId: kept.runId });
 		});
 
+		it('hides a run that changed nothing when removing it and its lock both fail', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const run = await store.startRun();
+			chmodSync(workspaceFolder(), 0o500);
+			try {
+				await expect(run.finish('completed')).rejects.toThrow();
+			} finally {
+				chmodSync(workspaceFolder(), 0o700);
+			}
+			// The lock still names this process, which lives on.
+			expect(existsSync(join(workspaceFolder(), 'lock'))).toBe(true);
+
+			await expect(store.listRuns()).resolves.toEqual({ runs: [] });
+			// Its lock is stale: the next run takes the workspace and finishes the removal.
+			const next = await store.startRun();
+			expect(existsSync(join(workspaceFolder(), 'runs', run.runId))).toBe(false);
+			await change(next);
+			await next.finish('completed');
+			expect((await store.listRuns()).runs).toEqual([
+				expect.objectContaining({ runId: next.runId }),
+			]);
+		});
+
+		it('takes over a lock this process left when releasing it failed', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const run = await store.startRun();
+			await change(run);
+			chmodSync(workspaceFolder(), 0o500);
+			try {
+				await expect(run.finish('completed')).rejects.toThrow();
+			} finally {
+				chmodSync(workspaceFolder(), 0o700);
+			}
+
+			// Its record was closed; only its lock was left, naming this process, which lives on.
+			await expect(store.readRun(run.runId)).resolves.toMatchObject({
+				record: { status: 'completed' },
+			});
+			const next = await store.startRun();
+			await change(next);
+			await next.finish('completed');
+			expect((await store.listRuns()).runs.at(-1)).toMatchObject({ parentRunId: run.runId });
+		});
+
 		it('still lists a dead run whose journal it cannot read', async () => {
 			const store = await FileRecoveryStore.open({ root, directory });
 			const dead = await store.startRun();
