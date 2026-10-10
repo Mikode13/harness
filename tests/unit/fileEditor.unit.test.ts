@@ -371,13 +371,16 @@ describe('FileEditor', () => {
 					const journal = await store.startRun();
 					const wrapped: RunJournal = {
 						runId: journal.runId,
+						changed: false,
 						saveContent: content => journal.saveContent(content),
 						prepare: change => journal.prepare(change),
 						applied: sequence => journal.applied(sequence),
 						abandoned: sequence => journal.abandoned(sequence),
 						finish: status => journal.finish(status),
 					};
-					return { ...wrapped, ...override(wrapped) };
+					const result = { ...wrapped, ...override(wrapped) };
+					// A spread copies a value: `changed` must keep following the journal.
+					return Object.defineProperty(result, 'changed', { get: () => journal.changed });
 				},
 			});
 		}

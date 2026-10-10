@@ -308,12 +308,12 @@ describe('moving through the history of runs', () => {
 		);
 		rmSync(join(root, 'b.txt'));
 
-		const next = await store.startRun();
-		await next.finish('completed');
+		const next = await run(['c.txt', 'new']);
 
 		expect([read('a.txt'), read('b.txt')]).toEqual([undefined, undefined]);
 		await expect(store.listRevisions()).resolves.toMatchObject([{ revision: 1, complete: true }]);
 		const { runs } = await store.listRuns();
+		expect(runs.at(-1)?.runId).toBe(next);
 		expect(runs.at(-1)).not.toHaveProperty('parentRunId');
 	});
 

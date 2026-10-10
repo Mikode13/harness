@@ -29,7 +29,7 @@ import {
 	WorkspaceBusyError,
 } from '../domain/recoveryStore.ts';
 import { chainEntries, nextPruneStep } from '../domain/retention.ts';
-import { HistoryExpiredError, redoTarget, route } from '../domain/runTree.ts';
+import { HistoryExpiredError, redoTarget, route, UnknownRunError } from '../domain/runTree.ts';
 import {
 	currentState,
 	hasRealParents,
@@ -77,6 +77,21 @@ function hashOf(content: Buffer): string {
 
 function isNotFound(error: unknown): boolean {
 	return (error as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
+/**
+ * The runs and moves this process holds a workspace lock for and has not ended. A lock naming
+ * this process and none of these was left by one whose release failed: it is as stale as a dead
+ * process's, which a process that lives on would otherwise keep until it exits.
+ */
+const heldHere = new Set<string>();
+
+/** Whether the holder of a lock is still at work. */
+function isLiveHolder(holder: { runId: string; pid?: number }): boolean {
+	// A holder that cannot be named cannot be shown to be gone.
+	if (holder.pid === undefined) return true;
+	if (holder.pid === process.pid) return heldHere.has(holder.runId);
+	return isAlive(holder.pid);
 }
 
 /** Whether a process still exists. One we may not signal exists too. */
@@ -257,6 +272,7 @@ export class FileRecoveryStore implements RecoveryStore {
 				runDirectory,
 				contentDirectory: join(this.directory, 'content'),
 				journal,
+				discard: () => this.discardRun(record),
 				release: () => this.unlock(runId),
 			});
 		} catch (error) {
@@ -284,19 +300,39 @@ export class FileRecoveryStore implements RecoveryStore {
 			...runs.flatMap(run => run.absorbed ?? []),
 			...(await this.listPruned()),
 		]);
-		const { runId: head } = await this.readHead();
+		// A dead run that changed nothing is not in the history either, though its removal did not
+		// finish. No run follows it: the next run or move removes it before starting.
+		for (const run of runs) {
+			if (run.status !== 'interrupted') continue;
+			// A journal it cannot read leaves the run listed: whether it changed anything is unknown.
+			const entries = await this.readEntries(run.runId, run.journal).catch(() => undefined);
+			if (entries && changedNothing(entries)) gone.add(run.runId);
+		}
+		const parents = new Map(runs.map(run => [run.runId, run.parentRunId]));
+		let { runId: head } = await this.readHead();
+		while (head !== undefined && gone.has(head)) head = parents.get(head);
 
 		return { ...(head ? { head } : {}), runs: runs.filter(run => !gone.has(run.runId)) };
 	}
 
 	async readRun(runId: string): Promise<{ record: RunRecord; entries: JournalEntry[] }> {
+		// An id from outside is checked before it names a folder.
+		if (!runIdPattern.test(runId)) throw new UnknownRunError(runId);
 		// The lock first: a run that finishes between the two reads then shows as finished, not as
 		// a `running` record nobody holds.
 		const holder = await readLock(join(this.directory, 'lock'));
 		// Before the record: a crash can leave the folder of a run retention already took.
 		await this.assertNotAbsorbed(runId);
-		const record = withLiveStatus(await this.readRecord(runId), holder);
-		return { record, entries: await this.readEntries(runId, record.journal) };
+		const record = await this.readRecord(runId).catch(async (error: unknown) => {
+			if (!isNotFound(error)) throw error;
+			// Retention may have taken it since the check above.
+			await this.assertNotAbsorbed(runId);
+			throw new UnknownRunError(runId);
+		});
+		return {
+			record: withLiveStatus(record, holder),
+			entries: await this.readEntries(runId, record.journal),
+		};
 	}
 
 	private async readRecord(runId: string): Promise<RunRecord> {
@@ -644,6 +680,25 @@ export class FileRecoveryStore implements RecoveryStore {
 		await rm(this.runDirectory(runId), { recursive: true, force: true });
 	}
 
+	/**
+	 * Takes a run that changed nothing out of the history, under the lock: the workspace goes back
+	 * to its parent first, so the head never names a run that is gone. Until the run is removed,
+	 * `listRuns` already hides it, and the next run or move finishes removing it. The contents it
+	 * saved are freed by the next prune.
+	 */
+	private async discardRun(record: RunRecord): Promise<void> {
+		const { runId: headRunId, ...head } = await this.readHead();
+		if (headRunId === record.runId) {
+			await this.writeHead({
+				...head,
+				...(record.parentRunId ? { runId: record.parentRunId } : {}),
+			});
+		}
+		await rm(join(this.runDirectory(record.runId), 'run.json'), { force: true });
+		await syncDirectory(this.runDirectory(record.runId));
+		await rm(this.runDirectory(record.runId), { recursive: true, force: true });
+	}
+
 	/** Removes the stored contents no kept run refers to. */
 	private async collectContent(): Promise<void> {
 		const referenced = new Set<string>();
@@ -697,6 +752,10 @@ export class FileRecoveryStore implements RecoveryStore {
 				}
 			}
 			await appendWhole(join(this.runDirectory(runId), record.journal ?? firstJournal), settled);
+			if (changedNothing(await this.readEntries(runId, record.journal))) {
+				await this.discardRun(record);
+				continue;
+			}
 			// Last, so a crash before it leaves a run that is settled again, and settling is idempotent.
 			await writeDurably(
 				join(this.runDirectory(runId), 'run.json'),
@@ -761,6 +820,7 @@ export class FileRecoveryStore implements RecoveryStore {
 			try {
 				// Written whole before it appears, so a lock that exists always names its holder.
 				await writeDurably(path, JSON.stringify({ runId, pid: process.pid }), { exclusive: true });
+				heldHere.add(runId);
 				return;
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
@@ -769,14 +829,11 @@ export class FileRecoveryStore implements RecoveryStore {
 			const holder = await readLock(path);
 			// Released meanwhile: try again.
 			if (!holder) continue;
-			// A holder that cannot be named cannot be shown to be dead.
-			if (holder.pid === undefined || isAlive(holder.pid)) {
-				throw new WorkspaceBusyError(holder.runId);
-			}
-			// Its process died without releasing it. Read again just before removing, so a lock
-			// another process has just taken is left alone.
+			if (isLiveHolder(holder)) throw new WorkspaceBusyError(holder.runId);
+			// Its process died, or its run ended, without releasing it. Read again just before
+			// removing, so a lock another run has just taken is left alone.
 			const again = await readLock(path);
-			if (again?.pid === holder.pid && again.runId === holder.runId) {
+			if (again !== undefined && again.pid === holder.pid && again.runId === holder.runId) {
 				await unlink(path).catch((error: unknown) => {
 					if (!isNotFound(error)) throw error;
 				});
@@ -787,22 +844,30 @@ export class FileRecoveryStore implements RecoveryStore {
 	}
 
 	private async unlock(runId: string): Promise<void> {
+		// First: the run has ended even if removing its lock fails, so that lock is stale.
+		heldHere.delete(runId);
 		const path = join(this.directory, 'lock');
 		// Only its own lock: one cleared as stale and taken by another run is not this run's.
 		if ((await readLock(path))?.runId === runId) await unlink(path);
 	}
 }
 
+/** No change it recorded may have reached a file: it recorded none, or abandoned each one. */
+function changedNothing(entries: JournalEntry[]): boolean {
+	return entries.every(entry => entry.status === 'abandoned');
+}
+
 /**
- * A run recorded as `running` only runs while it holds the lock and its process lives. Any
- * other is reported as `interrupted`, before the next run settles it.
+ * A run recorded as `running` only runs while it holds the lock, its process lives, and, in this
+ * process, it has not ended. Any other is reported as `interrupted`, before the next run settles
+ * it.
  */
 function withLiveStatus(
 	record: RunRecord,
 	holder: { runId: string; pid?: number } | undefined,
 ): RunRecord {
 	if (record.status !== 'running') return record;
-	const live = holder?.runId === record.runId && holder.pid !== undefined && isAlive(holder.pid);
+	const live = holder?.runId === record.runId && holder.pid !== undefined && isLiveHolder(holder);
 	return live ? record : { ...record, status: 'interrupted' };
 }
 
@@ -876,8 +941,12 @@ class FileRunJournal implements RunJournal {
 	private readonly runDirectory: string;
 	private readonly contentDirectory: string;
 	private readonly journal: FileHandle;
+	private readonly discard: () => Promise<void>;
 	private readonly release: () => Promise<void>;
 	private sequence = 0;
+	// The changes recorded as prepared and not abandoned: those that may have reached a file. One
+	// whose `prepared` line failed is not here, since nothing writes a file before that line.
+	private readonly effects = new Set<number>();
 	// Appends run one after another, so the lines never interleave.
 	private pending: Promise<unknown> = Promise.resolve();
 	private finished = false;
@@ -890,12 +959,14 @@ class FileRunJournal implements RunJournal {
 		runDirectory,
 		contentDirectory,
 		journal,
+		discard,
 		release,
 	}: {
 		record: RunRecord;
 		runDirectory: string;
 		contentDirectory: string;
 		journal: FileHandle;
+		discard: () => Promise<void>;
 		release: () => Promise<void>;
 	}) {
 		this.runId = record.runId;
@@ -903,6 +974,7 @@ class FileRunJournal implements RunJournal {
 		this.runDirectory = runDirectory;
 		this.contentDirectory = contentDirectory;
 		this.journal = journal;
+		this.discard = discard;
 		this.release = release;
 	}
 
@@ -929,6 +1001,7 @@ class FileRunJournal implements RunJournal {
 		this.assertOpen();
 		const sequence = ++this.sequence;
 		await this.append({ type: 'prepared', sequence, ...change });
+		this.effects.add(sequence);
 		return sequence;
 	}
 
@@ -937,9 +1010,15 @@ class FileRunJournal implements RunJournal {
 		return this.append({ type: 'applied', sequence });
 	}
 
-	abandoned(sequence: number): Promise<void> {
+	async abandoned(sequence: number): Promise<void> {
 		this.assertOpen();
-		return this.append({ type: 'abandoned', sequence });
+		await this.append({ type: 'abandoned', sequence });
+		// Only once recorded: a change whose abandonment was not may still count as made.
+		this.effects.delete(sequence);
+	}
+
+	get changed(): boolean {
+		return this.effects.size > 0;
 	}
 
 	async finish(status: Exclude<RunStatus, 'running' | 'interrupted'>): Promise<void> {
@@ -948,6 +1027,11 @@ class FileRunJournal implements RunJournal {
 		try {
 			await this.pending;
 			await this.journal.close();
+			// Its record is left `running`: if removing it fails, readers already take it as gone.
+			if (!this.changed) {
+				await this.discard();
+				return;
+			}
 			const record: RunRecord = { ...this.record, status, finishedAt: new Date().toISOString() };
 			await writeDurably(join(this.runDirectory, 'run.json'), JSON.stringify(record));
 		} finally {

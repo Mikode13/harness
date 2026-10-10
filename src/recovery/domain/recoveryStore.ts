@@ -65,7 +65,16 @@ export interface RunJournal {
 	applied(sequence: number): Promise<void>;
 	/** The change was not made, and the file still holds its `before`. */
 	abandoned(sequence: number): Promise<void>;
-	/** Ends the run and releases the workspace for the next writer. */
+	/**
+	 * Whether a change it recorded may have reached a file: one prepared and not abandoned. It
+	 * holds whatever happens to the record afterwards.
+	 */
+	readonly changed: boolean;
+	/**
+	 * Ends the run and releases the workspace for the next writer. A run that `changed` nothing
+	 * leaves the history, and the workspace is back at the run before it. If removing it fails,
+	 * the store still treats it as gone, and the next run or move finishes removing it.
+	 */
 	finish(status: Exclude<RunStatus, 'running' | 'interrupted'>): Promise<void>;
 }
 
@@ -152,7 +161,12 @@ export interface RecoveryStore {
 	redo(options?: { reason?: string }): Promise<Revision>;
 	/** Every move of the workspace, oldest first. */
 	listRevisions(): Promise<Revision[]>;
-	/** A run's record and its changes, in the order they were prepared. */
+	/**
+	 * A run's record and its changes, in the order they were prepared.
+	 *
+	 * @throws {UnknownRunError} when `runId` was never a run of this workspace.
+	 * @throws {HistoryExpiredError} when retention removed `runId` or chained it into a later run.
+	 */
 	readRun(runId: string): Promise<{ record: RunRecord; entries: JournalEntry[] }>;
 	/** The bytes a hash names. */
 	readContent(hash: string): Promise<Buffer>;

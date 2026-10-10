@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type RunJournal, WorkspaceBusyError } from '../../src/recovery/domain/recoveryStore.ts';
+import { UnknownRunError } from '../../src/recovery/domain/runTree.ts';
 import {
 	defaultStateDirectory,
 	FileRecoveryStore,
@@ -39,6 +40,11 @@ afterEach(() => {
 });
 
 const absent = { exists: false } as const;
+
+/** Records one change made, so the run stays in the history when it finishes. */
+async function change(run: RunJournal, path = 'a.txt'): Promise<void> {
+	await run.applied(await run.prepare({ path, before: absent, after: absent }));
+}
 
 /** The one folder the store keeps for `root`. */
 function workspaceFolder(): string {
@@ -79,6 +85,7 @@ describe('FileRecoveryStore', () => {
 		const store = await FileRecoveryStore.open({ root, directory });
 		const run = await store.startRun();
 		const hash = await run.saveContent(Buffer.from('source'));
+		await change(run);
 		await run.finish('completed');
 
 		const content = join(workspaceFolder(), 'content', hash.slice(0, 2), hash);
@@ -172,6 +179,7 @@ describe('FileRecoveryStore', () => {
 	it('refuses a journal damaged before its last line', async () => {
 		const store = await FileRecoveryStore.open({ root, directory });
 		const run = await store.startRun();
+		await change(run);
 		await run.finish('failed');
 		writeFileSync(join(workspaceFolder(), 'runs', run.runId, 'journal.jsonl'), 'garbage\n{}\n');
 
@@ -181,6 +189,7 @@ describe('FileRecoveryStore', () => {
 	it('marks a finished run with its status and end time', async () => {
 		const store = await FileRecoveryStore.open({ root, directory });
 		const run = await store.startRun();
+		await change(run);
 		await run.finish('cancelled');
 
 		const { record } = await store.readRun(run.runId);
@@ -208,7 +217,7 @@ describe('FileRecoveryStore', () => {
 	it.each(['../outside', 'runs/../../x', ''])('refuses %j as a run id', async runId => {
 		const store = await FileRecoveryStore.open({ root, directory });
 
-		await expect(store.readRun(runId)).rejects.toThrow(/Not a run id/);
+		await expect(store.readRun(runId)).rejects.toBeInstanceOf(UnknownRunError);
 	});
 
 	it('refuses to read content by anything but a hash', async () => {
@@ -349,8 +358,10 @@ describe('FileRecoveryStore', () => {
 			await expect(store.listRuns()).resolves.toEqual({ runs: [] });
 
 			const first = await store.startRun();
+			await change(first);
 			await first.finish('completed');
 			const second = await store.startRun();
+			await change(second);
 			await second.finish('failed');
 
 			const { head, runs } = await store.listRuns();
@@ -362,9 +373,60 @@ describe('FileRecoveryStore', () => {
 			expect(runs[0]).not.toHaveProperty('parentRunId');
 		});
 
+		it('takes a run that changed nothing out of the history, back to the run before it', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const kept = await store.startRun();
+			await change(kept);
+			expect(kept.changed).toBe(true);
+			await kept.finish('completed');
+
+			const abandoned = await store.startRun();
+			const hash = await abandoned.saveContent(Buffer.from('never written'));
+			await abandoned.abandoned(
+				await abandoned.prepare({
+					path: 'a.txt',
+					before: absent,
+					after: { exists: true, hash, mode: 0o644 },
+				}),
+			);
+			expect(abandoned.changed).toBe(false);
+			await abandoned.finish('failed');
+			const empty = await store.startRun();
+			await empty.finish('cancelled');
+
+			await expect(store.listRuns()).resolves.toEqual({
+				head: kept.runId,
+				runs: [expect.objectContaining({ runId: kept.runId })],
+			});
+			for (const run of [abandoned, empty]) {
+				expect(existsSync(join(workspaceFolder(), 'runs', run.runId))).toBe(false);
+				await expect(store.readRun(run.runId)).rejects.toBeInstanceOf(UnknownRunError);
+			}
+			// The next run starts from the one kept, and the workspace is free.
+			const next = await store.startRun();
+			await change(next);
+			await next.finish('completed');
+			expect((await store.listRuns()).runs.at(-1)).toMatchObject({ parentRunId: kept.runId });
+		});
+
+		it('keeps a run whose change may have been made', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const run = await store.startRun();
+			// Prepared, and neither applied nor abandoned: the file may hold it.
+			await run.prepare({ path: 'a.txt', before: absent, after: absent });
+
+			expect(run.changed).toBe(true);
+			await run.finish('failed');
+			await expect(store.listRuns()).resolves.toMatchObject({
+				head: run.runId,
+				runs: [{ runId: run.runId, status: 'failed' }],
+			});
+		});
+
 		it('lists a run as running only while it holds the workspace and its process lives', async () => {
 			const store = await FileRecoveryStore.open({ root, directory });
 			const run = await store.startRun();
+			await change(run);
 			await expect(store.listRuns()).resolves.toMatchObject({ runs: [{ status: 'running' }] });
 
 			kill(run);
@@ -413,6 +475,7 @@ describe('FileRecoveryStore', () => {
 				[notMade, 'abandoned'],
 				[changedSince, 'prepared'],
 			]);
+			await change(next);
 			await next.finish('completed');
 			await expect(store.listRuns()).resolves.toMatchObject({
 				runs: [{ runId: dead.runId }, { runId: next.runId, parentRunId: dead.runId }],
@@ -457,18 +520,116 @@ describe('FileRecoveryStore', () => {
 			await next.finish('completed');
 		});
 
-		it('keeps writing after a run that died before opening its journal', async () => {
+		it('takes out a run that died before opening its journal, which changed nothing', async () => {
 			const store = await FileRecoveryStore.open({ root, directory });
 			const dead = await store.startRun();
 			rmSync(join(workspaceFolder(), 'runs', dead.runId, 'journal.jsonl'));
 			kill(dead);
 
 			const next = await store.startRun();
+			await change(next);
+			await next.finish('completed');
 
-			await expect(store.readRun(dead.runId)).resolves.toMatchObject({
-				record: { status: 'interrupted' },
-				entries: [],
+			await expect(store.readRun(dead.runId)).rejects.toBeInstanceOf(UnknownRunError);
+			const { runs } = await store.listRuns();
+			expect(runs).toEqual([expect.objectContaining({ runId: next.runId })]);
+			expect(runs[0]).not.toHaveProperty('parentRunId');
+		});
+
+		it('hides a run that died having changed nothing at once, and the next run removes it', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const kept = await store.startRun();
+			await change(kept);
+			await kept.finish('completed');
+			const dead = await store.startRun();
+			await dead.abandoned(await dead.prepare({ path: 'a.txt', before: absent, after: absent }));
+			// It died before finishing, so the head still names it.
+			kill(dead);
+
+			await expect(store.listRuns()).resolves.toEqual({
+				head: kept.runId,
+				runs: [expect.objectContaining({ runId: kept.runId })],
 			});
+
+			const next = await store.startRun();
+			expect(existsSync(join(workspaceFolder(), 'runs', dead.runId))).toBe(false);
+			await change(next);
+			await next.finish('completed');
+			expect((await store.listRuns()).runs.at(-1)).toMatchObject({ parentRunId: kept.runId });
+		});
+
+		it('hides a run that changed nothing when removing it and its lock both fail', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const run = await store.startRun();
+			chmodSync(workspaceFolder(), 0o500);
+			try {
+				await expect(run.finish('completed')).rejects.toThrow();
+			} finally {
+				chmodSync(workspaceFolder(), 0o700);
+			}
+			// The lock still names this process, which lives on.
+			expect(existsSync(join(workspaceFolder(), 'lock'))).toBe(true);
+
+			await expect(store.listRuns()).resolves.toEqual({ runs: [] });
+			// Its lock is stale: the next run takes the workspace and finishes the removal.
+			const next = await store.startRun();
+			expect(existsSync(join(workspaceFolder(), 'runs', run.runId))).toBe(false);
+			await change(next);
+			await next.finish('completed');
+			expect((await store.listRuns()).runs).toEqual([
+				expect.objectContaining({ runId: next.runId }),
+			]);
+		});
+
+		it('takes over a lock this process left when releasing it failed', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const run = await store.startRun();
+			await change(run);
+			chmodSync(workspaceFolder(), 0o500);
+			try {
+				await expect(run.finish('completed')).rejects.toThrow();
+			} finally {
+				chmodSync(workspaceFolder(), 0o700);
+			}
+
+			// Its record was closed; only its lock was left, naming this process, which lives on.
+			await expect(store.readRun(run.runId)).resolves.toMatchObject({
+				record: { status: 'completed' },
+			});
+			const next = await store.startRun();
+			await change(next);
+			await next.finish('completed');
+			expect((await store.listRuns()).runs.at(-1)).toMatchObject({ parentRunId: run.runId });
+		});
+
+		it('still lists a dead run whose journal it cannot read', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const dead = await store.startRun();
+			kill(dead);
+			writeFileSync(join(workspaceFolder(), 'runs', dead.runId, 'journal.jsonl'), 'garbage\n{}\n');
+
+			await expect(store.listRuns()).resolves.toMatchObject({
+				head: dead.runId,
+				runs: [{ runId: dead.runId, status: 'interrupted' }],
+			});
+		});
+
+		it('hides a run that changed nothing when removing it fails, and the next run removes it', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const run = await store.startRun();
+			const folder = join(workspaceFolder(), 'runs', run.runId);
+			chmodSync(folder, 0o500);
+			try {
+				await expect(run.finish('completed')).rejects.toThrow();
+			} finally {
+				chmodSync(folder, 0o700);
+			}
+
+			await expect(store.listRuns()).resolves.toEqual({ runs: [] });
+			// The workspace is free, and the next run finishes the removal.
+			const next = await store.startRun();
+			expect(existsSync(folder)).toBe(false);
+			await change(next);
 			await next.finish('completed');
 		});
 

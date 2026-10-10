@@ -15,6 +15,12 @@ export interface AgentResponse {
 	tokens?: Tokens;
 	/** Wall-clock seconds the consumer waited for the run, retries and every role included. */
 	duration: number;
+	/**
+	 * The run the workspace's history recorded, when this run wrote through the harness's write
+	 * tools. Absent for a run that wrote nothing, and from the Agent SDK engines, whose changes
+	 * the history does not record.
+	 */
+	runId?: string;
 }
 
 export type Callback = (item: ProgressEvent) => void;

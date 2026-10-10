@@ -243,6 +243,48 @@ so create one per session, per user or per run.
 takes the same options as `createOrchestrator()` and returns a promise; its executor
 still runs on an Agent SDK, because the harness's own tools cannot change files.
 
+### Going back through what an agent wrote
+
+The harness's write tools record every run that changes files, outside the repository,
+under the platform's state directory. `createHistory` reads that record and moves the
+workspace through it:
+
+```ts
+import { createHistory, historyStart } from '@mikode13/harness';
+
+const history = await createHistory({ root: process.cwd() });
+const { runId } = await agent.run('Rename the helper.', { signal: controller.signal });
+
+if (runId) console.log(await history.changes(runId)); // a git-style diff
+await history.undo({ reason: 'keep the old name' });
+await history.redo();
+await history.goTo(historyStart); // as it was before the agent's first run
+```
+
+`list()` gives every run kept, oldest first, with its parent, status and the files it
+changed, and the run the workspace is at (`head`), absent at the start. Runs form a tree:
+going back and writing again starts a new branch, and `goTo` reaches the old one. `redo`
+returns towards where the workspace was most recently. A run's `runId` is in its
+`AgentResponse` when it changed a file, and a run that failed or was cancelled after
+writing is still listed, with that status. A run that changed nothing is not kept.
+
+A move writes a file only if it still holds what the history expects. A file you
+changed since is left as it is and named in the move's `conflicts`, and the move is
+then not `complete`. The reason is kept with the move.
+
+A consumer branches on four errors: `WorkspaceBusyError` while a run or another move
+holds the workspace, `NothingToMoveError` with nothing to undo or redo,
+`UnknownRunError` for a run the workspace never had, and `HistoryExpiredError` for one
+retention took. The history keeps 25 runs per workspace. Older runs are chained into
+the next, so `historyStart` always restores the original state. For a chained run,
+the error's `keptIn` names the run that now holds its changes, and that run's
+`absorbed` in `list()` names it.
+
+The history is not version control. It holds only what the harness's own tools wrote:
+not your edits, not other programs', and not the Agent SDK engines' changes. The lock
+keeps a second harness run out, but not an editor. The write tools are not exported
+yet, so today only an agent built inside the harness records runs.
+
 ## Tests
 
 `pnpm test` runs the unit suite against deterministic fakes; it never contacts a

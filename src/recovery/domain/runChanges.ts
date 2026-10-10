@@ -1,6 +1,6 @@
 import { unifiedDiff } from '#src/diff/domain/unifiedDiff';
 import { type FileChange, fileChanges, sameState } from './fileChanges.ts';
-import type { RecoveryStore } from './recoveryStore.ts';
+import type { JournalEntry, RecoveryStore, RunRecord } from './recoveryStore.ts';
 
 const binaryProbeBytes = 8000;
 
@@ -24,10 +24,7 @@ export async function showChanges(
 	{ maxLines = 1000 }: ShowChangesOptions = {},
 ): Promise<string> {
 	const { record, entries } = await store.readRun(runId);
-	// A file left as it was, such as one the run created and then deleted, is not a change.
-	const changes = fileChanges(entries, record.status !== 'running').filter(
-		change => change.uncertain || change.pending || !sameState(change.before, change.after),
-	);
+	const changes = changedFiles(record, entries);
 	const output: string[] = [];
 
 	for (const [index, change] of changes.entries()) {
@@ -50,6 +47,17 @@ export async function showChanges(
 	}
 
 	return output.join('\n');
+}
+
+/**
+ * The files a run changed, in the order it first touched each one. A file left as it was, such
+ * as one the run created and then deleted, is not a change; one it may or may not have changed,
+ * or is changing now, is.
+ */
+export function changedFiles(record: RunRecord, entries: JournalEntry[]): FileChange[] {
+	return fileChanges(entries, record.status !== 'running').filter(
+		change => change.uncertain || change.pending || !sameState(change.before, change.after),
+	);
 }
 
 async function renderFile(
@@ -107,6 +115,6 @@ function gitMode(mode: number): string {
  * Relative to the run's root when inside it; a file in another root keeps its real path. Both
  * are real absolute paths, with `/` as the separator on every supported platform.
  */
-function displayPath(root: string, path: string): string {
+export function displayPath(root: string, path: string): string {
 	return path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
 }

@@ -394,7 +394,8 @@ export class LLMAgent implements Agent {
 
 	/**
 	 * Runs inside the context of the run that reached it, or in one of its own that it ends with
-	 * the run: completed, failed or cancelled.
+	 * the run: completed, failed or cancelled. Only a run that owns its context names the history
+	 * run it recorded, since the run is over only when that context ends.
 	 */
 	async run(prompt: string, options: RunOptions): Promise<AgentResponse> {
 		const inherited = runContextOf(options);
@@ -402,16 +403,19 @@ export class LLMAgent implements Agent {
 
 		const context = new RunContext();
 		let end: RunEnd = 'failed';
+		let response: AgentResponse;
 		try {
-			const response = await this.runSteps(prompt, withRunContext(options, context), context);
+			response = await this.runSteps(prompt, withRunContext(options, context), context);
 			end = 'completed';
-			return response;
 		} catch (error) {
 			if (isAbortError(error)) end = 'cancelled';
 			throw error;
 		} finally {
 			await this.finishContext(context, end);
 		}
+		// Read once the run ended: a run that changed nothing left the history then.
+		const { runId } = context.historyRun;
+		return runId ? { ...response, runId } : response;
 	}
 
 	/**
