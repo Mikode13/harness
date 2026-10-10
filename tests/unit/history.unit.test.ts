@@ -3,6 +3,7 @@ import {
 	chmodSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	realpathSync,
 	rmSync,
 	symlinkSync,
@@ -10,7 +11,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import {
 	createHistory,
@@ -245,6 +246,41 @@ describe('the run an agent recorded', () => {
 		}
 
 		expect(readUnder(root, 'a.txt')).toBe('original');
+		expect(response).not.toHaveProperty('runId');
+		await expect(history.list()).resolves.toEqual({ runs: [] });
+	});
+
+	it('is neither named nor listed when removing a run that changed nothing fails', async () => {
+		writeFileSync(join(root, 'a.txt'), 'original');
+		const workspaces = join(stateDirectory, 'workspaces');
+		let runFolder: string | undefined;
+		const warn = vi.fn();
+		const agent = new LLMAgent({
+			llmClient: {
+				send: () => {
+					if (runFolder !== undefined) throw new Error('called a third time');
+					const runs = join(workspaces, readdirSync(workspaces)[0] ?? '', 'runs');
+					const started = readdirSync(runs);
+					if (started.length === 0) return Promise.resolve(write);
+					// The write failed; the run's folder cannot be emptied when the run ends.
+					runFolder = join(runs, started[0] ?? '');
+					chmodSync(runFolder, 0o500);
+					return Promise.resolve(textResponse('it could not be written'));
+				},
+			},
+			tools: [replaceTool(await writesOver(root, store))],
+			logger: { warn },
+		});
+		chmodSync(root, 0o555);
+		let response;
+		try {
+			response = await agent.run('change it', { signal });
+		} finally {
+			chmodSync(root, 0o755);
+			if (runFolder !== undefined) chmodSync(runFolder, 0o700);
+		}
+
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not close its records'));
 		expect(response).not.toHaveProperty('runId');
 		await expect(history.list()).resolves.toEqual({ runs: [] });
 	});

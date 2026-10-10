@@ -97,6 +97,12 @@ export class WriteSession {
 	async finish(status: Exclude<RunStatus, 'running' | 'interrupted'>): Promise<void> {
 		const journal = await this.journal?.catch(() => undefined);
 		this.journal = undefined;
-		if (journal && (await journal.finish(status)) === 'discarded') this.onDiscard?.();
+		if (!journal) return;
+		try {
+			await journal.finish(status);
+		} finally {
+			// Even when finishing failed: a run that changed nothing is out of the history either way.
+			if (!journal.changed) this.onDiscard?.();
+		}
 	}
 }

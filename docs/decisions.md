@@ -1410,5 +1410,6 @@ The user delegated the remaining names to me.
 
 - A history opened beside a writing agent is a second view of the same files on disk. The workspace lock keeps them apart, so a move during a run fails with `WorkspaceBusyError`.
 - `list()` reads every kept run's journal, at most 25.
-- A change counts while it may have reached its file: it is prepared and its abandonment was not recorded. A crash during the discard leaves an empty leaf behind. That leaf is settled as `interrupted` and pruned like any abandoned branch.
+- A change counts while it may have reached its file: it is prepared and its abandonment was not recorded.
+- Whether a run changed nothing is read from its journal, not from a removal that succeeded. The response leaves out its `runId` even when the removal fails. `list()` hides a dead run that changed nothing, and moves the head to its parent. The next run or move then finishes the removal under the lock. This covers a failed removal, a crash, and a run that died having changed nothing.
 - The write tools that record these runs are not exported yet, and the orchestrator's response has no `runId` until its roles share one run context. #71 does both.

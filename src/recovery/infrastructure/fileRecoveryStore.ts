@@ -23,7 +23,6 @@ import {
 	NothingToMoveError,
 	type Revision,
 	type RecoveryStore,
-	type RunEnding,
 	type RunJournal,
 	type RunRecord,
 	type RunStatus,
@@ -286,7 +285,17 @@ export class FileRecoveryStore implements RecoveryStore {
 			...runs.flatMap(run => run.absorbed ?? []),
 			...(await this.listPruned()),
 		]);
-		const { runId: head } = await this.readHead();
+		// A dead run that changed nothing is not in the history either, though its removal did not
+		// finish. No run follows it: the next run or move removes it before starting.
+		for (const run of runs) {
+			if (run.status !== 'interrupted') continue;
+			// A journal it cannot read leaves the run listed: whether it changed anything is unknown.
+			const entries = await this.readEntries(run.runId, run.journal).catch(() => undefined);
+			if (entries && changedNothing(entries)) gone.add(run.runId);
+		}
+		const parents = new Map(runs.map(run => [run.runId, run.parentRunId]));
+		let { runId: head } = await this.readHead();
+		while (head !== undefined && gone.has(head)) head = parents.get(head);
 
 		return { ...(head ? { head } : {}), runs: runs.filter(run => !gone.has(run.runId)) };
 	}
@@ -657,17 +666,19 @@ export class FileRecoveryStore implements RecoveryStore {
 	}
 
 	/**
-	 * Takes a run that changed nothing out of the history, while it still holds the lock: the
-	 * workspace goes back to its parent first, so the head never names a run that is gone. A
-	 * crash before the run is removed leaves an empty leaf, settled as `interrupted` and pruned
-	 * like any abandoned branch. The contents it saved are freed by the next prune.
+	 * Takes a run that changed nothing out of the history, under the lock: the workspace goes back
+	 * to its parent first, so the head never names a run that is gone. Until the run is removed,
+	 * `listRuns` already hides it, and the next run or move finishes removing it. The contents it
+	 * saved are freed by the next prune.
 	 */
 	private async discardRun(record: RunRecord): Promise<void> {
-		const head = await this.readHead();
-		await this.writeHead({
-			...(record.parentRunId ? { runId: record.parentRunId } : {}),
-			revision: head.revision,
-		});
+		const { runId: headRunId, ...head } = await this.readHead();
+		if (headRunId === record.runId) {
+			await this.writeHead({
+				...head,
+				...(record.parentRunId ? { runId: record.parentRunId } : {}),
+			});
+		}
 		await rm(join(this.runDirectory(record.runId), 'run.json'), { force: true });
 		await syncDirectory(this.runDirectory(record.runId));
 		await rm(this.runDirectory(record.runId), { recursive: true, force: true });
@@ -726,6 +737,10 @@ export class FileRecoveryStore implements RecoveryStore {
 				}
 			}
 			await appendWhole(join(this.runDirectory(runId), record.journal ?? firstJournal), settled);
+			if (changedNothing(await this.readEntries(runId, record.journal))) {
+				await this.discardRun(record);
+				continue;
+			}
 			// Last, so a crash before it leaves a run that is settled again, and settling is idempotent.
 			await writeDurably(
 				join(this.runDirectory(runId), 'run.json'),
@@ -820,6 +835,11 @@ export class FileRecoveryStore implements RecoveryStore {
 		// Only its own lock: one cleared as stale and taken by another run is not this run's.
 		if ((await readLock(path))?.runId === runId) await unlink(path);
 	}
+}
+
+/** No change it recorded may have reached a file: it recorded none, or abandoned each one. */
+function changedNothing(entries: JournalEntry[]): boolean {
+	return entries.every(entry => entry.status === 'abandoned');
 }
 
 /**
@@ -981,19 +1001,23 @@ class FileRunJournal implements RunJournal {
 		this.effects.delete(sequence);
 	}
 
-	async finish(status: Exclude<RunStatus, 'running' | 'interrupted'>): Promise<RunEnding> {
+	get changed(): boolean {
+		return this.effects.size > 0;
+	}
+
+	async finish(status: Exclude<RunStatus, 'running' | 'interrupted'>): Promise<void> {
 		this.assertOpen();
 		this.finished = true;
 		try {
 			await this.pending;
 			await this.journal.close();
-			if (this.effects.size === 0) {
+			// Its record is left `running`: if removing it fails, readers already take it as gone.
+			if (!this.changed) {
 				await this.discard();
-				return 'discarded';
+				return;
 			}
 			const record: RunRecord = { ...this.record, status, finishedAt: new Date().toISOString() };
 			await writeDurably(join(this.runDirectory, 'run.json'), JSON.stringify(record));
-			return 'recorded';
 		} finally {
 			await this.release();
 		}

@@ -66,15 +66,17 @@ export interface RunJournal {
 	/** The change was not made, and the file still holds its `before`. */
 	abandoned(sequence: number): Promise<void>;
 	/**
-	 * Ends the run and releases the workspace for the next writer. A run that changed nothing,
-	 * because every change it prepared was abandoned or it prepared none, is `discarded`: it
-	 * leaves the history, and the workspace is back at the run before it.
+	 * Whether a change it recorded may have reached a file: one prepared and not abandoned. It
+	 * holds whatever happens to the record afterwards.
 	 */
-	finish(status: Exclude<RunStatus, 'running' | 'interrupted'>): Promise<RunEnding>;
+	readonly changed: boolean;
+	/**
+	 * Ends the run and releases the workspace for the next writer. A run that `changed` nothing
+	 * leaves the history, and the workspace is back at the run before it. If removing it fails,
+	 * the store still treats it as gone, and the next run or move finishes removing it.
+	 */
+	finish(status: Exclude<RunStatus, 'running' | 'interrupted'>): Promise<void>;
 }
-
-/** Whether a finished run stays in the history. */
-export type RunEnding = 'recorded' | 'discarded';
 
 /** The point before any run: going there takes the workspace back to how it was. */
 export const historyStart = 'start';
