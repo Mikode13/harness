@@ -32,6 +32,18 @@ describe('PromptEmitter', () => {
 		await expect(prompts.emit('> ', signal)).rejects.toSatisfy(isAbortError);
 	});
 
+	it('says whether a person answers at a terminal', () => {
+		const piped = emitter().prompts;
+		const terminal = new PromptEmitter({
+			input: Object.assign(new PassThrough(), { isTTY: true }),
+			output: new PassThrough(),
+		});
+
+		expect([piped.interactive, terminal.interactive]).toEqual([false, true]);
+		piped.close();
+		terminal.close();
+	});
+
 	it('drops what a terminal typed while no question was asked', async () => {
 		const input = Object.assign(new PassThrough(), { isTTY: true });
 		const prompts = new PromptEmitter({ input, output: new PassThrough() });

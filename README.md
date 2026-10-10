@@ -339,7 +339,10 @@ files as they were, because they changed since, names them. None of the agents t
 CLI builds records runs yet, because none of them writes through the harness's tools.
 
 The CLI asks in the terminal before a destructive tool call runs: yes, always for
-that tool until the CLI exits, or no with an optional reason for the model. No
+that tool until the CLI exits, or no with an optional reason for the model. With
+piped input nobody can answer, so such a call is denied: a line written for a later
+question never approves one. Piped lines answer the prompt and the history commands in
+order. No
 agent it builds asks yet, because the harness's own tools only read and
 `autoApprove` is on.
 

@@ -28,10 +28,11 @@ export class PromptEmitter implements IPromptEmitter {
 	/**
 	 * Piped lines that arrived while no question was asked, answered in order by the next ones.
 	 * A terminal's are dropped instead, as before: a "y" typed during a run must never answer
-	 * the approval of a destructive call asked after it.
+	 * the approval of a destructive call asked after it. Piped input never answers an approval
+	 * at all: the approver denies when nobody is at a terminal.
 	 */
 	private readonly lines: string[] = [];
-	private readonly keepsEarlyLines: boolean;
+	readonly interactive: boolean;
 	private waiting: Waiting | undefined;
 
 	constructor({
@@ -39,12 +40,12 @@ export class PromptEmitter implements IPromptEmitter {
 		output = stdout,
 	}: { input?: NodeJS.ReadableStream; output?: NodeJS.WritableStream } = {}) {
 		this.rl = readline.createInterface({ input, output });
-		this.keepsEarlyLines = (input as { isTTY?: boolean }).isTTY !== true;
+		this.interactive = (input as { isTTY?: boolean }).isTTY === true;
 		this.rl.on('line', line => {
 			const waiting = this.waiting;
 			this.waiting = undefined;
 			if (waiting) waiting.resolve(line);
-			else if (this.keepsEarlyLines) this.lines.push(line);
+			else if (!this.interactive) this.lines.push(line);
 		});
 		this.rl.on('close', () => {
 			this.closed = true;
