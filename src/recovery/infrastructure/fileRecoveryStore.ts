@@ -199,11 +199,15 @@ type JournalLine =
  * same instant could both believe they hold it.
  */
 export class FileRecoveryStore implements RecoveryStore {
-	private constructor(
-		private readonly root: string,
-		private readonly directory: string,
-		private readonly keepRuns: number,
-	) {}
+	private readonly root: string;
+	private readonly directory: string;
+	private readonly keepRuns: number;
+
+	private constructor(root: string, directory: string, keepRuns: number) {
+		this.root = root;
+		this.directory = directory;
+		this.keepRuns = keepRuns;
+	}
 
 	static async open({
 		root,

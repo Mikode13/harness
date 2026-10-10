@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import {
+	createHistory,
 	createLLMOrchestrator,
 	createOrchestrator,
 	rememberApprovals,
@@ -13,6 +14,7 @@ import { parseArgs } from 'node:util';
 import { Output } from './adapters/output.ts';
 import { PromptEmitter } from './adapters/promptEmitter.ts';
 import { createTerminalApprover } from './terminalApprover.ts';
+import { HistoryCommands } from './historyCommands.ts';
 
 const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 let spinnerFrame = 0;
@@ -82,6 +84,8 @@ const loop = new ConversationLoop(
 	promptEmitter,
 	output,
 	approve,
+	// The history of what the harness's own write tools changed in this folder.
+	new HistoryCommands(await createHistory({ root: process.cwd() }), promptEmitter, output),
 );
 
 const exitConfirmationWindowMs = 3000;

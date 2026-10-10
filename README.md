@@ -310,6 +310,22 @@ The agents work on the repository root, which is the directory the script runs i
 Type your prompt at `>`. Press Ctrl+C while idle at the prompt to exit; pressing
 it while an agent is running cancels only that turn and returns to the prompt.
 
+A line that starts with `/` is a command for the CLI, not a prompt. Four commands
+move through the [history of what the agents wrote](#going-back-through-what-an-agent-wrote),
+without the model:
+
+- `/history` shows the tree of runs and marks where the workspace is.
+  `/history --files` adds the files each run changed.
+- `/undo` goes back to the run before the current one.
+- `/redo` goes forward again.
+- `/goto <run | start>` goes to a run, named by its id or its last six characters, or
+  to `start`, before any run.
+
+Each move says what it will do and changes nothing until you answer `y`. It then
+asks why, and records the reason, if you give one, with the move. A move that left
+files as they were, because they changed since, names them. None of the agents the
+CLI builds records runs yet, because none of them writes through the harness's tools.
+
 The CLI asks in the terminal before a destructive tool call runs: yes, always for
 that tool until the CLI exits, or no with an optional reason for the model. No
 agent it builds asks yet, because the harness's own tools only read and

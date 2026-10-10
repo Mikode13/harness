@@ -173,8 +173,11 @@ export interface RecoveryStore {
 }
 
 export class WorkspaceBusyError extends Error {
-	constructor(readonly runId: string) {
+	readonly runId: string;
+
+	constructor(runId: string) {
 		super(`The workspace is busy: ${runId} is writing to it`);
 		this.name = 'WorkspaceBusyError';
+		this.runId = runId;
 	}
 }

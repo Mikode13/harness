@@ -8,9 +8,12 @@ export interface Route {
 
 /** A run named in the history is not kept any more, or never existed. */
 export class UnknownRunError extends Error {
-	constructor(readonly runId: string) {
+	readonly runId: string;
+
+	constructor(runId: string) {
 		super(`Run ${runId} is not in the history of this workspace`);
 		this.name = 'UnknownRunError';
+		this.runId = runId;
 	}
 }
 
@@ -19,17 +22,19 @@ export class UnknownRunError extends Error {
  * changes into the next run. Either way the state right after it is gone.
  */
 export class HistoryExpiredError extends Error {
-	constructor(
-		readonly runId: string,
-		/** The run that now holds its changes, when it was chained rather than removed. */
-		readonly keptIn?: string,
-	) {
+	readonly runId: string;
+	/** The run that now holds its changes, when it was chained rather than removed. */
+	readonly keptIn: string | undefined;
+
+	constructor(runId: string, keptIn?: string) {
 		super(
 			keptIn
 				? `Run ${runId} is no longer kept: its changes are now part of run ${keptIn}`
 				: `Run ${runId} is no longer kept`,
 		);
 		this.name = 'HistoryExpiredError';
+		this.runId = runId;
+		this.keptIn = keptIn;
 	}
 }
 
