@@ -3,6 +3,7 @@ import {
 	describeCreation,
 	describeDeletion,
 	describeModification,
+	editDiff,
 } from '../domain/editResponse.ts';
 import { EditRefusedError } from '../domain/fileEdits.ts';
 import type { PreparedCall } from '../domain/preparedCall.ts';
@@ -52,6 +53,7 @@ export async function prepareTrackedEdit(
 		);
 		return {
 			risk: editRisk(prepared),
+			diff: editDiff(path, undefined, request.content.toString('utf8')),
 			run: async runSignal => {
 				await editor.apply(prepared, runSignal);
 				// It wrote the content itself, so it has seen it.
@@ -77,6 +79,7 @@ export async function prepareTrackedEdit(
 		const prepared = await editor.prepare({ kind: 'delete', path, expected: seen }, signal);
 		return {
 			risk: editRisk(prepared),
+			diff: editDiff(path, content.toString('utf8'), undefined),
 			run: async runSignal => {
 				await editor.apply(prepared, runSignal);
 				reads.forget(target.absolute);
@@ -92,6 +95,7 @@ export async function prepareTrackedEdit(
 	);
 	return {
 		risk: editRisk(prepared),
+		diff: editDiff(path, content.toString('utf8'), next.toString('utf8')),
 		run: async runSignal => {
 			await editor.apply(prepared, runSignal);
 			reads.record(target.absolute, hashOf(next));

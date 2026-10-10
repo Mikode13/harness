@@ -34,6 +34,8 @@ function stopSpinner(): void {
 	cursorTo(process.stdout, 0);
 	clearLine(process.stdout, 0);
 }
+// The Agent SDK engines ask no one here, so they run with their permission bypass. The model
+// API agents ask the terminal before a destructive call, as the harness does by default.
 const autoApprove = true;
 
 const output = new Output();
@@ -42,7 +44,10 @@ const output = new Output();
 const { values: flags } = parseArgs({ options: { llm: { type: 'boolean', default: false } } });
 
 const orchestratorAgent = flags.llm
-	? await createLLMOrchestrator({ autoApprove })
+	? await createLLMOrchestrator({
+			// The executor changes files here; every change goes to the history /undo moves through.
+			workspace: { roots: [{ path: process.cwd(), access: 'write' }] },
+		})
 	: createOrchestrator({ autoApprove });
 // The history of what the harness's own write tools changed in this folder.
 const history = await createHistory({ root: process.cwd() });

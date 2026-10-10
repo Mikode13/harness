@@ -64,6 +64,12 @@ export type ProgressEvent =
 			 * it never ran because no one allowed it, with no `in_progress` before it.
 			 */
 			status: 'in_progress' | 'completed' | 'error' | 'denied';
+			/**
+			 * On `completed`, for a call that changed a file through the harness's write tools: the
+			 * change as a unified diff, for the person watching. Narration only; the run's whole
+			 * record is the history's `changes`.
+			 */
+			diff?: string;
 	  }
 	| { type: 'todoList'; items: { text: string; completed: boolean }[] }
 	| { type: 'turnStarted' }

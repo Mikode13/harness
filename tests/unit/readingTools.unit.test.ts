@@ -1,0 +1,97 @@
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { RunContext } from '../../src/agent/domain/runContext.ts';
+import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
+import { ReadRegistry } from '../../src/tools/domain/readRegistry.ts';
+import { createWorkspace } from '../../src/tools/infrastructure/createWorkspace.ts';
+import { GitIgnoreRules } from '../../src/tools/infrastructure/gitIgnoreRules.ts';
+import { PolicyWorkspace } from '../../src/tools/infrastructure/policyWorkspace.ts';
+import { RootsAccessPolicy } from '../../src/tools/infrastructure/rootsAccessPolicy.ts';
+import { createShowChangesTool } from '../../src/tools/infrastructure/showChangesTool.ts';
+import { recordRun } from '../support/recordedRuns.ts';
+
+const signal = new AbortController().signal;
+
+let parent: string;
+let root: string;
+let policy: RootsAccessPolicy;
+
+beforeEach(async () => {
+	parent = realpathSync(mkdtempSync(join(tmpdir(), 'harness-reading-')));
+	root = join(parent, 'repo');
+	mkdirSync(join(root, 'src'), { recursive: true });
+	execFileSync('git', ['init', '--quiet'], { cwd: root });
+	// Not in .gitignore: only the policy keeps it closed.
+	writeFileSync(join(root, '.envrc'), 'export TOKEN=secret\n');
+	writeFileSync(join(root, 'src', 'a.ts'), 'export const token = process.env.TOKEN;\n');
+	policy = await RootsAccessPolicy.create({
+		roots: [{ path: root, access: 'write' }],
+		ignoreRules: new GitIgnoreRules(),
+	});
+});
+
+afterEach(() => {
+	rmSync(parent, { recursive: true, force: true });
+});
+
+describe('the read workspace under the access policy', () => {
+	async function workspace() {
+		return new PolicyWorkspace({ inner: await createWorkspace({ root }), policy });
+	}
+
+	it('neither lists, searches nor reads a secret .gitignore lets through, nor counts it', async () => {
+		const read = await workspace();
+
+		await expect(read.listFiles({ limit: 50 }, signal)).resolves.toEqual({
+			files: ['src/a.ts'],
+			total: 1,
+			truncated: false,
+		});
+		const { matches, total } = await read.searchText(
+			{ pattern: 'TOKEN', ignoreCase: false, limit: 50 },
+			signal,
+		);
+		expect(matches.map(match => match.path)).toEqual(['src/a.ts']);
+		expect(total).toBe(1);
+		await expect(
+			read.readFile({ path: '.envrc', fromLine: 1, lineCount: 10 }, signal),
+		).rejects.toThrow(/may hold secrets/);
+	});
+});
+
+describe('showChanges for the planner and the reviewer', () => {
+	async function showChanges(context: RunContext): Promise<string> {
+		const store = await FileRecoveryStore.open({ root, directory: join(parent, 'state') });
+		const tool = createShowChangesTool({ store, policy });
+		const prepared = await tool.prepare({}, signal, {
+			run: context,
+			reads: new ReadRegistry().begin(),
+		});
+		return prepared.run(signal);
+	}
+
+	it('says when the task has changed nothing yet', async () => {
+		await expect(showChanges(new RunContext())).resolves.toBe(
+			'Nothing has been changed in this task yet.',
+		);
+	});
+
+	it("shows the current run's changes it may read, and only counts the others", async () => {
+		const store = await FileRecoveryStore.open({ root, directory: join(parent, 'state') });
+		const context = new RunContext();
+		context.historyRun.runId = await recordRun(store, root, [
+			['src/a.ts', 'export const token = "changed";\n'],
+			['.envrc', 'export TOKEN=leaked\n'],
+		]);
+
+		const shown = await showChanges(context);
+
+		expect(shown).toContain('# 1 changed file is not shown: you may not read it');
+		expect(shown).toContain('+export const token = "changed";');
+		expect(shown).not.toContain('.envrc');
+		expect(shown).not.toContain('leaked');
+	});
+});

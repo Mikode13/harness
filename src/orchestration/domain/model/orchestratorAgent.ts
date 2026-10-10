@@ -4,7 +4,18 @@ import { RecoverableError, UnrecoverableError, withSpentTokens } from '#src/shar
 import type { ReviewerDecision } from './reviewerDecision.ts';
 import type { Validator } from '../interface/validator.ts';
 import type { ILogger } from '#src/shared/domain/logger';
-import { classifyHostFailure, treatErrors } from '#src/shared/domain/providerFailure';
+import {
+	classifyHostFailure,
+	describeFailure,
+	treatErrors,
+} from '#src/shared/domain/providerFailure';
+import {
+	RunContext,
+	type RunEnd,
+	runContextOf,
+	withRunContext,
+} from '#src/agent/domain/runContext';
+import { isAbortError } from '#src/shared/domain/isAbortError';
 
 // Each role's standing instructions, kept apart from the data of a round so an agent with a
 // system prompt can hold them there instead of receiving them again in every prompt. An agent
@@ -152,24 +163,48 @@ export class OrchestratorAgent implements Agent {
 		this.logger = logger;
 	}
 
+	/**
+	 * Every role, round and retry of one run shares one run context, so what the executor writes
+	 * is one run of the workspace's history, and the planner's and reviewer's turns are tied to
+	 * it. The orchestrator ends that context with the run, unless an outer agent owns it.
+	 */
 	async run(prompt: string, options: RunOptions): Promise<AgentResponse> {
 		const start = Date.now();
 		// Per invocation, not per instance: the CLI keeps one orchestrator for a whole session.
 		const totals: RunTotals = { tokens: undefined, unreported: false };
+		const inherited = runContextOf(options);
+		const context = inherited ?? new RunContext();
+		let end: RunEnd = 'failed';
 
 		try {
-			await this.runRounds(prompt, options, totals);
+			await this.runRounds(prompt, inherited ? options : withRunContext(options, context), totals);
+			end = 'completed';
 		} catch (error) {
+			if (isAbortError(error)) end = 'cancelled';
 			// A failing role carries its own tokens; the roles before it are in the totals.
 			throw withSpentTokens(error, totals.tokens, totals.unreported);
+		} finally {
+			if (!inherited) await this.finishContext(context, end);
 		}
 
+		// Read once the run ended: a run that changed nothing left the history then.
+		const { runId } = context.historyRun;
 		return {
 			response: 'All job has finished',
 			tokens: runTokens(totals),
 			// The whole run's wall clock, so it matches what the consumer waited.
 			duration: (Date.now() - start) / 1000,
+			...(!inherited && runId ? { runId } : {}),
 		};
+	}
+
+	/** The run's records end here, but its result stands: what it changed is already on disk. */
+	private async finishContext(context: RunContext, end: RunEnd): Promise<void> {
+		try {
+			await context.finish(end);
+		} catch (error) {
+			this.warn(`The run could not close its records: ${describeFailure(error)}`);
+		}
 	}
 
 	private async runRounds(prompt: string, options: RunOptions, totals: RunTotals): Promise<void> {

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import type { LLMClient, LLMResponse } from '../../src/llm/domain/llm.ts';
 import type { Message } from '../../src/llm/domain/message.ts';
@@ -262,6 +263,40 @@ describe('editing only from a version the model read', () => {
 		const errors = model.outputs.slice(1).map(({ output }) => output);
 		expect(errors[0]).toBe('The text appears 2 times in "a.txt"; it must appear once');
 		for (const error of errors) expect(error).not.toContain(parent);
+	});
+
+	it('narrates a change it made with its diff, and a refused one without', async () => {
+		const model = new CallingModel().then(
+			modify('a.txt', 'two', 'TWO'),
+			read('a.txt'),
+			modify('a.txt', 'two', 'TWO'),
+		);
+		const events: ProgressEvent[] = [];
+
+		await (
+			await agentOver(model)
+		).run('change it', { signal, onProgress: event => events.push(event) });
+
+		const ends = events.filter(event => event.type === 'tool' && event.status !== 'in_progress');
+		expect(ends).toEqual([
+			{ type: 'tool', id: 'call-1', name: 'edit', status: 'error' },
+			{ type: 'tool', id: 'call-2', name: 'readFile', status: 'completed' },
+			{
+				type: 'tool',
+				id: 'call-3',
+				name: 'edit',
+				status: 'completed',
+				diff: [
+					'--- a/a.txt',
+					'+++ b/a.txt',
+					'@@ -1,3 +1,3 @@',
+					' one',
+					'-two',
+					'+TWO',
+					' three',
+				].join('\n'),
+			},
+		]);
 	});
 
 	it('names how much of a large change it did not show', async () => {

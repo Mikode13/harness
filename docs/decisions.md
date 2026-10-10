@@ -964,6 +964,8 @@ tags: #mikode-harness #provider-integration #public-api
 
 tags: #mikode-harness #agent-loops #orchestration
 
+superseded by: "Each role gets its own tools, and every role of the model-backed orchestrator runs on the model APIs" (below). The executor is an `LLMAgent` now that the harness's own tools change files.
+
 **Decision:** `createLLMOrchestrator` runs the same workflow and role table as `createOrchestrator`, with the planner and reviewer from `createLLMAgent` and the read-only repository tools. The executor still comes from `createAgent`, and `autoApprove` reaches only the executor. Each role's instructions move out of the prompts `OrchestratorAgent` writes, which now carry only the round's data: the request, the plan, the executor's answer, the feedback. A model-backed role holds its instructions as its system prompt, followed by a short note on finding its way around the repository: paths are relative to the root, start with `AGENTS.md` and the architecture document it links to, then read only the files the task needs. An Agent SDK role has no system prompt, so `InstructedAgent` puts its instructions at the head of every prompt, which is what it received before. Both orchestrator factories take `systemPrompts`, per role, which replaces the harness's text word for word, repository note included; a role left out keeps the harness's own. The instructions are an opinion of the harness, not part of its contract, so a consumer can replace them without forking it; the reviewer's JSON decision is the one part the workflow depends on, and the option says so.
 
 **Context:** an agent of ours can read the repository (#25) but cannot change it, and approving a change is #43. A conversation owned by MiKode resends every earlier prompt on each call, so instructions inside the prompt were paid for once per round and stood in the conversation as if the user had written them. The system prompt is sent once per call, so it holds only what the role needs on every call; a repository's `AGENTS.md` and architecture document already say where things live, which costs less than searching the whole tree.
@@ -1415,7 +1417,7 @@ The user delegated the remaining names to me.
 - A change counts while it may have reached its file: it is prepared and its abandonment was not recorded.
 - Whether a run changed nothing is read from its journal, not from a removal that succeeded. The response leaves out its `runId` even when the removal fails. `list()` hides a dead run that changed nothing, and moves the head to its parent. The next run or move then finishes the removal under the lock. This covers a failed removal, a crash, and a run that died having changed nothing.
 - A run counts as live only while its process holds the lock and, in that process, the run has not ended. A lock left behind because releasing it failed names a run this process has ended. That lock is stale, like a dead process's: the run is listed as `interrupted`, and the next run or move takes the workspace over without waiting for the process to exit.
-- The write tools that record these runs are not exported yet, and the orchestrator's response has no `runId` until its roles share one run context. #71 does both.
+- When this was decided, the write tools that record these runs were not exported, and the orchestrator's response had no `runId`. #81 did both.
 
 ## An edit starts only from a version the conversation read
 
@@ -1511,3 +1513,52 @@ Both formats become the same internal operations through `prepareTrackedEdit`, s
 - A conversation that moves between providers keeps each call under its tool's name. A patch call sent to a client that does not offer `apply_patch` goes as a plain function call, and an `apply_patch_call` from a response that offered no such tool is logged and dropped.
 - Which tools each role gets, and the system prompt that names the roots, come with the factories in #81.
 - A folder `view` lists through the read `Workspace`, which covers the first root. #81 decides what a folder in another root shows.
+
+## Each role gets its own tools, and every role of the model-backed orchestrator runs on the model APIs
+
+tags: #mikode-harness #tools #orchestration #llm
+
+**Decision:** an agent's file tools come from `createFileTools(provider, workspace)`, and the consumer gives them to `createLLMAgent` beside its own tools:
+
+- **OpenAI:** `listFiles`, `searchText`, `readFile` and its native `apply_patch`.
+- **Anthropic:** `listFiles`, `searchText`, its native text editor and `delete_file`.
+
+Without a `write` root they only read. `WorkspaceOptions` lists the roots, each `read` or `write`, the secret rules and where the history is kept.
+
+- **`createLLMAgent({ workspace })`** follows the workspace's history. Its system prompt is followed by the roots and how to name a file in them.
+  - **By default**, the note on what was undone carries a summary from the provider's cheap model: Claude Haiku without thinking, or `gpt-5.6-luna` at high effort. `summarizeUndone: false` turns it off.
+  - **The history opens on first use,** so the factory stays synchronous.
+- **`createLLMOrchestrator`** runs all three roles on the model APIs over one opened workspace. Without `workspace`, that is the current directory, read only.
+  - The planner and reviewer get `listFiles`, `searchText`, `readFile` and `showChanges`.
+  - The executor, an `LLMAgent`, gets its provider's file tools, `maxSteps` and `autoApprove`.
+  - The summary comes from the planner's provider.
+- **`OrchestratorAgent` creates one `RunContext` for a whole run.** That makes every round's writes one run of the history, and ties the planner's and reviewer's turns to it. It ends the context with the run, and its response names the run.
+- **Every path the file tools touch goes through the access policy.**
+  - `PolicyWorkspace` filters what `listFiles` and `searchText` return, so a secret that `.gitignore` lets through is neither listed nor searched, and it does not count in `total`.
+  - `showChanges` for the model shows only what the role may read, and counts the rest.
+- **The tool event narrates changes.** A tool call that changed a file reports the change as a unified `diff` on its `completed` event, and the CLI prints it.
+- **The CLI's `--llm`** works on the current directory with a `write` root, and leaves `autoApprove` off. Its Agent SDK path keeps the permission bypass, because nobody answers those engines' own prompts there.
+
+**Context:** #81, the last part of #71.
+
+- **Decided earlier:** the tools per role, the shared run context, the summarizer's models and the live diff, in the issue and in the [v2 plan](https://github.com/Mikode13/harness/issues/52#issuecomment-5984397266).
+- **The user then chose:**
+  - that the consumer composes the file tools, not the factory;
+  - that the summary is on by default;
+  - that Haiku runs without thinking, since it accepts neither adaptive thinking nor an effort;
+  - to keep #81 one pull request.
+- **Mine:** the policy filter on the read tools, the hidden count in `showChanges`, the lazy history, and appending the workspace to a consumer's own prompt.
+
+**Alternatives considered:**
+
+- **The factory adds the file tools itself when given a workspace.** That is one option fewer, but the consumer could not choose the set. Rejected by the user.
+- **The summary off by default.** That avoids an extra billed call after an undo, at the cost of a poorer note. The user chose on.
+- **Haiku with a thinking budget, or Sonnet at low effort, for Anthropic summaries.** Both cost more for a short summary. Rejected by the user.
+- **Splitting #81 into two pull requests.** That would mean smaller reviews but one more round. Rejected by the user.
+
+**Consequences:**
+
+- **Two collaborators, one store.** An agent from `createLLMAgent` and the tools from `createFileTools` each open the workspace's store, so they share its files on disk. The workspace lock keeps their writers apart.
+- **Reading covers the first root.** `listFiles` and `searchText` read the first root only; a file in another root is read by its full path. A folder `view` in another root lists nothing.
+- **Extra files in the state directory.** A workspace with no `write` root still opens its store, which creates its folder in the state directory.
+- **Paid models.** The executor bills per token, like the other model API roles. `createOrchestrator` stays the Agent SDK path on the provider's login.

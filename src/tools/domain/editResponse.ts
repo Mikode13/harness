@@ -51,6 +51,30 @@ export function describeModification(path: string, before: string, after: string
 	return [header, ...shown, ...notice].join('\n');
 }
 
+// What one edit's diff may hold for the person watching; the history keeps the whole change.
+const maxDiffLines = 400;
+
+/**
+ * An edit as a git-style unified diff, for the person watching it happen. A missing side is a
+ * file that did not exist, or no longer does. Too long a diff is cut, and says so.
+ */
+export function editDiff(
+	path: string,
+	before: string | undefined,
+	after: string | undefined,
+): string {
+	const lines = [
+		`--- ${before === undefined ? '/dev/null' : `a/${path}`}`,
+		`+++ ${after === undefined ? '/dev/null' : `b/${path}`}`,
+		...unifiedDiff(before ?? '', after ?? '', { context: contextLines }).split('\n'),
+	];
+	if (lines.length <= maxDiffLines) return lines.join('\n');
+	return [
+		...lines.slice(0, maxDiffLines),
+		`... ${String(lines.length - maxDiffLines)} more lines of the diff not shown`,
+	].join('\n');
+}
+
 /** What a creation returns: a confirmation and the size, not the content the model just sent. */
 export function describeCreation(path: string, content: Buffer): string {
 	const lines = lineCount(content.toString('utf8'));
