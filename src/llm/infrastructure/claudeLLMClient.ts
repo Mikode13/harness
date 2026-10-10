@@ -8,6 +8,7 @@ import type {
 	RedactedThinkingBlockParam,
 	ThinkingBlockParam,
 	Tool as ClaudeTool,
+	ToolTextEditor20250728,
 	Usage,
 } from '@anthropic-ai/sdk/resources/messages';
 import {
@@ -28,7 +29,7 @@ import type { Tokens } from '#src/shared/domain/tokens';
 import { MaxContextError } from '../domain/errors.ts';
 import type { LLMClient, LLMResponse, StopReason } from '../domain/llm.ts';
 import type { Message, MessagePart } from '../domain/message.ts';
-import type { ToolDefinition } from '../domain/tool.ts';
+import { type NativeTool, nativeOf, type ToolDefinition } from '../domain/tool.ts';
 
 // The Messages API takes full model IDs. Callers name a model by the Agent SDK's alias, so both
 // paths share one vocabulary; this table pins the ID each alias means here, and moves by hand
@@ -117,11 +118,28 @@ function toClaudeInput(message: Message): MessageParam[] {
 	return [{ role: message.role === 'tool' ? 'user' : message.role, content }];
 }
 
+// Anthropic fixes the text editor's name: its calls arrive under it.
+const textEditorName = 'str_replace_based_edit_tool';
+
 /**
  * Strict: the API constrains the model to the schema, so its input always parses and matches.
- * A schema outside what strict mode supports fails the request with a 400.
+ * A schema outside what strict mode supports fails the request with a 400. The native text
+ * editor has Anthropic's own schema, and its calls and results are ordinary tool blocks.
  */
-function toClaudeTool({ name, description, inputSchema }: ToolDefinition): ClaudeTool {
+function toClaudeTool(definition: ToolDefinition): ClaudeTool | ToolTextEditor20250728 {
+	const native = nativeOf(definition);
+	if (native === 'textEditor') {
+		if (definition.name !== textEditorName) {
+			throw new InvalidAgentConfigError(
+				`Claude's text editor must be named "${textEditorName}", not "${definition.name}"`,
+			);
+		}
+		return { type: 'text_editor_20250728', name: textEditorName };
+	}
+	if (native !== undefined) {
+		throw new InvalidAgentConfigError(`Claude has no native tool "${native}"`);
+	}
+	const { name, description, inputSchema } = definition;
 	return { name, description, input_schema: inputSchema, strict: true };
 }
 
@@ -317,6 +335,10 @@ export class ClaudeLLMClient implements LLMClient {
 		this.reasoningEffort = reasoningEffort;
 		this.systemPrompt = systemPrompt;
 		this.logger = logger;
+	}
+
+	supportsNative(tool: NativeTool): boolean {
+		return tool === 'textEditor';
 	}
 
 	async send(

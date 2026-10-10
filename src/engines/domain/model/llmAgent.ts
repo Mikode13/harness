@@ -34,7 +34,7 @@ import {
 import { Conversation } from '#src/llm/domain/conversation';
 import type { LLMClient, LLMResponse } from '#src/llm/domain/llm';
 import type { Message, MessagePart, ToolCallPart, ToolResultPart } from '#src/llm/domain/message';
-import type { ToolDefinition } from '#src/llm/domain/tool';
+import { asNative, nativeOf, type ToolDefinition } from '#src/llm/domain/tool';
 import { type AgentTool, type PreparedCall, prepareCall } from '#src/tools/domain/preparedCall';
 import { ReadRegistry, type ToolCallContext } from '#src/tools/domain/readRegistry';
 import { isAbortError } from '#src/shared/domain/isAbortError';
@@ -164,11 +164,22 @@ export class LLMAgent implements Agent {
 			throw new InvalidAgentConfigError('Two tools share a name; each name must be unique');
 		}
 		// The client only describes the tools to the model; running them stays with the agent.
-		this.toolDefinitions = tools.map(({ name, description, inputSchema }) => ({
-			name,
-			description,
-			inputSchema,
-		}));
+		this.toolDefinitions = tools.map(tool => {
+			const definition = {
+				name: tool.name,
+				description: tool.description,
+				inputSchema: tool.inputSchema,
+			};
+			const native = nativeOf(tool);
+			if (native === undefined) return definition;
+			// Checked now, not on the first call: an agent its client cannot serve is a setup error.
+			if (llmClient.supportsNative?.(native) !== true) {
+				throw new InvalidAgentConfigError(
+					`The tool "${tool.name}" is the native "${native}" tool, which this model client cannot declare`,
+				);
+			}
+			return asNative(definition, native);
+		});
 	}
 
 	private async followHistory(history: HistoryReader): Promise<Followed> {

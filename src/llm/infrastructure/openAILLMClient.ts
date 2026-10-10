@@ -1,8 +1,10 @@
 import OpenAI, { APIError } from 'openai';
 import type { ReasoningEffort } from 'openai/resources/shared';
 import type {
+	ApplyPatchTool,
 	FunctionTool,
 	Response,
+	ResponseApplyPatchToolCall,
 	ResponseInputItem,
 	ResponseOutputItem,
 	ResponseReasoningItem,
@@ -27,7 +29,7 @@ import type { Tokens } from '#src/shared/domain/tokens';
 import { MaxContextError } from '../domain/errors.ts';
 import type { LLMClient, LLMResponse, StopReason } from '../domain/llm.ts';
 import type { Message, MessagePart } from '../domain/message.ts';
-import type { ToolDefinition } from '../domain/tool.ts';
+import { type NativeTool, nativeOf, type ToolDefinition } from '../domain/tool.ts';
 
 // The SDK types `model` as a plain string, so this list is maintained by hand.
 export const openAIModels = [
@@ -71,13 +73,30 @@ const failedToolPrefix = 'The tool call failed: ';
 /**
  * OpenAI takes a flat list of items, so every part becomes its own, in order. Reasoning crosses
  * back only as the encrypted item this client kept, which OpenAI requires beside the tool calls
- * that followed it; a reasoning part is its summary, kept for narration.
+ * that followed it; a reasoning part is its summary, kept for narration. A call to the tool
+ * offered as `apply_patch`, named `applyPatch` here, and its result go back as that tool's own
+ * items.
  */
-function toOpenAIItems(part: MessagePart, role: 'user' | 'assistant'): ResponseInputItem[] {
+function toOpenAIItems(
+	part: MessagePart,
+	role: 'user' | 'assistant',
+	applyPatch: string | undefined,
+): ResponseInputItem[] {
 	switch (part.type) {
 		case 'text':
 			return part.text ? [{ role, content: part.text }] : [];
 		case 'toolCall':
+			if (part.name === applyPatch) {
+				return [
+					{
+						type: 'apply_patch_call',
+						call_id: part.id,
+						// Kept as OpenAI sent it: the conversation holds the operation unchanged.
+						operation: part.input as ResponseApplyPatchToolCall['operation'],
+						status: 'completed',
+					},
+				];
+			}
 			return [
 				{
 					type: 'function_call',
@@ -88,6 +107,16 @@ function toOpenAIItems(part: MessagePart, role: 'user' | 'assistant'): ResponseI
 				},
 			];
 		case 'toolResult':
+			if (part.name === applyPatch) {
+				return [
+					{
+						type: 'apply_patch_call_output',
+						call_id: part.callId,
+						status: part.isError ? 'failed' : 'completed',
+						output: part.output,
+					},
+				];
+			}
 			return [
 				{
 					type: 'function_call_output',
@@ -104,18 +133,30 @@ function toOpenAIItems(part: MessagePart, role: 'user' | 'assistant'): ResponseI
 	}
 }
 
-function toOpenAIInput(message: Message): ResponseInputItem[] {
+function toOpenAIInput(message: Message, applyPatch: string | undefined): ResponseInputItem[] {
 	// A tool message holds only results, which carry no role.
 	const role = message.role === 'assistant' ? 'assistant' : 'user';
-	return message.content.flatMap(part => toOpenAIItems(part, role));
+	return message.content.flatMap(part => toOpenAIItems(part, role, applyPatch));
 }
 
 /**
  * Strict: the API constrains the model to the schema, so its arguments always parse and match.
- * A schema outside what strict mode supports fails the request with a 400.
+ * A schema outside what strict mode supports fails the request with a 400. The native
+ * `apply_patch` has OpenAI's own schema.
  */
-function toOpenAITool({ name, description, inputSchema }: ToolDefinition): FunctionTool {
+function toOpenAITool(definition: ToolDefinition): FunctionTool | ApplyPatchTool {
+	const native = nativeOf(definition);
+	if (native === 'applyPatch') return { type: 'apply_patch' };
+	if (native !== undefined) {
+		throw new InvalidAgentConfigError(`OpenAI has no native tool "${native}"`);
+	}
+	const { name, description, inputSchema } = definition;
 	return { type: 'function', name, description, parameters: inputSchema, strict: true };
+}
+
+/** The name the tool offered as `apply_patch` has in the conversation, if one is offered. */
+function applyPatchName(tools: ToolDefinition[]): string | undefined {
+	return tools.find(tool => nativeOf(tool) === 'applyPatch')?.name;
 }
 
 /**
@@ -131,7 +172,11 @@ function parseArguments(serialized: string): unknown {
 	}
 }
 
-function describeItem(item: ResponseOutputItem, logger: ILogger): MessagePart[] {
+function describeItem(
+	item: ResponseOutputItem,
+	logger: ILogger,
+	applyPatch: string | undefined,
+): MessagePart[] {
 	switch (item.type) {
 		case 'message':
 			// A refusal is not an answer: it only sets the stop reason.
@@ -163,17 +208,28 @@ function describeItem(item: ResponseOutputItem, logger: ILogger): MessagePart[] 
 					input: parseArguments(item.arguments),
 				},
 			];
+		case 'apply_patch_call':
+			// Only when `apply_patch` was offered; otherwise it is unexpected, as below.
+			if (applyPatch !== undefined) {
+				return [{ type: 'toolCall', id: item.call_id, name: applyPatch, input: item.operation }];
+			}
+			return unmapped(item, logger);
 		default:
-			// No built-in tools are offered, so any other item is output this client does not expect.
-			treatErrors(
-				() => {
-					logger.warn(item, 'OpenAI returned an output item the client does not map');
-				},
-				classifyHostFailure,
-				'OpenAI client logger failed while mapping a response',
-			);
-			return [];
+			return unmapped(item, logger);
 	}
+}
+
+/** An item this client does not map, which it reports and leaves out. */
+function unmapped(item: ResponseOutputItem, logger: ILogger): MessagePart[] {
+	// No other built-in tool is offered, so any other item is output this client does not expect.
+	treatErrors(
+		() => {
+			logger.warn(item, 'OpenAI returned an output item the client does not map');
+		},
+		classifyHostFailure,
+		'OpenAI client logger failed while mapping a response',
+	);
+	return [];
 }
 
 function toStopReason(response: Response): StopReason {
@@ -220,7 +276,11 @@ function toTokens(usage: ResponseUsage | undefined, logger: ILogger): Tokens | u
 	};
 }
 
-function toLLMResponse(response: Response, logger: ILogger): LLMResponse {
+function toLLMResponse(
+	response: Response,
+	logger: ILogger,
+	applyPatch: string | undefined,
+): LLMResponse {
 	let usage: Tokens | undefined;
 
 	try {
@@ -229,7 +289,7 @@ function toLLMResponse(response: Response, logger: ILogger): LLMResponse {
 		return {
 			message: {
 				role: 'assistant',
-				content: response.output.flatMap(item => describeItem(item, logger)),
+				content: response.output.flatMap(item => describeItem(item, logger, applyPatch)),
 			},
 			usage,
 			stopReason: toStopReason(response),
@@ -314,18 +374,23 @@ export class OpenAILLMClient implements LLMClient {
 		this.logger = logger;
 	}
 
+	supportsNative(tool: NativeTool): boolean {
+		return tool === 'applyPatch';
+	}
+
 	async send(
 		{ context, tools }: { context: Message[]; tools: ToolDefinition[] },
 		signal: AbortSignal,
 	): Promise<LLMResponse> {
 		let response: Response;
+		const applyPatch = applyPatchName(tools);
 
 		try {
 			response = await this.client.responses.create(
 				{
 					model: this.model,
 					instructions: this.systemPrompt,
-					input: context.flatMap(toOpenAIInput),
+					input: context.flatMap(message => toOpenAIInput(message, applyPatch)),
 					// Left out when empty, so a request without tools stays as it always was.
 					...(tools.length > 0 && { tools: tools.map(toOpenAITool) }),
 					store: false,
@@ -342,7 +407,7 @@ export class OpenAILLMClient implements LLMClient {
 		}
 
 		return treatErrors(
-			() => toLLMResponse(response, this.logger),
+			() => toLLMResponse(response, this.logger, applyPatch),
 			classifyLocalFailure,
 			'OpenAI response mapping failed',
 		);

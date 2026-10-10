@@ -1,6 +1,6 @@
 import type { Tokens } from '#src/shared/domain/tokens';
 import type { Message } from './message.ts';
-import type { ToolDefinition } from './tool.ts';
+import type { NativeTool, ToolDefinition } from './tool.ts';
 
 export type StopReason = 'completed' | 'truncated' | 'refused';
 
@@ -16,6 +16,8 @@ export interface LLMResponse {
 }
 
 export interface LLMClient {
+	/** Whether this client can declare a native tool. Missing means it declares none. */
+	supportsNative?(tool: NativeTool): boolean;
 	send(
 		{ context, tools }: { context: Message[]; tools: ToolDefinition[] },
 		signal: AbortSignal,

@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { lstat, readFile } from 'node:fs/promises';
 import { isText } from '#src/recovery/domain/runChanges';
-import type { AccessPolicy } from '../domain/accessPolicy.ts';
+import type { AccessPolicy, AllowedPath } from '../domain/accessPolicy.ts';
 import type { PreparingTool } from '../domain/preparedCall.ts';
+import type { RunReads } from '../domain/readRegistry.ts';
 import { definePreparingTool } from './defineTool.ts';
 import { readFileDescription, readFileInput, readRange, renderLines } from './workspaceTools.ts';
 
@@ -25,9 +26,58 @@ function code(error: unknown): string {
 }
 
 /**
+ * Reads lines `from` to `from + count - 1` of a file the policy allowed, and records the version
+ * of the whole file the model saw. The file is read once, so the version recorded is the content
+ * shown. A partial read counts: the model saw this version, and can read the rest.
+ */
+export async function readTracked({
+	target,
+	path,
+	from,
+	count,
+	reads,
+	signal,
+}: {
+	target: AllowedPath;
+	path: string;
+	from: number;
+	count: number;
+	reads: RunReads;
+	signal: AbortSignal;
+}): Promise<string> {
+	signal.throwIfAborted();
+	const stats = await lstat(target.absolute).catch((error: unknown) => {
+		if (code(error) === 'ENOENT') return undefined;
+		// Its own message would name the host path.
+		throw new Error(`Could not read ${path} (${code(error)})`);
+	});
+	// One answer for every file it cannot show, as the read tools give.
+	if (!stats?.isFile()) throw new Error(`No such file: ${path}`);
+	if (stats.size > maxFileBytes) {
+		throw new Error(
+			`${path} is larger than ${String(maxFileBytes / 1024 / 1024)} MB, too large to read`,
+		);
+	}
+	const content = await readFile(target.absolute, { signal }).catch((error: unknown) => {
+		signal.throwIfAborted();
+		throw new Error(`Could not read ${path} (${code(error)})`);
+	});
+	if (!isText(content)) throw new Error(`Not a text file: ${path}`);
+
+	const all = lines(content.toString('utf8'));
+	const shown = all.slice(from - 1, from - 1 + count);
+	reads.record(target.absolute, createHash('sha256').update(content).digest('hex'));
+	return renderLines({
+		lines: shown,
+		from,
+		totalLines: all.length,
+		truncated: from - 1 + shown.length < all.length,
+	});
+}
+
+/**
  * `readFile` for an agent that edits: the same tool for the model, through the access policy,
- * and it records the version of the file the model saw, so an edit starts only from it. The file
- * is read once, so the version recorded is the content shown.
+ * and it records the version of the file the model saw, so an edit starts only from it.
  */
 export function createTrackedReadFile(policy: AccessPolicy): PreparingTool {
 	return definePreparingTool({
@@ -39,39 +89,7 @@ export function createTrackedReadFile(policy: AccessPolicy): PreparingTool {
 			const target = await policy.check(path, 'read', signal);
 			return {
 				risk: 'safe',
-				run: async runSignal => {
-					runSignal.throwIfAborted();
-					const stats = await lstat(target.absolute).catch((error: unknown) => {
-						if (code(error) === 'ENOENT') return undefined;
-						// Its own message would name the host path.
-						throw new Error(`Could not read ${path} (${code(error)})`);
-					});
-					// One answer for every file it cannot show, as the read tools give.
-					if (!stats?.isFile()) throw new Error(`No such file: ${path}`);
-					if (stats.size > maxFileBytes) {
-						throw new Error(
-							`${path} is larger than ${String(maxFileBytes / 1024 / 1024)} MB, too large to read`,
-						);
-					}
-					const content = await readFile(target.absolute, { signal: runSignal }).catch(
-						(error: unknown) => {
-							runSignal.throwIfAborted();
-							throw new Error(`Could not read ${path} (${code(error)})`);
-						},
-					);
-					if (!isText(content)) throw new Error(`Not a text file: ${path}`);
-
-					const all = lines(content.toString('utf8'));
-					const shown = all.slice(from - 1, from - 1 + count);
-					// A partial read counts: the model saw this version, and can read the rest.
-					reads.record(target.absolute, createHash('sha256').update(content).digest('hex'));
-					return renderLines({
-						lines: shown,
-						from,
-						totalLines: all.length,
-						truncated: from - 1 + shown.length < all.length,
-					});
-				},
+				run: runSignal => readTracked({ target, path, from, count, reads, signal: runSignal }),
 			};
 		},
 	});

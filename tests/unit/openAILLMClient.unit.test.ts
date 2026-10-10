@@ -471,6 +471,26 @@ describe('OpenAILLMClient', () => {
 		expect(logger.warn).toHaveBeenCalledWith(search, expect.any(String));
 	});
 
+	it('warns about a patch call when apply_patch was not offered, and leaves it out', async () => {
+		const logger = { warn: vi.fn() };
+		const patch = {
+			type: 'apply_patch_call',
+			id: 'apc-1',
+			call_id: 'call-1',
+			status: 'completed',
+			operation: { type: 'delete_file', path: 'a.txt' },
+		} as ResponseOutputItem;
+		createSdk(response({ output: [patch, message({ text: 'answer' })] }));
+
+		const result = await createClient(logger).send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
+
+		expect(result.message.content).toEqual([{ type: 'text', text: 'answer' }]);
+		expect(logger.warn).toHaveBeenCalledWith(patch, expect.any(String));
+	});
+
 	it('makes a throwing logger unrecoverable', async () => {
 		const logger = {
 			warn: vi.fn(() => {
