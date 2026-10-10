@@ -225,6 +225,25 @@ describe('RootsAccessPolicy', () => {
 			},
 		);
 
+		it.each(['.env/x', 'config/app.pem/x', 'deep/.envrc/a/b'])(
+			'refuses %s, below a secret name, whether that name exists or not',
+			async path => {
+				expect(await denial(path, 'read')).toContain('may hold secrets');
+			},
+		);
+
+		it('counts no secret name above the root', async () => {
+			const folder = join(parent, '.env.d', 'app');
+			write(join(folder, 'a.txt'), 'a');
+			const inside = await RootsAccessPolicy.create({
+				roots: [{ path: folder, access: 'write' }],
+				ignoreRules,
+				home,
+			});
+
+			await expect(inside.check('a.txt', 'read', signal)).resolves.toBeDefined();
+		});
+
 		it('lets a template such as .env.example through', async () => {
 			await expect((await policy()).check('.env.example', 'write', signal)).resolves.toBeDefined();
 		});

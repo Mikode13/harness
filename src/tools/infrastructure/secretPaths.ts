@@ -57,7 +57,8 @@ function inside(folder: string, path: string): string | undefined {
 	return below.split(sep).join('/');
 }
 
-function isSecretName(name: string): boolean {
+/** Whether a file or folder name is one of the usual credential files. */
+export function isSecretName(name: string): boolean {
 	const lower = name.toLowerCase();
 	if (secretNames.has(lower)) return true;
 	if (lower.startsWith('.env.')) {

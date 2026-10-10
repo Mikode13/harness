@@ -10,7 +10,7 @@ import {
 	type WorkspaceRoot,
 } from '../domain/accessPolicy.ts';
 import type { IgnoreRules } from './gitIgnoreRules.ts';
-import { isSecretPath } from './secretPaths.ts';
+import { isSecretName, isSecretPath } from './secretPaths.ts';
 
 /** The host's changes to the default secrets list. */
 export interface SecretRules {
@@ -36,6 +36,15 @@ function withinIgnoringCase(folder: string, path: string): boolean {
 function hasGitPart(path: string): boolean {
 	return path.split(sep).some(part => part.toLowerCase() === '.git');
 }
+
+function secretRefusal(path: string): AccessDeniedError {
+	return new AccessDeniedError(
+		`"${path}" may hold secrets, so the harness keeps it closed; ask the user to allow it in the configuration if it is needed`,
+	);
+}
+
+/** A path that runs through a file as if it were a folder. Internal to `check`. */
+class NotAFolderError extends Error {}
 
 function code(error: unknown): string | undefined {
 	return (error as NodeJS.ErrnoException).code;
@@ -154,7 +163,16 @@ export class RootsAccessPolicy implements AccessPolicy {
 			throw new AccessDeniedError(`"${path}" is not a valid path`);
 		}
 		const named = resolve(this.base, path);
-		const absolute = await this.realLocation(named, path);
+		let absolute: string;
+		try {
+			absolute = await this.realLocation(named, path);
+		} catch (error) {
+			if (!(error instanceof NotAFolderError)) throw error;
+			// It runs through a file: answered as its name would be, or the answer would tell
+			// whether a file the policy hides exists, such as `.env` in `.env/x`.
+			await this.refuseByName(named, path, access, signal);
+			throw new AccessDeniedError(`"${path}" treats a file as a folder`);
+		}
 
 		const root = this.rootOf(absolute);
 		if (!root) throw new AccessDeniedError(`"${path}" is outside the workspace`);
@@ -170,9 +188,7 @@ export class RootsAccessPolicy implements AccessPolicy {
 			return { absolute, root: root.path, relative: relativePath };
 		}
 		if (this.isSecret(named, absolute)) {
-			throw new AccessDeniedError(
-				`"${path}" may hold secrets, so the harness keeps it closed; ask the user to allow it in the configuration if it is needed`,
-			);
+			throw secretRefusal(path);
 		}
 		for (const location of [...(await this.linksAlong(named)), absolute]) {
 			if (await this.isIgnored(location, signal)) {
@@ -199,10 +215,14 @@ export class RootsAccessPolicy implements AccessPolicy {
 			try {
 				return join(await realpath(existing), ...missing);
 			} catch (error) {
-				if (code(error) === 'ENOTDIR') {
-					throw new AccessDeniedError(`"${shown}" treats a file as a folder`);
+				if (code(error) === 'ENOTDIR') throw new NotAFolderError();
+				// Such as a loop of links, or a folder it may not enter. Its own message would
+				// name the host path.
+				if (code(error) !== 'ENOENT') {
+					throw new AccessDeniedError(
+						`Could not reach "${shown}" (${code(error) ?? 'unknown error'})`,
+					);
 				}
-				if (code(error) !== 'ENOENT') throw error;
 			}
 			const isLink = await lstat(existing).then(
 				stats => stats.isSymbolicLink(),
@@ -214,6 +234,33 @@ export class RootsAccessPolicy implements AccessPolicy {
 			// The filesystem root always exists, so this never runs out.
 			missing.unshift(basename(existing));
 			existing = parent;
+		}
+	}
+
+	/**
+	 * Refuses `named`, which could not be resolved, for what its name alone says: outside the
+	 * workspace, read-only, protected, a secret, or ignored. Returns when nothing does.
+	 */
+	private async refuseByName(
+		named: string,
+		path: string,
+		access: Access,
+		signal: AbortSignal,
+	): Promise<void> {
+		const root = this.rootOf(named);
+		if (!root) throw new AccessDeniedError(`"${path}" is outside the workspace`);
+		if (access === 'write' && root.access === 'read') {
+			throw new AccessDeniedError(`"${path}" is in a read-only folder of the workspace`);
+		}
+		if (this.isProtected(named, named)) {
+			throw new AccessDeniedError(`"${path}" is protected by the harness`);
+		}
+		if (this.isOpened(named, access)) return;
+		if (this.isSecret(named, named)) {
+			throw secretRefusal(path);
+		}
+		if (await this.isIgnored(named, signal)) {
+			throw new AccessDeniedError(`"${path}" is excluded by .gitignore`);
 		}
 	}
 
@@ -293,7 +340,21 @@ export class RootsAccessPolicy implements AccessPolicy {
 		return [named, absolute].some(
 			path =>
 				isSecretPath(path, this.home) ||
+				this.underSecretName(path) ||
 				this.secretFolders.some(folder => withinIgnoringCase(folder, path)),
 		);
+	}
+
+	/**
+	 * Whether `path` lies below a secret name inside its root, such as `.env/x`. A file there is
+	 * as closed as the name: otherwise `.env/x` would be refused for running through `.env` when
+	 * that file exists, and read as missing when it does not, telling the two apart. Folders above
+	 * the root do not count, or a workspace inside `.env.d` would be closed whole.
+	 */
+	private underSecretName(path: string): boolean {
+		const root = this.rootOf(path);
+		const below = root && within(root.path, path);
+		if (!below) return false;
+		return below.split(sep).slice(0, -1).some(isSecretName);
 	}
 }

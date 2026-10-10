@@ -7,13 +7,15 @@ const maxShownLines = 60;
 // One minified line can be larger than everything else the model reads.
 const maxLineLength = 300;
 
+/** A line as the model reads it: without the `\r` of a CRLF ending, and not too long. */
 function cutLine(text: string): string {
-	return text.length > maxLineLength ? `${text.slice(0, maxLineLength)}…` : text;
+	const line = text.endsWith('\r') ? text.slice(0, -1) : text;
+	return line.length > maxLineLength ? `${line.slice(0, maxLineLength)}…` : line;
 }
 
 function lineCount(text: string): number {
 	if (text === '') return 0;
-	const lines = text.split(/\r\n|\r|\n/);
+	const lines = text.split('\n');
 	return lines.at(-1) === '' ? lines.length - 1 : lines.length;
 }
 
@@ -23,6 +25,7 @@ function lineCount(text: string): number {
  * the file again. What does not fit is counted, not shown.
  */
 export function describeModification(path: string, before: string, after: string): string {
+	if (after === '') return `Changed ${path}. The file is now empty.`;
 	const shown: string[] = [];
 	let hidden = 0;
 	let line = 0;

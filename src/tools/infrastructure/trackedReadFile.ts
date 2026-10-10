@@ -9,12 +9,19 @@ import { readFileDescription, readFileInput, readRange, renderLines } from './wo
 // The same bound as an edit: a file too large to change need not be read whole to track it.
 const maxFileBytes = 5 * 1024 * 1024;
 
+/**
+ * The lines of a text, split as the diff an edit returns splits them, so their numbers agree: on
+ * `\n`, with a `\r` before it dropped. A final newline ends the last line; it starts no other.
+ */
 function lines(text: string): string[] {
 	if (text === '') return [];
-	const all = text.split(/\r\n|\r|\n/);
-	// A final newline ends the last line; it does not start another.
+	const all = text.split('\n').map(line => (line.endsWith('\r') ? line.slice(0, -1) : line));
 	if (all.at(-1) === '') all.pop();
 	return all;
+}
+
+function code(error: unknown): string {
+	return (error as NodeJS.ErrnoException).code ?? 'an unknown error';
 }
 
 /**
@@ -34,7 +41,11 @@ export function createTrackedReadFile(policy: AccessPolicy): PreparingTool {
 				risk: 'safe',
 				run: async runSignal => {
 					runSignal.throwIfAborted();
-					const stats = await lstat(target.absolute).catch(() => undefined);
+					const stats = await lstat(target.absolute).catch((error: unknown) => {
+						if (code(error) === 'ENOENT') return undefined;
+						// Its own message would name the host path.
+						throw new Error(`Could not read ${path} (${code(error)})`);
+					});
 					// One answer for every file it cannot show, as the read tools give.
 					if (!stats?.isFile()) throw new Error(`No such file: ${path}`);
 					if (stats.size > maxFileBytes) {
@@ -42,7 +53,12 @@ export function createTrackedReadFile(policy: AccessPolicy): PreparingTool {
 							`${path} is larger than ${String(maxFileBytes / 1024 / 1024)} MB, too large to read`,
 						);
 					}
-					const content = await readFile(target.absolute, { signal: runSignal });
+					const content = await readFile(target.absolute, { signal: runSignal }).catch(
+						(error: unknown) => {
+							runSignal.throwIfAborted();
+							throw new Error(`Could not read ${path} (${code(error)})`);
+						},
+					);
 					if (!isText(content)) throw new Error(`Not a text file: ${path}`);
 
 					const all = lines(content.toString('utf8'));
