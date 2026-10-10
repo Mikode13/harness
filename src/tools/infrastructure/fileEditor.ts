@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import type { FileState, RunJournal } from '#src/recovery/domain/recoveryStore';
 import type { ToolRisk } from '#src/agent/domain/approval';
-import type { AccessPolicy } from '../domain/accessPolicy.ts';
+import type { AccessPolicy, AllowedPath } from '../domain/accessPolicy.ts';
 import {
 	EditRefusedError,
 	EditUnconfirmedError,
@@ -129,6 +129,18 @@ export class FileEditor {
 		this.policy = policy;
 		this.session = session;
 		this.maxFileBytes = maxFileBytes;
+	}
+
+	/**
+	 * What `path` holds now, checked as a change to it would be: an edit format works its new
+	 * content out from this, and an edit tool compares it with the version the model read.
+	 */
+	async current(
+		path: string,
+		signal: AbortSignal,
+	): Promise<{ target: AllowedPath; state: FileState; content?: Buffer }> {
+		const target = await this.policy.check(path, 'write', signal);
+		return { target, ...(await this.read(target.absolute, path)) };
 	}
 
 	async prepare(change: FileChange, signal: AbortSignal): Promise<PreparedEdit> {

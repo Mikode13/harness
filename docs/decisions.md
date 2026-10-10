@@ -1416,3 +1416,56 @@ The user delegated the remaining names to me.
 - Whether a run changed nothing is read from its journal, not from a removal that succeeded. The response leaves out its `runId` even when the removal fails. `list()` hides a dead run that changed nothing, and moves the head to its parent. The next run or move then finishes the removal under the lock. This covers a failed removal, a crash, and a run that died having changed nothing.
 - A run counts as live only while its process holds the lock and, in that process, the run has not ended. A lock left behind because releasing it failed names a run this process has ended. That lock is stale, like a dead process's: the run is listed as `interrupted`, and the next run or move takes the workspace over without waiting for the process to exit.
 - The write tools that record these runs are not exported yet, and the orchestrator's response has no `runId` until its roles share one run context. #71 does both.
+
+## An edit starts only from a version the conversation read
+
+tags: #mikode-harness #tools #llm
+
+**Decision:** each `LLMAgent` keeps a `ReadRegistry`, its conversation's map from a file's real path to the hash of the content it saw. Before a modification or a deletion, `prepareTrackedEdit` checks it:
+
+- a file the conversation never read is refused with `READ_REQUIRED`;
+- a file whose content changed since is refused with `STALE_FILE`;
+- a new file needs a path that does not exist.
+
+The registry changes in four ways:
+
+- a successful edit records what the file now holds;
+- a deletion forgets the file;
+- a move through the workspace's history forgets every file;
+- the reads of a failed run are dropped. A run's reads are staged and kept only when the run succeeds, together with the turns that made them.
+
+The harness's own `readFile` (`createTrackedReadFile`) reads through the access policy, and reads the file once, so the hash it records is the content it showed. A partial read counts.
+
+An edit returns little:
+
+- a modification returns the lines around each change as the file now reads them, numbered, with two lines of context. At most 60 lines are shown, and the rest are counted;
+- a creation returns its size;
+- a deletion returns a confirmation;
+- an error returns only what fixes the call.
+
+Messages name a file only as the model wrote it.
+
+**Context:** #79, the first part of #71. The [v2 plan](https://github.com/Mikode13/harness/issues/52#issuecomment-5984397266) for #52 decided the registry, the two errors and the shape of the responses, in its section 6. The rest is mine:
+
+- staging a run's reads;
+- keying by real path;
+- forgetting everything on a move, rather than only the files the move wrote;
+- the 60-line bound.
+
+**Alternatives considered:**
+
+- **Committing reads as they happen.** That is simpler, but after a failed run the model has not seen that content, and the registry would say it has.
+- **Forgetting only the files a move touched.** That is more precise, but needs each move's file list, and an undone turn's reads were part of the conversation it no longer holds.
+- **The public `readFile` over `Workspace`.** It reads through ripgrep or git, line by line. Recording its hash would mean reading the file twice, and the second read could differ from the first.
+
+**Consequences:**
+
+- After a move, or a failed run, the model reads a file again before editing it. That costs a call, and it never edits a version it did not see.
+- Each role keeps its own registry, so a file the planner read is not read for the executor.
+- Reads follow the policy's rules for every path, and the review of #82 tightened two of them.
+  - **A path below a secret name inside a root is a secret.** `.env/x` used to be refused for running through `.env` when that file existed, and read as missing when it did not. Folders above the root do not count, so a workspace inside `.env.d` stays open.
+    - This also closes a whole folder with a secret name, such as a Python virtual environment named `.env/`. Such a folder is usually ignored by git anyway. `allow` opens exact files only, so a host cannot open the folder whole.
+  - **A path that runs through a file** is judged from where that file really is. Its links are resolved first, so it goes through the same outside, protected, secret and ignore checks as any other path. It is refused for running through a file only when nothing else refuses it. A path through a link out of the workspace, or into `.git`, gets the same answer whether its names exist or not.
+  - **A filesystem error the policy or a read does not expect,** such as a loop of links or a file it may not open, is named by the model's path and its error code only.
+- The tracked `readFile` splits lines as the diff of an edit does: on `\n`, dropping a `\r` before it. The line numbers of a read and of an edit's response always agree. A lone `\r` stays inside its line.
+- The path convention is unchanged: a path is relative to the first root, or absolute for a file in another root. Tool responses, `showChanges` and the undo note already follow it. The system prompt that tells the model the roots arrives with the factories (#81).

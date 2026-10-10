@@ -101,7 +101,7 @@ async function renderFile(
  * Git's test, a NUL byte near the start, plus content that is not valid UTF-8: decoding would
  * replace its bytes, and two different files could then show no difference.
  */
-function isText(content: Buffer): boolean {
+export function isText(content: Buffer): boolean {
 	if (content.subarray(0, binaryProbeBytes).includes(0)) return false;
 	return Buffer.from(content.toString('utf8'), 'utf8').equals(content);
 }

@@ -8,6 +8,7 @@ import { RunContext, type RunEnd, withRunContext } from '../../src/agent/domain/
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import type { RecoveryStore } from '../../src/recovery/domain/recoveryStore.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
+import { RunReads } from '../../src/tools/domain/readRegistry.ts';
 import { UnrecoverableError } from '../../src/shared/domain/errors.ts';
 import type { ILogger } from '../../src/shared/domain/logger.ts';
 import type { PreparedCall, PreparingTool } from '../../src/tools/domain/preparedCall.ts';
@@ -39,7 +40,7 @@ const oneCall = (input: unknown = { path: 'a' }) =>
 	new FakeLLMClient(assistantResponse([toolCall('call-1', 'edit', input)]), textResponse('done'));
 
 describe('LLMAgent with a tool that prepares its calls', () => {
-	it('prepares the call with the run context, and runs what was prepared', async () => {
+	it('prepares the call with the run context and its conversation reads, and runs what was prepared', async () => {
 		const prepared = preparedCall();
 		const prepare = vi.fn<PreparingTool['prepare']>(() => Promise.resolve(prepared));
 
@@ -47,11 +48,11 @@ describe('LLMAgent with a tool that prepares its calls', () => {
 			signal,
 		});
 
-		expect(prepare).toHaveBeenCalledExactlyOnceWith(
-			{ path: 'a' },
-			expect.any(AbortSignal),
-			expect.any(RunContext),
-		);
+		expect(prepare).toHaveBeenCalledOnce();
+		const [input, , call] = prepare.mock.calls[0] ?? [];
+		expect(input).toEqual({ path: 'a' });
+		expect(call?.run).toBeInstanceOf(RunContext);
+		expect(call?.reads).toBeInstanceOf(RunReads);
 		expect(prepared.run).toHaveBeenCalledOnce();
 	});
 
@@ -126,7 +127,7 @@ describe('LLMAgent with a tool that prepares its calls', () => {
 describe('LLMAgent and the run context', () => {
 	/** A tool that registers a finisher on the context it is given, and records the context. */
 	function finishingTool(ends: RunEnd[], contexts: RunContext[] = []) {
-		return preparingTool((_, __, context) => {
+		return preparingTool((_, __, { run: context }) => {
 			contexts.push(context);
 			context.onFinish(end => {
 				ends.push(end);
@@ -162,7 +163,7 @@ describe('LLMAgent and the run context', () => {
 	it('ends it as cancelled when the run is cancelled', async () => {
 		const ends: RunEnd[] = [];
 		const controller = new AbortController();
-		const tool = preparingTool((_, __, context) => {
+		const tool = preparingTool((_, __, { run: context }) => {
 			context.onFinish(end => {
 				ends.push(end);
 				return Promise.resolve();
@@ -221,7 +222,7 @@ describe('LLMAgent and the run context', () => {
 
 	it('reports a context it could not end, and keeps the run it already finished', async () => {
 		const logger: ILogger = { warn: vi.fn() };
-		const tool = preparingTool((_, __, context) => {
+		const tool = preparingTool((_, __, { run: context }) => {
 			context.onFinish(() => Promise.reject(new Error('disk full')));
 			return Promise.resolve(preparedCall());
 		});

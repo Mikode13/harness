@@ -10,7 +10,7 @@ import {
 	type WorkspaceRoot,
 } from '../domain/accessPolicy.ts';
 import type { IgnoreRules } from './gitIgnoreRules.ts';
-import { isSecretPath } from './secretPaths.ts';
+import { isSecretName, isSecretPath } from './secretPaths.ts';
 
 /** The host's changes to the default secrets list. */
 export interface SecretRules {
@@ -35,6 +35,17 @@ function withinIgnoringCase(folder: string, path: string): boolean {
 /** Whether `path` goes through git's metadata: `.git` as a folder or a worktree's pointer file. */
 function hasGitPart(path: string): boolean {
 	return path.split(sep).some(part => part.toLowerCase() === '.git');
+}
+
+function secretRefusal(path: string): AccessDeniedError {
+	return new AccessDeniedError(
+		`"${path}" may hold secrets, so the harness keeps it closed; ask the user to allow it in the configuration if it is needed`,
+	);
+}
+
+/** A path the filesystem would not resolve, named only as the model wrote it. */
+function unreachable(shown: string, error: unknown): AccessDeniedError {
+	return new AccessDeniedError(`Could not reach "${shown}" (${code(error) ?? 'unknown error'})`);
 }
 
 function code(error: unknown): string | undefined {
@@ -154,7 +165,14 @@ export class RootsAccessPolicy implements AccessPolicy {
 			throw new AccessDeniedError(`"${path}" is not a valid path`);
 		}
 		const named = resolve(this.base, path);
-		const absolute = await this.realLocation(named, path);
+		const { absolute, throughFile } = await this.realLocation(named, path);
+		// A path that runs through a file is judged like any other first, from where that file
+		// really is, and refused for it only if nothing else refuses it. Otherwise the answer
+		// would tell whether a file the policy hides exists, such as `.env` in `.env/x`.
+		const allowed = (found: AllowedPath): AllowedPath => {
+			if (throughFile) throw new AccessDeniedError(`"${path}" treats a file as a folder`);
+			return found;
+		};
 
 		const root = this.rootOf(absolute);
 		if (!root) throw new AccessDeniedError(`"${path}" is outside the workspace`);
@@ -167,12 +185,10 @@ export class RootsAccessPolicy implements AccessPolicy {
 			throw new AccessDeniedError(`"${path}" is protected by the harness`);
 		}
 		if (this.isOpened(absolute, access)) {
-			return { absolute, root: root.path, relative: relativePath };
+			return allowed({ absolute, root: root.path, relative: relativePath });
 		}
 		if (this.isSecret(named, absolute)) {
-			throw new AccessDeniedError(
-				`"${path}" may hold secrets, so the harness keeps it closed; ask the user to allow it in the configuration if it is needed`,
-			);
+			throw secretRefusal(path);
 		}
 		for (const location of [...(await this.linksAlong(named)), absolute]) {
 			if (await this.isIgnored(location, signal)) {
@@ -180,7 +196,7 @@ export class RootsAccessPolicy implements AccessPolicy {
 			}
 		}
 
-		return { absolute, root: root.path, relative: relativePath };
+		return allowed({ absolute, root: root.path, relative: relativePath });
 	}
 
 	private get base(): string {
@@ -192,17 +208,20 @@ export class RootsAccessPolicy implements AccessPolicy {
 	 * folder, resolved, plus the missing names. A link that leads nowhere is refused: writing to
 	 * it would create whatever it points at, wherever that is.
 	 */
-	private async realLocation(named: string, shown: string): Promise<string> {
+	private async realLocation(
+		named: string,
+		shown: string,
+	): Promise<{ absolute: string; throughFile: boolean }> {
 		const missing: string[] = [];
 		let existing = named;
 		for (;;) {
 			try {
-				return join(await realpath(existing), ...missing);
+				return { absolute: join(await realpath(existing), ...missing), throughFile: false };
 			} catch (error) {
-				if (code(error) === 'ENOTDIR') {
-					throw new AccessDeniedError(`"${shown}" treats a file as a folder`);
-				}
-				if (code(error) !== 'ENOENT') throw error;
+				if (code(error) === 'ENOTDIR') return this.throughFile(existing, missing, shown);
+				// Such as a loop of links, or a folder it may not enter. Its own message would
+				// name the host path.
+				if (code(error) !== 'ENOENT') throw unreachable(shown, error);
 			}
 			const isLink = await lstat(existing).then(
 				stats => stats.isSymbolicLink(),
@@ -214,6 +233,33 @@ export class RootsAccessPolicy implements AccessPolicy {
 			// The filesystem root always exists, so this never runs out.
 			missing.unshift(basename(existing));
 			existing = parent;
+		}
+	}
+
+	/**
+	 * Where a path that runs through a file would be: the deepest part of it that exists, which is
+	 * that file, resolved, plus the names after it.
+	 */
+	private async throughFile(
+		named: string,
+		missing: string[],
+		shown: string,
+	): Promise<{ absolute: string; throughFile: boolean }> {
+		const after = [...missing];
+		let existing = named;
+		while (
+			!(await lstat(existing).then(
+				() => true,
+				() => false,
+			))
+		) {
+			after.unshift(basename(existing));
+			existing = dirname(existing);
+		}
+		try {
+			return { absolute: join(await realpath(existing), ...after), throughFile: true };
+		} catch (error) {
+			throw unreachable(shown, error);
 		}
 	}
 
@@ -293,7 +339,21 @@ export class RootsAccessPolicy implements AccessPolicy {
 		return [named, absolute].some(
 			path =>
 				isSecretPath(path, this.home) ||
+				this.underSecretName(path) ||
 				this.secretFolders.some(folder => withinIgnoringCase(folder, path)),
 		);
+	}
+
+	/**
+	 * Whether `path` lies below a secret name inside its root, such as `.env/x`. A file there is
+	 * as closed as the name: otherwise `.env/x` would be refused for running through `.env` when
+	 * that file exists, and read as missing when it does not, telling the two apart. Folders above
+	 * the root do not count, or a workspace inside `.env.d` would be closed whole.
+	 */
+	private underSecretName(path: string): boolean {
+		const root = this.rootOf(path);
+		const below = root && within(root.path, path);
+		if (!below) return false;
+		return below.split(sep).slice(0, -1).some(isSecretName);
 	}
 }

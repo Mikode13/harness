@@ -73,6 +73,9 @@ beforeAll(() => {
 	write(join(standards, 'guide.md'), '# guide\n');
 	write(join(standards, 'drafts', 'next.md'), '# next\n');
 
+	symlinkSync(join('..', 'outside'), join(repo, 'out-dir'));
+	symlinkSync('.git', join(repo, 'git-link'));
+	write(join(repo, 'debug.log'), 'log\n');
 	write(join(home, '.ssh', 'id_rsa'), 'key');
 	write(join(home, '.npmrc'), '//registry:_authToken=x');
 	write(join(home, 'notes.txt'), 'notes');
@@ -224,6 +227,55 @@ describe('RootsAccessPolicy', () => {
 				expect(await denial(path, 'read')).toContain('may hold secrets');
 			},
 		);
+
+		it.each(['.env/x', 'config/app.pem/x', 'deep/.envrc/a/b'])(
+			'refuses %s, below a secret name, whether that name exists or not',
+			async path => {
+				expect(await denial(path, 'read')).toContain('may hold secrets');
+			},
+		);
+
+		it.each([
+			[
+				'through a link out of the workspace',
+				'out-dir/secret.txt/x',
+				'out-dir/none/x',
+				'outside the workspace',
+			],
+			['through a link to .git', 'git-link/HEAD/x', 'git-link/none/x', 'protected by the harness'],
+			[
+				'through a link to the store',
+				'store-link/run.json/x',
+				'store-link/none/x',
+				'protected by the harness',
+			],
+			['through an ignored file', 'debug.log/x', 'missing.log/x', 'excluded by .gitignore'],
+			['through a secret', '.env/x', 'missing/.env/x', 'may hold secrets'],
+		])(
+			'answers a path %s as it answers one through a missing name',
+			async (_, throughFile, throughNothing, answer) => {
+				expect(await denial(throughFile, 'read')).toContain(answer);
+				expect(await denial(throughFile, 'read')).toBe(
+					(await denial(throughNothing, 'read')).replace(throughNothing, throughFile),
+				);
+			},
+		);
+
+		it('refuses a path through a file that nothing else refuses, for that', async () => {
+			expect(await denial('src/a.ts/x', 'read')).toBe('"src/a.ts/x" treats a file as a folder');
+		});
+
+		it('counts no secret name above the root', async () => {
+			const folder = join(parent, '.env.d', 'app');
+			write(join(folder, 'a.txt'), 'a');
+			const inside = await RootsAccessPolicy.create({
+				roots: [{ path: folder, access: 'write' }],
+				ignoreRules,
+				home,
+			});
+
+			await expect(inside.check('a.txt', 'read', signal)).resolves.toBeDefined();
+		});
 
 		it('lets a template such as .env.example through', async () => {
 			await expect((await policy()).check('.env.example', 'write', signal)).resolves.toBeDefined();
