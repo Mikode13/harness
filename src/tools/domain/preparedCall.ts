@@ -1,6 +1,6 @@
 import type { ToolRisk } from '#src/agent/domain/approval';
-import type { RunContext } from '#src/agent/domain/runContext';
 import type { ToolDefinition } from '#src/llm/domain/tool';
+import type { ToolCallContext } from './readRegistry.ts';
 import type { Tool } from './tool.ts';
 
 /**
@@ -18,7 +18,7 @@ export interface PreparedCall {
  */
 export interface PreparingTool extends ToolDefinition {
 	/** Rejects with a message for the model when the call cannot run. */
-	prepare(input: unknown, signal: AbortSignal, context: RunContext): Promise<PreparedCall>;
+	prepare(input: unknown, signal: AbortSignal, call: ToolCallContext): Promise<PreparedCall>;
 }
 
 /** What an agent can run: a consumer's `Tool`, or one the harness built. */
@@ -36,9 +36,9 @@ export async function prepareCall(
 	tool: AgentTool,
 	input: unknown,
 	signal: AbortSignal,
-	context: RunContext,
+	call: ToolCallContext,
 ): Promise<PreparedCall> {
-	if (isPreparing(tool)) return tool.prepare(input, signal, context);
+	if (isPreparing(tool)) return tool.prepare(input, signal, call);
 
 	const risk = tool.risk(input);
 	return { risk, run: runSignal => tool.execute(input, runSignal) };

@@ -36,6 +36,7 @@ import type { LLMClient, LLMResponse } from '#src/llm/domain/llm';
 import type { Message, MessagePart, ToolCallPart, ToolResultPart } from '#src/llm/domain/message';
 import type { ToolDefinition } from '#src/llm/domain/tool';
 import { type AgentTool, type PreparedCall, prepareCall } from '#src/tools/domain/preparedCall';
+import { ReadRegistry, type ToolCallContext } from '#src/tools/domain/readRegistry';
 import { isAbortError } from '#src/shared/domain/isAbortError';
 import type { ILogger } from '#src/shared/domain/logger';
 import { addTokens, type Tokens } from '#src/shared/domain/tokens';
@@ -110,6 +111,8 @@ export class LLMAgent implements Agent {
 	private readonly summarizer: LLMClient | undefined;
 	// The latest move through the history this conversation has followed.
 	private seenRevision = 0;
+	// What this conversation has seen of each file, so an edit starts from a version it read.
+	private readonly reads = new ReadRegistry();
 
 	constructor({
 		llmClient,
@@ -310,7 +313,7 @@ export class LLMAgent implements Agent {
 		call: ToolCallPart,
 		{ signal, onProgress: callback = ignoreProgress, approve }: RunOptions,
 		effects: RunEffects,
-		context: RunContext,
+		toolCall: ToolCallContext,
 	): Promise<{ result: ToolResultPart; denied: boolean }> {
 		const result = { type: 'toolResult' as const, callId: call.id, name: call.name };
 		const tool = this.tools.get(call.name);
@@ -327,7 +330,7 @@ export class LLMAgent implements Agent {
 
 		let prepared: PreparedCall;
 		try {
-			prepared = await prepareCall(tool, call.input, signal, context);
+			prepared = await prepareCall(tool, call.input, signal, toolCall);
 		} catch (error) {
 			signal.throwIfAborted();
 			// A call that cannot be prepared, or whose tool cannot judge it, does not run; the
@@ -373,7 +376,7 @@ export class LLMAgent implements Agent {
 		calls: ToolCallPart[],
 		options: RunOptions,
 		effects: RunEffects,
-		context: RunContext,
+		toolCall: ToolCallContext,
 	): Promise<Message> {
 		const { signal, onProgress: callback = ignoreProgress } = options;
 		const results: MessagePart[] = [];
@@ -383,7 +386,7 @@ export class LLMAgent implements Agent {
 			signal.throwIfAborted();
 			// `runTool` announces the call only once it is allowed to run, so a consumer never
 			// shows a call as running early, nor while the user is still being asked.
-			const { result, denied } = await this.runTool(call, options, effects, context);
+			const { result, denied } = await this.runTool(call, options, effects, toolCall);
 			if (denied) emit({ type: 'tool', id: call.id, name: call.name, status: 'denied' }, callback);
 			else narrate(result, callback);
 			results.push(result);
@@ -457,6 +460,8 @@ export class LLMAgent implements Agent {
 			if (this.history) {
 				followed = await this.followHistory(this.history);
 				after = followed.turn;
+				// The files may no longer hold what the conversation saw of them.
+				if (followed.revisions.length > 0) this.reads.clear();
 				if (followed.undone.length > 0) {
 					const summary = await this.summarizeUndone(followed, signal);
 					tokens = addTokens(tokens, summary.usage);
@@ -473,6 +478,8 @@ export class LLMAgent implements Agent {
 				}
 			}
 
+			// After following the history, which may have made every earlier read stale.
+			const reads = this.reads.begin();
 			for (let step = 1; step <= this.maxSteps; step++) {
 				const response = await this.llmCall(runMessages, after, signal);
 				tokens = addTokens(tokens, response.usage);
@@ -489,6 +496,8 @@ export class LLMAgent implements Agent {
 					// Recorded only now, so a failed run leaves no tool call without its result, and a
 					// note about what was undone is given again to the next run.
 					this.conversation.addRunAfter(after, runMessages, context.historyRun);
+					// With the turns that read them, and only then: a failed run is not remembered.
+					reads.commit();
 					if (followed) this.seenRevision = followed.latestRevision;
 
 					return {
@@ -504,7 +513,7 @@ export class LLMAgent implements Agent {
 
 				// On the last step no call is left to send the results to, so the tools do not run.
 				if (step < this.maxSteps) {
-					runMessages.push(await this.runTools(calls, options, effects, context));
+					runMessages.push(await this.runTools(calls, options, effects, { run: context, reads }));
 				}
 			}
 

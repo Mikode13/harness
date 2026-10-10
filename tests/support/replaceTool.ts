@@ -15,9 +15,9 @@ export function replaceTool(
 		name: 'replace',
 		description: 'Replaces a file',
 		inputSchema: schema,
-		prepare: async (input, prepareSignal, context) => {
+		prepare: async (input, prepareSignal, { run }) => {
 			const { path, content } = input as { path: string; content: string };
-			const editor = writes.editorFor(context);
+			const editor = writes.editorFor(run);
 			const edit = await editor.prepare(
 				{ kind: 'replace', path, content: Buffer.from(content) },
 				prepareSignal,
