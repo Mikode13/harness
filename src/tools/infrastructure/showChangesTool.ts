@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { RecoveryStore } from '#src/recovery/domain/recoveryStore';
 import { showChanges } from '#src/recovery/domain/runChanges';
-import type { AccessPolicy } from '../domain/accessPolicy.ts';
+import { AccessDeniedError, type AccessPolicy } from '../domain/accessPolicy.ts';
 import type { PreparingTool } from '../domain/preparedCall.ts';
 import { definePreparingTool } from './defineTool.ts';
 
@@ -35,11 +35,15 @@ export function createShowChangesTool({
 					if (runId === undefined) return nothingYet;
 					const diff = await showChanges(store, runId, {
 						maxLines,
-						visible: path =>
-							policy.check(path, 'read', signal).then(
-								() => true,
-								() => false,
-							),
+						visible: async path => {
+							try {
+								await policy.check(path, 'read', signal);
+								return true;
+							} catch (error) {
+								if (error instanceof AccessDeniedError) return false;
+								throw error;
+							}
+						},
 					});
 					return diff === '' ? nothingYet : diff;
 				},

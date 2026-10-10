@@ -179,4 +179,18 @@ describe('showChanges for the planner and the reviewer', () => {
 		expect(shown).not.toContain('.envrc');
 		expect(shown).not.toContain('leaked');
 	});
+
+	it.each([
+		['a cancellation', new DOMException('The operation was aborted', 'AbortError')],
+		['an operational policy failure', new Error('git failed')],
+	])('propagates %s while deciding which changes may be shown', async (_, failure) => {
+		const store = await FileRecoveryStore.open({ root, directory: join(parent, 'state') });
+		const context = new RunContext();
+		context.historyRun.runId = await recordRun(store, root, [
+			['src/a.ts', 'export const token = "changed";\n'],
+		]);
+		vi.spyOn(policy, 'check').mockRejectedValueOnce(failure);
+
+		await expect(showChanges(context)).rejects.toBe(failure);
+	});
 });
