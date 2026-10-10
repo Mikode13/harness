@@ -1385,6 +1385,7 @@ tags: #mikode-harness #recovery #undo #api
 - **`list()`** gives each run with its parent, status, times and the files it changed. It gives no label: a host that wants one names the run itself.
 - **A move** returns where it came from and went, whether it was `complete`, and the files it left. Paths are relative to the root, as in `changes`.
 - **`AgentResponse.runId`** names the run a writing run recorded. A run that wrote nothing, and the Agent SDK engines, leave it out.
+- **A run that changed nothing leaves the history.** That is a run whose every prepared change was abandoned, or that prepared none. When it finishes, the store points the workspace back at its parent, then removes the run. The response then has no `runId`, and the run's turns count as turns that wrote nothing.
 - The errors a consumer branches on are exported: `WorkspaceBusyError`, `NothingToMoveError`, `UnknownRunError` and `HistoryExpiredError`. An id that is not one, or that this workspace never had, is an `UnknownRunError`.
 
 **Context:** #69. The user decided several points:
@@ -1393,7 +1394,8 @@ tags: #mikode-harness #recovery #undo #api
 - `Agent` keeps only `run()`, and `runId` is an optional field of `AgentResponse`;
 - the Agent SDK engines offer no history, because their changes are not inferred afterwards;
 - `changes` is shown whole to the consumer;
-- `list()` carries each run's files, for the host to show or not, and no label.
+- `list()` carries each run's files, for the host to show or not, and no label;
+- a run that started recording but changed nothing is discarded, rather than kept as an empty step. The PR review found the case: a write that failed after the journal started.
 
 The user delegated the remaining names to me.
 
@@ -1401,10 +1403,12 @@ The user delegated the remaining names to me.
 
 - **Methods on `Agent`**, such as `agent.undo()`. Rejected by the user: every engine would have to answer them, and the Agent SDK engines have no history to give.
 - **A label per run**: the prompt cut short, or a name the consumer passes in `RunOptions`. The user chose none for now. The files and the diff identify a run, and either label can be added later without breaking anything.
+- **Keeping a run that changed nothing**, with no `runId` in the response. Smaller, but `/history` would show empty runs, and an undo would step through them doing nothing. Rejected by the user.
 - **Exporting `RecoveryStore` itself.** It also exposes the journal, the content hashes and the store's own records, which would all become public API.
 
 **Consequences:**
 
 - A history opened beside a writing agent is a second view of the same files on disk. The workspace lock keeps them apart, so a move during a run fails with `WorkspaceBusyError`.
 - `list()` reads every kept run's journal, at most 25.
+- A change counts while it may have reached its file: it is prepared and its abandonment was not recorded. A crash during the discard leaves an empty leaf behind. That leaf is settled as `interrupted` and pruned like any abandoned branch.
 - The write tools that record these runs are not exported yet, and the orchestrator's response has no `runId` until its roles share one run context. #71 does both.

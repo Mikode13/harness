@@ -265,8 +265,8 @@ await history.goTo(historyStart); // as it was before the agent's first run
 changed, and the run the workspace is at (`head`), absent at the start. Runs form a tree:
 going back and writing again starts a new branch, and `goTo` reaches the old one. `redo`
 returns towards where the workspace was most recently. A run's `runId` is in its
-`AgentResponse` when it wrote, and a run that failed or was cancelled after writing is
-still listed, with that status.
+`AgentResponse` when it changed a file, and a run that failed or was cancelled after
+writing is still listed, with that status. A run that changed nothing is not kept.
 
 A move writes a file only if it still holds what the history expects. A file you
 changed since is left as it is and named in the move's `conflicts`, and the move is

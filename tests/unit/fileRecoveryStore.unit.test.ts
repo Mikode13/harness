@@ -41,6 +41,11 @@ afterEach(() => {
 
 const absent = { exists: false } as const;
 
+/** Records one change made, so the run stays in the history when it finishes. */
+async function change(run: RunJournal, path = 'a.txt'): Promise<void> {
+	await run.applied(await run.prepare({ path, before: absent, after: absent }));
+}
+
 /** The one folder the store keeps for `root`. */
 function workspaceFolder(): string {
 	const [folder] = readdirSync(join(directory, 'workspaces'));
@@ -80,6 +85,7 @@ describe('FileRecoveryStore', () => {
 		const store = await FileRecoveryStore.open({ root, directory });
 		const run = await store.startRun();
 		const hash = await run.saveContent(Buffer.from('source'));
+		await change(run);
 		await run.finish('completed');
 
 		const content = join(workspaceFolder(), 'content', hash.slice(0, 2), hash);
@@ -173,6 +179,7 @@ describe('FileRecoveryStore', () => {
 	it('refuses a journal damaged before its last line', async () => {
 		const store = await FileRecoveryStore.open({ root, directory });
 		const run = await store.startRun();
+		await change(run);
 		await run.finish('failed');
 		writeFileSync(join(workspaceFolder(), 'runs', run.runId, 'journal.jsonl'), 'garbage\n{}\n');
 
@@ -182,6 +189,7 @@ describe('FileRecoveryStore', () => {
 	it('marks a finished run with its status and end time', async () => {
 		const store = await FileRecoveryStore.open({ root, directory });
 		const run = await store.startRun();
+		await change(run);
 		await run.finish('cancelled');
 
 		const { record } = await store.readRun(run.runId);
@@ -350,8 +358,10 @@ describe('FileRecoveryStore', () => {
 			await expect(store.listRuns()).resolves.toEqual({ runs: [] });
 
 			const first = await store.startRun();
+			await change(first);
 			await first.finish('completed');
 			const second = await store.startRun();
+			await change(second);
 			await second.finish('failed');
 
 			const { head, runs } = await store.listRuns();
@@ -361,6 +371,53 @@ describe('FileRecoveryStore', () => {
 				{ runId: second.runId, parentRunId: first.runId, status: 'failed' },
 			]);
 			expect(runs[0]).not.toHaveProperty('parentRunId');
+		});
+
+		it('takes a run that changed nothing out of the history, back to the run before it', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const kept = await store.startRun();
+			await change(kept);
+			await expect(kept.finish('completed')).resolves.toBe('recorded');
+
+			const abandoned = await store.startRun();
+			const hash = await abandoned.saveContent(Buffer.from('never written'));
+			await abandoned.abandoned(
+				await abandoned.prepare({
+					path: 'a.txt',
+					before: absent,
+					after: { exists: true, hash, mode: 0o644 },
+				}),
+			);
+			await expect(abandoned.finish('failed')).resolves.toBe('discarded');
+			const empty = await store.startRun();
+			await expect(empty.finish('cancelled')).resolves.toBe('discarded');
+
+			await expect(store.listRuns()).resolves.toEqual({
+				head: kept.runId,
+				runs: [expect.objectContaining({ runId: kept.runId })],
+			});
+			for (const run of [abandoned, empty]) {
+				expect(existsSync(join(workspaceFolder(), 'runs', run.runId))).toBe(false);
+				await expect(store.readRun(run.runId)).rejects.toBeInstanceOf(UnknownRunError);
+			}
+			// The next run starts from the one kept, and the workspace is free.
+			const next = await store.startRun();
+			await change(next);
+			await next.finish('completed');
+			expect((await store.listRuns()).runs.at(-1)).toMatchObject({ parentRunId: kept.runId });
+		});
+
+		it('keeps a run whose change may have been made', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const run = await store.startRun();
+			// Prepared, and neither applied nor abandoned: the file may hold it.
+			await run.prepare({ path: 'a.txt', before: absent, after: absent });
+
+			await expect(run.finish('failed')).resolves.toBe('recorded');
+			await expect(store.listRuns()).resolves.toMatchObject({
+				head: run.runId,
+				runs: [{ runId: run.runId, status: 'failed' }],
+			});
 		});
 
 		it('lists a run as running only while it holds the workspace and its process lives', async () => {
@@ -414,6 +471,7 @@ describe('FileRecoveryStore', () => {
 				[notMade, 'abandoned'],
 				[changedSince, 'prepared'],
 			]);
+			await change(next);
 			await next.finish('completed');
 			await expect(store.listRuns()).resolves.toMatchObject({
 				runs: [{ runId: dead.runId }, { runId: next.runId, parentRunId: dead.runId }],

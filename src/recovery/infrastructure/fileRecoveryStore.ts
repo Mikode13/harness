@@ -23,6 +23,7 @@ import {
 	NothingToMoveError,
 	type Revision,
 	type RecoveryStore,
+	type RunEnding,
 	type RunJournal,
 	type RunRecord,
 	type RunStatus,
@@ -257,6 +258,7 @@ export class FileRecoveryStore implements RecoveryStore {
 				runDirectory,
 				contentDirectory: join(this.directory, 'content'),
 				journal,
+				discard: () => this.discardRun(record),
 				release: () => this.unlock(runId),
 			});
 		} catch (error) {
@@ -654,6 +656,23 @@ export class FileRecoveryStore implements RecoveryStore {
 		await rm(this.runDirectory(runId), { recursive: true, force: true });
 	}
 
+	/**
+	 * Takes a run that changed nothing out of the history, while it still holds the lock: the
+	 * workspace goes back to its parent first, so the head never names a run that is gone. A
+	 * crash before the run is removed leaves an empty leaf, settled as `interrupted` and pruned
+	 * like any abandoned branch. The contents it saved are freed by the next prune.
+	 */
+	private async discardRun(record: RunRecord): Promise<void> {
+		const head = await this.readHead();
+		await this.writeHead({
+			...(record.parentRunId ? { runId: record.parentRunId } : {}),
+			revision: head.revision,
+		});
+		await rm(join(this.runDirectory(record.runId), 'run.json'), { force: true });
+		await syncDirectory(this.runDirectory(record.runId));
+		await rm(this.runDirectory(record.runId), { recursive: true, force: true });
+	}
+
 	/** Removes the stored contents no kept run refers to. */
 	private async collectContent(): Promise<void> {
 		const referenced = new Set<string>();
@@ -886,8 +905,12 @@ class FileRunJournal implements RunJournal {
 	private readonly runDirectory: string;
 	private readonly contentDirectory: string;
 	private readonly journal: FileHandle;
+	private readonly discard: () => Promise<void>;
 	private readonly release: () => Promise<void>;
 	private sequence = 0;
+	// The changes recorded as prepared and not abandoned: those that may have reached a file. One
+	// whose `prepared` line failed is not here, since nothing writes a file before that line.
+	private readonly effects = new Set<number>();
 	// Appends run one after another, so the lines never interleave.
 	private pending: Promise<unknown> = Promise.resolve();
 	private finished = false;
@@ -900,12 +923,14 @@ class FileRunJournal implements RunJournal {
 		runDirectory,
 		contentDirectory,
 		journal,
+		discard,
 		release,
 	}: {
 		record: RunRecord;
 		runDirectory: string;
 		contentDirectory: string;
 		journal: FileHandle;
+		discard: () => Promise<void>;
 		release: () => Promise<void>;
 	}) {
 		this.runId = record.runId;
@@ -913,6 +938,7 @@ class FileRunJournal implements RunJournal {
 		this.runDirectory = runDirectory;
 		this.contentDirectory = contentDirectory;
 		this.journal = journal;
+		this.discard = discard;
 		this.release = release;
 	}
 
@@ -939,6 +965,7 @@ class FileRunJournal implements RunJournal {
 		this.assertOpen();
 		const sequence = ++this.sequence;
 		await this.append({ type: 'prepared', sequence, ...change });
+		this.effects.add(sequence);
 		return sequence;
 	}
 
@@ -947,19 +974,26 @@ class FileRunJournal implements RunJournal {
 		return this.append({ type: 'applied', sequence });
 	}
 
-	abandoned(sequence: number): Promise<void> {
+	async abandoned(sequence: number): Promise<void> {
 		this.assertOpen();
-		return this.append({ type: 'abandoned', sequence });
+		await this.append({ type: 'abandoned', sequence });
+		// Only once recorded: a change whose abandonment was not may still count as made.
+		this.effects.delete(sequence);
 	}
 
-	async finish(status: Exclude<RunStatus, 'running' | 'interrupted'>): Promise<void> {
+	async finish(status: Exclude<RunStatus, 'running' | 'interrupted'>): Promise<RunEnding> {
 		this.assertOpen();
 		this.finished = true;
 		try {
 			await this.pending;
 			await this.journal.close();
+			if (this.effects.size === 0) {
+				await this.discard();
+				return 'discarded';
+			}
 			const record: RunRecord = { ...this.record, status, finishedAt: new Date().toISOString() };
 			await writeDurably(join(this.runDirectory, 'run.json'), JSON.stringify(record));
+			return 'recorded';
 		} finally {
 			await this.release();
 		}

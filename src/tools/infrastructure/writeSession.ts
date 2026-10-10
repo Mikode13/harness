@@ -19,6 +19,7 @@ export class WriteSession {
 	private readonly store: RecoveryStore;
 	private readonly maxChanges: number;
 	private readonly onStart: ((runId: string) => void) | undefined;
+	private readonly onDiscard: (() => void) | undefined;
 	private journal: Promise<RunJournal> | undefined;
 	private changes = 0;
 	private stopped: string | undefined;
@@ -27,15 +28,19 @@ export class WriteSession {
 		store,
 		maxChanges = defaultMaxChanges,
 		onStart,
+		onDiscard,
 	}: {
 		store: RecoveryStore;
 		maxChanges?: number;
 		/** Told the run's id once its journal has started, before its first change is recorded. */
 		onStart?: (runId: string) => void;
+		/** Told when the run ended having changed nothing, so the history no longer has it. */
+		onDiscard?: () => void;
 	}) {
 		this.store = store;
 		this.maxChanges = maxChanges;
 		this.onStart = onStart;
+		this.onDiscard = onDiscard;
 	}
 
 	/** The journal for one more change, counted against the run's limit. */
@@ -85,10 +90,13 @@ export class WriteSession {
 		return journal?.runId;
 	}
 
-	/** Ends the run's record and releases the workspace. A run that never wrote has nothing to end. */
+	/**
+	 * Ends the run's record and releases the workspace. A run that never wrote has nothing to end,
+	 * and one whose every change was abandoned leaves the history.
+	 */
 	async finish(status: Exclude<RunStatus, 'running' | 'interrupted'>): Promise<void> {
 		const journal = await this.journal?.catch(() => undefined);
 		this.journal = undefined;
-		if (journal) await journal.finish(status);
+		if (journal && (await journal.finish(status)) === 'discarded') this.onDiscard?.();
 	}
 }

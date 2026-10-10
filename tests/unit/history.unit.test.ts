@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -221,6 +229,22 @@ describe('the run an agent recorded', () => {
 
 		const response = await agent.run('look', { signal });
 
+		expect(response).not.toHaveProperty('runId');
+		await expect(history.list()).resolves.toEqual({ runs: [] });
+	});
+
+	it('is neither named nor kept when the run started recording but changed nothing', async () => {
+		const agent = await agentWriting(write, textResponse('it could not be written'));
+		// The temporary beside the file cannot be created, so the write fails once recording began.
+		chmodSync(root, 0o555);
+		let response;
+		try {
+			response = await agent.run('change it', { signal });
+		} finally {
+			chmodSync(root, 0o755);
+		}
+
+		expect(readUnder(root, 'a.txt')).toBe('original');
 		expect(response).not.toHaveProperty('runId');
 		await expect(history.list()).resolves.toEqual({ runs: [] });
 	});

@@ -29,6 +29,10 @@ export class WorkspaceWrites {
 				onStart: runId => {
 					context.historyRun.runId = runId;
 				},
+				// A run that changed nothing is not in the history, so its turns wrote nothing.
+				onDiscard: () => {
+					delete context.historyRun.runId;
+				},
 			});
 			context.onFinish(end => created.finish(end));
 			this.sessions.set(context, created);
