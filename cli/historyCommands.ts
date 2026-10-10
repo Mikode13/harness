@@ -5,6 +5,7 @@ import {
 	NothingToMoveError,
 	UnknownRunError,
 	WorkspaceBusyError,
+	WorkspaceMovedError,
 	type History,
 	type HistoryRun,
 	type Move,
@@ -46,7 +47,8 @@ function describe(run: HistoryRun): string {
 /**
  * The commands that move the workspace through the history of the runs that wrote to it,
  * without the model. Each move says what it will do and waits for a yes, then asks why, and the
- * reason is recorded with the move.
+ * reason is recorded with the move. The move happens only from where the workspace was when it
+ * was described.
  */
 export class HistoryCommands {
 	private readonly history: History;
@@ -98,6 +100,12 @@ export class HistoryCommands {
 				this.output.print(`${error.message}. Nothing was changed.`);
 				return;
 			}
+			if (error instanceof WorkspaceMovedError) {
+				this.output.print(
+					`${error.message}, since a run ended while you were answering. Nothing was changed; see /history.`,
+				);
+				return;
+			}
 			throw error;
 		}
 	}
@@ -143,7 +151,8 @@ export class HistoryCommands {
 		);
 		if (!(await this.confirm(signal))) return;
 		const reason = await this.reason('Why are you going back? (optional): ', signal);
-		this.report(await this.history.undo(reason));
+		// Only from where the user saw it: a run that ended meanwhile is not the one confirmed.
+		this.report(await this.history.undo({ ...reason, from: current.runId }));
 	}
 
 	private async redo(signal: AbortSignal): Promise<void> {
@@ -158,7 +167,7 @@ export class HistoryCommands {
 		);
 		if (!(await this.confirm(signal))) return;
 		const reason = await this.reason('Why? (optional): ', signal);
-		this.report(await this.history.redo(reason));
+		this.report(await this.history.redo({ ...reason, from: head ?? historyStart }));
 	}
 
 	private async goTo(target: string | undefined, signal: AbortSignal): Promise<void> {
@@ -203,7 +212,7 @@ export class HistoryCommands {
 			back ? 'Why are you going back? (optional): ' : 'Why? (optional): ',
 			signal,
 		);
-		this.report(await this.history.goTo(runId, reason));
+		this.report(await this.history.goTo(runId, { ...reason, from: head ?? historyStart }));
 	}
 
 	/** Whether `runId` comes before `head` on the line from the start. */

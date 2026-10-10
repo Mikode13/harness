@@ -30,17 +30,19 @@ afterEach(() => {
 	rmSync(parent, { recursive: true, force: true });
 });
 
-/** The commands over the test history, answering each question with the next reply. */
-function commands(...replies: string[]) {
+/**
+ * The commands over the test history, answering each question with the next reply: a text, or
+ * something that happens while the user answers and then gives the text.
+ */
+function commands(...replies: (string | (() => Promise<string>))[]) {
 	const printed: string[] = [];
 	const questions: string[] = [];
 	const promptEmitter = {
 		emit: vi.fn((question: string) => {
 			questions.push(question);
 			const reply = replies.shift();
-			return reply === undefined
-				? Promise.reject(new Error(`Nothing to answer "${question}"`))
-				: Promise.resolve(reply);
+			if (reply === undefined) return Promise.reject(new Error(`Nothing to answer "${question}"`));
+			return typeof reply === 'string' ? Promise.resolve(reply) : reply();
 		}),
 		close: vi.fn(),
 	};
@@ -166,6 +168,33 @@ describe('the history commands', () => {
 			{ from: first },
 		]);
 	});
+
+	it.each([
+		['/undo', ['y', 'never recorded']],
+		['/redo', ['y', '']],
+		['/goto start', ['y', '']],
+	])(
+		'%s changes nothing when a run ends while the user answers',
+		async (command, [answer, reason]) => {
+			const first = await recordRun(store, root, [['a.txt', 'one']]);
+			const second = await recordRun(store, root, [['a.txt', 'two']]);
+			if (command === '/redo') await store.undo();
+			const at = command === '/redo' ? first : second;
+			let third = '';
+			const cli = commands(async () => {
+				third = await recordRun(store, root, [['a.txt', 'three']]);
+				return answer ?? '';
+			}, reason ?? '');
+
+			await cli.run(command);
+
+			expect(cli.printed.at(-1)).toBe(
+				`The workspace is no longer at run ${at}: it is at run ${third}, since a run ended while you were answering. Nothing was changed; see /history.`,
+			);
+			expect(readUnder(root, 'a.txt')).toBe('three');
+			await expect(store.listRevisions()).resolves.toHaveLength(command === '/redo' ? 1 : 0);
+		},
+	);
 
 	it('names the files a move left because they changed since', async () => {
 		const runId = await recordRun(store, root, [['a.txt', 'agent']]);

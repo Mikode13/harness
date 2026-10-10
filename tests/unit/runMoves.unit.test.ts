@@ -20,6 +20,7 @@ import {
 	historyStart,
 	NothingToMoveError,
 	WorkspaceBusyError,
+	WorkspaceMovedError,
 } from '../../src/recovery/domain/recoveryStore.ts';
 import { UnknownRunError } from '../../src/recovery/domain/runTree.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
@@ -56,6 +57,38 @@ function run(...edits: Edit[]): Promise<string> {
 }
 
 describe('moving through the history of runs', () => {
+	it('moves only from where it was told the workspace is', async () => {
+		const first = await run(['a.txt', 'one']);
+		const second = await run(['a.txt', 'two']);
+		// The host showed an undo of `first`; `second` ended while the user was answering.
+		const moves = [
+			() => store.undo({ from: first }),
+			() => store.redo({ from: first }),
+			() => store.goTo(historyStart, { from: first, reason: 'never recorded' }),
+		];
+
+		for (const move of moves) {
+			await expect(move()).rejects.toEqual(
+				expect.objectContaining({ name: 'WorkspaceMovedError', expected: first, actual: second }),
+			);
+		}
+		await expect(store.undo({ from: historyStart })).rejects.toBeInstanceOf(WorkspaceMovedError);
+		expect(read('a.txt')).toBe('two');
+		await expect(store.listRevisions()).resolves.toEqual([]);
+		// And the workspace is free for the next move.
+		await expect(store.undo({ from: second })).resolves.toMatchObject({ from: second, to: first });
+		await expect(store.goTo(historyStart, { from: first })).resolves.toMatchObject({ from: first });
+		await expect(store.redo({ from: historyStart })).resolves.toMatchObject({ to: first });
+	});
+
+	it('names the start as where a move expected the workspace', async () => {
+		await run(['a.txt', 'one']);
+
+		await expect(store.undo({ from: historyStart })).rejects.toThrow(
+			/^The workspace is no longer at the start: it is at run \d/,
+		);
+	});
+
 	it('takes a run back, and forward again', async () => {
 		writeFileSync(join(root, 'kept.txt'), 'one');
 		writeFileSync(join(root, 'gone.txt'), 'old');

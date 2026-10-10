@@ -107,6 +107,16 @@ export interface Revision {
 	conflicts: MoveConflict[];
 }
 
+export interface MoveOptions {
+	/** Why the user is moving the workspace, recorded with the move. */
+	reason?: string;
+	/**
+	 * Where the workspace must be for the move to happen: a run, or `historyStart`. Checked under
+	 * the workspace lock, so a move confirmed against one state never runs from another.
+	 */
+	from?: string;
+}
+
 /** There is nothing to undo at the start of the history, or nothing to redo at its tip. */
 export class NothingToMoveError extends Error {
 	constructor(direction: 'undo' | 'redo') {
@@ -142,23 +152,24 @@ export interface RecoveryStore {
 	 * move or run.
 	 *
 	 * @throws {WorkspaceBusyError} when a run or another move holds the workspace.
+	 * @throws {WorkspaceMovedError} when `from` was given and the workspace is elsewhere.
 	 * @throws {UnknownRunError} when `target` is not in the history.
 	 * @throws {HistoryExpiredError} when retention chained `target` into a later run.
 	 */
-	goTo(target: string, options?: { reason?: string }): Promise<Revision>;
+	goTo(target: string, options?: MoveOptions): Promise<Revision>;
 	/**
 	 * Moves the workspace to the run before the one it is at.
 	 *
 	 * @throws {NothingToMoveError} at the start of the history.
 	 */
-	undo(options?: { reason?: string }): Promise<Revision>;
+	undo(options?: MoveOptions): Promise<Revision>;
 	/**
 	 * Moves the workspace to the next run: towards where it was most recently, or the newest
 	 * branch.
 	 *
 	 * @throws {NothingToMoveError} when no run follows the one it is at.
 	 */
-	redo(options?: { reason?: string }): Promise<Revision>;
+	redo(options?: MoveOptions): Promise<Revision>;
 	/** Every move of the workspace, oldest first. */
 	listRevisions(): Promise<Revision[]>;
 	/**
@@ -170,6 +181,22 @@ export interface RecoveryStore {
 	readRun(runId: string): Promise<{ record: RunRecord; entries: JournalEntry[] }>;
 	/** The bytes a hash names. */
 	readContent(hash: string): Promise<Buffer>;
+}
+
+/** A move was asked from one point of the history, and the workspace is at another. */
+export class WorkspaceMovedError extends Error {
+	/** Where the move expected the workspace: a run, or `historyStart`. */
+	readonly expected: string;
+	/** Where the workspace is: a run, or `historyStart`. */
+	readonly actual: string;
+
+	constructor(expected: string, actual: string) {
+		const name = (point: string) => (point === historyStart ? 'the start' : `run ${point}`);
+		super(`The workspace is no longer at ${name(expected)}: it is at ${name(actual)}`);
+		this.name = 'WorkspaceMovedError';
+		this.expected = expected;
+		this.actual = actual;
+	}
 }
 
 export class WorkspaceBusyError extends Error {

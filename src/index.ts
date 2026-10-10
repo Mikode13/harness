@@ -51,6 +51,8 @@ export {
 	historyStart,
 	NothingToMoveError,
 	WorkspaceBusyError,
+	WorkspaceMovedError,
+	type MoveOptions,
 	type RunStatus,
 } from './recovery/domain/recoveryStore.ts';
 export { HistoryExpiredError, UnknownRunError } from './recovery/domain/runTree.ts';

@@ -1,5 +1,5 @@
 import { changedFiles, displayPath, showChanges } from './runChanges.ts';
-import type { RecoveryStore, Revision, RunStatus } from './recoveryStore.ts';
+import type { MoveOptions, RecoveryStore, Revision, RunStatus } from './recoveryStore.ts';
 import { HistoryExpiredError } from './runTree.ts';
 
 /** One run that wrote to the workspace. */
@@ -61,28 +61,33 @@ export interface History {
 	/**
 	 * Moves the workspace to the state right after `target`, or to how it was before any run with
 	 * `historyStart`. A file that does not hold what the history expects is left as it is, and the
-	 * move is then not `complete`.
+	 * move is then not `complete`. With `from`, it moves only if the workspace is still there: a
+	 * host that showed the user what a move will do passes where the workspace was, so a run that
+	 * ended meanwhile cannot make it do something else.
 	 *
 	 * @throws {WorkspaceBusyError} when a run or another move holds the workspace.
+	 * @throws {WorkspaceMovedError} when the workspace is not at `from`.
 	 * @throws {UnknownRunError} when `target` is not in the history.
 	 * @throws {HistoryExpiredError} when retention chained `target` into a later run.
 	 */
-	goTo(target: string, options?: { reason?: string }): Promise<Move>;
+	goTo(target: string, options?: MoveOptions): Promise<Move>;
 	/**
 	 * Moves the workspace to the run before the one it is at.
 	 *
 	 * @throws {NothingToMoveError} at the start of the history.
 	 * @throws {WorkspaceBusyError} when a run or another move holds the workspace.
+	 * @throws {WorkspaceMovedError} when the workspace is not at `from`.
 	 */
-	undo(options?: { reason?: string }): Promise<Move>;
+	undo(options?: MoveOptions): Promise<Move>;
 	/**
 	 * Moves the workspace to the next run: towards where it was most recently, or else the newest
 	 * branch.
 	 *
 	 * @throws {NothingToMoveError} when no run follows the one it is at.
 	 * @throws {WorkspaceBusyError} when a run or another move holds the workspace.
+	 * @throws {WorkspaceMovedError} when the workspace is not at `from`.
 	 */
-	redo(options?: { reason?: string }): Promise<Move>;
+	redo(options?: MoveOptions): Promise<Move>;
 }
 
 /** `History` over a recovery store, with paths shown relative to the workspace's real root. */
@@ -123,15 +128,15 @@ export class StoreHistory implements History {
 		return showChanges(this.store, runId, options);
 	}
 
-	async goTo(target: string, options: { reason?: string } = {}): Promise<Move> {
+	async goTo(target: string, options: MoveOptions = {}): Promise<Move> {
 		return this.moveOf(await this.store.goTo(target, options));
 	}
 
-	async undo(options: { reason?: string } = {}): Promise<Move> {
+	async undo(options: MoveOptions = {}): Promise<Move> {
 		return this.moveOf(await this.store.undo(options));
 	}
 
-	async redo(options: { reason?: string } = {}): Promise<Move> {
+	async redo(options: MoveOptions = {}): Promise<Move> {
 		return this.moveOf(await this.store.redo(options));
 	}
 

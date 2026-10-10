@@ -20,6 +20,7 @@ import {
 	historyStart,
 	type JournalEntry,
 	type MoveConflict,
+	type MoveOptions,
 	NothingToMoveError,
 	type Revision,
 	type RecoveryStore,
@@ -27,6 +28,7 @@ import {
 	type RunRecord,
 	type RunStatus,
 	WorkspaceBusyError,
+	WorkspaceMovedError,
 } from '../domain/recoveryStore.ts';
 import { chainEntries, nextPruneStep } from '../domain/retention.ts';
 import { HistoryExpiredError, redoTarget, route, UnknownRunError } from '../domain/runTree.ts';
@@ -367,23 +369,23 @@ export class FileRecoveryStore implements RecoveryStore {
 		await writeDurably(join(this.directory, 'head.json'), JSON.stringify(head));
 	}
 
-	goTo(target: string, { reason }: { reason?: string } = {}): Promise<Revision> {
-		return this.move(() => (target === historyStart ? undefined : target), reason);
+	goTo(target: string, options: MoveOptions = {}): Promise<Revision> {
+		return this.move(() => (target === historyStart ? undefined : target), options);
 	}
 
-	undo({ reason }: { reason?: string } = {}): Promise<Revision> {
+	undo(options: MoveOptions = {}): Promise<Revision> {
 		return this.move(({ runs, head }) => {
 			if (head === undefined) throw new NothingToMoveError('undo');
 			return runs.find(run => run.runId === head)?.parentRunId;
-		}, reason);
+		}, options);
 	}
 
-	redo({ reason }: { reason?: string } = {}): Promise<Revision> {
+	redo(options: MoveOptions = {}): Promise<Revision> {
 		return this.move(({ runs, head, revisions }) => {
 			const target = redoTarget(runs, revisions, head);
 			if (target === undefined) throw new NothingToMoveError('redo');
 			return target;
-		}, reason);
+		}, options);
 	}
 
 	async listRevisions(): Promise<Revision[]> {
@@ -417,7 +419,7 @@ export class FileRecoveryStore implements RecoveryStore {
 			head: string | undefined;
 			revisions: Revision[];
 		}) => string | undefined,
-		reason: string | undefined,
+		{ reason, from }: MoveOptions,
 	): Promise<Revision> {
 		const moveId = `move-${newRunId()}`;
 		try {
@@ -425,6 +427,10 @@ export class FileRecoveryStore implements RecoveryStore {
 			await this.settleInterrupted(moveId);
 			await this.finishPendingMove();
 			const head = await this.readHead();
+			// Only now, under the lock and once nothing is left unsettled, is the head the one the
+			// move would start from.
+			const at = head.runId ?? historyStart;
+			if (from !== undefined && from !== at) throw new WorkspaceMovedError(from, at);
 			const { runs } = await this.listRuns();
 			const to = resolve({ runs, head: head.runId, revisions: await this.listRevisions() });
 			if (to !== undefined && !runs.some(run => run.runId === to)) {

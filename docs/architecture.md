@@ -113,9 +113,9 @@ failure types an agent rejects with, `isAbortError`, `isAgentProvider`, `agentPr
 option and model types. For the model-backed agent's tools it also exports the `Tool`,
 `ToolDefinition`, `JSONSchema`, `Workspace` and `TextMatch` types, `defineTool`,
 `createWorkspace` and `createWorkspaceTools`. For the history of what those runs wrote it
-exports `createHistory`, the `History`, `HistoryRun`, `Move` and `RunStatus` types,
-`historyStart`, and the `WorkspaceBusyError`, `NothingToMoveError`, `UnknownRunError` and
-`HistoryExpiredError` errors; `AgentResponse.runId` names the run a writing run recorded. `defineTool` takes a Zod 4 schema, so Zod's major
+exports `createHistory`, the `History`, `HistoryRun`, `Move`, `MoveOptions` and `RunStatus` types,
+`historyStart`, and the `WorkspaceBusyError`, `WorkspaceMovedError`, `NothingToMoveError`,
+`UnknownRunError` and `HistoryExpiredError` errors; `AgentResponse.runId` names the run a writing run recorded. `defineTool` takes a Zod 4 schema, so Zod's major
 version is part of the contract, and `zod` is a peer dependency, so the consumer's schemas and
 the harness share one copy. `RetryingAgent`,
 `OrchestratorAgent`, `LLMAgent` and both engines are internal — the factories apply retry and the role

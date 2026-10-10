@@ -272,8 +272,20 @@ A move writes a file only if it still holds what the history expects. A file you
 changed since is left as it is and named in the move's `conflicts`, and the move is
 then not `complete`. The reason is kept with the move.
 
-A consumer branches on four errors: `WorkspaceBusyError` while a run or another move
-holds the workspace, `NothingToMoveError` with nothing to undo or redo,
+A move can be tied to where the workspace is. Pass `from`, a run or `historyStart`, and
+the move happens only if the workspace is still there; otherwise it fails with
+`WorkspaceMovedError` and changes nothing. Pass it when you showed the user what a move
+will do, so a run that ends while they answer cannot make it do something else:
+
+```ts
+const { head } = await history.list();
+// … show the user what undoing `head` does, and wait for a yes …
+await history.undo({ from: head ?? historyStart, reason });
+```
+
+A consumer branches on five errors: `WorkspaceBusyError` while a run or another move
+holds the workspace, `WorkspaceMovedError` when it is not at `from`,
+`NothingToMoveError` with nothing to undo or redo,
 `UnknownRunError` for a run the workspace never had, and `HistoryExpiredError` for one
 retention took. The history keeps 25 runs per workspace. Older runs are chained into
 the next, so `historyStart` always restores the original state. For a chained run,
