@@ -325,7 +325,7 @@ export class LLMAgent implements Agent {
 		{ signal, onProgress: callback = ignoreProgress, approve }: RunOptions,
 		effects: RunEffects,
 		toolCall: ToolCallContext,
-	): Promise<{ result: ToolResultPart; denied: boolean }> {
+	): Promise<{ result: ToolResultPart; denied: boolean; diff?: string }> {
 		const result = { type: 'toolResult' as const, callId: call.id, name: call.name };
 		const tool = this.tools.get(call.name);
 		if (!tool) {
@@ -372,6 +372,7 @@ export class LLMAgent implements Agent {
 			return {
 				result: { ...result, output: await prepared.run(signal), isError: false },
 				denied: false,
+				...(prepared.diff === undefined ? {} : { diff: prepared.diff }),
 			};
 		} catch (error) {
 			signal.throwIfAborted();
@@ -397,9 +398,12 @@ export class LLMAgent implements Agent {
 			signal.throwIfAborted();
 			// `runTool` announces the call only once it is allowed to run, so a consumer never
 			// shows a call as running early, nor while the user is still being asked.
-			const { result, denied } = await this.runTool(call, options, effects, toolCall);
+			const { result, denied, diff } = await this.runTool(call, options, effects, toolCall);
 			if (denied) emit({ type: 'tool', id: call.id, name: call.name, status: 'denied' }, callback);
-			else narrate(result, callback);
+			// The diff of a change it made, for the person watching; only once it was made.
+			else if (diff !== undefined) {
+				emit({ type: 'tool', id: call.id, name: call.name, status: 'completed', diff }, callback);
+			} else narrate(result, callback);
 			results.push(result);
 		}
 

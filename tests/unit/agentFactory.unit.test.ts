@@ -6,7 +6,11 @@ import { Codex } from '@openai/codex-sdk';
 import type { Thread, ThreadEvent } from '@openai/codex-sdk';
 import OpenAI from 'openai';
 import type { Response } from 'openai/resources/responses/responses';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { InvalidAgentConfigError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
 import {
@@ -15,11 +19,14 @@ import {
 	isAgentProvider,
 } from '../../src/factory/infrastructure/agentFactory.ts';
 import {
+	createFileTools,
 	createLLMAgent,
 	createLLMOrchestrator,
 } from '../../src/factory/infrastructure/agentLLMFactory.ts';
-import type { AgentProvider } from '../../src/factory/infrastructure/types.ts';
+import { agentProviders, type AgentProvider } from '../../src/factory/infrastructure/types.ts';
 import { defineTool } from '../../src/tools/infrastructure/defineTool.ts';
+import type { WorkspaceOptions } from '../../src/tools/infrastructure/fileTools.ts';
+import { createHistory } from '../../src/recovery/infrastructure/createHistory.ts';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 vi.mock('@openai/codex-sdk', () => ({ Codex: vi.fn() }));
@@ -425,11 +432,16 @@ describe('createLLMAgent', () => {
 		).toThrow(InvalidAgentConfigError);
 	});
 
-	it('rejects haiku, which has no adaptive thinking on the Messages API', () => {
+	it('rejects a reasoning effort for haiku, which runs without thinking', () => {
 		claudeAPIReplying('hi');
 
 		expect(() =>
-			createLLMAgent('anthropic', { model: 'haiku', systemPrompt: '', logger: createLogger() }),
+			createLLMAgent('anthropic', {
+				model: 'haiku',
+				reasoningEffort: 'high',
+				systemPrompt: '',
+				logger: createLogger(),
+			}),
 		).toThrow(InvalidAgentConfigError);
 	});
 
@@ -541,153 +553,422 @@ describe('createOrchestrator', () => {
 	});
 });
 
+/** An OpenAI response whose one item creates `path` with `apply_patch`. */
+function patchResponse(path: string): Response {
+	return {
+		status: 'completed',
+		incomplete_details: null,
+		error: null,
+		output: [
+			{
+				type: 'apply_patch_call',
+				id: 'apc-1',
+				call_id: 'call-1',
+				status: 'completed',
+				operation: { type: 'create_file', path, diff: '+written by the executor\n' },
+			},
+		],
+		usage: {
+			input_tokens: 1,
+			input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+			output_tokens: 1,
+			output_tokens_details: { reasoning_tokens: 0 },
+			total_tokens: 2,
+		},
+	} as unknown as Response;
+}
+
 describe('createLLMOrchestrator', () => {
-	it('plans and reviews on the model APIs and executes on the Agent SDK', async () => {
+	let parent: string;
+	let repo: string;
+	let workspace: WorkspaceOptions;
+
+	beforeEach(() => {
+		parent = realpathSync(mkdtempSync(join(tmpdir(), 'harness-factory-')));
+		repo = join(parent, 'repo');
+		mkdirSync(repo);
+		execFileSync('git', ['init', '--quiet'], { cwd: repo });
+		workspace = {
+			roots: [{ path: repo, access: 'write' }],
+			stateDirectory: join(parent, 'state'),
+		};
+	});
+
+	afterEach(() => {
+		rmSync(parent, { recursive: true, force: true });
+	});
+
+	/** The request each call to a faked SDK client was made with, in order. */
+	const requestsOf = (create: { mock: { calls: unknown[][] } }) =>
+		create.mock.calls.map(call => call[0] as Record<string, unknown>);
+
+	interface ToolDeclaration {
+		name?: string;
+		type?: string;
+	}
+	const declared = (request: unknown) =>
+		((request as { tools?: ToolDeclaration[] }).tools ?? []).map(tool => tool.name ?? tool.type);
+
+	it('plans, executes and reviews on the model APIs, none on an Agent SDK', async () => {
 		const openAICreate = openAIReplying('plan');
 		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
-		const startThread = codexReplying('implementation');
 
 		await expect(
-			(await createLLMOrchestrator({ logger: createLogger() })).run('ship it', { signal }),
+			(await createLLMOrchestrator({ workspace, logger: createLogger() })).run('ship it', {
+				signal,
+			}),
 		).resolves.toMatchObject({ response: 'All job has finished' });
 
-		expect(openAICreate).toHaveBeenCalledWith(
-			expect.objectContaining({
-				model: 'gpt-5.6-sol',
-				reasoning: { effort: 'high', summary: 'auto' },
-				instructions: expect.stringContaining('AGENTS.md') as unknown,
-			}),
-			{ signal },
-		);
-		expect(codexModels(startThread)).toEqual(['gpt-5.6-luna']);
-		expect(codexEfforts(startThread)).toEqual(['xhigh']);
-		expect(startThread.mock.calls[0]?.[0]).not.toHaveProperty('approvalPolicy');
+		const [planner, executor] = requestsOf(openAICreate);
+		expect(planner).toMatchObject({
+			model: 'gpt-5.6-sol',
+			reasoning: { effort: 'high', summary: 'auto' },
+		});
+		expect(executor).toMatchObject({
+			model: 'gpt-5.6-luna',
+			reasoning: { effort: 'xhigh', summary: 'auto' },
+		});
 		expect(claudeCreate).toHaveBeenCalledWith(
-			expect.objectContaining({
-				model: 'claude-opus-5-5',
-				output_config: { effort: 'high' },
-				system: expect.stringContaining('AGENTS.md') as unknown,
-			}),
+			expect.objectContaining({ model: 'claude-opus-5-5', output_config: { effort: 'high' } }),
 			{ signal },
 		);
+		expect(Codex).not.toHaveBeenCalled();
 		expect(query).not.toHaveBeenCalled();
 	});
 
-	it('gives the model-backed roles their instructions as the system prompt, with the tools', async () => {
+	it('gives the planner and reviewer the reading tools, and the executor its file tools', async () => {
 		const openAICreate = openAIReplying('plan');
 		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
-		const startThread = codexReplying('implementation');
 
-		await (await createLLMOrchestrator({ logger: createLogger() })).run('ship it', { signal });
+		await (
+			await createLLMOrchestrator({ workspace, logger: createLogger() })
+		).run('ship it', { signal });
 
-		const plannerRequest = openAICreate.mock.calls[0] as unknown as [
-			{ instructions: string; input: unknown; tools: { name: string }[] },
-		];
-		expect(plannerRequest[0].instructions).toContain('You are the planner agent');
-		expect(JSON.stringify(plannerRequest[0].input)).not.toContain('You are the planner agent');
-		expect(plannerRequest[0].tools.map(tool => tool.name)).toEqual([
+		const reading = ['listFiles', 'searchText', 'readFile', 'showChanges'];
+		expect(declared(requestsOf(openAICreate)[0])).toEqual(reading);
+		expect(declared(requestsOf(openAICreate)[1])).toEqual([
 			'listFiles',
 			'searchText',
 			'readFile',
+			'apply_patch',
 		]);
-		const reviewerRequest = claudeCreate.mock.calls[0] as unknown as [
-			{ system: string; messages: unknown; tools: unknown[] },
-		];
-		expect(reviewerRequest[0].system).toContain('You are the reviewer agent');
-		expect(JSON.stringify(reviewerRequest[0].messages)).not.toContain('You are the reviewer agent');
-		expect(reviewerRequest[0].tools).toHaveLength(3);
-		// The executor's Agent SDK takes no system prompt, so its instructions lead the prompt.
-		const { runStreamed } = startThread.mock.results[0]?.value as {
-			runStreamed: ReturnType<typeof vi.fn>;
-		};
-		expect(runStreamed.mock.calls[0]?.[0]).toMatch(/^You are the executor agent/);
+		expect(declared(requestsOf(claudeCreate)[0])).toEqual(reading);
 	});
 
-	it("uses a caller's own system prompt word for word, and keeps ours for the rest", async () => {
+	it('gives the executor only reading tools in a workspace with no write root', async () => {
 		const openAICreate = openAIReplying('plan');
-		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
-		const startThread = codexReplying('implementation');
+		claudeAPIReplying('{"decision":"approved"}');
 
 		await (
 			await createLLMOrchestrator({
+				workspace: { ...workspace, roots: [{ path: repo, access: 'read' }] },
+				logger: createLogger(),
+			})
+		).run('ship it', { signal });
+
+		expect(declared(requestsOf(openAICreate)[1])).toEqual(['listFiles', 'searchText', 'readFile']);
+	});
+
+	it('gives every role its instructions as the system prompt, then the workspace', async () => {
+		const openAICreate = openAIReplying('plan');
+		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
+
+		await (
+			await createLLMOrchestrator({ workspace, logger: createLogger() })
+		).run('ship it', { signal });
+
+		const [planner, executor] = requestsOf(openAICreate) as unknown as {
+			instructions: string;
+			input: unknown;
+		}[];
+		expect(planner?.instructions).toMatch(/^You are the planner agent/);
+		expect(executor?.instructions).toMatch(/^You are the executor agent/);
+		const reviewer = requestsOf(claudeCreate)[0] as unknown as { system: string };
+		expect(reviewer.system).toMatch(/^You are the reviewer agent/);
+		for (const prompt of [planner?.instructions, executor?.instructions, reviewer.system]) {
+			expect(prompt).toContain(`The workspace:\n- ${repo}\n`);
+			expect(prompt).toContain('AGENTS.md');
+		}
+		expect(JSON.stringify(planner?.input)).not.toContain('You are the planner agent');
+	});
+
+	it("uses a caller's own system prompt word for word, followed by the workspace, and keeps ours for the rest", async () => {
+		const openAICreate = openAIReplying('plan');
+		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
+
+		await (
+			await createLLMOrchestrator({
+				workspace,
 				systemPrompts: { reviewer: 'Review strictly.', executor: 'Change only tests.' },
 				logger: createLogger(),
 			})
 		).run('ship it', { signal });
 
-		expect(claudeCreate).toHaveBeenCalledWith(
-			expect.objectContaining({ system: 'Review strictly.' }),
-			{ signal },
-		);
-		expect(openAICreate).toHaveBeenCalledWith(
-			expect.objectContaining({
-				instructions: expect.stringMatching(
-					/^You are the planner agent[\s\S]*AGENTS\.md/,
-				) as unknown,
-			}),
-			{ signal },
-		);
-		const { runStreamed } = startThread.mock.results[0]?.value as {
-			runStreamed: ReturnType<typeof vi.fn>;
-		};
-		expect(runStreamed.mock.calls[0]?.[0]).toMatch(
-			/^Change only tests\.\n\nOriginal user request:/,
-		);
+		// Word for word, then the workspace, which the model needs to name a file; not our guidance.
+		const reviewer = (requestsOf(claudeCreate)[0] as unknown as { system: string }).system;
+		const executor = (requestsOf(openAICreate)[1] as unknown as { instructions: string })
+			.instructions;
+		expect(reviewer).toMatch(/^Review strictly\.\n\nThe workspace:\n/);
+		expect(executor).toMatch(/^Change only tests\.\n\nThe workspace:\n/);
+		for (const prompt of [reviewer, executor]) expect(prompt).not.toContain('AGENTS.md');
+		expect(
+			(requestsOf(openAICreate)[0] as unknown as { instructions: string }).instructions,
+		).toMatch(/^You are the planner agent[\s\S]*AGENTS\.md/);
 	});
 
-	it('runs every role on Anthropic when asked to', async () => {
-		const claudeCreate = claudeAPIReplying('plan');
-		claudeCreate.mockResolvedValueOnce({
-			stop_reason: 'end_turn',
-			content: [{ type: 'text', text: 'plan', citations: null }],
-			usage: {
-				input_tokens: 1,
-				cache_read_input_tokens: 0,
-				cache_creation_input_tokens: 0,
-				output_tokens: 1,
-			},
-		} as unknown as AnthropicMessage);
-		claudeCreate.mockResolvedValueOnce({
-			stop_reason: 'end_turn',
-			content: [{ type: 'text', text: '{"decision":"approved"}', citations: null }],
-			usage: {
-				input_tokens: 1,
-				cache_read_input_tokens: 0,
-				cache_creation_input_tokens: 0,
-				output_tokens: 1,
-			},
-		} as unknown as AnthropicMessage);
-		vi.mocked(query).mockReturnValue(claudeStream([claudeResult('implementation')]));
+	it('runs every role on Anthropic when asked to, the executor with the text editor', async () => {
+		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
 
 		await expect(
-			(await createLLMOrchestrator({ provider: 'anthropic', logger: createLogger() })).run(
-				'ship it',
-				{ signal },
-			),
+			(
+				await createLLMOrchestrator({ provider: 'anthropic', workspace, logger: createLogger() })
+			).run('ship it', { signal }),
 		).resolves.toMatchObject({ response: 'All job has finished' });
 
-		expect(claudeCreate).toHaveBeenCalledTimes(2);
-		expect(claudeModels()).toEqual(['sonnet']);
-		expect(claudeEfforts()).toEqual(['xhigh']);
-		expect(Codex).not.toHaveBeenCalled();
+		const requests = requestsOf(claudeCreate);
+		expect(requests.map(request => request.model)).toEqual([
+			'claude-opus-5-5',
+			'claude-sonnet-5',
+			'claude-opus-5-5',
+		]);
+		expect(requests[1]).toMatchObject({ output_config: { effort: 'xhigh' } });
+		expect(declared(requests[1])).toEqual([
+			'listFiles',
+			'searchText',
+			'str_replace_based_edit_tool',
+			'delete_file',
+		]);
 		expect(OpenAI).not.toHaveBeenCalled();
 	});
 
-	it('passes autoApprove to the executor alone', async () => {
-		openAIReplying('plan');
+	it('records what the executor wrote as one run of the history, and names it', async () => {
+		const patch = {
+			type: 'apply_patch_call',
+			id: 'apc-1',
+			call_id: 'call-1',
+			status: 'completed',
+			operation: { type: 'create_file', path: 'notes.md', diff: '+written by the executor\n' },
+		};
+		const openAICreate = openAIReplying('plan');
+		// The planner answers; the executor writes, then answers.
+		openAICreate
+			.mockImplementationOnce(openAICreate.getMockImplementation() as never)
+			.mockImplementationOnce(() =>
+				Promise.resolve({
+					status: 'completed',
+					incomplete_details: null,
+					error: null,
+					output: [patch],
+					usage: {
+						input_tokens: 1,
+						input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+						output_tokens: 1,
+						output_tokens_details: { reasoning_tokens: 0 },
+						total_tokens: 2,
+					},
+				} as unknown as Response),
+			);
 		claudeAPIReplying('{"decision":"approved"}');
-		const startThread = codexReplying('implementation');
 
-		await createLLMOrchestrator({ autoApprove: true, logger: createLogger() });
+		const response = await (
+			await createLLMOrchestrator({ workspace, logger: createLogger() })
+		).run('write notes', { signal });
 
-		expect(startThread.mock.calls).toEqual([
-			[expect.objectContaining({ approvalPolicy: 'never', sandboxMode: 'danger-full-access' })],
+		expect(readFileSync(join(repo, 'notes.md'), 'utf8')).toBe('written by the executor\n');
+		const history = await createHistory({ root: repo, stateDirectory: join(parent, 'state') });
+		const { head, runs } = await history.list();
+		expect(response.runId).toBe(head);
+		expect(runs).toEqual([
+			expect.objectContaining({ runId: head, files: ['notes.md'], status: 'completed' }),
 		]);
 	});
 
+	it.each([
+		['fails', 'failed'],
+		['is cancelled', 'cancelled'],
+	] as const)(
+		'closes the run and frees the workspace when it %s after the executor wrote',
+		async (_, status) => {
+			const openAICreate = openAIReplying('plan');
+			openAICreate
+				.mockImplementationOnce(openAICreate.getMockImplementation() as never)
+				.mockImplementationOnce(() => Promise.resolve(patchResponse('notes.md')));
+			const controller = new AbortController();
+			const claudeCreate = claudeAPIReplying('unused');
+			claudeCreate.mockImplementation(() => {
+				if (status === 'cancelled') {
+					controller.abort();
+					return Promise.reject(controller.signal.reason as Error);
+				}
+				return Promise.reject(new Error('the reviewer is down'));
+			});
+
+			await expect(
+				(await createLLMOrchestrator({ workspace, logger: createLogger() })).run('write notes', {
+					signal: controller.signal,
+				}),
+			).rejects.toThrow();
+
+			const history = await createHistory({ root: repo, stateDirectory: join(parent, 'state') });
+			expect((await history.list()).runs).toEqual([
+				expect.objectContaining({ status, files: ['notes.md'] }),
+			]);
+			// The workspace is free: the run released it.
+			await expect(history.undo()).resolves.toMatchObject({ complete: true });
+		},
+	);
+
 	it('rejects an unknown provider coming from untyped input', async () => {
-		await expect(createLLMOrchestrator({ provider: 'astra' as AgentProvider })).rejects.toThrow(
-			InvalidAgentConfigError,
-		);
+		await expect(
+			createLLMOrchestrator({ provider: 'astra' as AgentProvider, workspace }),
+		).rejects.toThrow(InvalidAgentConfigError);
+	});
+});
+
+describe('createFileTools, and createLLMAgent over a workspace', () => {
+	let parent: string;
+	let repo: string;
+	let workspace: WorkspaceOptions;
+
+	beforeEach(() => {
+		parent = realpathSync(mkdtempSync(join(tmpdir(), 'harness-file-tools-')));
+		repo = join(parent, 'repo');
+		mkdirSync(repo);
+		execFileSync('git', ['init', '--quiet'], { cwd: repo });
+		workspace = { roots: [{ path: repo, access: 'write' }], stateDirectory: join(parent, 'state') };
+	});
+
+	afterEach(() => {
+		rmSync(parent, { recursive: true, force: true });
+	});
+
+	it('gives each provider its own file tools, and only reading ones without a write root', async () => {
+		const names = async (provider: AgentProvider, options: WorkspaceOptions) =>
+			(await createFileTools(provider, options, { logger: createLogger() })).map(tool => tool.name);
+		const readOnly = { ...workspace, roots: [{ path: repo, access: 'read' as const }] };
+
+		await expect(names('openai', workspace)).resolves.toEqual([
+			'listFiles',
+			'searchText',
+			'readFile',
+			'apply_patch',
+		]);
+		await expect(names('anthropic', workspace)).resolves.toEqual([
+			'listFiles',
+			'searchText',
+			'str_replace_based_edit_tool',
+			'delete_file',
+		]);
+		for (const provider of agentProviders) {
+			await expect(names(provider, readOnly)).resolves.toEqual([
+				'listFiles',
+				'searchText',
+				'readFile',
+			]);
+		}
+		await expect(
+			createFileTools('gemini' as AgentProvider, workspace, { logger: createLogger() }),
+		).rejects.toThrow(InvalidAgentConfigError);
+	});
+
+	it('refuses a workspace with no root when the agent is built', () => {
+		expect(() =>
+			createLLMAgent('openai', {
+				systemPrompt: '',
+				workspace: { roots: [] },
+				logger: createLogger(),
+			}),
+		).toThrow(InvalidAgentConfigError);
+	});
+
+	it('tries the history again on the next run after it could not be opened', async () => {
+		openAIReplying('done');
+		const stateDirectory = join(parent, 'blocked');
+		// A file where the folder should be: the history cannot be made.
+		writeFileSync(stateDirectory, '');
+		const agent = createLLMAgent('openai', {
+			systemPrompt: '',
+			workspace: { ...workspace, stateDirectory },
+			logger: createLogger(),
+		});
+		await expect(agent.run('first', { signal })).rejects.toBeInstanceOf(UnrecoverableError);
+
+		rmSync(stateDirectory);
+
+		await expect(agent.run('second', { signal })).resolves.toMatchObject({ response: 'done' });
+	});
+
+	it('tells the model the workspace after its own system prompt', async () => {
+		const create = openAIReplying('done');
+
+		await createLLMAgent('openai', {
+			systemPrompt: 'You fix bugs.',
+			workspace,
+			logger: createLogger(),
+		}).run('fix it', { signal });
+
+		expect((create.mock.calls as unknown[][])[0]?.[0]).toMatchObject({
+			instructions: expect.stringMatching(
+				new RegExp(
+					`^You fix bugs\\.\\n\\nThe workspace:\\n- ${repo}\\nName a file by its path relative to`,
+				),
+			) as unknown,
+		});
+	});
+
+	it('follows what the history undoes, with a summary from the cheap model unless turned off', async () => {
+		for (const summarizeUndone of [true, false]) {
+			const create = openAIReplying('done');
+			const patch = {
+				type: 'apply_patch_call',
+				id: 'apc-1',
+				call_id: 'call-1',
+				status: 'completed',
+				operation: {
+					type: 'create_file',
+					path: `note-${String(summarizeUndone)}.md`,
+					diff: '+hi\n',
+				},
+			};
+			create.mockImplementationOnce(() =>
+				Promise.resolve({
+					status: 'completed',
+					incomplete_details: null,
+					error: null,
+					output: [patch],
+					usage: {
+						input_tokens: 1,
+						input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+						output_tokens: 1,
+						output_tokens_details: { reasoning_tokens: 0 },
+						total_tokens: 2,
+					},
+				} as unknown as Response),
+			);
+			const agent = createLLMAgent('openai', {
+				systemPrompt: 'You write notes.',
+				tools: await createFileTools('openai', workspace, { logger: createLogger() }),
+				workspace,
+				summarizeUndone,
+				logger: createLogger(),
+			});
+			const { runId } = await agent.run('write a note', { signal });
+			expect(runId).toEqual(expect.any(String));
+			await (await createHistory({ root: repo, stateDirectory: join(parent, 'state') })).undo();
+
+			await agent.run('try again', { signal });
+
+			const requests = (create.mock.calls as unknown[][]).map(call => JSON.stringify(call[0]));
+			const summaries = requests.filter(request => request.includes('The user undid the work'));
+			expect(summaries).toHaveLength(summarizeUndone ? 1 : 0);
+			if (summarizeUndone) {
+				expect(JSON.parse(summaries[0] ?? '{}')).toMatchObject({
+					model: 'gpt-5.6-luna',
+					reasoning: { effort: 'high' },
+				});
+			}
+			// Either way the model is told what was undone.
+			expect(requests.at(-1)).toContain('Note from the harness');
+		}
 	});
 });

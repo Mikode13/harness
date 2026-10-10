@@ -6,10 +6,15 @@ export {
 	type CreateAgentOptions,
 } from './factory/infrastructure/agentFactory.ts';
 export {
+	createFileTools,
 	createLLMAgent,
 	createLLMOrchestrator,
 	type CreateLLMAgentOptions,
+	type CreateLLMOrchestratorOptions,
 } from './factory/infrastructure/agentLLMFactory.ts';
+export type { FileTool, WorkspaceOptions } from './tools/infrastructure/fileTools.ts';
+export type { WorkspaceRoot } from './tools/domain/accessPolicy.ts';
+export type { SecretRules } from './tools/infrastructure/rootsAccessPolicy.ts';
 export {
 	agentProviders,
 	type AgentModel,

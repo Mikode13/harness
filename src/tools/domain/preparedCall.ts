@@ -9,6 +9,8 @@ import type { Tool } from './tool.ts';
  */
 export interface PreparedCall {
 	readonly risk: ToolRisk;
+	/** For a change to a file, what it will change as a unified diff, fixed when prepared. */
+	readonly diff?: string;
 	run(signal: AbortSignal): Promise<string>;
 }
 

@@ -39,9 +39,10 @@ chat loop itself never knows the difference.
   captured `session_id`, so the provider keeps the context.
 - **The model API path**: `LLMAgent` calls the OpenAI Responses API or the
   Anthropic Messages API and keeps the conversation itself, in a form that can move
-  between providers. It runs its own tool loop over the tools it is given; the
-  harness ships three that only read the repository (list, search, read), bounded
-  by `.gitignore`.
+  between providers. It runs its own tool loop over the tools it is given. The
+  harness ships tools that read the repository (list, search, read), bounded by
+  `.gitignore`, and `createFileTools`, which also change files in each provider's
+  native format, every change recorded so it can be undone.
 - **`OrchestratorAgent`**: coordinates a planner, an executor, and a reviewer
   (each an injected `Agent`) in a plan → execute → review loop. The reviewer's
   decision is a Zod-validated structured `{decision, feedback}`, not free text —
@@ -239,9 +240,63 @@ neither run nor remembered. Its `key` option decides what counts as the same cal
 such as the tool and its path. The memory lives as long as the approver you created,
 so create one per session, per user or per run.
 
-`createLLMOrchestrator()`
-takes the same options as `createOrchestrator()` and returns a promise; its executor
-still runs on an Agent SDK, because the harness's own tools cannot change files.
+### Agents that change files
+
+`createFileTools` gives an agent the file tools of its provider, over the folders you
+declare, each `read` or `write`:
+
+- **OpenAI** gets `listFiles`, `searchText`, `readFile` and its native `apply_patch`.
+- **Anthropic** gets `listFiles`, `searchText`, its native text editor (whose `view`
+  reads) and `delete_file`.
+
+Give the agent the same `workspace`, so it follows what the history undoes:
+
+```ts
+import { createFileTools, createLLMAgent, type WorkspaceOptions } from '@mikode13/harness';
+
+const workspace: WorkspaceOptions = {
+	roots: [
+		{ path: process.cwd(), access: 'write' },
+		{ path: '/srv/standards', access: 'read' },
+	],
+};
+const agent = createLLMAgent('openai', {
+	systemPrompt: 'You fix bugs, with a test for each.',
+	tools: await createFileTools('openai', workspace),
+	workspace,
+});
+```
+
+Every tool goes through one access policy:
+
+- it refuses a path outside the roots;
+- it refuses a file `.gitignore` excludes;
+- it refuses git's metadata, the history itself, and a secret such as `.env`. Add more
+  secrets with `secrets.protect`, or open exact files with `secrets.allow`.
+
+A change happens only in a `write` root, and only from a version of the file the agent
+read: editing a file it never read is `READ_REQUIRED`, and editing one that changed since
+is `STALE_FILE`. Every change is recorded before it is made, so the history can undo the
+run.
+
+With `workspace`, the agent's system prompt is followed by the roots and how to name a file
+in them. After the user undoes runs, the agent's next run starts from its conversation as it
+was then, with a note on what was undone and why. By default that note carries a summary
+from the provider's cheap model, Claude Haiku or `gpt-5.6-luna`, billed with the run;
+`summarizeUndone: false` keeps to the undone prompts. A run that changed a file names its
+run in `AgentResponse.runId`. Progress reports each change as a unified `diff` on the tool's
+`completed` event.
+
+`createLLMOrchestrator()` takes the options of `createOrchestrator()` plus `workspace`,
+`maxSteps` and `summarizeUndone`, and returns a promise. Every role runs on the model APIs:
+
+- the planner and the reviewer read, with a `showChanges` tool that gives the current task's
+  changes as far as each may read them;
+- the executor gets its provider's file tools. `autoApprove` and `maxSteps` reach only the
+  executor.
+
+Without `workspace` it works on the current directory, read only. One run of the
+orchestrator is one run of the history, every round included.
 
 ### Going back through what an agent wrote
 
@@ -294,8 +349,7 @@ the error's `keptIn` names the run that now holds its changes, and that run's
 
 The history is not version control. It holds only what the harness's own tools wrote:
 not your edits, not other programs', and not the Agent SDK engines' changes. The lock
-keeps a second harness run out, but not an editor. The write tools are not exported
-yet, so today only an agent built inside the harness records runs.
+keeps a second harness run out, but not an editor.
 
 ## Tests
 
@@ -335,18 +389,19 @@ without the model:
 
 Each move says what it will do and changes nothing until you answer `y`. It then
 asks why, and records the reason, if you give one, with the move. A move that left
-files as they were, because they changed since, names them. None of the agents the
-CLI builds records runs yet, because none of them writes through the harness's tools.
+files as they were, because they changed since, names them. With `--llm` the executor
+writes to the current directory through the harness's tools, so its runs are in that
+history. The Agent SDK path changes files through its own tools, which the history does not
+record.
 
 The CLI asks in the terminal before a destructive tool call runs: yes, always for
 that tool until the CLI exits, or no with an optional reason for the model. With
 piped input nobody can answer, so such a call is denied: a line written for a later
 question never approves one. Piped lines answer the prompt and the history commands in
-order. No
-agent it builds asks yet, because the harness's own tools only read and
-`autoApprove` is on.
+order. With `--llm`, the executor asks before a destructive change, such as one that would
+make `.gitignore` hide less.
 
-`cli/cli.ts` currently enables `autoApprove` for its trusted backend agents.
+`cli/cli.ts` currently enables `autoApprove` for its Agent SDK agents, not for `--llm`.
 This maps to each provider's permission-bypass mode and grants those processes
 unrestricted command access. Keep it disabled when the host may receive untrusted
 prompts, or provide an approval workflow from the entry point.

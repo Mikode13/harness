@@ -13,8 +13,11 @@ export function formatProgressEvent(item: ProgressEvent): string | undefined {
 		case 'mcpTool':
 			if (!item.server || !item.status) return undefined;
 			return `tool: ${item.tool}, server: ${item.server}, status: ${item.status}`;
-		case 'tool':
-			return `tool: ${item.name}, status: ${item.status}`;
+		case 'tool': {
+			const line = `tool: ${item.name}, status: ${item.status}`;
+			// The change a write tool made, as it happens.
+			return item.diff === undefined ? line : `${line}\n${item.diff}`;
+		}
 		case 'search':
 			if (!item.query) return undefined;
 			return `searching... query:${item.query}`;

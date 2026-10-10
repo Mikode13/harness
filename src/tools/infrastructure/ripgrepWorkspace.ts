@@ -54,12 +54,13 @@ export class RipgrepWorkspace extends BoundedWorkspace {
 		root: string;
 		ripgrepPath: string;
 		timeoutMs?: number;
+		hidden?: (path: string) => boolean;
 	}) {
 		super(options);
 		this.ripgrepPath = ripgrepPath;
 	}
 
-	protected async listCandidates(signal: AbortSignal): Promise<string[]> {
+	protected async listUnignored(signal: AbortSignal): Promise<string[]> {
 		const { stdout, stderr, exitCode } = await this.ripgrep(['--files', '--null'], signal);
 		// 1 means nothing to list, which an empty repository is. 2 with a listing means some
 		// folder could not be read, which git skips with a warning too; without one, it failed.

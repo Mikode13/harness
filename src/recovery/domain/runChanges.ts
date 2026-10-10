@@ -9,6 +9,11 @@ export interface ShowChangesOptions {
 	 * The most lines of diff shown. What does not fit is named instead, in at most two more lines.
 	 */
 	maxLines?: number;
+	/**
+	 * Whether a file, by its real path, may be shown. A file it may not show is neither shown nor
+	 * named: only how many there were is said. Defaults to every file.
+	 */
+	visible?: (path: string) => Promise<boolean>;
 }
 
 /**
@@ -21,11 +26,19 @@ export interface ShowChangesOptions {
 export async function showChanges(
 	store: RecoveryStore,
 	runId: string,
-	{ maxLines = 1000 }: ShowChangesOptions = {},
+	{ maxLines = 1000, visible }: ShowChangesOptions = {},
 ): Promise<string> {
 	const { record, entries } = await store.readRun(runId);
-	const changes = changedFiles(record, entries);
+	const all = changedFiles(record, entries);
+	const changes: FileChange[] = [];
+	for (const change of all) if (!visible || (await visible(change.path))) changes.push(change);
 	const output: string[] = [];
+	const hidden = all.length - changes.length;
+	if (hidden > 0) {
+		output.push(
+			`# ${String(hidden)} changed ${hidden === 1 ? 'file is' : 'files are'} not shown: you may not read ${hidden === 1 ? 'it' : 'them'}`,
+		);
+	}
 
 	for (const [index, change] of changes.entries()) {
 		const name = displayPath(record.root, change.path);
