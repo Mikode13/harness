@@ -426,6 +426,26 @@ describe("Claude's text editor on the shared edit engine", () => {
 		expect(onDisk('mixed.txt')).toBe('a\r\nb\nb2\nc\n');
 	});
 
+	it('takes the ending of the line an old_str ends with, when it ends with its newline', async () => {
+		writeFileSync(join(root, 'mixed.txt'), 'a\r\nb\nc\r\n');
+		const { agent } = await agentOver(
+			claudeResponse(editor('t1', { command: 'view', path: 'mixed.txt' })),
+			claudeResponse(
+				editor('t2', {
+					command: 'str_replace',
+					path: 'mixed.txt',
+					old_str: 'b\n',
+					new_str: 'b\nb2\n',
+				}),
+			),
+			claudeResponse(done()),
+		);
+
+		await agent.run('extend', { signal });
+
+		expect(onDisk('mixed.txt')).toBe('a\r\nb\nb2\nc\r\n');
+	});
+
 	it('cannot be offered to OpenAI', () => {
 		vi.mocked(OpenAI).mockImplementation(function () {
 			return { responses: { create: vi.fn() } } as unknown as OpenAI;

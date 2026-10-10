@@ -150,7 +150,8 @@ function replaceOnce(source: string, oldText: string, newText: string, path: str
 	}
 	const at = source.indexOf(from);
 	// New lines end like the line where the text sits, so a CRLF line gains no bare `\n`.
-	const ending = endingAt(source, at + from.length);
+	// When the text ends with its line's newline, that newline says how the line ends.
+	const ending = endingAt(source, from.endsWith('\n') ? at + from.length - 1 : at + from.length);
 	const written = to.replace(/(?<!\r)\n/g, ending);
 	return source.slice(0, at) + written + source.slice(at + from.length);
 }
