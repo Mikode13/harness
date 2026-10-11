@@ -15,9 +15,11 @@ import {
 } from '#src/llm/infrastructure/openAILLMClient';
 import {
 	executorInstructions,
+	executorInstructionsWithoutCommands,
 	OrchestratorAgent,
 	plannerInstructions,
 	reviewerInstructions,
+	reviewerInstructionsWithoutCommands,
 } from '#src/orchestration/domain/model/orchestratorAgent';
 import { ReviewerDecisionValidator } from '#src/orchestration/infrastructure/model/reviewerDecisionValidator';
 import type { RecoveryStore } from '#src/recovery/domain/recoveryStore';
@@ -473,6 +475,9 @@ const repositoryGuidance =
  *   default.
  * - Each role gets `runCommand` with the `commands` whose `roles` name it, the executor by
  *   default. A command asks the approver in any role, and its files are captured around it.
+ * - The executor is told to finish only once the tests and checks pass, and the reviewer that
+ *   they passed, when the executor has a command; without one, both are told the tests were
+ *   not run, and the reviewer judges from the code whether they would pass.
  *
  * One run of the orchestrator is one run of the workspace's history, every round and retry
  * included, and its `AgentResponse` names it. Every role follows what the user undoes.
@@ -520,6 +525,14 @@ export async function createLLMOrchestrator({
 			...shared,
 		});
 	const { executor } = roles;
+	const executorToolset = await executorTools(
+		executor.provider,
+		opened,
+		commands && commandsFor(commands, 'executor'),
+	);
+	// The executor and the reviewer are told whether the tests were run, which only an executor
+	// with a command can do.
+	const executorRuns = executorToolset.some(tool => tool.name === 'runCommand');
 
 	return new OrchestratorAgent({
 		plannerAgent: await reader(
@@ -530,12 +543,11 @@ export async function createLLMOrchestrator({
 		executorAgent: buildLLMAgent(executor.provider, {
 			model: executor.model,
 			reasoningEffort: executor.reasoningEffort,
-			systemPrompt: prompt(systemPrompts.executor, executorInstructions),
-			tools: await executorTools(
-				executor.provider,
-				opened,
-				commands && commandsFor(commands, 'executor'),
+			systemPrompt: prompt(
+				systemPrompts.executor,
+				executorRuns ? executorInstructions : executorInstructionsWithoutCommands,
 			),
+			tools: executorToolset,
 			maxSteps: steps.executor,
 			autoApprove,
 			...shared,
@@ -543,7 +555,10 @@ export async function createLLMOrchestrator({
 		reviewerAgent: await reader(
 			roles.reviewer,
 			'reviewer',
-			prompt(systemPrompts.reviewer, reviewerInstructions),
+			prompt(
+				systemPrompts.reviewer,
+				executorRuns ? reviewerInstructions : reviewerInstructionsWithoutCommands,
+			),
 		),
 		reviewerDecisionValidator: new ReviewerDecisionValidator(),
 		logger,

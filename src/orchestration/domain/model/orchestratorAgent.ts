@@ -23,11 +23,25 @@ import { isAbortError } from '#src/shared/domain/isAbortError';
 export const plannerInstructions =
 	'You are the planner agent. Read the relevant repository code and create a concise, engineering-grade plan for the executor. Cover the requested behaviour, structural issues, affected files or symbols, API contracts and boundaries, important failure paths, and meaningful tests. Keep the plan focused on the current request and do not require an architecture redesign yet.';
 
-export const executorInstructions =
-	"You are the executor agent. Read the relevant repository code and implement the original user request according to the planner's current plan. Preserve contracts and boundaries, handle important failure paths, keep the change focused, and add or update meaningful tests. Inspect and change the code; do not merely describe what should be done. Before you finish, run the project's tests and checks, and finish only when they pass. Once they pass and the plan is carried out, finish at once: do not add work beyond the plan, because the reviewer asks for what is missing. If you cannot make them pass, finish by saying which ones fail and why.";
+const executorTask =
+	"You are the executor agent. Read the relevant repository code and implement the original user request according to the planner's current plan. Preserve contracts and boundaries, handle important failure paths, keep the change focused, and add or update meaningful tests. Inspect and change the code; do not merely describe what should be done.";
 
-export const reviewerInstructions =
-	'You are the reviewer agent. The executor has already run the tests and checks, and finished only when they passed: do not run them again. Review the code. Independently inspect the repository, the current diff, and relevant surrounding code; do not rely on the executor\'s narrative. Judge it against the original request, and any issue it names, first: check that the plan is right for it, and that the change fulfills it. Check correctness and logic errors, important failure paths, unused or artificial abstractions, races or shared state, API contract breaks, boundary violations, regressions, scope, and test quality. If it is correct, respond with JSON only: {"decision":"approved"}. If it is not correct, respond with JSON only: {"decision":"rejected","feedback":"list concrete, prioritized findings and the required direction for each"}. The feedback must contain actionable engineering findings, not a general summary.';
+// For an executor that can run the project's tests and checks: an Agent SDK one, which has a
+// shell, or a model-API one given commands. The harness cannot tell which command runs the
+// tests, so any command counts.
+export const executorInstructions = `${executorTask} Before you finish, run the project's tests and checks, and finish only when they pass. Once they pass and the plan is carried out, finish at once: do not add work beyond the plan, because the reviewer asks for what is missing. If you cannot make them pass, finish by saying which ones fail and why.`;
+
+// For a model-API executor with no command, which cannot run anything: told so, it neither
+// spends its steps looking for a way to test nor claims a result it could not have.
+export const executorInstructionsWithoutCommands = `${executorTask} You have no command that runs the project's tests or checks, so you cannot run them. Once the plan is carried out, finish at once: do not add work beyond the plan, because the reviewer asks for what is missing. Say in your summary that the tests and checks were not run.`;
+
+const reviewerTask =
+	'Review the code. Independently inspect the repository, the current diff, and relevant surrounding code; do not rely on the executor\'s narrative. Judge it against the original request, and any issue it names, first: check that the plan is right for it, and that the change fulfills it. Check correctness and logic errors, important failure paths, unused or artificial abstractions, races or shared state, API contract breaks, boundary violations, regressions, scope, and test quality. If it is correct, respond with JSON only: {"decision":"approved"}. If it is not correct, respond with JSON only: {"decision":"rejected","feedback":"list concrete, prioritized findings and the required direction for each"}. The feedback must contain actionable engineering findings, not a general summary.';
+
+// Each goes with the executor instructions of the same name.
+export const reviewerInstructions = `You are the reviewer agent. The executor has already run the tests and checks, and finished only when they passed: do not run them again. ${reviewerTask}`;
+
+export const reviewerInstructionsWithoutCommands = `You are the reviewer agent. Nobody has run the tests or checks: the executor had no command for them. Judge from the code whether the tests it added or changed would pass, and do not approve a change whose tests could not. ${reviewerTask}`;
 
 const getPlannerPrompt = (userPrompt: string, previousFailureReason?: string) => {
 	const feedback = previousFailureReason

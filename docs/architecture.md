@@ -302,9 +302,13 @@ each other's.
   `createOrchestrator` bills that key instead of the subscription. `createLLMOrchestrator`
   needs the key anyway: all three of its roles, the executor included, are `LLMAgent`s on the
   model APIs and bill per token.
-- **An agent reads only what `.gitignore` does not ignore, inside one root.** Ignored files,
-  tracked files `.gitignore` names, `.git`, files ripgrep's own `.ignore` would un-ignore, symlinks and paths outside the root do not exist
-  for the repository tools, so a secret that is not ignored is visible. A line reaches the model
+- **An agent reads only what `.gitignore` does not ignore, inside its roots.** For
+  `createWorkspaceTools`, ignored files, tracked files `.gitignore` names, `.git`, files
+  ripgrep's own `.ignore` would un-ignore, symlinks and paths outside its one root do not
+  exist. The file tools of `createFileTools` and `createLLMOrchestrator` take several roots and
+  also decide through `RootsAccessPolicy`, which follows a symlink and judges it by where it
+  leads: one inside the roots, such as `CLAUDE.md → AGENTS.md`, works, and one out of them is
+  refused. Either way, a secret that is not ignored is visible. A line reaches the model
   cut past 300 characters, or past 5,000 in a prose file (`.md`, `.markdown`, `.mdx`, `.txt`),
   where a cut line could not be copied into an edit; the result says so. The scope a model asks for is applied to the output
   of a search over the whole root as it arrives, before anything is stored, and never passed to ripgrep, which stops honouring

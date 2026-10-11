@@ -1793,3 +1793,28 @@ tags: #mikode-harness #tools
 - A prose line up to 5,000 characters can be copied into an edit, so `apply_patch` and `str_replace` can change it.
 - A page of 200 prose lines can now be about 16 times larger than before, at worst.
 - Long lines in code, such as a long string literal or a JSON fixture, are still cut at 300, and cannot be patched whole.
+
+## Each role is told whether the tests were run
+
+tags: #mikode-harness #orchestration #llm
+
+**Decision:**
+
+- **Two versions of the executor's and the reviewer's instructions,** chosen by `createLLMOrchestrator` when it builds the roles.
+  - **The executor has a command** (`runCommand` is among its tools): the executor finishes only once the tests and checks pass, and the reviewer is told they passed and not to run them again, as in "The live run of #52 decided commands per role, 50 steps, a stop for loops, and each role's end".
+  - **The executor has none:** the executor is told it cannot run the tests or checks, finishes once the plan is carried out, and says in its summary that they were not run. The reviewer is told nobody ran them, judges from the code whether the tests would pass, and does not approve a change whose tests could not.
+- **Any command counts.** The harness cannot tell which command runs the tests, so an executor with only `issue` gets the first version.
+- **The Agent SDK path keeps the first version.** Its executor has a shell, so it can always run them.
+- **A caller's `systemPrompts` still replaces either version** word for word.
+
+**Context:** the AI review of #93 found that, without `commands`, the executor was told to finish only on passing tests it had no way to run, and the reviewer to trust that they had passed. That is the default configuration of `createLLMOrchestrator`. The executor would spend its steps looking for a way to test, or finish without testing, and the reviewer would approve on a false premise.
+
+**Alternatives considered:**
+
+- **One wording that holds in both cases**, such as "if you have a command that runs the tests…". It is cheaper, with no branch and one text per role. The user chose two versions, which are more precise and spend no words on the case that does not apply.
+- **Leave it for an issue.** It would have shipped the false premise in the release that adds commands.
+
+**Consequences:**
+
+- Each of the two roles has two texts, both tested through the factory.
+- An executor whose commands do not include the tests is still told to run them. Telling those cases apart would need commands to declare what they are for.

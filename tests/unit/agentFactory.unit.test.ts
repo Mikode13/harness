@@ -857,6 +857,41 @@ describe('createLLMOrchestrator', () => {
 		expect(JSON.stringify(planner?.input)).not.toContain('You are the planner agent');
 	});
 
+	it.each([
+		['without commands', undefined, /cannot run them/, /Nobody has run the tests/],
+		[
+			'with a command',
+			{ test: { description: 'Runs the tests', executable: 'true' } },
+			/finish only when they pass/,
+			/do not run them again/,
+		],
+	] as const)(
+		'tells the executor and the reviewer whether the tests are run, %s',
+		async (_, commands, executorSays, reviewerSays) => {
+			const openAICreate = openAIReplying('plan');
+			const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
+
+			await (
+				await createLLMOrchestrator({
+					workspace,
+					...(commands === undefined ? {} : { commands }),
+					logger: createLogger(),
+				})
+			).run('ship it', { signal });
+
+			const executor = (requestsOf(openAICreate)[1] as unknown as { instructions: string })
+				.instructions;
+			const reviewer = (requestsOf(claudeCreate)[0] as unknown as { system: string }).system;
+			expect(executor).toMatch(executorSays);
+			expect(reviewer).toMatch(reviewerSays);
+			// Each version leaves out the other's promise.
+			expect(executor).not.toMatch(commands === undefined ? /finish only when/ : /cannot run/);
+			expect(reviewer).not.toMatch(
+				commands === undefined ? /do not run them again/ : /Nobody has run/,
+			);
+		},
+	);
+
 	it("uses a caller's own system prompt word for word, followed by the workspace, and keeps ours for the rest", async () => {
 		const openAICreate = openAIReplying('plan');
 		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
