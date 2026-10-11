@@ -18,6 +18,7 @@ export type {
 	CommandArgument,
 	CommandDefinition,
 	CommandParameter,
+	CommandRole,
 	Commands,
 } from './tools/domain/commands.ts';
 export type { SecretRules } from './tools/infrastructure/rootsAccessPolicy.ts';

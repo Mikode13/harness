@@ -92,6 +92,17 @@ function emit(event: ProgressEvent, callback: Callback): void {
 	);
 }
 
+/** `value` with the keys of every object sorted, so equal inputs serialize alike. */
+function canonical(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(canonical);
+	if (typeof value !== 'object' || value === null) return value;
+	return Object.fromEntries(
+		Object.entries(value)
+			.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+			.map(([key, inner]) => [key, canonical(inner)]),
+	);
+}
+
 // A model that asks for exactly the same calls this many times in a row is stuck: it already
 // has what they return, and running them again changes nothing.
 const maxRepeatedSteps = 5;
@@ -102,7 +113,9 @@ class RepeatedCalls {
 	private times = 0;
 
 	count(calls: readonly ToolCallPart[]): number {
-		const key = JSON.stringify(calls.map(call => [call.name, call.input]));
+		// Keys sorted at every level: the same input with its properties in another order is the
+		// same call. Arrays, and the order of the calls, keep theirs.
+		const key = JSON.stringify(calls.map(call => [call.name, canonical(call.input)]));
 		this.times = key === this.last ? this.times + 1 : 1;
 		this.last = key;
 		return this.times;
