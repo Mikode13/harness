@@ -1739,3 +1739,33 @@ tags: #mikode-harness #llm #orchestration
 - `maxSteps` used to reach only the executor; now one number applies to every role. That is a change of behavior inside #52's breaking release.
 - `RoleSteps` joins the public API.
 - The CLI's users move their `commands.json` to `config.json`, under `commands`.
+
+## A consumer narrows a model and an effort per provider, with one pair of narrowers per path
+
+tags: #mikode-harness #public-api #provider-integration
+
+**Decision:** `src/index.ts` exports the models and efforts each provider takes, on each path, and narrowers built on them:
+
+| Path                         | Lists                                  | Narrowers                                                                  |
+| ---------------------------- | -------------------------------------- | -------------------------------------------------------------------------- |
+| Agent SDK (`createAgent`)    | `agentModels`, `agentReasoningEfforts` | `isModelOf(provider, value)`, `isReasoningEffortOf(provider, value)`       |
+| Model API (`createLLMAgent`) | `llmModels`, `llmReasoningEfforts`     | `isLLMModelOf(provider, value)`, `isLLMReasoningEffortOf(provider, value)` |
+
+- **The lists are the arrays the engines and clients already validate against,** so adding a model is still a change in one file.
+- **Each pair lives beside its path's factory:** `agentFactory.ts` and `agentLLMFactory.ts`.
+- **A narrower narrows to that provider's union,** so a consumer drops its cast.
+- **Each narrower checks one value.** A pair can still be refused when the agent is built, such as `gpt-5.6-luna` with `ultra`, or any effort for Claude Haiku on the model API. So is a value that skips the narrowers.
+- **The two paths keep their own lists,** as "Providers are named after the company" decided. Today they hold the same names except Codex's `ultra`, and a test fails if they drift apart.
+
+**Context:** #20. "Stable publication starts at `1.0.0`" deferred a model narrower until a consumer needed one, and harness-cli does. The harness's own executor wrote it through `--llm`, as the live test of #52.
+
+- In the first run, the executor took a list, as in `isModelOf(agentModels[provider], value)`. The user chose the provider instead, with one pair of functions per path.
+- The third run, which the reviewer approved, built that shape.
+
+**Alternatives considered:**
+
+- **A list as the first argument.** One pair serves both paths, but it is a renamed `isOneOf`, and a consumer can pass the wrong list. Rejected by the user.
+- **One pair with a path option,** such as `isModelOf(provider, value, { path: 'llm' })`. That is one parameter more on every call, against one function more per path. The user chose two functions.
+- **One list per provider for both paths.** It would remove the drift, but `src/llm` would then import the engines it replaces.
+
+**Consequences:** additive, so it would ship as a minor change on its own. Four functions and four lists join the public API. A model added to one path only has to change the drift test on purpose.

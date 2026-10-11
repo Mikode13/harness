@@ -105,3 +105,31 @@ Same task, after the fixes of #88: roles per command, 50 steps, the stop for loo
 ### The cost grows with the run's length, through the cache
 
 - **Evidence:** at the failure, the run had spent 918 uncached input tokens, 2,109,499 read from the cache, 109,142 written to it, and 18,828 output tokens. That is about twice the cache reads of the first run, for twice the steps.
+
+## The third live run of the write tools (2026-10-11)
+
+Same task, after #90: 80 steps for the executor, the executor told to stop once the tests pass and the plan is done, and every role told to batch its reads.
+
+### The whole cycle ran, and the executor stopped by itself
+
+- **What happened:** the planner read the issue and planned. The executor implemented, ran the tests and the check, and finished with a summary. The reviewer checked the change with `showChanges` against the issue, and approved it.
+- **Evidence:** run `20261011T151755194Z-77402c`, about 18 minutes long. It spent 945 uncached input tokens, 2,533,071 read from the cache, 154,166 written to it, and 29,207 output tokens. The result passed `check`, 1016 tests and `pack:check`. This version became the one merged for #20.
+- **Where it is enforced:** "Each role has its own step limit, which the consumer and the CLI can raise".
+
+### A reviewer that reviews the code, not the tests, still checks what matters
+
+- **What happened:** the reviewer did not run the tests. It read the diff and the types, and found the one thing missing: a `decisions.md` entry for the API shape chosen. It judged that minor and approved.
+- **Evidence:** the reviewer's reasoning, before `{"decision":"approved"}`.
+- **What changed:** the entry was added before merging. A missing decision record is something to tell the executor to write, not something to leave for the review.
+
+### A model patches badly more often in a longer run
+
+- **What happened:** 9 of 22 `apply_patch` calls failed, against 2 of 17 in the second run.
+- **Evidence:** the CLI's tool events.
+- **Where it is enforced:** nowhere yet. The CLI did not show why each patch failed, which #89 is to fix, so the cause, such as context that did not match or a file changed since it was read, is unknown.
+
+### Batching reads did not shorten a run
+
+- **What happened:** the run made 118 tool calls, 56 of them `readFile`, against 105 with 48 in the second run.
+- **Evidence:** the CLI's tool events.
+- **What it means:** the instruction to ask for several files in one answer either was not followed or did not cut the number of reads. The run finished because the executor stopped, not because it read less. Knowing the number of steps, not only the calls, needs #89.

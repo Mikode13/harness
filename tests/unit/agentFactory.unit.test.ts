@@ -269,6 +269,18 @@ describe('provider model and reasoning catalogs', () => {
 		expect(isLLMReasoningEffortOf('anthropic', 'not-an-effort')).toBe(false);
 	});
 
+	// Both paths take the same names, so one role table serves both. A model or an effort added
+	// to one path only has to change this test on purpose.
+	it.each(agentProviders)(
+		'holds the same names on both paths for %s, but Codex ultra',
+		provider => {
+			expect([...llmModels[provider]].sort()).toEqual([...agentModels[provider]].sort());
+			expect([...llmReasoningEfforts[provider]].sort()).toEqual(
+				agentReasoningEfforts[provider].filter(effort => effort !== 'ultra').sort(),
+			);
+		},
+	);
+
 	it('keeps the Agent SDK and model API effort catalogs distinct', () => {
 		expect(isReasoningEffortOf('openai', 'ultra')).toBe(true);
 		expect(isLLMReasoningEffortOf('openai', 'ultra')).toBe(false);
