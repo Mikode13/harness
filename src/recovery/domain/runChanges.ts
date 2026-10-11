@@ -83,6 +83,12 @@ async function renderFile(
 	if (change.uncertain) {
 		lines.push(`# ${name}: the run stopped while changing this file; it may not hold this change`);
 	}
+	if (change.observedBy.length > 0) {
+		const commands = change.observedBy.map(command => `"${command}"`).join(', ');
+		lines.push(
+			`# ${name}: changed while the command ${commands} ran, seen by comparing before and after`,
+		);
+	}
 	if (change.pending) {
 		lines.push(`# ${name}: the run is changing this file now; that change is not shown`);
 		if (sameState(before, after)) return lines;

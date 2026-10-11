@@ -1,7 +1,7 @@
 import {
 	type ApprovalDecision,
+	type ApprovalRequest,
 	type Approver,
-	type ToolRisk,
 	readDecision,
 } from '#src/agent/domain/approval';
 import {
@@ -284,7 +284,7 @@ export class LLMAgent implements Agent {
 	 */
 	private async denial(
 		call: ToolCallPart,
-		risk: ToolRisk,
+		{ risk, command }: PreparedCall,
 		signal: AbortSignal,
 		approve: Approver | undefined,
 	): Promise<string | undefined> {
@@ -301,7 +301,14 @@ export class LLMAgent implements Agent {
 			const input: unknown = structuredClone(call.input);
 			// Read inside the boundary: an untyped approver can answer anything, and a bad answer
 			// is its failure, which must carry the run's tokens like any other.
-			decision = readDecision(await approve({ tool: call.name, input, risk }, signal));
+			const request: ApprovalRequest = {
+				tool: call.name,
+				input,
+				risk,
+				// A copy too: the approver must not be able to change what runs.
+				...(command ? { command: structuredClone(command) } : {}),
+			};
+			decision = readDecision(await approve(request, signal));
 		} catch (error) {
 			// An approver that gives up on a cancellation, whatever it throws, did not fail.
 			signal.throwIfAborted();
@@ -355,7 +362,7 @@ export class LLMAgent implements Agent {
 		// Preparing may have finished after a cancellation it did not notice; nobody is asked to
 		// approve a call in a run that has already stopped.
 		signal.throwIfAborted();
-		const denial = await this.denial(call, prepared.risk, signal, approve);
+		const denial = await this.denial(call, prepared, signal, approve);
 		if (denial !== undefined) {
 			return { result: { ...result, output: denial, isError: true }, denied: true };
 		}

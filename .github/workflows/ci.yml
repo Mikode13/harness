@@ -42,3 +42,33 @@ jobs:
       documentation: true
       # End-to-end stays off: this is a library with no application entry point to drive, and
       # a placeholder suite that always succeeds is what the CI standard forbids.
+
+  commands-macos:
+    # Configured commands stop whole process groups, which the shared Linux jobs cover. This
+    # runs the same tests on macOS, the platform the CLI is used on, whose process groups,
+    # signals and temporary folders differ in detail. See "The executor runs configured
+    # commands by name" in docs/decisions.md.
+    name: commands on macOS
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pnpm and Node.js
+        uses: pnpm/setup@84cb39b217b10273981911c288cd62326dc7c6d2 # v2.0.2
+        with:
+          version: 11.17.0
+          runtime: node@24
+          cache: true
+          install: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run the command tests
+        run: >-
+          pnpm exec vitest run --project unit
+          tests/unit/commands.unit.test.ts
+          tests/unit/commandProcess.unit.test.ts
+          tests/unit/commandTool.unit.test.ts

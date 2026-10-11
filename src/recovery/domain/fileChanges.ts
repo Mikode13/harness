@@ -20,6 +20,8 @@ export interface FileChange {
 	pending: boolean;
 	/** Folders the run created for this file, outermost first. */
 	createdFolders: string[];
+	/** The commands seen changing it, for changes no tool of the harness made itself. */
+	observedBy: string[];
 }
 
 export function sameState(a: FileState, b: FileState): boolean {
@@ -51,6 +53,9 @@ export function fileChanges(entries: JournalEntry[], stopped: boolean): FileChan
 			known.createdFolders.push(
 				...folders.filter(folder => !known.createdFolders.includes(folder)),
 			);
+			if (entry.observedBy !== undefined && !known.observedBy.includes(entry.observedBy)) {
+				known.observedBy.push(entry.observedBy);
+			}
 		} else {
 			byPath.set(entry.path, {
 				path: entry.path,
@@ -60,6 +65,7 @@ export function fileChanges(entries: JournalEntry[], stopped: boolean): FileChan
 				uncertain,
 				pending,
 				createdFolders: [...folders],
+				observedBy: entry.observedBy === undefined ? [] : [entry.observedBy],
 			});
 		}
 	}

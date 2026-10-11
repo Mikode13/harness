@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ApprovalRequest } from '../../../src/index.ts';
 import { PassThrough } from 'node:stream';
 import { PromptEmitter } from '../../adapters/promptEmitter.ts';
-import { createTerminalApprover } from '../../terminalApprover.ts';
+import { approvalKey, createTerminalApprover } from '../../terminalApprover.ts';
 
 const signal = new AbortController().signal;
 const request: ApprovalRequest = { tool: 'delete', input: { path: 'a.txt' }, risk: 'destructive' };
@@ -103,5 +103,37 @@ describe('createTerminalApprover', () => {
 		await expect(
 			createTerminalApprover(answering(), output())(request, signal),
 		).rejects.toHaveProperty('name', 'AbortError');
+	});
+});
+
+describe('a configured command', () => {
+	const command: ApprovalRequest = {
+		tool: 'runCommand',
+		input: { command: { name: 'test', filter: 'adds numbers' } },
+		risk: 'destructive',
+		command: {
+			executable: 'pnpm',
+			args: ['vitest', '-t', 'adds numbers', '--', 'src/a.ts'],
+			cwd: '/repo',
+		},
+	};
+
+	it('is shown as the line it will run, an argument with spaces quoted', async () => {
+		const printed = output();
+
+		await createTerminalApprover(answering('y'), printed)(command, signal);
+
+		expect(printed.print.mock.calls).toEqual([
+			['The agent wants to run a configured command, in /repo:'],
+			['pnpm vitest -t "adds numbers" -- src/a.ts'],
+		]);
+	});
+
+	it('is remembered by its name, apart from every other command', () => {
+		const other = { ...command, input: { command: { name: 'format' } } };
+
+		expect(approvalKey(command)).toBe('runCommand:test');
+		expect(approvalKey(other)).toBe('runCommand:format');
+		expect(approvalKey(request)).toBe('delete');
 	});
 });

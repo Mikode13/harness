@@ -87,12 +87,16 @@ export function chainEntries(older: JournalEntry[], newer: JournalEntry[]): Jour
 			const last = segment.at(-1);
 			if (!first || !last) continue;
 			const createdFolders = [...new Set(segment.flatMap(entry => entry.createdFolders ?? []))];
+			// Seen around commands only when no tool of the harness made any part of it.
+			const observers = new Set(segment.map(entry => entry.observedBy));
+			const observedBy = observers.has(undefined) ? undefined : [...observers].join(', ');
 			chained.push({
 				sequence: chained.length + 1,
 				path,
 				before: first.before,
 				after: last.after,
 				...(createdFolders.length > 0 ? { createdFolders } : {}),
+				...(observedBy === undefined ? {} : { observedBy }),
 				// One change nobody could settle leaves the whole chain unsettled.
 				status: segment.some(entry => entry.status === 'prepared') ? 'prepared' : 'applied',
 			});

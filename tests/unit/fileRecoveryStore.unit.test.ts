@@ -16,7 +16,11 @@ import { open, type FileHandle } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { type RunJournal, WorkspaceBusyError } from '../../src/recovery/domain/recoveryStore.ts';
+import {
+	historyStart,
+	type RunJournal,
+	WorkspaceBusyError,
+} from '../../src/recovery/domain/recoveryStore.ts';
 import { UnknownRunError } from '../../src/recovery/domain/runTree.ts';
 import {
 	defaultStateDirectory,
@@ -480,6 +484,97 @@ describe('FileRecoveryStore', () => {
 			await expect(store.listRuns()).resolves.toMatchObject({
 				runs: [{ runId: dead.runId }, { runId: next.runId, parentRunId: dead.runId }],
 			});
+		});
+
+		it('records what a command an interrupted run was observing changed in the files it captured', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const dead = await store.startRun();
+			const file = async (name: string, content: string) => {
+				const path = join(root, name);
+				writeFileSync(path, content);
+				chmodSync(path, 0o644);
+				return {
+					path,
+					state: {
+						exists: true,
+						hash: await dead.saveContent(Buffer.from(content)),
+						mode: 0o644,
+					} as const,
+				};
+			};
+			const formatted = await file('formatted.txt', 'a ;\n');
+			const deleted = await file('deleted.txt', 'gone\n');
+			const untouched = await file('untouched.txt', 'same\n');
+			const manifest = {
+				files: Object.fromEntries(
+					[formatted, deleted, untouched].map(({ path, state }) => [path, state]),
+				),
+			};
+			await dead.observe(await dead.saveContent(Buffer.from(JSON.stringify(manifest))), 'format');
+			// The command ran, and the process died before comparing the files.
+			writeFileSync(formatted.path, 'a;\n');
+			rmSync(deleted.path);
+			writeFileSync(join(root, 'created.txt'), 'new\n');
+			kill(dead);
+
+			const next = await store.startRun();
+			await next.finish('completed');
+
+			const { entries } = await store.readRun(dead.runId);
+			expect(entries).toMatchObject([
+				{ path: formatted.path, before: formatted.state, status: 'applied', observedBy: 'format' },
+				{ path: deleted.path, after: absent, status: 'applied', observedBy: 'format' },
+			]);
+			// A file it created was never captured, so the settled run cannot know of it.
+			expect(entries).toHaveLength(2);
+			await store.goTo(historyStart);
+			expect(readFileSync(formatted.path, 'utf8')).toBe('a ;\n');
+			expect(readFileSync(deleted.path, 'utf8')).toBe('gone\n');
+		});
+
+		it('leaves alone a file the run recorded itself after its observation began', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const dead = await store.startRun();
+			const path = join(root, 'a.txt');
+			writeFileSync(path, 'a ;\n');
+			chmodSync(path, 0o644);
+			const state = async (content: string) =>
+				({
+					exists: true,
+					hash: await dead.saveContent(Buffer.from(content)),
+					mode: 0o644,
+				}) as const;
+			const before = await state('a ;\n');
+			await dead.observe(
+				await dead.saveContent(Buffer.from(JSON.stringify({ files: { [path]: before } }))),
+				'format',
+			);
+			// The command ran, and the run had recorded this file before it died.
+			writeFileSync(path, 'a;\n');
+			const after = await state('a;\n');
+			await dead.applied(await dead.prepare({ path, before, after, observedBy: 'format' }));
+			kill(dead);
+
+			const next = await store.startRun();
+			await next.finish('completed');
+
+			const { entries } = await store.readRun(dead.runId);
+			expect(entries).toHaveLength(1);
+			expect(entries[0]).toMatchObject({ before, after, status: 'applied' });
+		});
+
+		it('settles an observation whose manifest was never stored as one that saw nothing', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const dead = await store.startRun();
+			await dead.observe('0'.repeat(64), 'format');
+			expect(dead.changed).toBe(true);
+			kill(dead);
+
+			const next = await store.startRun();
+			await next.finish('completed');
+
+			// It changed nothing it recorded, so it left the history.
+			await expect(store.listRuns()).resolves.toEqual({ runs: [] });
 		});
 
 		it('keeps a whole last line a crash left without its newline when it settles a run', async () => {

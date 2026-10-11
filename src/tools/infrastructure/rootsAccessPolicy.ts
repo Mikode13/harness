@@ -209,6 +209,18 @@ export class RootsAccessPolicy implements AccessPolicy {
 		return !this.isOpened(absolute, 'read') && this.isSecret(absolute, absolute);
 	}
 
+	/**
+	 * Whether a command's checkpoint leaves a file out, by its path alone: it is outside every
+	 * `write` root, protected, or a secret the host did not open for writing. Such a file is
+	 * neither copied before a command nor recorded after it. `absolute` is a real path.
+	 */
+	closedToWriting(absolute: string): boolean {
+		const root = this.rootOf(absolute);
+		if (root?.access !== 'write') return true;
+		if (this.isProtected(absolute, absolute)) return true;
+		return !this.isOpened(absolute, 'write') && this.isSecret(absolute, absolute);
+	}
+
 	private get base(): string {
 		return this.roots[0]?.path ?? '';
 	}

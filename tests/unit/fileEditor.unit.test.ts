@@ -376,6 +376,9 @@ describe('FileEditor', () => {
 						prepare: change => journal.prepare(change),
 						applied: sequence => journal.applied(sequence),
 						abandoned: sequence => journal.abandoned(sequence),
+						observe: (manifest, by) => journal.observe(manifest, by),
+						observed: (sequence, measure) => journal.observed(sequence, measure),
+						storedBytes: 0,
 						finish: status => journal.finish(status),
 					};
 					const result = { ...wrapped, ...override(wrapped) };

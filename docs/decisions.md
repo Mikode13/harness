@@ -1574,3 +1574,86 @@ Without a `write` root they only read. `WorkspaceOptions` lists the roots, each 
   The release needs `feat!:` and a `BREAKING CHANGE:` note, as #50 did when the planner and reviewer moved.
 
 - **A caller's own role prompt** replaces our instructions and guidance, but is still followed by the workspace's roots, as in `createLLMAgent`. The model needs them to name a file.
+
+## The executor runs configured commands by name, and each one's effects go to the history
+
+tags: #mikode-harness #tools #recovery
+
+**Decision:** with `commands`, `createFileTools` and `createLLMOrchestrator` give the executor `runCommand`, which runs one of the commands the consumer configured.
+
+- **The consumer declares each command in code** (`Commands`): a fixed `executable`, its `args`, a `cwd` inside a `write` root, extra `env`, and optional limits. It runs without a shell, so no argument is read as shell syntax.
+- **One tool, `runCommand`.** The model sends `{ command: { name, ...parameters } }`. Its schema is a union of one object per command, each with that command's parameters, and strict mode accepts it.
+- **The model fills only typed parameters,** placed among the fixed arguments:
+  - `paths`: each one checked by the access policy for reading, then given relative to the command's `cwd`. A path that would read as a flag is given as `./` and its name.
+  - `choice`: one of the values the consumer listed, which may be flags.
+  - `text`: a value that matches the consumer's pattern whole, at most 1,000 characters, and never starting with `-`.
+- **A small environment.** A command inherits only `PATH`, `HOME`, `TMPDIR`, `USER`, `SHELL`, `LANG` and `LC_*`, plus the variables its definition sets. The provider keys never reach it.
+- **Limits.** A command stops after 10 minutes by default; the model reads the last 16 KB of its output, standard output and error together. Its process group is asked to stop with `SIGTERM`, then killed after 5 seconds. What it left running in its group is stopped when it ends too. The group is confirmed gone by asking the system, never assumed.
+- **Approval.** Every call is `destructive`, so it asks the approver unless `autoApprove`. `ApprovalRequest.command` shows the program, its arguments and its `cwd` as they will run. The CLI shows that line and remembers "always" per command name, not for every command.
+- **A checkpoint around each command.** Formatters and tests write without our tools, so:
+  1. Before it runs, every covered file is read and stored by content hash, with a manifest of them. The journal records an observation that names the manifest. If any of that fails, the command does not run.
+  2. After it ends, the covered files are listed and read again. Each one that differs is recorded as its own change, `observedBy` the command, and the observation is closed with what it cost: files, bytes read, new bytes stored and time.
+  3. This first version reads and hashes everything both times, trusting neither size nor modification time. The cost is kept with each observation, to measure before optimizing.
+- **Coverage.** The covered files are those of the `write` roots that `.gitignore` does not exclude, tracked or not, less what the policy closes to writing by name: protected paths and secrets the host did not open for writing. Ignored files such as `node_modules`, files outside the roots, files over 64 MB, git history, the network and remote services are not covered. `showChanges` marks a change seen around a command apart from one a tool journaled.
+- **Never a false completion.**
+  - A timeout fails the call with its report.
+  - A cancellation records what changed, then ends as the cancellation.
+  - A program that cannot start reports that nothing ran.
+  - When the group cannot be confirmed gone, what changed so far is recorded, the observation stays open, writing stops for the run, and the call fails.
+- **An interrupted observation.** If the process dies while a command runs, the next run settles it: each file of the manifest that changed since is recorded as changed by that command. A file the command created was never in the manifest, and is missed.
+- **If the harness exits while a command runs,** as on an uncaught exception, the command's group is killed on the way out. A harness killed by a signal gets no such chance, and the command runs on until it ends.
+- **Not on Windows yet.** There is no process group to stop there, so `runCommand` cannot be built on Windows.
+- **The CLI** reads its commands from `$XDG_CONFIG_HOME/mikode-harness/commands.json`, or `~/.config/mikode-harness/commands.json`, keyed by each repository's real path. It refuses that file inside the repository, where the agent could rewrite it.
+
+**Context:** #72, the last feature of #52. The issue and the [v2 plan](https://github.com/Mikode13/harness/issues/52#issuecomment-5984397266) decided: no shell, typed arguments, a small environment, bounded duration and output, stopping the whole group, the checkpoint, approval, and no sandbox. The user then chose:
+
+- commands declared in code, and for the CLI a file outside the repository;
+- one `runCommand` tool rather than one tool per command;
+- `paths`, `choice` and `text` parameters;
+- 10 minutes and 16 KB as the defaults;
+- an inherited base plus declared variables;
+- a typed `command` field on `ApprovalRequest`;
+- Windows left unsupported for now.
+
+**Alternatives considered:**
+
+- **A configuration file inside the repository.** It would travel with the repository, but a cloned repository, or the agent, would then decide what runs. Rejected by the user.
+- **One tool per command.** Each would have a simpler schema, and "always" by tool name would already mean one command. The user chose one tool, which keeps the tool list fixed.
+- **Only paths, or paths and choices.** Safer, but no test filter. The user chose to add patterned text, never starting with `-`.
+- **Only declared variables, or inheriting more by name.** The first makes every command repeat `PATH` and `HOME`. The second would make the key protection depend on a name filter. Rejected by the user.
+- **A generic `description` on `ApprovalRequest`.** More general, but text a consumer cannot reason about. Rejected by the user.
+- **`taskkill /T /F` or Job Objects on Windows.** The first misses a process that leaves the tree; the second needs native code. Deferred.
+- **Trusting size and modification time** to skip unchanged files. Faster, but a command can change a file and keep both. Deferred until the measurements say it is needed.
+- **Keeping the last capture's contents** instead of freeing them, so the next command only reads and hashes. Much faster after the first command, at the cost of a lasting copy of the covered files in the state directory. The user chose to measure in #73 first.
+- **One sync at the end of a capture,** instead of one per stored content. Faster, but Node has no `syncfs`, so it would weaken the store's rule that nothing returns before it is on disk. Rejected by the user for now.
+
+**Consequences:**
+
+- Each command reads every covered file twice, and stores each one it captures, with a sync, unless the store already holds that content. Measured on this repository (166 files, 1.4 MB, macOS), capturing took about 1.4 s and comparing 50 ms. Capturing runs 16 files at a time. A run that changed nothing frees what it captured, so the next command stores it all again. The cost of each observation is in the journal, to decide on.
+- Folders a command creates are not recorded, so undoing it removes the files in them and leaves the folders.
+- A command that writes outside the covered files, such as to `node_modules`, a build folder or a remote service, cannot be undone by the history.
+- The user's edits made while a command runs are recorded as the command's.
+- A command counts as one change towards the run's limit of 500, however many files it changes.
+- `RunJournal` gains `observe`, `observed` and `storedBytes`, and `JournalEntry` gains `observedBy`. Journals written before read as before.
+
+## Configured commands are trusted, not sandboxed
+
+tags: #mikode-harness #tools #security
+
+**Decision:** a configured command runs as the user, with everything the user's account can reach. The harness bounds how it is started, how long it runs and what it is given, but does not isolate it.
+
+- **A test runs the repository's code,** including code the model has just written. It can read any file the user can, secrets included, write outside the roots and reach the network. The access policy of the file tools does not apply to it, and cannot be made to.
+- **What the harness does control:** which programs run, with which arguments, in which folder, with which environment, for how long, and that the user approves each one. It also records what the command changed in the covered files.
+- **The consumer chooses the commands,** and with them how much to trust the repository. The model only picks one by name and fills its declared parameters.
+
+**Context:** decided by the user on 2026-10-06, in #52. Pi's documented argument applies: a partial sandbox would be read as a security boundary it is not, and anyone relying on it would trust it for more than it gives.
+
+**Alternatives considered:**
+
+- **An OS sandbox** (`sandbox-exec` on macOS, namespaces or seccomp on Linux). It differs per platform, and is deprecated on macOS. Toolchains need wide access to work, so a sandbox that lets them run would leave most of the risk.
+- **Running the commands in a container.** A real boundary, but it needs a container runtime, and the user's toolchain set up inside it. That is out of scope for the harness.
+
+**Consequences:**
+
+- The docs say plainly that commands are trusted execution, and that their safety is the consumer's choice of commands and the user's approval.
+- The secret rules of the file tools do not cover commands. A command can print a secret, which the model then reads in its output.
