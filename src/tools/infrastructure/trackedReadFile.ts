@@ -68,6 +68,7 @@ export async function readTracked({
 	const shown = all.slice(from - 1, from - 1 + count);
 	reads.record(target.absolute, createHash('sha256').update(content).digest('hex'));
 	return renderLines({
+		path,
 		lines: shown,
 		from,
 		totalLines: all.length,

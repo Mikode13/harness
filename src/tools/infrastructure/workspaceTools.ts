@@ -2,13 +2,13 @@ import { z } from 'zod';
 import type { Tool } from '../domain/tool.ts';
 import type { Workspace } from '../domain/workspace.ts';
 import { defineTool } from './defineTool.ts';
+import { cutLine, maxLineLength } from '../domain/lineLength.ts';
 
 // What one call may return. The model can ask for fewer lines, never for more.
 const maxFiles = 200;
 const maxMatches = 100;
 const maxLines = 200;
 // One minified line can be larger than everything else the model has read.
-const maxLineLength = 300;
 
 // Strict mode has no optional fields: an argument the model may leave out is nullable.
 const scope = {
@@ -21,21 +21,19 @@ const scope = {
 		),
 };
 
-/** One line as the model reads it: a minified bundle on a single line would flood its context. */
-function cutLine(text: string): string {
-	return text.length > maxLineLength ? `${text.slice(0, maxLineLength)}…` : text;
-}
-
 /**
  * Lines of a file as the model reads them: each numbered, a line too long cut, and a notice for
  * what was cut or lies beyond.
  */
 export function renderLines({
+	path,
 	lines,
 	from,
 	totalLines,
 	truncated,
 }: {
+	/** The file, which decides how long a line may be. */
+	path: string;
 	lines: string[];
 	from: number;
 	totalLines: number;
@@ -46,13 +44,12 @@ export function renderLines({
 		return `No lines from ${String(from)}: the file has ${String(totalLines)} lines.`;
 	}
 
-	const numbered = lines.map((text, index) => `${String(from + index)}: ${cutLine(text)}`);
-	const cut = lines.filter(text => text.length > maxLineLength).length;
+	const numbered = lines.map((text, index) => `${String(from + index)}: ${cutLine(path, text)}`);
+	const max = maxLineLength(path);
+	const cut = lines.filter(text => text.length > max).length;
 	const notices = [
 		...(cut > 0
-			? [
-					`[${String(cut)} lines were longer than ${String(maxLineLength)} characters and were cut.]`,
-				]
+			? [`[${String(cut)} lines were longer than ${String(max)} characters and were cut.]`]
 			: []),
 		...(truncated
 			? [
@@ -152,7 +149,7 @@ export function createWorkspaceTools(workspace: Workspace): Tool[] {
 				}
 
 				const results = matches.map(
-					match => `${match.path}:${String(match.line)}: ${cutLine(match.text)}`,
+					match => `${match.path}:${String(match.line)}: ${cutLine(match.path, match.text)}`,
 				);
 
 				const notice = truncated
@@ -174,7 +171,7 @@ export function createWorkspaceTools(workspace: Workspace): Tool[] {
 					{ path, fromLine: from, lineCount: count },
 					signal,
 				);
-				return renderLines({ lines, from, totalLines, truncated });
+				return renderLines({ path, lines, from, totalLines, truncated });
 			},
 		}),
 	];
