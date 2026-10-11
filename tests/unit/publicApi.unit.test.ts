@@ -49,7 +49,9 @@ describe('public API', () => {
 			'UnrecoverableError',
 			'WorkspaceBusyError',
 			'WorkspaceMovedError',
+			'agentModels',
 			'agentProviders',
+			'agentReasoningEfforts',
 			'createAgent',
 			'createFileTools',
 			'createHistory',
@@ -62,6 +64,10 @@ describe('public API', () => {
 			'historyStart',
 			'isAbortError',
 			'isAgentProvider',
+			'isModelOf',
+			'isReasoningEffortOf',
+			'llmModels',
+			'llmReasoningEfforts',
 			'rememberApprovals',
 		]);
 	});

@@ -163,6 +163,37 @@ reasoning effort the chosen provider does not support throws
 `UnrecoverableError` if the Codex CLI binary cannot be found, which happens when
 optional dependencies were skipped at install time.
 
+When model and effort names come from an untyped source such as command-line input, use the
+provider-specific capability table for the path you are building. The narrowers preserve the
+literal type, so no cast is needed:
+
+```ts
+import {
+	agentModels,
+	agentReasoningEfforts,
+	isAgentProvider,
+	isModelOf,
+	isReasoningEffortOf,
+} from '@mikode13/harness';
+
+function agentOptions(providerInput: string, modelInput: string, effortInput: string) {
+	if (!isAgentProvider(providerInput)) throw new Error('Unknown provider');
+
+	const models = agentModels[providerInput];
+	const efforts = agentReasoningEfforts[providerInput];
+	if (!isModelOf(models, modelInput)) throw new Error('Unsupported model');
+	if (!isReasoningEffortOf(efforts, effortInput)) throw new Error('Unsupported effort');
+
+	return { provider: providerInput, model: modelInput, reasoningEffort: effortInput };
+}
+```
+
+Use `llmModels` and `llmReasoningEfforts` for `createLLMAgent` and
+`createLLMOrchestrator`. The Agent SDK and model API paths can expose different lists: for example,
+Codex accepts the `ultra` effort while the OpenAI model API list does not. A model being in a
+provider's list and an effort being in its list also does not guarantee that the particular pair
+is supported; the factory still rejects invalid combinations with `InvalidAgentConfigError`.
+
 ### Authentication
 
 The two paths authenticate differently:

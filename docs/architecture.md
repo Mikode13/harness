@@ -110,7 +110,10 @@ why it is the only place that knows every provider.
 and `Tokens` types, the approval contract (`rememberApprovals` and the `Approver`,
 `ApprovalRequest`, `ApprovalDecision`, `RememberableDecision`, `ToolRisk` and `CommandLine` types), the three
 failure types an agent rejects with, `isAbortError`, `isAgentProvider`, `agentProviders`, and the
-option and model types. For the model-backed agent's tools it also exports the `Tool`,
+provider/path capability tables (`agentModels`, `agentReasoningEfforts`, `llmModels` and
+`llmReasoningEfforts`) with their `isModelOf` and `isReasoningEffortOf` narrowers. The capability
+tables expose the exact accepted tuples for each provider on the Agent SDK and model API paths;
+the option and model types remain available too. For the model-backed agent's tools it also exports the `Tool`,
 `ToolDefinition`, `JSONSchema`, `Workspace` and `TextMatch` types, `defineTool`,
 `createWorkspace` and `createWorkspaceTools`. For agents that change files it exports
 `createFileTools` and the `FileTool`, `WorkspaceOptions`, `WorkspaceRoot`, `SecretRules` and
@@ -147,9 +150,14 @@ Four contracts have rules of their own:
 - **`ProgressEvent` grows in minor releases.** Consumers are told to render the types they
   know and ignore the rest, so a new type must never carry information a consumer needs to be
   correct. The result of a run travels in `AgentResponse`; progress is narration.
-- **A model or reasoning effort is the engine's to accept.** Each engine constructor rejects
-  what its provider does not support with `InvalidAgentConfigError`, while the agent is being
-  built. The factory does not validate them, so adding a model is a change in one file.
+- **A model or reasoning effort is the engine's to accept.** The public capability tables describe
+  the accepted models and efforts for each provider separately on the Agent SDK and model API
+  paths. `isModelOf` and `isReasoningEffortOf` narrow untyped input against one selected table
+  entry, but membership in each list does not promise that every model/effort combination is
+  valid. Each engine or model API client remains the authoritative runtime boundary and rejects
+  what its provider or model does not support with `InvalidAgentConfigError`, while the agent is
+  being built. The factory does not replace that validation, so values that bypass the narrowers
+  still fail there.
 
 External integrations are `@anthropic-ai/claude-agent-sdk` and `@openai/codex-sdk`, each
 reached only from its own engine, `openai` and `@anthropic-ai/sdk`, each reached only from its own `LLMClient`, and `zod`, used by
@@ -176,7 +184,8 @@ executor's writes are one run of the history, and names it in its response. It s
 without a system prompt gets its instructions at the head of every prompt from `InstructedAgent`. The Agent SDK path stays the default: `createAgent`
 and `createOrchestrator` use the provider's own login, while the model API path needs
 `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` and bills per token. Both paths name a provider by its company, `'anthropic'` or `'openai'`, and
-take the same model and effort names, so one role table serves both.
+take the same model and effort vocabulary where it overlaps, so one role table serves both; the
+public capability tables make the path-specific differences explicit.
 
 ## Important flows
 

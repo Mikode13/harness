@@ -29,6 +29,14 @@ export {
 	type ReasoningEffort,
 } from './factory/infrastructure/types.ts';
 export {
+	agentModels,
+	agentReasoningEfforts,
+	isModelOf,
+	isReasoningEffortOf,
+	llmModels,
+	llmReasoningEfforts,
+} from './factory/infrastructure/providerCapabilities.ts';
+export {
 	type Agent,
 	type AgentResponse,
 	type Callback,
