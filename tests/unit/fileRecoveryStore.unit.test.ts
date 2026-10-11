@@ -532,6 +532,37 @@ describe('FileRecoveryStore', () => {
 			expect(readFileSync(deleted.path, 'utf8')).toBe('gone\n');
 		});
 
+		it('leaves alone a file the run recorded itself after its observation began', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const dead = await store.startRun();
+			const path = join(root, 'a.txt');
+			writeFileSync(path, 'a ;\n');
+			chmodSync(path, 0o644);
+			const state = async (content: string) =>
+				({
+					exists: true,
+					hash: await dead.saveContent(Buffer.from(content)),
+					mode: 0o644,
+				}) as const;
+			const before = await state('a ;\n');
+			await dead.observe(
+				await dead.saveContent(Buffer.from(JSON.stringify({ files: { [path]: before } }))),
+				'format',
+			);
+			// The command ran, and the run had recorded this file before it died.
+			writeFileSync(path, 'a;\n');
+			const after = await state('a;\n');
+			await dead.applied(await dead.prepare({ path, before, after, observedBy: 'format' }));
+			kill(dead);
+
+			const next = await store.startRun();
+			await next.finish('completed');
+
+			const { entries } = await store.readRun(dead.runId);
+			expect(entries).toHaveLength(1);
+			expect(entries[0]).toMatchObject({ before, after, status: 'applied' });
+		});
+
 		it('settles an observation whose manifest was never stored as one that saw nothing', async () => {
 			const store = await FileRecoveryStore.open({ root, directory });
 			const dead = await store.startRun();

@@ -89,6 +89,31 @@ describe('validateCommands', () => {
 			},
 			/unknown type/,
 		],
+		// A configuration read from JSON can hold anything.
+		['a command that is not an object', { test: null } as never, /must be an object/],
+		['args that are not a list', { test: { ...test, args: 'test' } } as never, /args to be a list/],
+		['env that is not an object', { test: { ...test, env: ['A=1'] } } as never, /env to map/],
+		['a cwd that is not text', { test: { ...test, cwd: 1 } } as never, /invalid cwd/],
+		[
+			'a timeout that is not a number',
+			{ test: { ...test, timeoutMs: '10' } } as never,
+			/timeoutMs/,
+		],
+		[
+			'an argument that is neither text nor a parameter',
+			{ test: { ...test, args: [1] } } as never,
+			/neither text nor a parameter/,
+		],
+		[
+			'a required flag that is not a boolean',
+			{
+				test: {
+					...test,
+					args: [{ type: 'text', name: 'f', description: 'x', pattern: '.', required: 'yes' }],
+				},
+			} as never,
+			/required to be true or false/,
+		],
 	])('refuses %s', (_, commands, message) => {
 		const error = invalid(commands);
 		expect(error).toBeInstanceOf(InvalidAgentConfigError);

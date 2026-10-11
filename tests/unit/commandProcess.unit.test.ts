@@ -1,6 +1,8 @@
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runCommandProcess } from '../../src/tools/infrastructure/commandProcess.ts';
@@ -126,6 +128,29 @@ describe('runCommandProcess', () => {
 
 		expect(result).toMatchObject({ outcome: 'exited', exitCode: 0, stopped: true });
 		expect(isAlive(await pidIn('child'))).toBe(false);
+	});
+
+	it('kills a command still running when this process exits', async () => {
+		const runner = join(folder, 'runner.ts');
+		const module = resolve('src/tools/infrastructure/commandProcess.ts');
+		writeFileSync(
+			runner,
+			[
+				`import { runCommandProcess } from ${JSON.stringify(module)};`,
+				`void runCommandProcess('sh', ['-c', 'sleep 30 & echo $! > child; wait'], { cwd: ${JSON.stringify(folder)}, env: { PATH: process.env.PATH }, timeoutMs: 60000, outputBytes: 100, signal: new AbortController().signal });`,
+				// Exits as an uncaught failure would, with the command still running.
+				`setTimeout(() => process.exit(1), 300);`,
+			].join('\n'),
+		);
+
+		await promisify(execFile)(process.execPath, ['--experimental-strip-types', runner]).catch(
+			() => undefined,
+		);
+
+		const child = await pidIn('child');
+		// Killed on the way out: give the system a moment to reap it.
+		for (let attempt = 0; attempt < 50 && isAlive(child); attempt++) await delay(20);
+		expect(isAlive(child)).toBe(false);
 	});
 
 	it('rejects, having run nothing, when the program does not exist', async () => {

@@ -74,6 +74,7 @@ export function runCommandProcess(
 			detached: true,
 			stdio: ['ignore', 'pipe', 'pipe'],
 		});
+		if (child.pid !== undefined) watchForExit(child.pid);
 		const tail = new OutputTail(outputBytes);
 		let outcome: CommandProcessResult['outcome'] = 'exited';
 		let stopping: Promise<boolean> | undefined;
@@ -96,24 +97,6 @@ export function runCommandProcess(
 			tail.push(chunk);
 		});
 
-		let finished = false;
-		const finish = async (stopped: boolean) => {
-			if (finished) return;
-			finished = true;
-			await Promise.race([streamsClosed, delay(drainMs)]);
-			child.stdout.destroy();
-			child.stderr.destroy();
-			resolve({
-				outcome,
-				exitCode: exit?.code ?? null,
-				signal: exit?.signal ?? null,
-				output: tail.text(),
-				printedBytes: tail.total,
-				durationMs: Math.round(performance.now() - started),
-				stopped,
-			});
-		};
-
 		const stop = (why: 'timedOut' | 'cancelled') => {
 			if (exit || child.pid === undefined) return;
 			outcome = why;
@@ -135,6 +118,26 @@ export function runCommandProcess(
 			signal.removeEventListener('abort', onAbort);
 		};
 
+		let finished = false;
+		const finish = async (stopped: boolean) => {
+			if (finished) return;
+			finished = true;
+			detach();
+			if (stopped && child.pid !== undefined) liveGroups.delete(child.pid);
+			await Promise.race([streamsClosed, delay(drainMs)]);
+			child.stdout.destroy();
+			child.stderr.destroy();
+			resolve({
+				outcome,
+				exitCode: exit?.code ?? null,
+				signal: exit?.signal ?? null,
+				output: tail.text(),
+				printedBytes: tail.total,
+				durationMs: Math.round(performance.now() - started),
+				stopped,
+			});
+		};
+
 		child.once('error', error => {
 			// Only a program that never started: nothing here signals the child through Node.
 			if (child.pid !== undefined) return;
@@ -150,6 +153,24 @@ export function runCommandProcess(
 				stopping ?? (pid === undefined ? Promise.resolve(true) : stopGroup(pid, gracePeriodMs))
 			).then(finish);
 		});
+	});
+}
+
+/**
+ * The groups of the commands still running. If this process exits while one runs, as on an
+ * uncaught exception, each is killed on the way out: nothing would be left to stop it or
+ * record what it changed. A process killed by a signal gets no such chance, and its commands
+ * then run on until they end.
+ */
+const liveGroups = new Set<number>();
+let exitHookInstalled = false;
+
+function watchForExit(pgid: number): void {
+	liveGroups.add(pgid);
+	if (exitHookInstalled) return;
+	exitHookInstalled = true;
+	process.once('exit', () => {
+		for (const group of liveGroups) signalGroup(group, 'SIGKILL');
 	});
 }
 

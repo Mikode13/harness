@@ -75,7 +75,9 @@ export type ParameterValue = string[] | string | null;
  * @throws {InvalidAgentConfigError} for the first thing that is wrong.
  */
 export function validateCommands(commands: Commands): void {
-	const entries = Object.entries(commands);
+	// Unknown throughout: the configuration may come from a JSON file, whatever its type says.
+	if (!isRecord(commands)) throw new InvalidAgentConfigError('Commands must be an object');
+	const entries = Object.entries(commands as Record<string, unknown>);
 	if (entries.length === 0) throw new InvalidAgentConfigError('No command is configured');
 	for (const [name, definition] of entries) {
 		const fail = (problem: string) => {
@@ -84,41 +86,53 @@ export function validateCommands(commands: Commands): void {
 		if (!namePattern.test(name)) {
 			fail('needs a name of letters, digits, "-" and "_", starting with a letter');
 		}
-		if (typeof definition.description !== 'string' || definition.description.trim() === '') {
+		if (!isRecord(definition)) fail('must be an object');
+		const { description, executable, cwd, timeoutMs, outputBytes, env, args } =
+			definition as Record<string, unknown>;
+		if (typeof description !== 'string' || description.trim() === '') {
 			fail('needs a description');
 		}
-		if (typeof definition.executable !== 'string' || !isArgument(definition.executable)) {
-			fail('needs an executable');
+		if (typeof executable !== 'string' || !isArgument(executable)) fail('needs an executable');
+		if (cwd !== undefined && (typeof cwd !== 'string' || !isArgument(cwd))) {
+			fail('has an invalid cwd');
 		}
-		if (definition.cwd !== undefined && !isArgument(definition.cwd)) fail('has an invalid cwd');
-		checkLimit(definition.timeoutMs, maxTimeoutMs, 'timeoutMs', fail);
-		checkLimit(definition.outputBytes, maxOutputBytes, 'outputBytes', fail);
-		for (const [variable, value] of Object.entries(definition.env ?? {})) {
+		checkLimit(timeoutMs, maxTimeoutMs, 'timeoutMs', fail);
+		checkLimit(outputBytes, maxOutputBytes, 'outputBytes', fail);
+		if (env !== undefined && !isRecord(env)) fail('needs env to map names to values');
+		for (const [variable, value] of Object.entries((env ?? {}) as Record<string, unknown>)) {
 			if (!variablePattern.test(variable)) fail(`sets an invalid variable name "${variable}"`);
-			if (typeof value !== 'string' || value.includes('\0'))
+			if (typeof value !== 'string' || value.includes('\0')) {
 				fail(`sets "${variable}" to a non-string`);
+			}
 		}
 
+		if (args !== undefined && !Array.isArray(args)) fail('needs args to be a list');
 		const seen = new Set<string>();
-		for (const argument of definition.args ?? []) {
+		for (const argument of (args ?? []) as unknown[]) {
 			if (typeof argument === 'string') {
-				if (!isArgument(argument, { allowEmpty: true }))
+				if (!isArgument(argument, { allowEmpty: true })) {
 					fail('has an argument with a NUL character');
+				}
 				continue;
 			}
-			checkParameter(argument, seen, fail);
+			if (!isRecord(argument)) fail('has an argument that is neither text nor a parameter');
+			checkParameter(argument as CommandParameter, seen, fail);
 		}
 	}
 }
 
+function isRecord(value: unknown): boolean {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function checkLimit(
-	value: number | undefined,
+	value: unknown,
 	max: number,
 	field: string,
 	fail: (problem: string) => never,
 ): void {
 	if (value === undefined) return;
-	if (!Number.isInteger(value) || value <= 0 || value > max) {
+	if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0 || value > max) {
 		fail(`needs ${field} to be a whole number from 1 to ${String(max)}`);
 	}
 }
@@ -139,6 +153,10 @@ function checkParameter(
 	seen.add(name);
 	if (typeof parameter.description !== 'string' || parameter.description.trim() === '') {
 		fail(`needs a description for the parameter "${name}"`);
+	}
+	const { required } = parameter as { required?: unknown };
+	if (required !== undefined && typeof required !== 'boolean') {
+		fail(`needs required to be true or false for the parameter "${name}"`);
 	}
 
 	switch (parameter.type) {

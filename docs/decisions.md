@@ -1601,6 +1601,7 @@ tags: #mikode-harness #tools #recovery
   - A program that cannot start reports that nothing ran.
   - When the group cannot be confirmed gone, what changed so far is recorded, the observation stays open, writing stops for the run, and the call fails.
 - **An interrupted observation.** If the process dies while a command runs, the next run settles it: each file of the manifest that changed since is recorded as changed by that command. A file the command created was never in the manifest, and is missed.
+- **If the harness exits while a command runs,** as on an uncaught exception, the command's group is killed on the way out. A harness killed by a signal gets no such chance, and the command runs on until it ends.
 - **Not on Windows yet.** There is no process group to stop there, so `runCommand` cannot be built on Windows.
 - **The CLI** reads its commands from `$XDG_CONFIG_HOME/mikode-harness/commands.json`, or `~/.config/mikode-harness/commands.json`, keyed by each repository's real path. It refuses that file inside the repository, where the agent could rewrite it.
 
@@ -1626,7 +1627,8 @@ tags: #mikode-harness #tools #recovery
 
 **Consequences:**
 
-- Each command reads every covered file twice. On a large repository that is the slowest part of a short command, and its cost is in the journal to decide on.
+- Each command reads every covered file twice, and stores each one it captures, with a sync, unless the store already holds that content. Measured on this repository (166 files, 1.4 MB, macOS), capturing took about 1.4 s and comparing 50 ms. Capturing runs 16 files at a time. A run that changed nothing frees what it captured, so the next command stores it all again. The cost of each observation is in the journal, to decide on.
+- Folders a command creates are not recorded, so undoing it removes the files in them and leaves the folders.
 - A command that writes outside the covered files, such as to `node_modules`, a build folder or a remote service, cannot be undone by the history.
 - The user's edits made while a command runs are recorded as the command's.
 - A command counts as one change towards the run's limit of 500, however many files it changes.

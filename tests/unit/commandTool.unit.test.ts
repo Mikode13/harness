@@ -7,6 +7,7 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
+	truncateSync,
 	writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -169,6 +170,23 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			.filter(entry => entry.isFile())
 			.map(entry => readFileSync(join(entry.parentPath, entry.name), 'utf8'));
 		expect(stored.some(content => content.includes('TOKEN=secret'))).toBe(false);
+	});
+
+	it('names only what the command made uncopyable, not a large file it left alone', async () => {
+		// Sparse: over the size limit without writing 64 MB.
+		write('big.bin', '');
+		truncateSync(join(root, 'big.bin'), 65 * 1024 * 1024);
+		const opened = await open();
+		const tool = await commandToolFor(opened, {
+			swap: shell('rm src/b.ts && mkdir src/b.ts'),
+		});
+
+		const { output = '' } = await call(tool as PreparingTool, { command: { name: 'swap' } });
+
+		expect(output).toContain(
+			'Not recorded, because the history cannot copy them (a folder, a link, or a file over 64 MB): src/b.ts.',
+		);
+		expect(output).not.toContain('big.bin');
 	});
 
 	it('gives the command no provider key, only the few variables it inherits and its own', async () => {

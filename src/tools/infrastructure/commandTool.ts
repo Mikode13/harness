@@ -219,7 +219,7 @@ export async function createCommandTool({
 		);
 		if (unrecorded.length > 0) {
 			lines.push(
-				`Not recorded, because they are no longer files the history can copy: ${unrecorded.map(shown).join(', ')}.`,
+				`Not recorded, because the history cannot copy them (a folder, a link, or a file over 64 MB): ${unrecorded.map(shown).join(', ')}.`,
 			);
 		}
 
