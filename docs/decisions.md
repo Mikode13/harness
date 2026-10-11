@@ -1693,10 +1693,17 @@ The user chose:
 
 - **Read-only commands for every role, without a checkpoint.** Cheaper, but "read only" would be the consumer's promise, which the harness cannot check. Rejected by the user.
 - **A final call without tools at the step limit,** to end with a summary. It would change what `maxSteps` means. Not chosen.
-- **Comparing the results of repeated calls too.** It would let a model poll something that changes, but a stuck model gets the same results anyway. Not needed for now.
+- **Comparing the results of repeated calls too.** It would let a model poll something that changes, but a stuck model gets the same results anyway. The user kept the rule on calls alone; see when that stops being enough under Consequences.
+- **Counting calls to the same tool, whatever their input.** It would catch a loop that changes its input a little each time, but reading five files, or applying five patches, in a row is ordinary work. A threshold high enough to spare that would catch little the step limit does not.
+- **A `repeatable` flag on `Tool`,** to exempt a tool from the rule. Explicit, but a field more in the public contract, which a consumer has to know about. Not needed while the rule only catches identical calls.
 
 **Consequences:**
 
 - A planner or reviewer command shows in the history like the executor's, since every role shares the run.
 - A run that loops spends at most five of its steps on the loop.
+- **Where the loop rule would stop a run wrongly, and how to fix it.** It stops five identical calls in a row, by tool and input.
+  - A tool designed well passes its position as input, such as a cursor or `fromLine`, so paging through results never trips it. The harness's own tools do.
+  - **A tool that keeps hidden state,** such as `nextPage({})` with an internal cursor, would trip it while still making progress. The fix belongs in that tool: take the cursor as input.
+  - **Polling something outside,** such as a command that reports CI status until it is done, sends the same call while the answer changes. Today that is a poll with no pause, since there is no tool to wait, and stopping it is no loss.
+  - If a waiting tool is added, or polling becomes something a role should do, compare the results too. Then a run stops only when the same call returns the same result five times in a row. Hash each step's results beside its calls in `RepeatedCalls`, in `llmAgent.ts`.
 - Changing the default from 25 to 50 changes behavior for every consumer that left `maxSteps` out, inside the breaking release of #52.
