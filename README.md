@@ -225,17 +225,16 @@ The two paths authenticate differently:
 
 - `createAgent` and `createOrchestrator` use the Agent SDKs, which use the login of
   the Codex CLI and of Claude Code, so a run counts against that subscription.
-- `createLLMAgent` and the planner and reviewer of `createLLMOrchestrator` call the
-  model APIs, which bill per token and need the key of each provider they use in
+- `createLLMAgent` and every role of `createLLMOrchestrator`, the executor included, call
+  the model APIs, which bill per token and need the key of each provider they use in
   the environment: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or both for the
   orchestrator's default roles. A missing OpenAI key fails when the agent is built; a missing
   Anthropic key fails its first run.
 
 The Claude Agent SDK
 [authenticates with `ANTHROPIC_API_KEY`](https://code.claude.com/docs/en/agent-sdk) whenever
-it is set, so with that key in the environment a Claude agent from `createAgent`, or the executor of
-`createLLMOrchestrator({ provider: 'anthropic' })`, bills the key instead of the
-subscription.
+it is set, so with that key in the environment a Claude agent from `createAgent` or `createOrchestrator`
+bills the key instead of the subscription.
 
 ### Agents that own their conversation
 
@@ -481,7 +480,7 @@ pnpm run dev
 ```
 
 The agents work on the repository root, which is the directory the script runs in.
-`pnpm run dev --llm` plans and reviews on the model APIs instead, through
+`pnpm run dev --llm` runs all three roles on the model APIs instead, through
 `createLLMOrchestrator`, and needs the API keys in the environment (see
 [Authentication](#authentication)).
 

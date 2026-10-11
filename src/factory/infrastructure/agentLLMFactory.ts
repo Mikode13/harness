@@ -140,13 +140,19 @@ const defaultRoleSteps: Record<OrchestratorRole, number> = {
 /**
  * Each role's step limit, from one number for all of them or a number per role.
  *
- * @throws {InvalidAgentConfigError} for a role that does not exist, which is a typo that would
- * otherwise leave that role on its default without a word.
+ * @throws {InvalidAgentConfigError} for a value that is neither, and for a role that does not
+ * exist, which is a typo that would otherwise leave that role on its default without a word.
  */
-function stepsPerRole(maxSteps: number | RoleSteps | undefined): Record<OrchestratorRole, number> {
+function stepsPerRole(maxSteps: unknown): Record<OrchestratorRole, number> {
 	if (maxSteps === undefined) return defaultRoleSteps;
 	if (typeof maxSteps === 'number') {
 		return { planner: maxSteps, executor: maxSteps, reviewer: maxSteps };
+	}
+	// Untyped input, such as the CLI's configuration file, can hold `null` or a list here.
+	if (typeof maxSteps !== 'object' || maxSteps === null || Array.isArray(maxSteps)) {
+		throw new InvalidAgentConfigError(
+			'maxSteps must be a number or an object of steps per role, such as { "executor": 120 }',
+		);
 	}
 	const unknown = Object.keys(maxSteps).filter(role => !(role in defaultRoleSteps));
 	if (unknown.length > 0) {

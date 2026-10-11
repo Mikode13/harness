@@ -1074,6 +1074,24 @@ describe('createLLMOrchestrator', () => {
 		).rejects.toThrow('maxSteps names roles that do not exist: exector');
 	});
 
+	it.each([
+		['null', null],
+		['a list', [100]],
+		['text', '100'],
+	])('refuses a step limit that is %s, as untyped input can give', async (_, maxSteps) => {
+		await expect(
+			createLLMOrchestrator({
+				workspace,
+				maxSteps: maxSteps as never,
+				logger: createLogger(),
+			}),
+		).rejects.toThrow(
+			new InvalidAgentConfigError(
+				'maxSteps must be a number or an object of steps per role, such as { "executor": 120 }',
+			),
+		);
+	});
+
 	it('rejects an unknown provider coming from untyped input', async () => {
 		await expect(
 			createLLMOrchestrator({ provider: 'astra' as AgentProvider, workspace }),
