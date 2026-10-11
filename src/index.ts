@@ -2,13 +2,21 @@ export type { ILogger } from './shared/domain/logger.ts';
 export {
 	createAgent,
 	createOrchestrator,
+	agentModels,
+	agentReasoningEfforts,
 	isAgentProvider,
+	isModelOf,
+	isReasoningEffortOf,
 	type CreateAgentOptions,
 } from './factory/infrastructure/agentFactory.ts';
 export {
 	createFileTools,
 	createLLMAgent,
 	createLLMOrchestrator,
+	isLLMModelOf,
+	isLLMReasoningEffortOf,
+	llmModels,
+	llmReasoningEfforts,
 	type CreateLLMAgentOptions,
 	type CreateLLMOrchestratorOptions,
 	type RoleSteps,

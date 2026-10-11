@@ -1,7 +1,15 @@
 import type { Agent } from '#src/agent/domain/agent';
 import { InvalidAgentConfigError } from '#src/shared/domain/errors';
-import { ClaudeAgent } from '#src/engines/claude/infrastructure/model/claudeAgent';
-import { CodexAgent } from '#src/engines/codex/infrastructure/model/codexAgent';
+import {
+	ClaudeAgent,
+	claudeModels,
+	claudeReasoningEfforts,
+} from '#src/engines/claude/infrastructure/model/claudeAgent';
+import {
+	CodexAgent,
+	codexModels,
+	codexReasoningEfforts,
+} from '#src/engines/codex/infrastructure/model/codexAgent';
 import { InstructedAgent } from '#src/orchestration/domain/model/instructedAgent';
 import {
 	executorInstructions,
@@ -24,6 +32,34 @@ import {
 
 export function isAgentProvider(value: string): value is AgentProvider {
 	return isOneOf(agentProviders, value);
+}
+
+/** The models each provider's Agent SDK accepts. */
+export const agentModels = {
+	anthropic: claudeModels,
+	openai: codexModels,
+} as const satisfies Readonly<Record<AgentProvider, readonly AgentModel[]>>;
+
+/** The reasoning efforts each provider's Agent SDK accepts. */
+export const agentReasoningEfforts = {
+	anthropic: claudeReasoningEfforts,
+	openai: codexReasoningEfforts,
+} as const satisfies Readonly<Record<AgentProvider, readonly ReasoningEffort[]>>;
+
+/** Narrows a model to one accepted by the selected provider's Agent SDK. */
+export function isModelOf<Provider extends AgentProvider>(
+	provider: Provider,
+	value: string,
+): value is (typeof agentModels)[Provider][number] {
+	return isOneOf(agentModels[provider], value);
+}
+
+/** Narrows a reasoning effort to one accepted by the selected provider's Agent SDK. */
+export function isReasoningEffortOf<Provider extends AgentProvider>(
+	provider: Provider,
+	value: string,
+): value is (typeof agentReasoningEfforts)[Provider][number] {
+	return isOneOf(agentReasoningEfforts[provider], value);
 }
 
 export interface CreateAgentOptions {

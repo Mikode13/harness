@@ -56,6 +56,11 @@ provider: it drives whatever `LLMClient` it is given.
 | `src/retry/`         | The decision to call an inner agent again, and the prompt that carries the previous failure into the next call                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `src/shared/`        | `ILogger` and its stderr implementation, `isAbortError`, `isOneOf`, `Tokens`, the error types and the functions that classify a failure. The failure contract lives here because the model clients use it as much as the agents do                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
+The factory also owns the provider-indexed model and reasoning-effort catalogs and their
+path-specific narrowers: `agentModels` and `agentReasoningEfforts` for the Agent SDKs, and
+`llmModels` and `llmReasoningEfforts` for the model APIs. The catalogs are derived from the
+provider adapters and preserve their literal tuples.
+
 Two boundaries carry most of the design:
 
 **Everything is an `Agent`.** `ClaudeAgent`, `CodexAgent`, `LLMAgent`, `RetryingAgent` and
@@ -109,8 +114,11 @@ why it is the only place that knows every provider.
 `createLLMOrchestrator`, the `Agent`, `RunOptions`, `AgentResponse`, `Callback`, `ProgressEvent`
 and `Tokens` types, the approval contract (`rememberApprovals` and the `Approver`,
 `ApprovalRequest`, `ApprovalDecision`, `RememberableDecision`, `ToolRisk` and `CommandLine` types), the three
-failure types an agent rejects with, `isAbortError`, `isAgentProvider`, `agentProviders`, and the
-option and model types. For the model-backed agent's tools it also exports the `Tool`,
+failure types an agent rejects with, `isAbortError`, `isAgentProvider`, `agentProviders`, the
+provider-indexed `agentModels` and `agentReasoningEfforts` catalogs with their `isModelOf` and
+`isReasoningEffortOf` narrowers, and the model-API `llmModels` and `llmReasoningEfforts` catalogs
+with `isLLMModelOf` and `isLLMReasoningEffortOf`. It also exports the option and model types. For
+the model-backed agent's tools it also exports the `Tool`,
 `ToolDefinition`, `JSONSchema`, `Workspace` and `TextMatch` types, `defineTool`,
 `createWorkspace` and `createWorkspaceTools`. For agents that change files it exports
 `createFileTools` and the `FileTool`, `WorkspaceOptions`, `WorkspaceRoot`, `SecretRules` and
@@ -147,9 +155,13 @@ Four contracts have rules of their own:
 - **`ProgressEvent` grows in minor releases.** Consumers are told to render the types they
   know and ignore the rest, so a new type must never carry information a consumer needs to be
   correct. The result of a run travels in `AgentResponse`; progress is narration.
-- **A model or reasoning effort is the engine's to accept.** Each engine constructor rejects
-  what its provider does not support with `InvalidAgentConfigError`, while the agent is being
-  built. The factory does not validate them, so adding a model is a change in one file.
+- **A model or reasoning effort is the engine or client's to accept.** The factory publishes
+  provider-indexed catalogs and path-specific narrowers: `agentModels` and
+  `agentReasoningEfforts` for the Agent SDKs, and `llmModels` and `llmReasoningEfforts` for the
+  model APIs. Each engine or client constructor still rejects what its provider does not support
+  with `InvalidAgentConfigError`, while the agent is being built. The catalogs do not encode
+  model-specific constraints such as Haiku taking no effort, so constructor validation remains
+  the final boundary and the factory does not otherwise validate the values.
 
 External integrations are `@anthropic-ai/claude-agent-sdk` and `@openai/codex-sdk`, each
 reached only from its own engine, `openai` and `@anthropic-ai/sdk`, each reached only from its own `LLMClient`, and `zod`, used by
@@ -177,7 +189,9 @@ executor's writes are one run of the history, and names it in its response. It s
 without a system prompt gets its instructions at the head of every prompt from `InstructedAgent`. The Agent SDK path stays the default: `createAgent`
 and `createOrchestrator` use the provider's own login, while the model API path needs
 `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` and bills per token. Both paths name a provider by its company, `'anthropic'` or `'openai'`, and
-take the same model and effort names, so one role table serves both.
+take mostly the same model and effort names, but support is path-specific: for example, the Agent
+SDK's OpenAI catalog accepts `ultra` while the OpenAI model API's catalog does not. Each path has
+its own catalogs and narrowers.
 
 ## Important flows
 
