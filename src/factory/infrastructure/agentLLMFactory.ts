@@ -3,8 +3,16 @@ import type { Agent } from '#src/agent/domain/agent';
 import type { HistoryReader } from '#src/engines/domain/model/historyFollower';
 import { LLMAgent } from '#src/engines/domain/model/llmAgent';
 import type { LLMClient } from '#src/llm/domain/llm';
-import { ClaudeLLMClient } from '#src/llm/infrastructure/claudeLLMClient';
-import { OpenAILLMClient } from '#src/llm/infrastructure/openAILLMClient';
+import {
+	ClaudeLLMClient,
+	claudeLLMModels,
+	claudeLLMReasoningEfforts,
+} from '#src/llm/infrastructure/claudeLLMClient';
+import {
+	OpenAILLMClient,
+	openAIModels,
+	openAIReasoningEfforts,
+} from '#src/llm/infrastructure/openAILLMClient';
 import {
 	executorInstructions,
 	OrchestratorAgent,
@@ -15,6 +23,7 @@ import { ReviewerDecisionValidator } from '#src/orchestration/infrastructure/mod
 import type { RecoveryStore } from '#src/recovery/domain/recoveryStore';
 import { RetryingAgent } from '#src/retry/domain/model/retryingAgent';
 import { InvalidAgentConfigError } from '#src/shared/domain/errors';
+import { isOneOf } from '#src/shared/domain/isOneOf';
 import type { ILogger } from '#src/shared/domain/logger';
 import { Logger } from '#src/shared/infrastructure/logger';
 import type { WorkspaceRoot } from '#src/tools/domain/accessPolicy';
@@ -47,6 +56,34 @@ import {
 	type CreateOrchestratorOptions,
 	type ReasoningEffort,
 } from './types.ts';
+
+/** The models each provider's model API accepts. */
+export const llmModels = {
+	anthropic: claudeLLMModels,
+	openai: openAIModels,
+} as const satisfies Record<AgentProvider, readonly string[]>;
+
+/** The reasoning efforts each provider's model API accepts. */
+export const llmReasoningEfforts = {
+	anthropic: claudeLLMReasoningEfforts,
+	openai: openAIReasoningEfforts,
+} as const satisfies Record<AgentProvider, readonly string[]>;
+
+/** Narrows a model to one accepted by the selected provider's model API. */
+export function isLLMModelOf<Provider extends AgentProvider>(
+	provider: Provider,
+	value: string,
+): value is (typeof llmModels)[Provider][number] {
+	return isOneOf(llmModels[provider], value);
+}
+
+/** Narrows a reasoning effort to one accepted by the selected provider's model API. */
+export function isLLMReasoningEffortOf<Provider extends AgentProvider>(
+	provider: Provider,
+	value: string,
+): value is (typeof llmReasoningEfforts)[Provider][number] {
+	return isOneOf(llmReasoningEfforts[provider], value);
+}
 
 export interface CreateLLMAgentOptions {
 	/**

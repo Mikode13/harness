@@ -157,6 +157,62 @@ example when the other one is out of quota.
 a role left out keeps the harness's own, and the reviewer must still answer with
 the JSON decision described on the option.
 
+### Validating factory options
+
+The provider-aware guards validate command-line strings before a factory is built. Use the
+catalog for help text rather than copying the accepted values; choose the catalog and guards for
+the path you are using:
+
+```ts
+import {
+	agentModels,
+	agentReasoningEfforts,
+	createAgent,
+	createLLMAgent,
+	isAgentProvider,
+	isLLMModelOf,
+	isLLMReasoningEffortOf,
+	isModelOf,
+	isReasoningEffortOf,
+	llmModels,
+	llmReasoningEfforts,
+} from '@mikode13/harness';
+
+const providerInput: string = process.argv[2] ?? '';
+const modelInput: string = process.argv[3] ?? '';
+const effortInput: string = process.argv[4] ?? '';
+const useModelApi = false;
+
+if (!isAgentProvider(providerInput)) throw new Error('Unknown provider');
+
+if (useModelApi) {
+	if (
+		!isLLMModelOf(providerInput, modelInput) ||
+		!isLLMReasoningEffortOf(providerInput, effortInput)
+	) {
+		throw new Error(
+			`Expected model ${llmModels[providerInput].join(', ')} and effort ${llmReasoningEfforts[providerInput].join(', ')}`,
+		);
+	}
+	createLLMAgent(providerInput, {
+		model: modelInput,
+		reasoningEffort: effortInput,
+		systemPrompt: 'Be concise.',
+	});
+} else {
+	if (!isModelOf(providerInput, modelInput) || !isReasoningEffortOf(providerInput, effortInput)) {
+		throw new Error(
+			`Expected model ${agentModels[providerInput].join(', ')} and effort ${agentReasoningEfforts[providerInput].join(', ')}`,
+		);
+	}
+	createAgent(providerInput, { model: modelInput, reasoningEffort: effortInput });
+}
+```
+
+These guards describe the provider-wide catalogs. A client can still impose a model-specific
+constraint, such as Claude Haiku accepting no reasoning effort, and the factory's client or
+engine validation remains the final boundary for values that bypass the guards.
+
 Every agent a factory returns already retries recoverable failures. A model or
 reasoning effort the chosen provider does not support throws
 `InvalidAgentConfigError` when the agent is built. Building a Codex agent throws

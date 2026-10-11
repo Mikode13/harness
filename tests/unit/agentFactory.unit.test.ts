@@ -10,20 +10,52 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { z } from 'zod';
 import { InvalidAgentConfigError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
 import {
+	agentModels,
+	agentReasoningEfforts,
 	createAgent,
 	createOrchestrator,
 	isAgentProvider,
+	isModelOf,
+	isReasoningEffortOf,
 } from '../../src/factory/infrastructure/agentFactory.ts';
 import {
 	createFileTools,
 	createLLMAgent,
 	createLLMOrchestrator,
+	isLLMModelOf,
+	isLLMReasoningEffortOf,
+	llmModels,
+	llmReasoningEfforts,
 } from '../../src/factory/infrastructure/agentLLMFactory.ts';
 import { agentProviders, type AgentProvider } from '../../src/factory/infrastructure/types.ts';
+import {
+	claudeModels as claudeModelCatalog,
+	claudeReasoningEfforts,
+	type ClaudeModel,
+	type ClaudeReasoningEffort,
+} from '../../src/engines/claude/infrastructure/model/claudeAgent.ts';
+import {
+	codexModels as codexModelCatalog,
+	codexReasoningEfforts,
+	type CodexModel,
+	type CodexReasoningEffort,
+} from '../../src/engines/codex/infrastructure/model/codexAgent.ts';
+import {
+	claudeLLMModels,
+	claudeLLMReasoningEfforts,
+	type ClaudeLLMModel,
+	type ClaudeLLMReasoningEffort,
+} from '../../src/llm/infrastructure/claudeLLMClient.ts';
+import {
+	openAIModels,
+	openAIReasoningEfforts,
+	type OpenAIModel,
+	type OpenAIReasoningEffort,
+} from '../../src/llm/infrastructure/openAILLMClient.ts';
 import { defineTool } from '../../src/tools/infrastructure/defineTool.ts';
 import type { WorkspaceOptions } from '../../src/tools/infrastructure/fileTools.ts';
 import { createHistory } from '../../src/recovery/infrastructure/createHistory.ts';
@@ -192,6 +224,89 @@ describe('isAgentProvider', () => {
 		['codex', false],
 	])('recognizes %s as a provider: %s', (value, expected) => {
 		expect(isAgentProvider(value)).toBe(expected);
+	});
+});
+
+describe('provider model and reasoning catalogs', () => {
+	it('exposes each provider adapter catalog under the matching provider', () => {
+		expect(agentModels.anthropic).toBe(claudeModelCatalog);
+		expect(agentModels.openai).toBe(codexModelCatalog);
+		expect(agentReasoningEfforts.anthropic).toBe(claudeReasoningEfforts);
+		expect(agentReasoningEfforts.openai).toBe(codexReasoningEfforts);
+		expect(llmModels.anthropic).toBe(claudeLLMModels);
+		expect(llmModels.openai).toBe(openAIModels);
+		expect(llmReasoningEfforts.anthropic).toBe(claudeLLMReasoningEfforts);
+		expect(llmReasoningEfforts.openai).toBe(openAIReasoningEfforts);
+	});
+
+	it('accepts every value listed for its provider', () => {
+		for (const provider of agentProviders) {
+			for (const model of agentModels[provider]) {
+				expect(isModelOf(provider, model)).toBe(true);
+			}
+			for (const effort of agentReasoningEfforts[provider]) {
+				expect(isReasoningEffortOf(provider, effort)).toBe(true);
+			}
+			for (const model of llmModels[provider]) {
+				expect(isLLMModelOf(provider, model)).toBe(true);
+			}
+			for (const effort of llmReasoningEfforts[provider]) {
+				expect(isLLMReasoningEffortOf(provider, effort)).toBe(true);
+			}
+		}
+	});
+
+	it('rejects arbitrary and cross-provider values', () => {
+		expect(isModelOf('anthropic', 'gpt-5.6-sol')).toBe(false);
+		expect(isModelOf('openai', 'opus')).toBe(false);
+		expect(isModelOf('anthropic', 'not-a-model')).toBe(false);
+		expect(isLLMModelOf('anthropic', 'gpt-5.6-sol')).toBe(false);
+		expect(isLLMModelOf('openai', 'opus')).toBe(false);
+		expect(isLLMModelOf('openai', 'not-a-model')).toBe(false);
+		expect(isReasoningEffortOf('anthropic', 'ultra')).toBe(false);
+		expect(isReasoningEffortOf('openai', 'not-an-effort')).toBe(false);
+		expect(isLLMReasoningEffortOf('openai', 'ultra')).toBe(false);
+		expect(isLLMReasoningEffortOf('anthropic', 'not-an-effort')).toBe(false);
+	});
+
+	it('keeps the Agent SDK and model API effort catalogs distinct', () => {
+		expect(isReasoningEffortOf('openai', 'ultra')).toBe(true);
+		expect(isLLMReasoningEffortOf('openai', 'ultra')).toBe(false);
+	});
+
+	it('narrows to the selected provider catalog at compile time', () => {
+		const anthropicModel = 'model' as string;
+		if (isModelOf('anthropic', anthropicModel)) {
+			expectTypeOf(anthropicModel).toEqualTypeOf<ClaudeModel>();
+		}
+		const openAIModel = 'model' as string;
+		if (isModelOf('openai', openAIModel)) {
+			expectTypeOf(openAIModel).toEqualTypeOf<CodexModel>();
+		}
+		const anthropicEffort = 'effort' as string;
+		if (isReasoningEffortOf('anthropic', anthropicEffort)) {
+			expectTypeOf(anthropicEffort).toEqualTypeOf<ClaudeReasoningEffort>();
+		}
+		const openAIEffort = 'effort' as string;
+		if (isReasoningEffortOf('openai', openAIEffort)) {
+			expectTypeOf(openAIEffort).toEqualTypeOf<CodexReasoningEffort>();
+		}
+		const anthropicLLMModel = 'model' as string;
+		if (isLLMModelOf('anthropic', anthropicLLMModel)) {
+			expectTypeOf(anthropicLLMModel).toEqualTypeOf<ClaudeLLMModel>();
+		}
+		const openAILLMModel = 'model' as string;
+		if (isLLMModelOf('openai', openAILLMModel)) {
+			expectTypeOf(openAILLMModel).toEqualTypeOf<OpenAIModel>();
+		}
+		const anthropicLLMEffort = 'effort' as string;
+		if (isLLMReasoningEffortOf('anthropic', anthropicLLMEffort)) {
+			expectTypeOf(anthropicLLMEffort).toEqualTypeOf<ClaudeLLMReasoningEffort>();
+		}
+		const openAILLMEffort = 'effort' as string;
+		if (isLLMReasoningEffortOf('openai', openAILLMEffort)) {
+			expectTypeOf(openAILLMEffort).toEqualTypeOf<OpenAIReasoningEffort>();
+		}
 	});
 });
 
