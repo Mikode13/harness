@@ -64,6 +64,8 @@ describe('public API', () => {
 			'historyStart',
 			'isAbortError',
 			'isAgentProvider',
+			'isLLMModelOf',
+			'isLLMReasoningEffortOf',
 			'isModelOf',
 			'isReasoningEffortOf',
 			'llmModels',

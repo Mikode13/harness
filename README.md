@@ -163,36 +163,26 @@ reasoning effort the chosen provider does not support throws
 `UnrecoverableError` if the Codex CLI binary cannot be found, which happens when
 optional dependencies were skipped at install time.
 
-When model and effort names come from an untyped source such as command-line input, use the
-provider-specific capability table for the path you are building. The narrowers preserve the
-literal type, so no cast is needed:
+When a model or effort comes from an untyped source, such as a command-line flag, narrow it
+for the provider without a cast:
 
 ```ts
-import {
-	agentModels,
-	agentReasoningEfforts,
-	isAgentProvider,
-	isModelOf,
-	isReasoningEffortOf,
-} from '@mikode13/harness';
+import { isAgentProvider, isModelOf, isReasoningEffortOf } from '@mikode13/harness';
 
-function agentOptions(providerInput: string, modelInput: string, effortInput: string) {
-	if (!isAgentProvider(providerInput)) throw new Error('Unknown provider');
-
-	const models = agentModels[providerInput];
-	const efforts = agentReasoningEfforts[providerInput];
-	if (!isModelOf(models, modelInput)) throw new Error('Unsupported model');
-	if (!isReasoningEffortOf(efforts, effortInput)) throw new Error('Unsupported effort');
-
-	return { provider: providerInput, model: modelInput, reasoningEffort: effortInput };
-}
+if (!isAgentProvider(provider)) throw new Error(`Unknown provider: ${provider}`);
+if (!isModelOf(provider, model)) throw new Error(`${provider} has no model ${model}`);
+if (!isReasoningEffortOf(provider, effort)) throw new Error(`${provider} has no effort ${effort}`);
+const agent = createAgent(provider, { model, reasoningEffort: effort });
 ```
 
-Use `llmModels` and `llmReasoningEfforts` for `createLLMAgent` and
-`createLLMOrchestrator`. The Agent SDK and model API paths can expose different lists: for example,
-Codex accepts the `ultra` effort while the OpenAI model API list does not. A model being in a
-provider's list and an effort being in its list also does not guarantee that the particular pair
-is supported; the factory still rejects invalid combinations with `InvalidAgentConfigError`.
+`agentModels` and `agentReasoningEfforts` list what each provider takes, for help text. The model
+API path has its own: `isLLMModelOf`, `isLLMReasoningEffortOf`, `llmModels` and
+`llmReasoningEfforts`, for `createLLMAgent` and `createLLMOrchestrator`. Both paths take the same
+names today, except Codex's `ultra` effort, which only the Agent SDK path has.
+
+Each narrower checks one value, so a pair can still be refused with `InvalidAgentConfigError` when
+the agent is built: `gpt-5.6-luna` does not take `ultra`, and Claude Haiku on the model API takes
+no effort. So is a value that skips the narrowers.
 
 ### Authentication
 

@@ -31,6 +31,8 @@ export {
 export {
 	agentModels,
 	agentReasoningEfforts,
+	isLLMModelOf,
+	isLLMReasoningEffortOf,
 	isModelOf,
 	isReasoningEffortOf,
 	llmModels,

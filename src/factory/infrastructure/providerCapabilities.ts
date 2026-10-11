@@ -32,8 +32,9 @@ export const agentReasoningEfforts = {
 } as const satisfies Record<AgentProvider, readonly string[]>;
 
 /**
- * Models accepted by the model API client for each provider. Model API and Agent SDK lists are
- * kept separate because their providers do not necessarily expose the same catalog.
+ * Models accepted by the model API client for each provider. The lists are kept apart from the
+ * Agent SDK's, so `src/llm` never imports the engines; today they hold the same names, and a test
+ * fails if they drift apart. See "Providers are named after the company" in decisions.md.
  */
 export const llmModels = {
 	anthropic: claudeLLMModels,
@@ -48,18 +49,44 @@ export const llmReasoningEfforts = {
 	openai: openAIReasoningEfforts,
 } as const satisfies Record<AgentProvider, readonly string[]>;
 
-/** Narrows an untyped string to a model in one provider/path capability entry. */
-export function isModelOf<const Models extends readonly string[]>(
-	models: Models,
+type AgentModelOf<Provider extends AgentProvider> = (typeof agentModels)[Provider][number];
+type AgentReasoningEffortOf<Provider extends AgentProvider> =
+	(typeof agentReasoningEfforts)[Provider][number];
+type LLMModelOf<Provider extends AgentProvider> = (typeof llmModels)[Provider][number];
+type LLMReasoningEffortOf<Provider extends AgentProvider> =
+	(typeof llmReasoningEfforts)[Provider][number];
+
+/**
+ * Whether `value` is a model `createAgent` accepts for `provider`, on the Agent SDK path. It
+ * narrows an untyped string, such as a command-line flag, without a cast.
+ */
+export function isModelOf<Provider extends AgentProvider>(
+	provider: Provider,
 	value: string,
-): value is Models[number] {
-	return isOneOf(models, value);
+): value is AgentModelOf<Provider> {
+	return isOneOf<string>(agentModels[provider], value);
 }
 
-/** Narrows an untyped string to a reasoning effort in one provider/path capability entry. */
-export function isReasoningEffortOf<const Efforts extends readonly string[]>(
-	efforts: Efforts,
+/** Whether `value` is a reasoning effort `createAgent` accepts for `provider`. */
+export function isReasoningEffortOf<Provider extends AgentProvider>(
+	provider: Provider,
 	value: string,
-): value is Efforts[number] {
-	return isOneOf(efforts, value);
+): value is AgentReasoningEffortOf<Provider> {
+	return isOneOf<string>(agentReasoningEfforts[provider], value);
+}
+
+/** Whether `value` is a model `createLLMAgent` accepts for `provider`, on the model API path. */
+export function isLLMModelOf<Provider extends AgentProvider>(
+	provider: Provider,
+	value: string,
+): value is LLMModelOf<Provider> {
+	return isOneOf<string>(llmModels[provider], value);
+}
+
+/** Whether `value` is a reasoning effort `createLLMAgent` accepts for `provider`. */
+export function isLLMReasoningEffortOf<Provider extends AgentProvider>(
+	provider: Provider,
+	value: string,
+): value is LLMReasoningEffortOf<Provider> {
+	return isOneOf<string>(llmReasoningEfforts[provider], value);
 }
