@@ -326,9 +326,9 @@ describe('LLMAgent with tools', () => {
 		expect(events).not.toContainEqual(expect.objectContaining({ id: 'call-2' }));
 	});
 
-	it('defaults to 50 steps', async () => {
+	it('defaults to 65 steps', async () => {
 		const weather = fakeTool('weather');
-		const cities = Array.from({ length: 50 }, (_, index) =>
+		const cities = Array.from({ length: 65 }, (_, index) =>
 			assistantResponse([
 				toolCall(`call-${String(index)}`, 'weather', { city: `City ${String(index)}` }),
 			]),
@@ -338,7 +338,7 @@ describe('LLMAgent with tools', () => {
 		await expect(
 			new LLMAgent({ llmClient, tools: [weather] }).run('prompt', { signal }),
 		).rejects.toThrow('The LLM did not finish within its step limit');
-		expect(llmClient.contexts).toHaveLength(50);
+		expect(llmClient.contexts).toHaveLength(65);
 	});
 
 	// Each step's calls get new ids; what makes them the same is the tool and its input.

@@ -856,6 +856,97 @@ describe('createLLMOrchestrator', () => {
 		},
 	);
 
+	/**
+	 * OpenAI answering the planner with a plan, then the executor with a new read on every call,
+	 * so only the executor's step limit ends the run. Returns the spy that counts the calls.
+	 */
+	function executorThatNeverStops({ planFirst = true } = {}) {
+		const create = openAIReplying('plan');
+		let call = 0;
+		if (planFirst) create.mockImplementationOnce(create.getMockImplementation() as never);
+		create.mockImplementation(() =>
+			Promise.resolve({
+				status: 'completed',
+				incomplete_details: null,
+				error: null,
+				output: [
+					{
+						type: 'function_call',
+						id: `fc-${String(call)}`,
+						call_id: `call-${String(call)}`,
+						name: 'readFile',
+						// A different file each time, so the loop stop never fires.
+						arguments: JSON.stringify({
+							path: `missing-${String(call++)}.ts`,
+							fromLine: null,
+							lineCount: null,
+						}),
+					},
+				],
+				usage: {
+					input_tokens: 1,
+					input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+					output_tokens: 1,
+					output_tokens_details: { reasoning_tokens: 0 },
+					total_tokens: 2,
+				},
+			} as unknown as Response),
+		);
+		return create;
+	}
+
+	it.each([
+		['the executor 80 by default', undefined, 80],
+		['every role the same number', 7, 7],
+		['a role its own number, the rest their defaults', { executor: 5, planner: 2 }, 5],
+	] as const)('gives %s', async (_, maxSteps, executorSteps) => {
+		const openAICreate = executorThatNeverStops();
+		claudeAPIReplying('{"decision":"approved"}');
+
+		await expect(
+			(
+				await createLLMOrchestrator({
+					workspace,
+					logger: createLogger(),
+					...(maxSteps === undefined ? {} : { maxSteps }),
+				})
+			).run('ship it', { signal }),
+		).rejects.toThrow('The LLM did not finish within its step limit');
+
+		// One call for the plan, then the executor's.
+		expect(openAICreate).toHaveBeenCalledTimes(1 + executorSteps);
+	});
+
+	it.each([
+		['65 by default', undefined, 65],
+		['its own number', { planner: 3 }, 3],
+		['the number every role gets', 4, 4],
+	] as const)('gives the planner %s', async (_, maxSteps, plannerSteps) => {
+		const openAICreate = executorThatNeverStops({ planFirst: false });
+
+		await expect(
+			(
+				await createLLMOrchestrator({
+					workspace,
+					logger: createLogger(),
+					...(maxSteps === undefined ? {} : { maxSteps }),
+				})
+			).run('ship it', { signal }),
+		).rejects.toThrow('The LLM did not finish within its step limit');
+
+		expect(openAICreate).toHaveBeenCalledTimes(plannerSteps);
+	});
+
+	it('refuses a step limit for a role that does not exist', async () => {
+		await expect(
+			createLLMOrchestrator({
+				workspace,
+				maxSteps: { exector: 100 } as never,
+				logger: createLogger(),
+			}),
+		).rejects.toThrow('maxSteps names roles that do not exist: exector');
+	});
+
 	it('rejects an unknown provider coming from untyped input', async () => {
 		await expect(
 			createLLMOrchestrator({ provider: 'astra' as AgentProvider, workspace }),

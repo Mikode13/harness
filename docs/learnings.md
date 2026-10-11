@@ -73,3 +73,35 @@ were `issue`, `test`, `check` and `format`. The executor's work became #87.
 - **What happened:** the first `issue` command printed nothing for #20, which has no comments.
 - **What changed:** the command uses `--json title,body,comments`, which also gives the title and
   the body.
+
+## The second live run of the write tools (2026-10-11)
+
+Same task, after the fixes of #88: roles per command, 50 steps, the stop for loops, and the executor told to finish on green tests.
+
+### The planner reads the issue itself once it has the command
+
+- **What happened:** with `issue` given to the planner, the planner ran `gh issue view 20` before it planned.
+- **Evidence:** the CLI asked to approve `gh issue view 20 --json title,body,comments` during the planner's turn.
+- **Where it is enforced:** commands per role, in "The live run of #52 decided commands per role, 50 steps, a stop for loops, and each role's end".
+
+### Green tests are not a reason to stop, for the executor
+
+- **What happened:** the executor ran the whole suite green, and then went on adding a test and editing the architecture document until it hit 50 steps.
+- **Evidence:** between them, the planner and the executor made 105 tool calls: 48 `readFile`, 15 `apply_patch` (plus 2 that failed), 15 `runCommand`, 14 `searchText` and 11 `listFiles`. The run ended with "The model was still calling tools after 50 steps", and the result passed `check` and the 1048 tests.
+- **Where it is enforced:** the executor is told to finish once the tests pass and the plan is carried out. Its limit is 80, and configurable. See "Each role has its own step limit, which the consumer and the CLI can raise".
+
+### Each role reads again what the one before it read
+
+- **What happened:** the executor read `AGENTS.md`, the architecture document and the factory files the planner had just read, because each role has its own conversation.
+- **Evidence:** 48 `readFile` calls across the planner and the executor, many of them on the same files.
+- **Where it is enforced:** nowhere yet. The roles are told to ask for several files in one answer, which makes each read cheaper in steps, but they still read twice.
+
+### A command description that names the order saves a step
+
+- **What happened:** the executor ran `check` before `format`, failed on formatting, and fixed the imports by hand. Running `format` first would have done that.
+- **Evidence:** `check` ran four times, `format` twice.
+- **Where it is enforced:** the CLI's `check` command for this repository now says "Run format first". That lives in the user's configuration, not in the harness.
+
+### The cost grows with the run's length, through the cache
+
+- **Evidence:** at the failure, the run had spent 918 uncached input tokens, 2,109,499 read from the cache, 109,142 written to it, and 18,828 output tokens. That is about twice the cache reads of the first run, for twice the steps.

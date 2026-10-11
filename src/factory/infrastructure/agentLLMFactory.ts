@@ -74,8 +74,8 @@ export interface CreateLLMAgentOptions {
 	 */
 	summarizeUndone?: boolean;
 	/**
-	 * How many calls to the model one run may make before it fails. Defaults to 50. A run that asks
-	 * for exactly the same tool calls 5 times in a row fails before that.
+	 * How many calls to the model one run may make before it fails. Defaults to 65, with no upper
+	 * bound. A run that asks for exactly the same tool calls 5 times in a row fails before that.
 	 */
 	maxSteps?: number;
 	/**
@@ -87,6 +87,43 @@ export interface CreateLLMAgentOptions {
 	logger?: ILogger;
 }
 
+/** A limit per role of `createLLMOrchestrator`; a role left out keeps its default. */
+export type RoleSteps = Partial<Record<OrchestratorRole, number>>;
+
+// The same three roles a command can be given to.
+type OrchestratorRole = CommandRole;
+
+// The executor reads, edits and checks, so it needs more calls than the roles that only read.
+const defaultRoleSteps: Record<OrchestratorRole, number> = {
+	planner: 65,
+	executor: 80,
+	reviewer: 65,
+};
+
+/**
+ * Each role's step limit, from one number for all of them or a number per role.
+ *
+ * @throws {InvalidAgentConfigError} for a role that does not exist, which is a typo that would
+ * otherwise leave that role on its default without a word.
+ */
+function stepsPerRole(maxSteps: number | RoleSteps | undefined): Record<OrchestratorRole, number> {
+	if (maxSteps === undefined) return defaultRoleSteps;
+	if (typeof maxSteps === 'number') {
+		return { planner: maxSteps, executor: maxSteps, reviewer: maxSteps };
+	}
+	const unknown = Object.keys(maxSteps).filter(role => !(role in defaultRoleSteps));
+	if (unknown.length > 0) {
+		throw new InvalidAgentConfigError(
+			`maxSteps names roles that do not exist: ${unknown.join(', ')}; expected planner, executor or reviewer`,
+		);
+	}
+	// A role given as `undefined`, which untyped input can do, keeps its default.
+	const given = Object.entries(maxSteps as Record<string, unknown>).filter(
+		([, steps]) => steps !== undefined,
+	);
+	return { ...defaultRoleSteps, ...Object.fromEntries(given) };
+}
+
 export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions {
 	/**
 	 * The folders the agents work on. The executor changes files only in a `write` root, every
@@ -95,10 +132,12 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	 */
 	workspace?: WorkspaceOptions;
 	/**
-	 * How many calls to the model one executor run may make. Defaults to 50, as for every role. A
-	 * run that asks for exactly the same tool calls 5 times in a row fails before that.
+	 * How many calls to the model one run of each role may make: one number for every role, or a
+	 * number per role. Defaults to 80 for the executor and 65 for the planner and the reviewer,
+	 * with no upper bound. A run that asks for exactly the same tool calls 5 times in a row fails
+	 * before its limit.
 	 */
-	maxSteps?: number;
+	maxSteps?: number | RoleSteps;
 	/**
 	 * Commands the roles may run, such as the project's tests, through `runCommand`. Each goes to
 	 * the roles its `roles` names, the executor by default. See `createFileTools`. Each needs a
@@ -376,7 +415,7 @@ async function readingTools(
 // Sent after the workspace's roots, so it stays short: it only says how to find one's way
 // around the repository without reading all of it.
 const repositoryGuidance =
-	'Start with AGENTS.md and the architecture document it links to learn where things live, then read only the files your task needs.';
+	'Start with AGENTS.md and the architecture document it links to learn where things live, then read only the files your task needs. When you know you need several files, or several searches, ask for all of them in one answer rather than one at a time: each answer is a step, and steps are limited.';
 
 /**
  * Builds the planner → executor → reviewer workflow with every role on the model APIs, each
@@ -386,7 +425,9 @@ const repositoryGuidance =
  * - The planner and the reviewer read: `listFiles`, `searchText`, `readFile`, and
  *   `showChanges`, the current task's changes as far as each may read them.
  * - The executor gets its provider's file tools (see `createFileTools`), and changes files only
- *   in a `write` root; `autoApprove` and `maxSteps` reach only it.
+ *   in a `write` root; `autoApprove` reaches only it.
+ * - Each role has its own step limit: `maxSteps`, 80 for the executor and 65 for the others by
+ *   default.
  * - Each role gets `runCommand` with the `commands` whose `roles` name it, the executor by
  *   default. A command asks the approver in any role, and its files are captured around it.
  *
@@ -409,6 +450,7 @@ export async function createLLMOrchestrator({
 	logger = new Logger(),
 }: CreateLLMOrchestratorOptions = {}): Promise<Agent> {
 	const roles = orchestratorRolesFor(provider);
+	const steps = stepsPerRole(maxSteps);
 	const opened = await openWorkspace(workspace, logger);
 	const guidance = workspaceGuidance(workspace.roots);
 	const summarizer = summarizeUndone ? summarizerFor(roles.planner.provider, logger) : undefined;
@@ -431,6 +473,7 @@ export async function createLLMOrchestrator({
 			reasoningEffort,
 			systemPrompt,
 			tools: await readingTools(opened, role, commands),
+			maxSteps: steps[role],
 			...shared,
 		});
 	const { executor } = roles;
@@ -450,7 +493,7 @@ export async function createLLMOrchestrator({
 				opened,
 				commands && commandsFor(commands, 'executor'),
 			),
-			maxSteps,
+			maxSteps: steps.executor,
 			autoApprove,
 			...shared,
 		}),
