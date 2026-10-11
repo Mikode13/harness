@@ -48,7 +48,7 @@ jobs:
     # runs the same tests on macOS, the platform the CLI is used on, whose process groups,
     # signals and temporary folders differ in detail. See "The executor runs configured
     # commands by name" in docs/decisions.md.
-    name: commands on macOS
+    name: commands and end to end on macOS
     runs-on: macos-15
     timeout-minutes: 15
     steps:
@@ -72,3 +72,4 @@ jobs:
           tests/unit/commands.unit.test.ts
           tests/unit/commandProcess.unit.test.ts
           tests/unit/commandTool.unit.test.ts
+          tests/unit/endToEnd.unit.test.ts
