@@ -171,7 +171,8 @@ over a workspace (`openWorkspace`, then `fileToolsFor`): one access policy, one 
 and one record of writes. `createLLMOrchestrator` runs all three roles on the model APIs over one
 opened workspace, each with its role's instructions, or the caller's, then the workspace, as the
 system prompt. The planner and reviewer read, with `showChanges`; the executor gets
-`fileToolsFor` its provider, and `runCommand` with `commands`. `OrchestratorAgent` creates one `RunContext` for a whole run, so the
+`fileToolsFor` its provider. Each role gets `runCommand` with the `commands` whose `roles` name
+it, the executor by default. `OrchestratorAgent` creates one `RunContext` for a whole run, so the
 executor's writes are one run of the history, and names it in its response. It sends each role only the round's data; an agent
 without a system prompt gets its instructions at the head of every prompt from `InstructedAgent`. The Agent SDK path stays the default: `createAgent`
 and `createOrchestrator` use the provider's own login, while the model API path needs
@@ -202,9 +203,10 @@ through one stream.
 definitions of its tools to its `LLMClient`, inside `classifyProviderFailure`; the client
 never receives a tool's `execute`. When the answer calls tools, the agent runs them one at a
 time, in order, and calls the model again with the calls and a `tool` message holding their
-results. The run ends when an answer calls no tool. After `maxSteps` calls to the model it
-fails with `UnrecoverableError` instead, without running the last step's calls, because no
-call is left to send their results to. A missing tool, or a tool that throws, becomes an
+results. The run ends when an answer calls no tool. After `maxSteps` calls to the model, 50 by
+default, it fails with `UnrecoverableError` instead, without running the last step's calls,
+because no call is left to send their results to. It fails the same way, before running them,
+when five answers in a row ask for exactly the same calls, by tool and input. A missing tool, or a tool that throws, becomes an
 error result the model can correct itself from; only a cancellation escapes, whatever error
 the tool turned it into, and a cancelled run neither starts nor announces another tool. A
 call is announced as `in_progress` only once it is about to run, after its approval, so a

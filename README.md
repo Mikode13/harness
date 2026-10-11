@@ -289,12 +289,18 @@ run in `AgentResponse.runId`. Progress reports each change as a unified `diff` o
 `completed` event.
 
 `createLLMOrchestrator()` takes the options of `createOrchestrator()` plus `workspace`,
-`maxSteps` and `summarizeUndone`, and returns a promise. Every role runs on the model APIs:
+`maxSteps`, `commands` and `summarizeUndone`, and returns a promise. Every role runs on the
+model APIs:
 
 - the planner and the reviewer read, with a `showChanges` tool that gives the current task's
   changes as far as each may read them;
 - the executor gets its provider's file tools. `autoApprove` and `maxSteps` reach only the
-  executor.
+  executor;
+- each role gets the commands whose `roles` name it; a command names only the executor unless
+  it says otherwise.
+
+A run stops after 50 calls to the model (`maxSteps`), or sooner when five in a row ask for
+exactly the same tool calls, which means the model is stuck.
 
 Without `workspace` it works on the current directory, read only. One run of the
 orchestrator is one run of the history, every round included.
@@ -322,6 +328,9 @@ const tools = await createFileTools('openai', workspace, {
   values you list; or `text` that matches your pattern and never starts with `-`.
 - **Approval:** every call asks the approver, which sees the exact program, arguments and
   folder in `request.command`. `autoApprove` skips it.
+- **Roles:** in `createLLMOrchestrator`, a command goes to the executor, or to the roles its
+  `roles` lists, such as `['planner', 'executor']` for one that reads an issue. Whoever runs it,
+  its files are captured around it. `createFileTools` offers every command.
 - **Environment:** a command inherits only `PATH`, `HOME`, `TMPDIR`, `USER`, `SHELL`, `LANG`
   and `LC_*`, plus its own `env`. The provider keys never reach it.
 - **Limits:** 10 minutes, then its whole process group is stopped (`timeoutMs`). The model

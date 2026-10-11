@@ -4,6 +4,7 @@ import {
 	buildArguments,
 	type CommandDefinition,
 	type Commands,
+	commandsFor,
 	validateCommands,
 } from '../../src/tools/domain/commands.ts';
 
@@ -104,6 +105,9 @@ describe('validateCommands', () => {
 			{ test: { ...test, args: [1] } } as never,
 			/neither text nor a parameter/,
 		],
+		['a role that does not exist', { test: { ...test, roles: ['tester'] } } as never, /roles/],
+		['no role at all', { test: { ...test, roles: [] } }, /roles/],
+		['a role named twice', { test: { ...test, roles: ['planner', 'planner'] } }, /each once/],
 		[
 			'a required flag that is not a boolean',
 			{
@@ -155,5 +159,15 @@ describe('buildArguments', () => {
 		};
 
 		expect(() => buildArguments(required, { filter: null })).toThrow(/"filter" is required/);
+	});
+});
+
+describe('commandsFor', () => {
+	it('gives each role the commands that name it, and the executor those that name none', () => {
+		const commands: Commands = { test, issue: { ...test, roles: ['planner', 'executor'] } };
+
+		expect(Object.keys(commandsFor(commands, 'planner'))).toEqual(['issue']);
+		expect(Object.keys(commandsFor(commands, 'executor'))).toEqual(['test', 'issue']);
+		expect(commandsFor(commands, 'reviewer')).toEqual({});
 	});
 });

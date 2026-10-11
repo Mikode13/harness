@@ -1,4 +1,5 @@
 import { InvalidAgentConfigError } from '#src/shared/domain/errors';
+import { isOneOf } from '#src/shared/domain/isOneOf';
 
 /**
  * Something the model fills in a command's arguments. It never writes free arguments: each
@@ -19,6 +20,10 @@ export type CommandParameter =
 
 /** One argument of a command: fixed text, or the place where a parameter goes. */
 export type CommandArgument = string | CommandParameter;
+
+/** The roles of the model-backed orchestrator a command can be given to. */
+export const commandRoles = ['planner', 'executor', 'reviewer'] as const;
+export type CommandRole = (typeof commandRoles)[number];
 
 /**
  * A command the consumer lets the agent run, such as the project's tests or its formatter. It
@@ -48,6 +53,12 @@ export interface CommandDefinition {
 	timeoutMs?: number;
 	/** How much of the end of its output the model reads. Defaults to 16 KB. */
 	outputBytes?: number;
+	/**
+	 * Which roles of `createLLMOrchestrator` may run it, such as the planner for a command that
+	 * reads an issue. Defaults to the executor only. Whoever runs it, the files are captured
+	 * around it, so what it changes is in the history. `createFileTools` offers every command.
+	 */
+	roles?: CommandRole[];
 }
 
 /** The commands an agent may run, by the name the model calls each one. */
@@ -87,7 +98,7 @@ export function validateCommands(commands: Commands): void {
 			fail('needs a name of letters, digits, "-" and "_", starting with a letter');
 		}
 		if (!isRecord(definition)) fail('must be an object');
-		const { description, executable, cwd, timeoutMs, outputBytes, env, args } =
+		const { description, executable, cwd, timeoutMs, outputBytes, env, args, roles } =
 			definition as Record<string, unknown>;
 		if (typeof description !== 'string' || description.trim() === '') {
 			fail('needs a description');
@@ -106,6 +117,15 @@ export function validateCommands(commands: Commands): void {
 			}
 		}
 
+		if (
+			roles !== undefined &&
+			(!Array.isArray(roles) ||
+				roles.length === 0 ||
+				new Set(roles).size !== roles.length ||
+				!roles.every(role => typeof role === 'string' && isOneOf(commandRoles, role)))
+		) {
+			fail(`needs roles to list some of ${commandRoles.join(', ')}, each once`);
+		}
 		if (args !== undefined && !Array.isArray(args)) fail('needs args to be a list');
 		const seen = new Set<string>();
 		for (const argument of (args ?? []) as unknown[]) {
@@ -190,6 +210,15 @@ function isArgument(value: string, { allowEmpty = false } = {}): boolean {
 
 function textMatcher(pattern: string): RegExp {
 	return new RegExp(`^(?:${pattern})$`, 'u');
+}
+
+/** The commands `role` may run: those that name it, or, without `roles`, the executor. */
+export function commandsFor(commands: Commands, role: CommandRole): Commands {
+	return Object.fromEntries(
+		Object.entries(commands).filter(([, definition]) =>
+			(definition.roles ?? ['executor']).includes(role),
+		),
+	);
 }
 
 /** The parameters of a command, in the order its arguments use them. */

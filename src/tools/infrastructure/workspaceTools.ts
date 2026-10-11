@@ -13,7 +13,12 @@ const maxLineLength = 300;
 // Strict mode has no optional fields: an argument the model may leave out is nullable.
 const scope = {
 	path: z.string().nullable().describe('A folder or file to stay inside, relative to the root.'),
-	glob: z.string().nullable().describe('Only paths matching this glob, such as "**/*.ts".'),
+	glob: z
+		.string()
+		.nullable()
+		.describe(
+			'Only paths matching this glob, relative to the root. "*" stays inside one folder and "**" crosses folders: "**/*.ts" is every TypeScript file, "*.ts" only those at the top.',
+		),
 };
 
 /** One line as the model reads it: a minified bundle on a single line would flood its context. */
