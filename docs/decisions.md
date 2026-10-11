@@ -1624,6 +1624,8 @@ tags: #mikode-harness #tools #recovery
 - **A generic `description` on `ApprovalRequest`.** More general, but text a consumer cannot reason about. Rejected by the user.
 - **`taskkill /T /F` or Job Objects on Windows.** The first misses a process that leaves the tree; the second needs native code. Deferred.
 - **Trusting size and modification time** to skip unchanged files. Faster, but a command can change a file and keep both. Deferred until the measurements say it is needed.
+- **Keeping the last capture's contents** instead of freeing them, so the next command only reads and hashes. Much faster after the first command, at the cost of a lasting copy of the covered files in the state directory. The user chose to measure in #73 first.
+- **One sync at the end of a capture,** instead of one per stored content. Faster, but Node has no `syncfs`, so it would weaken the store's rule that nothing returns before it is on disk. Rejected by the user for now.
 
 **Consequences:**
 
