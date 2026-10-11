@@ -294,13 +294,20 @@ model APIs:
 
 - the planner and the reviewer read, with a `showChanges` tool that gives the current task's
   changes as far as each may read them;
-- the executor gets its provider's file tools. `autoApprove` and `maxSteps` reach only the
-  executor;
+- the executor gets its provider's file tools. `autoApprove` reaches only the executor;
 - each role gets the commands whose `roles` name it; a command names only the executor unless
   it says otherwise.
 
-A run stops after 50 calls to the model (`maxSteps`), or sooner when five in a row ask for
-exactly the same tool calls, which means the model is stuck.
+Each role's run stops after a number of calls to the model: 80 for the executor and 65 for
+the planner and the reviewer by default. `maxSteps` changes it, as one number for every role
+or per role, with no upper bound:
+
+```ts
+createLLMOrchestrator({ workspace, maxSteps: { executor: 120 } });
+```
+
+A run also stops sooner when five answers in a row ask for exactly the same tool calls,
+which means the model is stuck. `createLLMAgent` takes one number, 65 by default.
 
 Without `workspace` it works on the current directory, read only. One run of the
 orchestrator is one run of the history, every round included.
@@ -450,15 +457,19 @@ question never approves one. Piped lines answer the prompt and the history comma
 order. With `--llm`, the executor asks before a destructive change, such as one that would
 make `.gitignore` hide less.
 
-With `--llm`, the executor can also [run commands](#running-the-projects-commands) you
-configure for the repository, in `~/.config/mikode-harness/commands.json` (or under
-`$XDG_CONFIG_HOME`). The file maps each repository's real path to its commands, and lives
-outside every repository, so neither a cloned repository nor the agent decides what runs:
+With `--llm`, the agents can also [run commands](#running-the-projects-commands) you
+configure for the repository, in `~/.config/mikode-harness/config.json` (or under
+`$XDG_CONFIG_HOME`). The file maps each repository's real path to its `commands` and,
+optionally, its `maxSteps`. It lives outside every repository, so neither a cloned repository
+nor the agent decides what runs, or for how long:
 
 ```json
 {
 	"/Users/me/code/app": {
-		"test": { "description": "Runs the tests", "executable": "pnpm", "args": ["test"] }
+		"commands": {
+			"test": { "description": "Runs the tests", "executable": "pnpm", "args": ["test"] }
+		},
+		"maxSteps": { "executor": 120 }
 	}
 }
 ```

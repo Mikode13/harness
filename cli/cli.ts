@@ -14,7 +14,7 @@ import { parseArgs } from 'node:util';
 import { Output } from './adapters/output.ts';
 import { PromptEmitter } from './adapters/promptEmitter.ts';
 import { approvalKey, createTerminalApprover } from './terminalApprover.ts';
-import { commandsConfigPath, loadCommands } from './commandsConfig.ts';
+import { loadUserConfig, userConfigPath } from './userConfig.ts';
 import { HistoryCommands } from './historyCommands.ts';
 
 const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -44,10 +44,10 @@ const output = new Output();
 // `--llm` plans and reviews on the model APIs, which need ANTHROPIC_API_KEY and OPENAI_API_KEY.
 const { values: flags } = parseArgs({ options: { llm: { type: 'boolean', default: false } } });
 
-// The commands the executor may run here, such as the tests, from the user's own file.
-const commands = flags.llm ? await loadCommands(process.cwd()) : undefined;
+// The commands the agents may run here, and their step limits, from the user's own file.
+const { commands, maxSteps } = flags.llm ? await loadUserConfig(process.cwd()) : {};
 if (commands) {
-	output.print(`Commands from ${commandsConfigPath()}: ${Object.keys(commands).join(', ')}`);
+	output.print(`Commands from ${userConfigPath()}: ${Object.keys(commands).join(', ')}`);
 }
 
 const orchestratorAgent = flags.llm
@@ -55,6 +55,7 @@ const orchestratorAgent = flags.llm
 			// The executor changes files here; every change goes to the history /undo moves through.
 			workspace: { roots: [{ path: process.cwd(), access: 'write' }] },
 			...(commands ? { commands } : {}),
+			...(maxSteps === undefined ? {} : { maxSteps }),
 		})
 	: createOrchestrator({ autoApprove });
 // The history of what the harness's own write tools changed in this folder.

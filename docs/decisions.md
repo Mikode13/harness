@@ -1707,3 +1707,35 @@ The user chose:
   - **Polling something outside,** such as a command that reports CI status until it is done, sends the same call while the answer changes. Today that is a poll with no pause, since there is no tool to wait, and stopping it is no loss.
   - If a waiting tool is added, or polling becomes something a role should do, compare the results too. Then a run stops only when the same call returns the same result five times in a row. Hash each step's results beside its calls in `RepeatedCalls`, in `llmAgent.ts`.
 - Changing the default from 25 to 50 changes behavior for every consumer that left `maxSteps` out, inside the breaking release of #52.
+
+## Each role has its own step limit, which the consumer and the CLI can raise
+
+tags: #mikode-harness #llm #orchestration
+
+**Decision:**
+
+- **Defaults per role:** 80 calls for the executor, and 65 for the planner and the reviewer. `createLLMAgent` and `LLMAgent` take one number, 65 by default.
+- **`createLLMOrchestrator`'s `maxSteps`** takes one number for every role, or a number per role (`RoleSteps`), with no upper bound. A role left out keeps its default. A role that does not exist, such as a typo, is refused.
+- **The CLI** reads its settings from `~/.config/mikode-harness/config.json`, keyed by the repository's real path: `commands` and `maxSteps`. That replaces `commands.json`, and the old shape is refused rather than misread.
+- **Each step does more work, and the executor knows when to stop:**
+  - The model API roles are told to ask for several files or searches in one answer, because each answer is a step.
+  - The executor is told to finish as soon as the tests and checks pass and the plan is carried out, without adding work beyond the plan, because the reviewer asks for what is missing.
+
+**Context:** the second live run of #20, after #88, ended the same way as the first. The executor's work was green, and it went on polishing until it hit the limit of 50. That run's learnings are in [`learnings.md`](learnings.md). The user chose:
+
+- to raise the defaults, to 80 for the executor and 65 for the others;
+- to make the limits configurable, per role, from the API and the CLI, with no upper bound;
+- to tell the executor when it is done;
+- to ask for reads in parallel.
+
+**Alternatives considered:**
+
+- **One number, raised again.** It needs one change, but every task larger than the last one would need another raise, and nobody could adjust it without a release.
+- **A final call without tools at the limit.** It would keep a nearly finished run, but changes what `maxSteps` means. Not chosen again.
+- **The limit only through the API.** The CLI would stay on the defaults, and the live runs that found the problem could not raise it.
+
+**Consequences:**
+
+- `maxSteps` used to reach only the executor; now one number applies to every role. That is a change of behavior inside #52's breaking release.
+- `RoleSteps` joins the public API.
+- The CLI's users move their `commands.json` to `config.json`, under `commands`.

@@ -148,7 +148,7 @@ export class LLMAgent implements Agent {
 		llmClient,
 		messages,
 		tools = [],
-		maxSteps = 50,
+		maxSteps = 65,
 		autoApprove = false,
 		logger,
 		history,
@@ -157,7 +157,7 @@ export class LLMAgent implements Agent {
 		llmClient: LLMClient;
 		messages?: Message[];
 		tools?: AgentTool[];
-		/** How many calls to the model one run may make before it fails. Defaults to 50. */
+		/** How many calls to the model one run may make before it fails. Defaults to 65. */
 		maxSteps?: number;
 		/** Runs every tool call without asking, `destructive` ones included. Meant for CI. */
 		autoApprove?: boolean;
