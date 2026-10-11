@@ -61,13 +61,13 @@ import {
 export const llmModels = {
 	anthropic: claudeLLMModels,
 	openai: openAIModels,
-} as const satisfies Record<AgentProvider, readonly string[]>;
+} as const satisfies Readonly<Record<AgentProvider, readonly AgentModel[]>>;
 
 /** The reasoning efforts each provider's model API accepts. */
 export const llmReasoningEfforts = {
 	anthropic: claudeLLMReasoningEfforts,
 	openai: openAIReasoningEfforts,
-} as const satisfies Record<AgentProvider, readonly string[]>;
+} as const satisfies Readonly<Record<AgentProvider, readonly ReasoningEffort[]>>;
 
 /** Narrows a model to one accepted by the selected provider's model API. */
 export function isLLMModelOf<Provider extends AgentProvider>(

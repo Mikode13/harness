@@ -38,13 +38,13 @@ export function isAgentProvider(value: string): value is AgentProvider {
 export const agentModels = {
 	anthropic: claudeModels,
 	openai: codexModels,
-} as const satisfies Record<AgentProvider, readonly string[]>;
+} as const satisfies Readonly<Record<AgentProvider, readonly AgentModel[]>>;
 
 /** The reasoning efforts each provider's Agent SDK accepts. */
 export const agentReasoningEfforts = {
 	anthropic: claudeReasoningEfforts,
 	openai: codexReasoningEfforts,
-} as const satisfies Record<AgentProvider, readonly string[]>;
+} as const satisfies Readonly<Record<AgentProvider, readonly ReasoningEffort[]>>;
 
 /** Narrows a model to one accepted by the selected provider's Agent SDK. */
 export function isModelOf<Provider extends AgentProvider>(
