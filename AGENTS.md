@@ -54,6 +54,11 @@ the result of a run travels in `AgentResponse`, and progress stays optional narr
 and the public contract. Read it before placing a change, and update it in the same pull
 request when a change moves a boundary, a contract or an important flow.
 
+[`docs/decisions.md`](docs/decisions.md) records the choices made and their alternatives.
+[`docs/learnings.md`](docs/learnings.md) records what running, measuring or reviewing the
+harness taught us, such as a live run or a measurement. Add a lesson there in the pull request
+that learns it, and link the decision it led to instead of repeating it.
+
 A new engine implements `Agent`, routes each SDK call through `classifyProviderFailure` and
 each SDK stream through `classifiedProviderStream`, and is registered in `src/factory/`. Its
 constructor rejects any model or reasoning effort its provider does not support with
