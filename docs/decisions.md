@@ -1658,7 +1658,7 @@ tags: #mikode-harness #tools #security
 - The docs say plainly that commands are trusted execution, and that their safety is the consumer's choice of commands and the user's approval.
 - The secret rules of the file tools do not cover commands. A command can print a secret, which the model then reads in its output.
 
-## The live run of #52 decided three changes: commands per role, 50 steps, and a stop for loops
+## The live run of #52 decided commands per role, 50 steps, a stop for loops, and each role's end
 
 tags: #mikode-harness #tools #llm
 
@@ -1671,6 +1671,10 @@ tags: #mikode-harness #tools #llm
 - **`maxSteps` defaults to 50** for every role, up from 25.
 - **A run stops when five answers in a row ask for exactly the same tool calls,** by tool and input, ids aside. It fails with `UnrecoverableError` before the fifth set runs, as at the step limit. A call repeated with anything else in between, such as tests run again after an edit, does not count.
 - **`listFiles` and `searchText` explain their glob:** `*` stays inside one folder, and `**` crosses folders.
+- **The executor finishes on green tests, and the reviewer reviews the code.**
+  - The executor's instructions tell it to run the project's tests and checks before finishing, and to finish only when they pass, or to say which fail and why.
+  - The reviewer's instructions tell it that the tests have already passed, and not to run them again. It judges the change against the request, and any issue it names: that the plan is right for it, and that the change fulfills it.
+  - This refines "The reviewer judges like a senior engineer": the request still comes first. It also explains why the CLI's commands for this repository give `issue` to every role, but `test` and `check` only to the executor.
 
 **Context:** the live run of #20 through `--llm`, the test #73 asked for, found three things:
 
@@ -1680,6 +1684,7 @@ tags: #mikode-harness #tools #llm
 
 The user chose:
 
+- that the executor's end of the loop is green tests, and that the reviewer reviews the code against the issue and the plan, without running the tests again;
 - roles per command over read-only commands, so nothing depends on a command's promise not to write;
 - 50 steps;
 - the stop for five identical answers.

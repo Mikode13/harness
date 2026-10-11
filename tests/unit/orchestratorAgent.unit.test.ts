@@ -155,8 +155,10 @@ describe('OrchestratorAgent', () => {
 		expect(plannerInstructions).toContain('engineering-grade plan');
 		expect(plannerInstructions).toContain('do not require an architecture redesign yet');
 		expect(executorInstructions).toContain('Preserve contracts and boundaries');
+		expect(executorInstructions).toContain('finish only when they pass');
 		expect(reviewerInstructions).toContain('Independently inspect the repository');
-		expect(reviewerInstructions).toContain('plan compliance is secondary');
+		expect(reviewerInstructions).toContain('do not run them again');
+		expect(reviewerInstructions).toContain('check that the plan is right for it');
 		expect(reviewerInstructions).toContain(
 			'{"decision":"rejected","feedback":"list concrete, prioritized findings',
 		);
