@@ -41,7 +41,7 @@ const autoApprove = true;
 
 const output = new Output();
 
-// `--llm` plans and reviews on the model APIs, which need ANTHROPIC_API_KEY and OPENAI_API_KEY.
+// `--llm` runs all three roles on the model APIs, which need ANTHROPIC_API_KEY and OPENAI_API_KEY.
 const { values: flags } = parseArgs({ options: { llm: { type: 'boolean', default: false } } });
 
 // The commands the agents may run here, and their step limits, from the user's own file.
