@@ -92,6 +92,36 @@ function emit(event: ProgressEvent, callback: Callback): void {
 	);
 }
 
+/** `value` with the keys of every object sorted, so equal inputs serialize alike. */
+function canonical(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(canonical);
+	if (typeof value !== 'object' || value === null) return value;
+	return Object.fromEntries(
+		Object.entries(value)
+			.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+			.map(([key, inner]) => [key, canonical(inner)]),
+	);
+}
+
+// A model that asks for exactly the same calls this many times in a row is stuck: it already
+// has what they return, and running them again changes nothing.
+const maxRepeatedSteps = 5;
+
+/** How many steps in a row have asked for exactly the same tool calls, with the same input. */
+class RepeatedCalls {
+	private last: string | undefined;
+	private times = 0;
+
+	count(calls: readonly ToolCallPart[]): number {
+		// Keys sorted at every level: the same input with its properties in another order is the
+		// same call. Arrays, and the order of the calls, keep theirs.
+		const key = JSON.stringify(calls.map(call => [call.name, canonical(call.input)]));
+		this.times = key === this.last ? this.times + 1 : 1;
+		this.last = key;
+		return this.times;
+	}
+}
+
 /**
  * An agent whose conversation is owned by MiKode: every run sends the whole context to a
  * stateless `LLMClient`. Within a run the model may call the agent's tools; the agent runs them
@@ -118,7 +148,7 @@ export class LLMAgent implements Agent {
 		llmClient,
 		messages,
 		tools = [],
-		maxSteps = 25,
+		maxSteps = 50,
 		autoApprove = false,
 		logger,
 		history,
@@ -127,7 +157,7 @@ export class LLMAgent implements Agent {
 		llmClient: LLMClient;
 		messages?: Message[];
 		tools?: AgentTool[];
-		/** How many calls to the model one run may make before it fails. */
+		/** How many calls to the model one run may make before it fails. Defaults to 50. */
 		maxSteps?: number;
 		/** Runs every tool call without asking, `destructive` ones included. Meant for CI. */
 		autoApprove?: boolean;
@@ -502,6 +532,7 @@ export class LLMAgent implements Agent {
 
 			// After following the history, which may have made every earlier read stale.
 			const reads = this.reads.begin();
+			const repeats = new RepeatedCalls();
 			for (let step = 1; step <= this.maxSteps; step++) {
 				const response = await this.llmCall(runMessages, after, signal);
 				tokens = addTokens(tokens, response.usage);
@@ -531,6 +562,13 @@ export class LLMAgent implements Agent {
 						tokens: unreported ? undefined : tokens,
 						duration: (Date.now() - start) / 1000,
 					};
+				}
+
+				// Before running them again: the model has already seen what they return.
+				if (repeats.count(calls) >= maxRepeatedSteps) {
+					throw new UnrecoverableError('The LLM repeated the same tool calls', {
+						cause: `The model asked for the same tool calls ${String(maxRepeatedSteps)} times in a row.`,
+					});
 				}
 
 				// On the last step no call is left to send the results to, so the tools do not run.

@@ -18,7 +18,12 @@ import { InvalidAgentConfigError } from '#src/shared/domain/errors';
 import type { ILogger } from '#src/shared/domain/logger';
 import { Logger } from '#src/shared/infrastructure/logger';
 import type { WorkspaceRoot } from '#src/tools/domain/accessPolicy';
-import type { Commands } from '#src/tools/domain/commands';
+import {
+	type CommandRole,
+	type Commands,
+	commandsFor,
+	validateCommands,
+} from '#src/tools/domain/commands';
 import type { AgentTool } from '#src/tools/domain/preparedCall';
 import type { Tool } from '#src/tools/domain/tool';
 import {
@@ -68,7 +73,10 @@ export interface CreateLLMAgentOptions {
 	 * effort, and the call is billed with the run's tokens. Defaults to `true`.
 	 */
 	summarizeUndone?: boolean;
-	/** How many calls to the model one run may make before it fails. Defaults to 25. */
+	/**
+	 * How many calls to the model one run may make before it fails. Defaults to 50. A run that asks
+	 * for exactly the same tool calls 5 times in a row fails before that.
+	 */
 	maxSteps?: number;
 	/**
 	 * Runs every tool call without asking, `destructive` ones included, for CI where no one can
@@ -86,11 +94,15 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	 * read only.
 	 */
 	workspace?: WorkspaceOptions;
-	/** How many calls to the model one executor run may make. Defaults to 25. */
+	/**
+	 * How many calls to the model one executor run may make. Defaults to 50, as for every role. A
+	 * run that asks for exactly the same tool calls 5 times in a row fails before that.
+	 */
 	maxSteps?: number;
 	/**
-	 * Commands the executor may run, such as the project's tests, through `runCommand`. See
-	 * `createFileTools`. Each needs a `write` root to run in.
+	 * Commands the roles may run, such as the project's tests, through `runCommand`. Each goes to
+	 * the roles its `roles` names, the executor by default. See `createFileTools`. Each needs a
+	 * `write` root to run in.
 	 */
 	commands?: Commands;
 	/**
@@ -323,6 +335,7 @@ export async function createFileTools(
 ): Promise<FileTool[]> {
 	// Reachable from untyped input.
 	if (!isAgentProvider(provider)) throw unknownProvider(provider);
+	if (commands !== undefined) validateCommands(commands);
 	const opened = await openWorkspace(workspace, logger);
 	return (await executorTools(provider, opened, commands)) as unknown as FileTool[];
 }
@@ -334,15 +347,30 @@ async function executorTools(
 	commands: Commands | undefined,
 ): Promise<AgentTool[]> {
 	const tools = fileToolsFor(provider, workspace);
-	if (commands === undefined) return tools;
+	// Every command may belong to other roles, leaving none for this one.
+	if (commands === undefined || Object.keys(commands).length === 0) return tools;
 	return [...tools, await commandToolFor(workspace, commands)];
 }
 
-/** What the planner and the reviewer read with: no edits, and the current task's changes. */
-function readingTools(workspace: OpenedWorkspace): AgentTool[] {
+/**
+ * What the planner and the reviewer read with: no edits, the current task's changes, and the
+ * commands given to their role.
+ */
+async function readingTools(
+	workspace: OpenedWorkspace,
+	role: CommandRole,
+	commands: Commands | undefined,
+): Promise<AgentTool[]> {
 	const { read, policy, store } = workspace;
 	const finding = createWorkspaceTools(read).filter(tool => tool.name !== 'readFile');
-	return [...finding, createTrackedReadFile(policy), createShowChangesTool({ store, policy })];
+	const tools = [
+		...finding,
+		createTrackedReadFile(policy),
+		createShowChangesTool({ store, policy }),
+	];
+	const own = commands && commandsFor(commands, role);
+	if (!own || Object.keys(own).length === 0) return tools;
+	return [...tools, await commandToolFor(workspace, own)];
 }
 
 // Sent after the workspace's roots, so it stays short: it only says how to find one's way
@@ -358,7 +386,9 @@ const repositoryGuidance =
  * - The planner and the reviewer read: `listFiles`, `searchText`, `readFile`, and
  *   `showChanges`, the current task's changes as far as each may read them.
  * - The executor gets its provider's file tools (see `createFileTools`), and changes files only
- *   in a `write` root; `autoApprove`, `maxSteps` and `commands` reach only it.
+ *   in a `write` root; `autoApprove` and `maxSteps` reach only it.
+ * - Each role gets `runCommand` with the `commands` whose `roles` name it, the executor by
+ *   default. A command asks the approver in any role, and its files are captured around it.
  *
  * One run of the orchestrator is one run of the workspace's history, every round and retry
  * included, and its `AgentResponse` names it. Every role follows what the user undoes.
@@ -389,28 +419,46 @@ export async function createLLMOrchestrator({
 		own === undefined
 			? withGuidance(instructions, `${guidance}\n${repositoryGuidance}`)
 			: withGuidance(own, guidance);
-	const reader = ({ provider, model, reasoningEffort }: Role, systemPrompt: string) =>
+	// Every command, checked once, before any role takes its share.
+	if (commands !== undefined) validateCommands(commands);
+	const reader = async (
+		{ provider, model, reasoningEffort }: Role,
+		role: CommandRole,
+		systemPrompt: string,
+	) =>
 		buildLLMAgent(provider, {
 			model,
 			reasoningEffort,
 			systemPrompt,
-			tools: readingTools(opened),
+			tools: await readingTools(opened, role, commands),
 			...shared,
 		});
 	const { executor } = roles;
 
 	return new OrchestratorAgent({
-		plannerAgent: reader(roles.planner, prompt(systemPrompts.planner, plannerInstructions)),
+		plannerAgent: await reader(
+			roles.planner,
+			'planner',
+			prompt(systemPrompts.planner, plannerInstructions),
+		),
 		executorAgent: buildLLMAgent(executor.provider, {
 			model: executor.model,
 			reasoningEffort: executor.reasoningEffort,
 			systemPrompt: prompt(systemPrompts.executor, executorInstructions),
-			tools: await executorTools(executor.provider, opened, commands),
+			tools: await executorTools(
+				executor.provider,
+				opened,
+				commands && commandsFor(commands, 'executor'),
+			),
 			maxSteps,
 			autoApprove,
 			...shared,
 		}),
-		reviewerAgent: reader(roles.reviewer, prompt(systemPrompts.reviewer, reviewerInstructions)),
+		reviewerAgent: await reader(
+			roles.reviewer,
+			'reviewer',
+			prompt(systemPrompts.reviewer, reviewerInstructions),
+		),
 		reviewerDecisionValidator: new ReviewerDecisionValidator(),
 		logger,
 	});

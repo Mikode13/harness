@@ -669,6 +669,30 @@ describe('createLLMOrchestrator', () => {
 		expect(declared(requestsOf(claudeCreate)[0])).not.toContain('runCommand');
 	});
 
+	it('gives each role the commands whose roles name it, the executor by default', async () => {
+		const openAICreate = openAIReplying('plan');
+		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
+		const commands = {
+			issue: { description: 'Shows an issue', executable: 'true', roles: ['planner' as const] },
+			test: { description: 'Runs the tests', executable: 'true' },
+		};
+
+		await (
+			await createLLMOrchestrator({ workspace, commands, logger: createLogger() })
+		).run('ship it', { signal });
+
+		const [planner, executor] = requestsOf(openAICreate);
+		const runCommand = (request: unknown) =>
+			((request as { tools?: { name?: string; description?: string }[] }).tools ?? []).find(
+				tool => tool.name === 'runCommand',
+			)?.description;
+		expect(runCommand(planner)).toContain('- issue: Shows an issue');
+		expect(runCommand(planner)).not.toContain('- test:');
+		expect(runCommand(executor)).toContain('- test: Runs the tests');
+		expect(runCommand(executor)).not.toContain('- issue:');
+		expect(declared(requestsOf(claudeCreate)[0])).not.toContain('runCommand');
+	});
+
 	it('gives the executor only reading tools in a workspace with no write root', async () => {
 		const openAICreate = openAIReplying('plan');
 		claudeAPIReplying('{"decision":"approved"}');

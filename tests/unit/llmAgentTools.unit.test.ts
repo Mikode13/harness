@@ -326,6 +326,107 @@ describe('LLMAgent with tools', () => {
 		expect(events).not.toContainEqual(expect.objectContaining({ id: 'call-2' }));
 	});
 
+	it('defaults to 50 steps', async () => {
+		const weather = fakeTool('weather');
+		const cities = Array.from({ length: 50 }, (_, index) =>
+			assistantResponse([
+				toolCall(`call-${String(index)}`, 'weather', { city: `City ${String(index)}` }),
+			]),
+		);
+		const llmClient = new FakeLLMClient(...cities, textResponse('never'));
+
+		await expect(
+			new LLMAgent({ llmClient, tools: [weather] }).run('prompt', { signal }),
+		).rejects.toThrow('The LLM did not finish within its step limit');
+		expect(llmClient.contexts).toHaveLength(50);
+	});
+
+	// Each step's calls get new ids; what makes them the same is the tool and its input.
+	it('stops a model that asks for the same calls five times in a row, before the fifth runs', async () => {
+		const weather = fakeTool('weather');
+		const same = (id: string) => assistantResponse([toolCall(id, 'weather', { city: 'Madrid' })]);
+		const llmClient = new FakeLLMClient(
+			same('a'),
+			same('b'),
+			same('c'),
+			same('d'),
+			same('e'),
+			textResponse('never'),
+		);
+
+		await expect(
+			new LLMAgent({ llmClient, tools: [weather] }).run('prompt', { signal }),
+		).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			message: 'The LLM repeated the same tool calls',
+			cause: 'The model asked for the same tool calls 5 times in a row.',
+			tokens: { inputTokens: 5, outputTokens: 5 },
+		});
+		expect(weather.execute).toHaveBeenCalledTimes(4);
+	});
+
+	it('counts the same input with its properties in another order as the same call', async () => {
+		const weather = fakeTool('weather');
+		const call = (id: string, input: Record<string, unknown>) =>
+			assistantResponse([toolCall(id, 'weather', input)]);
+		const forward = { city: 'Madrid', options: { unit: 'C', days: [1, 2] } };
+		const backward = { options: { days: [1, 2], unit: 'C' }, city: 'Madrid' };
+		const llmClient = new FakeLLMClient(
+			call('a', forward),
+			call('b', backward),
+			call('c', forward),
+			call('d', backward),
+			call('e', forward),
+			textResponse('never'),
+		);
+
+		await expect(
+			new LLMAgent({ llmClient, tools: [weather] }).run('prompt', { signal }),
+		).rejects.toThrow('The LLM repeated the same tool calls');
+		expect(weather.execute).toHaveBeenCalledTimes(4);
+	});
+
+	it('tells apart inputs whose arrays hold the same items in another order', async () => {
+		const weather = fakeTool('weather');
+		const call = (id: string, days: number[]) =>
+			assistantResponse([toolCall(id, 'weather', { city: 'Madrid', days })]);
+		const llmClient = new FakeLLMClient(
+			call('a', [1, 2]),
+			call('b', [2, 1]),
+			call('c', [1, 2]),
+			call('d', [2, 1]),
+			call('e', [1, 2]),
+			textResponse('done'),
+		);
+
+		await expect(
+			new LLMAgent({ llmClient, tools: [weather] }).run('prompt', { signal }),
+		).resolves.toMatchObject({ response: 'done' });
+	});
+
+	it('lets a model repeat a call with something else between, or four times in a row', async () => {
+		const weather = fakeTool('weather');
+		const call = (id: string, city: string) =>
+			assistantResponse([toolCall(id, 'weather', { city })]);
+		const llmClient = new FakeLLMClient(
+			call('1', 'Madrid'),
+			call('2', 'Madrid'),
+			call('3', 'Madrid'),
+			call('4', 'Madrid'),
+			call('5', 'Oslo'),
+			call('6', 'Madrid'),
+			call('7', 'Madrid'),
+			call('8', 'Madrid'),
+			call('9', 'Madrid'),
+			textResponse('done'),
+		);
+
+		await expect(
+			new LLMAgent({ llmClient, tools: [weather] }).run('prompt', { signal }),
+		).resolves.toMatchObject({ response: 'done' });
+		expect(weather.execute).toHaveBeenCalledTimes(9);
+	});
+
 	it('reports the tokens of every step', async () => {
 		const llmClient = new FakeLLMClient(
 			assistantResponse([madridCall], {

@@ -949,7 +949,7 @@ tags: #mikode-harness #provider-integration #public-api
 
 **Decision:** `AgentProvider` is `'anthropic' | 'openai'`, for `createAgent`, `createOrchestrator` and `createLLMAgent` alike. A provider is the company that authenticates and bills the call; whether it is reached through its Agent SDK (Claude Code, Codex) or its model API is the factory's choice. The model API clients also take the Agent SDK's names, so one role of the orchestrator's table can run on either path:
 
-- `ClaudeLLMClient` takes `opus`, `fable` and `sonnet`, and sends the ID each one pins: `claude-opus-5-5`, `claude-fable-5-1` and `claude-sonnet-5`. Haiku is left out, because it has no adaptive thinking.
+- `ClaudeLLMClient` takes `opus`, `fable` and `sonnet`, and sends the ID each one pins: `claude-opus-5-5`, `claude-fable-5-1` and `claude-sonnet-5`. Haiku was left out at first, because it has no adaptive thinking; #81 added it (`claude-haiku-4-5`), without thinking or an effort, for the summary of what was undone.
 - Both clients take a `reasoningEffort`, `high` by default as on the engines: `output_config.effort` on Anthropic and `reasoning.effort` on OpenAI. Each validates its own list, from `low` to `max`. Codex's `ultra` has no API equivalent, so the API clients reject it.
 
 **Context:** slice 7 of #23 puts the planner and reviewer on the model APIs, where the provider had been `'openai'` while the SDK path called the same company `'codex'`. Calling both `'codex'` would tell a caller it reaches Codex through a ChatGPT login, when the API path needs `OPENAI_API_KEY` and bills per token. Without an effort, a role on the API path ran at the provider's default and lost the effort its role sets on the SDK path.
@@ -1657,3 +1657,53 @@ tags: #mikode-harness #tools #security
 
 - The docs say plainly that commands are trusted execution, and that their safety is the consumer's choice of commands and the user's approval.
 - The secret rules of the file tools do not cover commands. A command can print a secret, which the model then reads in its output.
+
+## The live run of #52 decided commands per role, 50 steps, a stop for loops, and each role's end
+
+tags: #mikode-harness #tools #llm
+
+**Decision:**
+
+- **A command declares the roles that get it** (`roles`: `planner`, `executor`, `reviewer`), the executor by default.
+  - Each role of `createLLMOrchestrator` gets `runCommand` with its own share.
+  - The checkpoint runs whoever runs the command, and every call asks the approver.
+  - `createFileTools` has no roles, so it offers every command.
+- **`maxSteps` defaults to 50** for every role, up from 25.
+- **A run stops when five answers in a row ask for exactly the same tool calls,** by tool and input, ids aside. It fails with `UnrecoverableError` before the fifth set runs, as at the step limit. A call repeated with anything else in between, such as tests run again after an edit, does not count.
+- **`listFiles` and `searchText` explain their glob:** `*` stays inside one folder, and `**` crosses folders.
+- **The executor finishes on green tests, and the reviewer reviews the code.**
+  - The executor's instructions tell it to run the project's tests and checks before finishing, and to finish only when they pass, or to say which fail and why.
+  - The reviewer's instructions tell it that the tests have already passed, and not to run them again. It judges the change against the request, and any issue it names: that the plan is right for it, and that the change fulfills it.
+  - This refines "The reviewer judges like a senior engineer": the request still comes first. It also explains why the CLI's commands for this repository give `issue` to every role, but `test` and `check` only to the executor.
+
+**Context:** the live run of #20 through `--llm`, the test #73 asked for, found three things:
+
+- The planner tried to read the issue with the `issue` command, which only the executor had.
+- The model took the glob `*` to be recursive.
+- The executor finished its work, then hit the limit of 25 steps while still checking it, so the run failed and the reviewer never ran.
+
+The user chose:
+
+- that the executor's end of the loop is green tests, and that the reviewer reviews the code against the issue and the plan, without running the tests again;
+- roles per command over read-only commands, so nothing depends on a command's promise not to write;
+- 50 steps;
+- the stop for five identical answers.
+
+**Alternatives considered:**
+
+- **Read-only commands for every role, without a checkpoint.** Cheaper, but "read only" would be the consumer's promise, which the harness cannot check. Rejected by the user.
+- **A final call without tools at the step limit,** to end with a summary. It would change what `maxSteps` means. Not chosen.
+- **Comparing the results of repeated calls too.** It would let a model poll something that changes, but a stuck model gets the same results anyway. The user kept the rule on calls alone; see when that stops being enough under Consequences.
+- **Counting calls to the same tool, whatever their input.** It would catch a loop that changes its input a little each time, but reading five files, or applying five patches, in a row is ordinary work. A threshold high enough to spare that would catch little the step limit does not.
+- **A `repeatable` flag on `Tool`,** to exempt a tool from the rule. Explicit, but a field more in the public contract, which a consumer has to know about. Not needed while the rule only catches identical calls.
+
+**Consequences:**
+
+- A planner or reviewer command shows in the history like the executor's, since every role shares the run.
+- A run that loops spends at most five of its steps on the loop.
+- **Where the loop rule would stop a run wrongly, and how to fix it.** It stops five identical calls in a row, by tool and input.
+  - A tool designed well passes its position as input, such as a cursor or `fromLine`, so paging through results never trips it. The harness's own tools do.
+  - **A tool that keeps hidden state,** such as `nextPage({})` with an internal cursor, would trip it while still making progress. The fix belongs in that tool: take the cursor as input.
+  - **Polling something outside,** such as a command that reports CI status until it is done, sends the same call while the answer changes. Today that is a poll with no pause, since there is no tool to wait, and stopping it is no loss.
+  - If a waiting tool is added, or polling becomes something a role should do, compare the results too. Then a run stops only when the same call returns the same result five times in a row. Hash each step's results beside its calls in `RepeatedCalls`, in `llmAgent.ts`.
+- Changing the default from 25 to 50 changes behavior for every consumer that left `maxSteps` out, inside the breaking release of #52.
