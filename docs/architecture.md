@@ -123,9 +123,9 @@ with `isLLMModelOf` and `isLLMReasoningEffortOf`. It also exports the option and
 the model-backed agent's tools it also exports the `Tool`,
 `ToolDefinition`, `JSONSchema`, `Workspace` and `TextMatch` types, `defineTool`,
 `createWorkspace` and `createWorkspaceTools`. For agents that change files it exports
-`createFileTools` and the `FileTool`, `WorkspaceOptions`, `WorkspaceRoot`, `SecretRules` and
-`CreateLLMOrchestratorOptions` types, and for the commands they run the `Commands`,
-`CommandDefinition`, `CommandArgument` and `CommandParameter` types. For the history of what those runs wrote it exports `createHistory`, the `History`, `HistoryRun`, `Move`, `MoveOptions` and `RunStatus` types,
+`createFileTools` and the `FileTool`, `WorkspaceOptions`, `WorkspaceRoot`, `SecretRules`,
+`CreateLLMOrchestratorOptions` and `RoleSteps` types, and for the commands they run the
+`Commands`, `CommandDefinition`, `CommandArgument`, `CommandParameter` and `CommandRole` types. For the history of what those runs wrote it exports `createHistory`, the `History`, `HistoryRun`, `Move`, `MoveOptions` and `RunStatus` types,
 `historyStart`, and the `WorkspaceBusyError`, `WorkspaceMovedError`, `NothingToMoveError`,
 `UnknownRunError` and `HistoryExpiredError` errors; `AgentResponse.runId` names the run a writing run recorded. `defineTool` takes a Zod 4 schema, so Zod's major
 version is part of the contract, and `zod` is a peer dependency, so the consumer's schemas and
@@ -289,10 +289,12 @@ each other's.
   WebSocket consumer would call `Agent.run()` per request and want none of it. It stays out of
   the tarball too — `files` lists `dist` only, and `scripts/pack-check.mjs` fails on anything
   else reaching it.
-- **Only the executor changes files, and only a destructive call is held back.**
-  `createLLMOrchestrator` gives its planner and reviewer reading tools only, so nothing a model
-  runs there can change a file; the executor changes files only in a `write` root, each change
-  recorded before it is made. Each tool judges each call `safe`, `mutating` or
+- **Only the executor edits files, and only a destructive call is held back.**
+  `createLLMOrchestrator` gives its planner and reviewer reading tools only, so they edit nothing
+  through a file tool; the executor changes files only in a `write` root, each change recorded
+  before it is made. A command given to the planner's or the reviewer's role can still change
+  files, like any command: its checkpoint captures them into the run's history, and every call
+  asks the approver. Each tool judges each call `safe`, `mutating` or
   `destructive`; `LLMAgent` asks the run's `approve` only about a `destructive` one, and denies
   it when there is none. A `mutating` call runs unasked, because git can undo it, so a tool
   that changes something git does not track must count as `destructive`.
