@@ -1,4 +1,4 @@
-import type { ToolRisk } from '#src/agent/domain/approval';
+import type { CommandLine, ToolRisk } from '#src/agent/domain/approval';
 import type { ToolDefinition } from '#src/llm/domain/tool';
 import type { ToolCallContext } from './readRegistry.ts';
 import type { Tool } from './tool.ts';
@@ -11,6 +11,8 @@ export interface PreparedCall {
 	readonly risk: ToolRisk;
 	/** For a change to a file, what it will change as a unified diff, fixed when prepared. */
 	readonly diff?: string;
+	/** For a call that runs a configured command, what it will run, fixed when prepared. */
+	readonly command?: CommandLine;
 	run(signal: AbortSignal): Promise<string>;
 }
 

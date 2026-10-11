@@ -10,8 +10,11 @@ import { InvalidAgentConfigError, UnrecoverableError } from '#src/shared/domain/
 import type { ILogger } from '#src/shared/domain/logger';
 import { describeFailure } from '#src/shared/domain/providerFailure';
 import type { AccessPolicy, WorkspaceRoot } from '../domain/accessPolicy.ts';
+import type { Commands } from '../domain/commands.ts';
 import type { AgentTool } from '../domain/preparedCall.ts';
 import type { Workspace } from '../domain/workspace.ts';
+import type { CoveredFiles } from './commandCheckpoint.ts';
+import { createCommandTool } from './commandTool.ts';
 import { chooseWorkspace } from './createWorkspace.ts';
 import { createApplyPatchTool, createDeleteFileTool, createTextEditorTool } from './editFormats.ts';
 import { GitIgnoreRules } from './gitIgnoreRules.ts';
@@ -54,6 +57,10 @@ export interface OpenedWorkspace {
 	readonly read: Workspace;
 	readonly writes: WorkspaceWrites;
 	readonly writable: boolean;
+	/** The real path of the first root. */
+	readonly base: string;
+	/** What a command's checkpoint captures and compares: see `CoveredFiles`. */
+	readonly covered: CoveredFiles;
 }
 
 /**
@@ -127,7 +134,60 @@ export async function openWorkspace(
 		read,
 		writes: new WorkspaceWrites({ policy, store }),
 		writable: roots.some(({ access }) => access === 'write'),
+		base: root,
+		covered: coveredFiles(roots, policy, logger),
 	};
+}
+
+/**
+ * Lists every file of the `write` roots that `.gitignore` does not exclude, less what the policy
+ * closes to writing by name, before anything is read. Each root is listed by its own program,
+ * opened on the first listing.
+ */
+function coveredFiles(
+	roots: WorkspaceRoot[],
+	policy: RootsAccessPolicy,
+	logger: ILogger,
+): CoveredFiles {
+	let listers: Promise<{ root: string; workspace: Workspace }[]> | undefined;
+	const open = () =>
+		Promise.all(
+			roots
+				.filter(({ access }) => access === 'write')
+				.map(async ({ path }) => {
+					const root = await realpath(resolve(path));
+					const workspace = await chooseWorkspace({
+						root,
+						logger,
+						hidden: relativePath => policy.closedToWriting(join(root, relativePath)),
+					});
+					return { root, workspace };
+				}),
+		);
+
+	return async signal => {
+		listers ??= open().catch((error: unknown) => {
+			// Not kept: the next command tries again.
+			listers = undefined;
+			throw error;
+		});
+		const files = new Set<string>();
+		for (const { root, workspace } of await listers) {
+			const listed = await workspace.listFiles({ limit: Number.MAX_SAFE_INTEGER }, signal);
+			for (const path of listed.files) files.add(join(root, path));
+		}
+		return [...files];
+	};
+}
+
+/**
+ * `runCommand` over an opened workspace: see `createCommandTool`.
+ *
+ * @throws {InvalidAgentConfigError} for an invalid configuration, or on Windows.
+ */
+export function commandToolFor(workspace: OpenedWorkspace, commands: Commands): Promise<AgentTool> {
+	const { policy, writes, covered, base } = workspace;
+	return createCommandTool({ commands, policy, writes, covered, base });
 }
 
 /**

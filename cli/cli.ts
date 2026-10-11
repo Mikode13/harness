@@ -13,7 +13,8 @@ import { clearLine, cursorTo } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { Output } from './adapters/output.ts';
 import { PromptEmitter } from './adapters/promptEmitter.ts';
-import { createTerminalApprover } from './terminalApprover.ts';
+import { approvalKey, createTerminalApprover } from './terminalApprover.ts';
+import { commandsConfigPath, loadCommands } from './commandsConfig.ts';
 import { HistoryCommands } from './historyCommands.ts';
 
 const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -43,10 +44,17 @@ const output = new Output();
 // `--llm` plans and reviews on the model APIs, which need ANTHROPIC_API_KEY and OPENAI_API_KEY.
 const { values: flags } = parseArgs({ options: { llm: { type: 'boolean', default: false } } });
 
+// The commands the executor may run here, such as the tests, from the user's own file.
+const commands = flags.llm ? await loadCommands(process.cwd()) : undefined;
+if (commands) {
+	output.print(`Commands from ${commandsConfigPath()}: ${Object.keys(commands).join(', ')}`);
+}
+
 const orchestratorAgent = flags.llm
 	? await createLLMOrchestrator({
 			// The executor changes files here; every change goes to the history /undo moves through.
 			workspace: { roots: [{ path: process.cwd(), access: 'write' }] },
+			...(commands ? { commands } : {}),
 		})
 	: createOrchestrator({ autoApprove });
 // The history of what the harness's own write tools changed in this folder.
@@ -61,14 +69,17 @@ let turnActive = false;
 // One memory for the whole session: "always" holds until the CLI exits. The spinner would
 // overwrite the question, so it stops while the user answers.
 const askInTerminal = createTerminalApprover(promptEmitter, output);
-const approve = rememberApprovals(async (request, signal) => {
-	stopSpinner();
-	try {
-		return await askInTerminal(request, signal);
-	} finally {
-		startSpinner();
-	}
-});
+const approve = rememberApprovals(
+	async (request, signal) => {
+		stopSpinner();
+		try {
+			return await askInTerminal(request, signal);
+		} finally {
+			startSpinner();
+		}
+	},
+	{ key: approvalKey },
+);
 
 const loop = new ConversationLoop(
 	orchestratorAgent,

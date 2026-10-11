@@ -42,7 +42,8 @@ chat loop itself never knows the difference.
   between providers. It runs its own tool loop over the tools it is given. The
   harness ships tools that read the repository (list, search, read), bounded by
   `.gitignore`, and `createFileTools`, which also change files in each provider's
-  native format, every change recorded so it can be undone.
+  native format, every change recorded so it can be undone, and run the commands you
+  configure, such as the tests, recording what each one changed too.
 - **`OrchestratorAgent`**: coordinates a planner, an executor, and a reviewer
   (each an injected `Agent`) in a plan → execute → review loop. The reviewer's
   decision is a Zod-validated structured `{decision, feedback}`, not free text —
@@ -298,6 +299,45 @@ run in `AgentResponse.runId`. Progress reports each change as a unified `diff` o
 Without `workspace` it works on the current directory, read only. One run of the
 orchestrator is one run of the history, every round included.
 
+### Running the project's commands
+
+With `commands`, `createFileTools` and `createLLMOrchestrator` add `runCommand`, which runs
+one of the commands you configure, by name. Nothing goes through a shell, and the model
+fills only the parameters a command declares:
+
+```ts
+const tools = await createFileTools('openai', workspace, {
+	commands: {
+		test: {
+			description: 'Runs the tests. Give the test files to run only those.',
+			executable: 'pnpm',
+			args: ['vitest', 'run', '--', { type: 'paths', name: 'files', description: 'Test files' }],
+		},
+		format: { description: 'Formats the repository', executable: 'pnpm', args: ['format'] },
+	},
+});
+```
+
+- **Parameters:** `paths` inside the roots that the agent may read; a `choice` among the
+  values you list; or `text` that matches your pattern and never starts with `-`.
+- **Approval:** every call asks the approver, which sees the exact program, arguments and
+  folder in `request.command`. `autoApprove` skips it.
+- **Environment:** a command inherits only `PATH`, `HOME`, `TMPDIR`, `USER`, `SHELL`, `LANG`
+  and `LC_*`, plus its own `env`. The provider keys never reach it.
+- **Limits:** 10 minutes, then its whole process group is stopped (`timeoutMs`). The model
+  reads the last 16 KB of its output (`outputBytes`).
+- **History:** the files of the `write` roots are captured before each command and compared
+  after it. What it changed is recorded in the history, so `undo` takes it back.
+  - Not covered: what `.gitignore` excludes (`node_modules`, build output), secrets, files
+    outside the roots, the network and remote services.
+  - A timeout or a cancellation is never reported as a finished command.
+- **Not on Windows yet.**
+
+A command is trusted execution, not a sandbox. A test runs the repository's code, including
+code the model just wrote, with everything your account can reach. The secret rules of the
+file tools do not apply to it, so a command can print a secret into the model's context.
+Configure only commands you would run yourself on that repository.
+
 ### Going back through what an agent wrote
 
 The harness's write tools record every run that changes files, outside the repository,
@@ -400,6 +440,22 @@ piped input nobody can answer, so such a call is denied: a line written for a la
 question never approves one. Piped lines answer the prompt and the history commands in
 order. With `--llm`, the executor asks before a destructive change, such as one that would
 make `.gitignore` hide less.
+
+With `--llm`, the executor can also [run commands](#running-the-projects-commands) you
+configure for the repository, in `~/.config/mikode-harness/commands.json` (or under
+`$XDG_CONFIG_HOME`). The file maps each repository's real path to its commands, and lives
+outside every repository, so neither a cloned repository nor the agent decides what runs:
+
+```json
+{
+	"/Users/me/code/app": {
+		"test": { "description": "Runs the tests", "executable": "pnpm", "args": ["test"] }
+	}
+}
+```
+
+The CLI shows each command as the line it will run before asking, and "always" allows
+that command again, not every command.
 
 `cli/cli.ts` currently enables `autoApprove` for its Agent SDK agents, not for `--llm`.
 This maps to each provider's permission-bypass mode and grants those processes

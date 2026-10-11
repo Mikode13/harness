@@ -655,6 +655,20 @@ describe('createLLMOrchestrator', () => {
 		expect(declared(requestsOf(claudeCreate)[0])).toEqual(reading);
 	});
 
+	it('gives only the executor the configured commands', async () => {
+		const openAICreate = openAIReplying('plan');
+		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
+		const commands = { test: { description: 'Runs the tests', executable: 'true' } };
+
+		await (
+			await createLLMOrchestrator({ workspace, commands, logger: createLogger() })
+		).run('ship it', { signal });
+
+		expect(declared(requestsOf(openAICreate)[0])).not.toContain('runCommand');
+		expect(declared(requestsOf(openAICreate)[1])).toContain('runCommand');
+		expect(declared(requestsOf(claudeCreate)[0])).not.toContain('runCommand');
+	});
+
 	it('gives the executor only reading tools in a workspace with no write root', async () => {
 		const openAICreate = openAIReplying('plan');
 		claudeAPIReplying('{"decision":"approved"}');
@@ -869,6 +883,26 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 		await expect(
 			createFileTools('gemini' as AgentProvider, workspace, { logger: createLogger() }),
 		).rejects.toThrow(InvalidAgentConfigError);
+	});
+
+	it('adds runCommand with commands, which need a write root to run in', async () => {
+		const commands = { test: { description: 'Runs the tests', executable: 'true' } };
+		const tools = await createFileTools('openai', workspace, { commands, logger: createLogger() });
+
+		expect(tools.map(tool => tool.name)).toEqual([
+			'listFiles',
+			'searchText',
+			'readFile',
+			'apply_patch',
+			'runCommand',
+		]);
+		await expect(
+			createFileTools(
+				'openai',
+				{ ...workspace, roots: [{ path: repo, access: 'read' }] },
+				{ commands, logger: createLogger() },
+			),
+		).rejects.toThrow('Command "test" needs a cwd inside a write root of the workspace');
 	});
 
 	it('refuses a workspace with no root when the agent is built', () => {

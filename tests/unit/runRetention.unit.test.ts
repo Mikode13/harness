@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { historyStart } from '../../src/recovery/domain/recoveryStore.ts';
+import { chainEntries } from '../../src/recovery/domain/retention.ts';
 import { HistoryExpiredError } from '../../src/recovery/domain/runTree.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
 import { type Edit, readUnder, recordRun } from '../support/recordedRuns.ts';
@@ -223,5 +224,26 @@ describe('keeping a bounded history of runs', () => {
 				FileRecoveryStore.open({ root, directory: join(parent, 'state'), keepRuns }),
 			).rejects.toBeInstanceOf(RangeError);
 		}
+	});
+});
+
+describe('chainEntries', () => {
+	const state = (hash: string) => ({ exists: true as const, hash, mode: 0o644 });
+	const entry = (sequence: number, before: string, after: string, observedBy?: string) => ({
+		sequence,
+		path: '/repo/a.ts',
+		before: state(before),
+		after: state(after),
+		...(observedBy === undefined ? {} : { observedBy }),
+		status: 'applied' as const,
+	});
+
+	it('keeps a change as seen around commands only when no tool made any part of it', () => {
+		expect(
+			chainEntries([entry(1, 'a', 'b', 'format')], [entry(1, 'b', 'c', 'lint')]),
+		).toMatchObject([{ before: state('a'), after: state('c'), observedBy: 'format, lint' }]);
+		expect(
+			chainEntries([entry(1, 'a', 'b', 'format')], [entry(1, 'b', 'c')])[0],
+		).not.toHaveProperty('observedBy');
 	});
 });

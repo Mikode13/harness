@@ -21,6 +21,11 @@ export class WorkspaceWrites {
 
 	/** An editor over this run's session, created on the run's first write tool call. */
 	editorFor(context: RunContext): FileEditor {
+		return new FileEditor({ policy: this.policy, session: this.sessionFor(context) });
+	}
+
+	/** Everything this run writes, its commands' changes included, created on its first write. */
+	sessionFor(context: RunContext): WriteSession {
 		let session = this.sessions.get(context);
 		if (!session) {
 			const created = new WriteSession({
@@ -38,6 +43,6 @@ export class WorkspaceWrites {
 			this.sessions.set(context, created);
 			session = created;
 		}
-		return new FileEditor({ policy: this.policy, session });
+		return session;
 	}
 }

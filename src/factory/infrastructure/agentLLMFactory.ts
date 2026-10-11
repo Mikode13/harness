@@ -18,9 +18,11 @@ import { InvalidAgentConfigError } from '#src/shared/domain/errors';
 import type { ILogger } from '#src/shared/domain/logger';
 import { Logger } from '#src/shared/infrastructure/logger';
 import type { WorkspaceRoot } from '#src/tools/domain/accessPolicy';
+import type { Commands } from '#src/tools/domain/commands';
 import type { AgentTool } from '#src/tools/domain/preparedCall';
 import type { Tool } from '#src/tools/domain/tool';
 import {
+	commandToolFor,
 	type FileTool,
 	fileToolsFor,
 	type OpenedWorkspace,
@@ -86,6 +88,11 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	workspace?: WorkspaceOptions;
 	/** How many calls to the model one executor run may make. Defaults to 25. */
 	maxSteps?: number;
+	/**
+	 * Commands the executor may run, such as the project's tests, through `runCommand`. See
+	 * `createFileTools`. Each needs a `write` root to run in.
+	 */
+	commands?: Commands;
 	/**
 	 * A summary of what the user undid, from the planner's provider's cheap model, for every
 	 * role. See `CreateLLMAgentOptions.summarizeUndone`. Defaults to `true`.
@@ -298,17 +305,37 @@ export function createLLMAgent(
  * so it can be undone. Without a `write` root the tools only read. Give the agent the same
  * `workspace`, so it follows what the history undoes.
  *
- * @throws {InvalidAgentConfigError} for an unknown provider, or a workspace with no root.
+ * With `commands`, they include `runCommand`, which runs one of them by name, with only the
+ * parameters it declares and never through a shell. Each run asks the approver, showing the
+ * program exactly as it will run, and gets a small environment without the provider keys. The
+ * files of the `write` roots are captured before it and compared after, so what it changed is
+ * in the history too. It is trusted execution, not a sandbox: a command can reach whatever
+ * this user can. Not supported on Windows yet.
+ *
+ * @throws {InvalidAgentConfigError} for an unknown provider, a workspace with no root, or an
+ * invalid command, including one whose `cwd` is not in a `write` root, or any on Windows.
  * @throws {UnrecoverableError} when no program can read the first root.
  */
 export async function createFileTools(
 	provider: AgentProvider,
 	workspace: WorkspaceOptions,
-	{ logger = new Logger() }: { logger?: ILogger } = {},
+	{ logger = new Logger(), commands }: { logger?: ILogger; commands?: Commands } = {},
 ): Promise<FileTool[]> {
 	// Reachable from untyped input.
 	if (!isAgentProvider(provider)) throw unknownProvider(provider);
-	return fileToolsFor(provider, await openWorkspace(workspace, logger)) as unknown as FileTool[];
+	const opened = await openWorkspace(workspace, logger);
+	return (await executorTools(provider, opened, commands)) as unknown as FileTool[];
+}
+
+/** The executor's file tools, and `runCommand` when there are commands. */
+async function executorTools(
+	provider: AgentProvider,
+	workspace: OpenedWorkspace,
+	commands: Commands | undefined,
+): Promise<AgentTool[]> {
+	const tools = fileToolsFor(provider, workspace);
+	if (commands === undefined) return tools;
+	return [...tools, await commandToolFor(workspace, commands)];
 }
 
 /** What the planner and the reviewer read with: no edits, and the current task's changes. */
@@ -331,7 +358,7 @@ const repositoryGuidance =
  * - The planner and the reviewer read: `listFiles`, `searchText`, `readFile`, and
  *   `showChanges`, the current task's changes as far as each may read them.
  * - The executor gets its provider's file tools (see `createFileTools`), and changes files only
- *   in a `write` root; `autoApprove` and `maxSteps` reach only it.
+ *   in a `write` root; `autoApprove`, `maxSteps` and `commands` reach only it.
  *
  * One run of the orchestrator is one run of the workspace's history, every round and retry
  * included, and its `AgentResponse` names it. Every role follows what the user undoes.
@@ -347,6 +374,7 @@ export async function createLLMOrchestrator({
 	systemPrompts = {},
 	workspace = { roots: [{ path: process.cwd(), access: 'read' }] },
 	maxSteps,
+	commands,
 	summarizeUndone = true,
 	logger = new Logger(),
 }: CreateLLMOrchestratorOptions = {}): Promise<Agent> {
@@ -377,7 +405,7 @@ export async function createLLMOrchestrator({
 			model: executor.model,
 			reasoningEffort: executor.reasoningEffort,
 			systemPrompt: prompt(systemPrompts.executor, executorInstructions),
-			tools: fileToolsFor(executor.provider, opened),
+			tools: await executorTools(executor.provider, opened, commands),
 			maxSteps,
 			autoApprove,
 			...shared,

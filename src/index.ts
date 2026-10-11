@@ -14,6 +14,12 @@ export {
 } from './factory/infrastructure/agentLLMFactory.ts';
 export type { FileTool, WorkspaceOptions } from './tools/infrastructure/fileTools.ts';
 export type { WorkspaceRoot } from './tools/domain/accessPolicy.ts';
+export type {
+	CommandArgument,
+	CommandDefinition,
+	CommandParameter,
+	Commands,
+} from './tools/domain/commands.ts';
 export type { SecretRules } from './tools/infrastructure/rootsAccessPolicy.ts';
 export {
 	agentProviders,
@@ -41,6 +47,7 @@ export {
 	type ApprovalDecision,
 	type ApprovalRequest,
 	type Approver,
+	type CommandLine,
 	type RememberableDecision,
 	type ToolRisk,
 } from './agent/domain/approval.ts';

@@ -17,7 +17,32 @@ export interface JournalEntry {
 	after: FileState;
 	/** Folders the change creates for a new file, outermost first: undo removes them if empty. */
 	createdFolders?: string[];
+	/**
+	 * The command whose run the change was seen around, for a change no tool of the harness made
+	 * itself. It was found by comparing the file before and after, not journaled before it was made.
+	 */
+	observedBy?: string;
 	status: 'prepared' | 'applied' | 'abandoned';
+}
+
+/**
+ * What a group of files held right before something outside the journal ran, such as a
+ * command: the content of each, by its real path, absolute. It is stored as content, and the
+ * journal names its hash before the command starts.
+ */
+export interface Manifest {
+	files: Record<string, FileState>;
+}
+
+/** What one observation cost: before and after together. */
+export interface ObservationMeasure {
+	/** Files captured before, and compared after. */
+	files: number;
+	bytesRead: number;
+	/** New content stored, which the store did not hold already. */
+	bytesStored: number;
+	/** Spent capturing and comparing, not running what was observed. */
+	durationMs: number;
 }
 
 /**
@@ -65,6 +90,21 @@ export interface RunJournal {
 	applied(sequence: number): Promise<void>;
 	/** The change was not made, and the file still holds its `before`. */
 	abandoned(sequence: number): Promise<void>;
+	/**
+	 * Records that `by`, such as a command, is about to change files the journal cannot see it
+	 * change, and that the stored `manifest` holds what they hold now. Each change it makes is
+	 * then recorded as its own entry, prepared and applied at once, before `observed`. If the run
+	 * stops first, the next run settles it: every file of the manifest that changed since is
+	 * recorded as changed by `by`. A file it created is not in the manifest, and is then missed.
+	 */
+	observe(manifest: string, by: string): Promise<number>;
+	/**
+	 * Every change the observation found is recorded. `measure`, what capturing and comparing the
+	 * files cost, is kept with it.
+	 */
+	observed(sequence: number, measure?: ObservationMeasure): Promise<void>;
+	/** How many bytes of content this run stored that the store did not hold yet. */
+	readonly storedBytes: number;
 	/**
 	 * Whether a change it recorded may have reached a file: one prepared and not abandoned. It
 	 * holds whatever happens to the record afterwards.
