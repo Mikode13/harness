@@ -2,6 +2,8 @@ import { z } from 'zod';
 import type { ToolRisk } from '#src/agent/domain/approval';
 import { InvalidAgentConfigError } from '#src/shared/domain/errors';
 import type { JSONSchema } from '#src/llm/domain/tool';
+import type { PreparedCall, PreparingTool } from '../domain/preparedCall.ts';
+import type { ToolCallContext } from '../domain/readRegistry.ts';
 import type { Tool } from '../domain/tool.ts';
 
 // Both providers take tools in strict mode, which supports only part of JSON Schema. Claude
@@ -98,15 +100,10 @@ export function defineTool<Schema extends z.ZodObject>({
 	risk: ToolRisk | ((input: z.infer<Schema>) => ToolRisk);
 	execute: (input: z.infer<Schema>, signal: AbortSignal) => Promise<string>;
 }): Tool {
-	const inputSchema: Record<string, unknown> = { ...z.toJSONSchema(input) };
-	// The dialect marker is noise to both APIs.
-	delete inputSchema.$schema;
-	assertStrict(inputSchema, name);
-
 	return {
 		name,
 		description,
-		inputSchema: inputSchema as JSONSchema,
+		inputSchema: strictSchema(input, name),
 		risk: raw => {
 			if (typeof risk === 'string') return risk;
 			const parsed = input.safeParse(raw);
@@ -119,6 +116,48 @@ export function defineTool<Schema extends z.ZodObject>({
 			}
 
 			return execute(parsed.data, signal);
+		},
+	};
+}
+
+/** The JSON schema of `input`, checked against what strict mode supports. */
+function strictSchema(input: z.ZodObject, toolName: string): JSONSchema {
+	const inputSchema: Record<string, unknown> = { ...z.toJSONSchema(input) };
+	// The dialect marker is noise to both APIs.
+	delete inputSchema.$schema;
+	assertStrict(inputSchema, toolName);
+	return inputSchema as JSONSchema;
+}
+
+/**
+ * Builds a harness tool that prepares each call, from a Zod schema, as `defineTool` builds a
+ * consumer's: input that fails validation is refused before anything is prepared. Internal.
+ *
+ * @throws {InvalidAgentConfigError} when the schema falls outside what strict mode supports.
+ */
+export function definePreparingTool<Schema extends z.ZodObject>({
+	name,
+	description,
+	input,
+	prepare,
+}: {
+	name: string;
+	description: string;
+	input: Schema;
+	prepare: (
+		input: z.infer<Schema>,
+		signal: AbortSignal,
+		call: ToolCallContext,
+	) => Promise<PreparedCall>;
+}): PreparingTool {
+	return {
+		name,
+		description,
+		inputSchema: strictSchema(input, name),
+		prepare: (raw, signal, call) => {
+			const parsed = input.safeParse(raw);
+			if (!parsed.success) return Promise.reject(new Error(z.prettifyError(parsed.error)));
+			return prepare(parsed.data, signal, call);
 		},
 	};
 }

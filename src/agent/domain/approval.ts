@@ -6,12 +6,22 @@
  */
 export type ToolRisk = 'safe' | 'mutating' | 'destructive';
 
+/** A program a tool call will run, exactly as it will run: no shell reads it. */
+export interface CommandLine {
+	executable: string;
+	args: string[];
+	/** Where it runs, as a real path. */
+	cwd: string;
+}
+
 /** A tool call waiting for someone to allow it. */
 export interface ApprovalRequest {
 	tool: string;
 	/** What the model sent, unvalidated: the tool validates it only if the call is allowed. */
 	input: unknown;
 	risk: ToolRisk;
+	/** For a call that runs a configured command: the program, worked out from the input. */
+	command?: CommandLine;
 }
 
 /** A denial's `reason` reaches the model, so it can try something else. */

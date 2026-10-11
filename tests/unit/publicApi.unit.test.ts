@@ -9,21 +9,38 @@ import type {
 	AgentProvider,
 	AgentResponse,
 	Callback,
+	CommandArgument,
+	CommandDefinition,
+	CommandLine,
+	CommandParameter,
+	CommandRole,
+	Commands,
 	CreateAgentOptions,
 	CreateLLMAgentOptions,
+	CreateLLMOrchestratorOptions,
 	CreateOrchestratorOptions,
+	FileTool,
+	History,
+	HistoryRun,
 	ILogger,
 	JSONSchema,
+	Move,
+	MoveOptions,
 	ProgressEvent,
 	ReasoningEffort,
 	RememberableDecision,
+	RoleSteps,
 	RunOptions,
+	RunStatus,
+	SecretRules,
 	TextMatch,
 	Tokens,
 	Tool,
 	ToolDefinition,
 	ToolRisk,
 	Workspace,
+	WorkspaceOptions,
+	WorkspaceRoot,
 } from '../../src/index.ts';
 
 // Everything src/index.ts exports is public: removing an export is a breaking change, and
@@ -31,19 +48,35 @@ import type {
 describe('public API', () => {
 	it('exports exactly these values', () => {
 		expect(Object.keys(harness).sort()).toEqual([
+			'HistoryExpiredError',
 			'InvalidAgentConfigError',
+			'NothingToMoveError',
 			'RecoverableError',
+			'UnknownRunError',
 			'UnrecoverableError',
+			'WorkspaceBusyError',
+			'WorkspaceMovedError',
+			'agentModels',
 			'agentProviders',
+			'agentReasoningEfforts',
 			'createAgent',
+			'createFileTools',
+			'createHistory',
 			'createLLMAgent',
 			'createLLMOrchestrator',
 			'createOrchestrator',
 			'createWorkspace',
 			'createWorkspaceTools',
 			'defineTool',
+			'historyStart',
 			'isAbortError',
 			'isAgentProvider',
+			'isLLMModelOf',
+			'isLLMReasoningEffortOf',
+			'isModelOf',
+			'isReasoningEffortOf',
+			'llmModels',
+			'llmReasoningEfforts',
 			'rememberApprovals',
 		]);
 	});
@@ -61,22 +94,69 @@ describe('public API', () => {
 				AgentProvider,
 				AgentResponse,
 				Callback,
+				CommandArgument,
+				CommandDefinition,
+				CommandLine,
+				CommandParameter,
+				CommandRole,
+				Commands,
 				CreateAgentOptions,
 				CreateLLMAgentOptions,
+				CreateLLMOrchestratorOptions,
 				CreateOrchestratorOptions,
+				FileTool,
+				History,
+				HistoryRun,
 				ILogger,
 				JSONSchema,
+				Move,
+				MoveOptions,
 				ProgressEvent,
 				ReasoningEffort,
 				RememberableDecision,
+				RoleSteps,
 				RunOptions,
+				RunStatus,
+				SecretRules,
 				TextMatch,
 				Tokens,
 				Tool,
 				ToolDefinition,
 				ToolRisk,
 				Workspace,
+				WorkspaceOptions,
+				WorkspaceRoot,
 			]
 		>().not.toBeNever();
+
+		expectTypeOf(harness.agentModels).toExtend<Record<AgentProvider, readonly AgentModel[]>>();
+		expectTypeOf(harness.agentReasoningEfforts).toExtend<
+			Record<AgentProvider, readonly ReasoningEffort[]>
+		>();
+		expectTypeOf(harness.llmModels).toExtend<Record<AgentProvider, readonly AgentModel[]>>();
+		expectTypeOf(harness.llmReasoningEfforts).toExtend<
+			Record<AgentProvider, readonly ReasoningEffort[]>
+		>();
+
+		const model = '' as string;
+		if (harness.isModelOf('anthropic', model)) {
+			expectTypeOf(model).toEqualTypeOf<(typeof harness.agentModels)['anthropic'][number]>();
+		}
+		const effort = '' as string;
+		if (harness.isReasoningEffortOf('openai', effort)) {
+			expectTypeOf(effort).toEqualTypeOf<
+				(typeof harness.agentReasoningEfforts)['openai'][number]
+			>();
+		}
+		const llmModel = '' as string;
+		if (harness.isLLMModelOf('anthropic', llmModel)) {
+			expectTypeOf(llmModel).toEqualTypeOf<(typeof harness.llmModels)['anthropic'][number]>();
+		}
+		const llmEffort = '' as string;
+		if (harness.isLLMReasoningEffortOf('openai', llmEffort)) {
+			expectTypeOf(llmEffort).toEqualTypeOf<
+				(typeof harness.llmReasoningEfforts)['openai'][number]
+			>();
+		}
 	});
 });

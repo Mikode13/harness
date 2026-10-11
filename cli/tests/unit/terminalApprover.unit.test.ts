@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ApprovalRequest } from '../../../src/index.ts';
-import { createTerminalApprover } from '../../terminalApprover.ts';
+import { PassThrough } from 'node:stream';
+import { PromptEmitter } from '../../adapters/promptEmitter.ts';
+import { approvalKey, createTerminalApprover } from '../../terminalApprover.ts';
 
 const signal = new AbortController().signal;
 const request: ApprovalRequest = { tool: 'delete', input: { path: 'a.txt' }, risk: 'destructive' };
 
 function answering(...answers: string[]) {
 	return {
+		interactive: true,
 		emit: vi.fn(() => {
 			const answer = answers.shift();
 			return answer === undefined
@@ -20,6 +23,35 @@ function answering(...answers: string[]) {
 const output = () => ({ print: vi.fn(), printError: vi.fn() });
 
 describe('createTerminalApprover', () => {
+	it('never approves from a piped line meant for a later question', async () => {
+		const input = new PassThrough();
+		const prompts = new PromptEmitter({ input, output: new PassThrough() });
+		// A script's answer to the confirmation of a later /undo.
+		input.end('tidy up the repo\n/undo\ny\n');
+		await new Promise(resolve => setImmediate(resolve));
+		await prompts.emit('> ', signal);
+
+		await expect(createTerminalApprover(prompts, output())(request, signal)).resolves.toMatchObject(
+			{
+				approved: false,
+			},
+		);
+		await expect(prompts.emit('> ', signal)).resolves.toBe('/undo');
+		await expect(prompts.emit('Go ahead? [y/N]: ', signal)).resolves.toBe('y');
+	});
+
+	it('denies without asking when nobody is at a terminal, so piped lines never approve', async () => {
+		const printed = output();
+		const piped = { ...answering('y'), interactive: false };
+
+		await expect(createTerminalApprover(piped, printed)(request, signal)).resolves.toEqual({
+			approved: false,
+			reason: 'Nobody was at a terminal to approve it',
+		});
+		expect(piped.emit).not.toHaveBeenCalled();
+		expect(printed.print).toHaveBeenCalledWith('Denied: nobody is at a terminal to approve it.');
+	});
+
 	it('shows the call before asking', async () => {
 		const printed = output();
 
@@ -71,5 +103,37 @@ describe('createTerminalApprover', () => {
 		await expect(
 			createTerminalApprover(answering(), output())(request, signal),
 		).rejects.toHaveProperty('name', 'AbortError');
+	});
+});
+
+describe('a configured command', () => {
+	const command: ApprovalRequest = {
+		tool: 'runCommand',
+		input: { command: { name: 'test', filter: 'adds numbers' } },
+		risk: 'destructive',
+		command: {
+			executable: 'pnpm',
+			args: ['vitest', '-t', 'adds numbers', '--', 'src/a.ts'],
+			cwd: '/repo',
+		},
+	};
+
+	it('is shown as the line it will run, an argument with spaces quoted', async () => {
+		const printed = output();
+
+		await createTerminalApprover(answering('y'), printed)(command, signal);
+
+		expect(printed.print.mock.calls).toEqual([
+			['The agent wants to run a configured command, in /repo:'],
+			['pnpm vitest -t "adds numbers" -- src/a.ts'],
+		]);
+	});
+
+	it('is remembered by its name, apart from every other command', () => {
+		const other = { ...command, input: { command: { name: 'format' } } };
+
+		expect(approvalKey(command)).toBe('runCommand:test');
+		expect(approvalKey(other)).toBe('runCommand:format');
+		expect(approvalKey(request)).toBe('delete');
 	});
 });

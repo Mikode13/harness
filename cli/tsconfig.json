@@ -3,7 +3,9 @@
 	"compilerOptions": {
 		"types": ["node"],
 		"rewriteRelativeImportExtensions": true,
-		"customConditions": ["mikode-harness-source"]
+		"customConditions": ["mikode-harness-source"],
+		// `pnpm run dev` runs it, and src/, through Node's type stripping.
+		"erasableSyntaxOnly": true
 	},
 	"include": ["."]
 }

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import {
+	createHistory,
 	createLLMOrchestrator,
 	createOrchestrator,
 	rememberApprovals,
@@ -12,7 +13,9 @@ import { clearLine, cursorTo } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { Output } from './adapters/output.ts';
 import { PromptEmitter } from './adapters/promptEmitter.ts';
-import { createTerminalApprover } from './terminalApprover.ts';
+import { approvalKey, createTerminalApprover } from './terminalApprover.ts';
+import { loadUserConfig, userConfigPath } from './userConfig.ts';
+import { HistoryCommands } from './historyCommands.ts';
 
 const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 let spinnerFrame = 0;
@@ -32,31 +35,52 @@ function stopSpinner(): void {
 	cursorTo(process.stdout, 0);
 	clearLine(process.stdout, 0);
 }
+// The Agent SDK engines ask no one here, so they run with their permission bypass. The model
+// API agents ask the terminal before a destructive call, as the harness does by default.
 const autoApprove = true;
 
 const output = new Output();
-const promptEmitter = new PromptEmitter();
 
-// `--llm` plans and reviews on the model APIs, which need ANTHROPIC_API_KEY and OPENAI_API_KEY.
+// `--llm` runs all three roles on the model APIs, which need ANTHROPIC_API_KEY and OPENAI_API_KEY.
 const { values: flags } = parseArgs({ options: { llm: { type: 'boolean', default: false } } });
 
+// The commands the agents may run here, and their step limits, from the user's own file.
+const { commands, maxSteps } = flags.llm ? await loadUserConfig(process.cwd()) : {};
+if (commands) {
+	output.print(`Commands from ${userConfigPath()}: ${Object.keys(commands).join(', ')}`);
+}
+
 const orchestratorAgent = flags.llm
-	? await createLLMOrchestrator({ autoApprove })
+	? await createLLMOrchestrator({
+			// The executor changes files here; every change goes to the history /undo moves through.
+			workspace: { roots: [{ path: process.cwd(), access: 'write' }] },
+			...(commands ? { commands } : {}),
+			...(maxSteps === undefined ? {} : { maxSteps }),
+		})
 	: createOrchestrator({ autoApprove });
+// The history of what the harness's own write tools changed in this folder.
+const history = await createHistory({ root: process.cwd() });
+
+// After every await: readline reads its input as soon as it exists, and a line that arrives
+// before the first question is asked is lost.
+const promptEmitter = new PromptEmitter();
 
 let turnActive = false;
 
 // One memory for the whole session: "always" holds until the CLI exits. The spinner would
 // overwrite the question, so it stops while the user answers.
 const askInTerminal = createTerminalApprover(promptEmitter, output);
-const approve = rememberApprovals(async (request, signal) => {
-	stopSpinner();
-	try {
-		return await askInTerminal(request, signal);
-	} finally {
-		startSpinner();
-	}
-});
+const approve = rememberApprovals(
+	async (request, signal) => {
+		stopSpinner();
+		try {
+			return await askInTerminal(request, signal);
+		} finally {
+			startSpinner();
+		}
+	},
+	{ key: approvalKey },
+);
 
 const loop = new ConversationLoop(
 	orchestratorAgent,
@@ -82,6 +106,7 @@ const loop = new ConversationLoop(
 	promptEmitter,
 	output,
 	approve,
+	new HistoryCommands(history, promptEmitter, output),
 );
 
 const exitConfirmationWindowMs = 3000;

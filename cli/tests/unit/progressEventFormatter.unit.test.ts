@@ -16,6 +16,16 @@ describe('formatProgressEvent', () => {
 			{ type: 'tool', id: 'call-1', name: 'weather', status: 'completed' },
 			'tool: weather, status: completed',
 		],
+		[
+			{
+				type: 'tool',
+				id: 'call-2',
+				name: 'apply_patch',
+				status: 'completed',
+				diff: '--- a/a.ts\n+++ b/a.ts',
+			},
+			'tool: apply_patch, status: completed\n--- a/a.ts\n+++ b/a.ts',
+		],
 		[{ type: 'search', query: 'Codex SDK' }, 'searching... query:Codex SDK'],
 		[
 			{

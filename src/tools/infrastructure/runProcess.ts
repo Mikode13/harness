@@ -21,14 +21,26 @@ export interface ProcessResult {
  * With `onLine`, each line of the output is handed over as it arrives and nothing is kept, so
  * the caller decides what to hold; only a single line is then bound by the size limit. An
  * error thrown by `onLine` stops the program and rejects with that error.
+ *
+ * `env` replaces the environment the program inherits; without it, it gets this process's.
  */
 export function runProcess(
 	command: string,
 	args: string[],
-	{ cwd, signal, onLine }: { cwd: string; signal: AbortSignal; onLine?: (line: string) => void },
+	{
+		cwd,
+		signal,
+		onLine,
+		env,
+	}: {
+		cwd: string;
+		signal: AbortSignal;
+		onLine?: (line: string) => void;
+		env?: NodeJS.ProcessEnv;
+	},
 ): Promise<ProcessResult> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(command, args, { cwd, signal, stdio: ['ignore', 'pipe', 'pipe'] });
+		const child = spawn(command, args, { cwd, signal, env, stdio: ['ignore', 'pipe', 'pipe'] });
 		const decoder = new StringDecoder('utf8');
 		const stdout: string[] = [];
 		const stderr: Buffer[] = [];

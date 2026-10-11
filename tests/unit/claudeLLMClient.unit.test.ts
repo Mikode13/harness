@@ -76,16 +76,46 @@ describe('ClaudeLLMClient', () => {
 		vi.clearAllMocks();
 	});
 
-	it.each(['haiku', 'claude-opus-5-5'])(
-		'rejects %s, a model it does not take, before building the SDK',
-		model => {
-			// Haiku has no adaptive thinking; a full ID is not one of the aliases callers use.
-			expect(
-				() => new ClaudeLLMClient({ model, systemPrompt: '', logger: { warn: vi.fn() } }),
-			).toThrow(InvalidAgentConfigError);
-			expect(Anthropic).not.toHaveBeenCalled();
-		},
-	);
+	it('rejects a model it does not take before building the SDK', () => {
+		// A full ID is not one of the aliases callers use.
+		expect(
+			() =>
+				new ClaudeLLMClient({
+					model: 'claude-opus-5-5',
+					systemPrompt: '',
+					logger: { warn: vi.fn() },
+				}),
+		).toThrow(InvalidAgentConfigError);
+		expect(Anthropic).not.toHaveBeenCalled();
+	});
+
+	it('runs Haiku without thinking or an effort, which it would refuse', async () => {
+		const { create } = createSdk(response());
+
+		await new ClaudeLLMClient({
+			model: 'haiku',
+			systemPrompt: 'Sum up.',
+			logger: { warn: vi.fn() },
+		}).send({ context: [userMessage('undone turns')], tools: [] }, signal);
+
+		const request = create.mock.calls[0]?.[0] as Record<string, unknown>;
+		expect(request.model).toBe('claude-haiku-4-5');
+		expect(request).not.toHaveProperty('thinking');
+		expect(request).not.toHaveProperty('output_config');
+	});
+
+	it('refuses a reasoning effort for Haiku before building the SDK', () => {
+		expect(
+			() =>
+				new ClaudeLLMClient({
+					model: 'haiku',
+					reasoningEffort: 'high',
+					systemPrompt: '',
+					logger: { warn: vi.fn() },
+				}),
+		).toThrow('Claude Haiku takes no reasoning effort: it runs without thinking');
+		expect(Anthropic).not.toHaveBeenCalled();
+	});
 
 	it('rejects a reasoning effort the Messages API does not take before building the SDK', () => {
 		expect(

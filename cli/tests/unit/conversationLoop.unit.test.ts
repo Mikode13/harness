@@ -230,6 +230,65 @@ describe('ConversationLoop', () => {
 		expect(capturedSignal?.aborted).toBe(true);
 	});
 
+	it('sends a command to the commands, not to the agent, and carries on', async () => {
+		const promptEmitter = createPromptEmitter('/undo', 'hello', { error: abortError() });
+		const run = vi.fn<Agent['run']>(() => Promise.resolve(response()));
+		const commands = {
+			handles: (line: string) => line.startsWith('/'),
+			run: vi.fn(() => Promise.resolve()),
+		};
+
+		await new ConversationLoop(
+			{ run },
+			vi.fn(),
+			promptEmitter,
+			createOutput(),
+			undefined,
+			commands,
+		).start();
+
+		expect(commands.run).toHaveBeenCalledWith('/undo', expect.any(AbortSignal));
+		expect(run).toHaveBeenCalledOnce();
+		expect(run.mock.calls[0]?.[0]).toBe('hello');
+	});
+
+	it('prints a command that fails and carries on, and stops when the user cancels it', async () => {
+		const promptEmitter = createPromptEmitter('/history', '/undo');
+		const output = createOutput();
+		const failure = new Error('the disk is gone');
+		const commands = {
+			handles: () => true,
+			run: vi
+				.fn<(line: string, signal: AbortSignal) => Promise<void>>()
+				.mockRejectedValueOnce(failure)
+				.mockRejectedValueOnce(abortError()),
+		};
+
+		await new ConversationLoop(
+			{ run: vi.fn() },
+			vi.fn(),
+			promptEmitter,
+			output,
+			undefined,
+			commands,
+		).start();
+
+		expect(output.printError).toHaveBeenCalledWith(failure);
+		expect(commands.run).toHaveBeenCalledTimes(2);
+	});
+
+	it('names the run a response recorded', async () => {
+		const promptEmitter = createPromptEmitter('hello', { error: abortError() });
+		const output = createOutput();
+		const run = vi.fn<Agent['run']>(() =>
+			Promise.resolve(response({ runId: '20261010T120000000Z-abc123' })),
+		);
+
+		await new ConversationLoop({ run }, vi.fn(), promptEmitter, output).start();
+
+		expect(output.print).toHaveBeenCalledWith('run: 20261010T120000000Z-abc123');
+	});
+
 	it('closes the prompt emitter and says goodbye', () => {
 		const promptEmitter = createPromptEmitter();
 		const output = createOutput();

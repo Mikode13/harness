@@ -41,7 +41,7 @@ async function isGitWorkTree(root: string): Promise<boolean> {
  *
  * @throws {UnrecoverableError} when neither ripgrep nor a git repository is available.
  */
-export async function createWorkspace({
+export function createWorkspace({
 	root,
 	logger = new Logger(),
 }: {
@@ -49,9 +49,26 @@ export async function createWorkspace({
 	/** Defaults to warnings on stderr. */
 	logger?: ILogger;
 }): Promise<Workspace> {
+	return chooseWorkspace({ root, logger });
+}
+
+/**
+ * `createWorkspace`, with `hidden`: files to treat as absent, by their path relative to the
+ * root. Internal: the file tools hide the secrets their access policy closes, before anything
+ * is counted or stored.
+ */
+export async function chooseWorkspace({
+	root,
+	logger,
+	hidden,
+}: {
+	root: string;
+	logger: ILogger;
+	hidden?: (path: string) => boolean;
+}): Promise<Workspace> {
 	const ripgrepPath = await loadRipgrep();
 	if (ripgrepPath !== undefined) {
-		return new RipgrepWorkspace({ root, ripgrepPath });
+		return new RipgrepWorkspace({ root, ripgrepPath, ...(hidden ? { hidden } : {}) });
 	}
 
 	if (await isGitWorkTree(root)) {
@@ -64,7 +81,7 @@ export async function createWorkspace({
 			classifyHostFailure,
 			'Workspace logger failed while choosing an implementation',
 		);
-		return new GitWorkspace({ root });
+		return new GitWorkspace({ root, ...(hidden ? { hidden } : {}) });
 	}
 
 	throw new UnrecoverableError('No program can read the workspace', {

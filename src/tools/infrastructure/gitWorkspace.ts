@@ -8,7 +8,7 @@ import { firstLine, runProcess } from './runProcess.ts';
  * operation fails.
  */
 export class GitWorkspace extends BoundedWorkspace {
-	protected async listCandidates(signal: AbortSignal): Promise<string[]> {
+	protected async listUnignored(signal: AbortSignal): Promise<string[]> {
 		// Tracked files and new ones not yet added; then the tracked ones `.gitignore` matches
 		// anyway, such as a `.env` committed before it was ignored. ripgrep hides those, and the
 		// fallback must not show what the preferred implementation hides.

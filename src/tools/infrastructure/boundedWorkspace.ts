@@ -35,14 +35,36 @@ function compareText(a: string, b: string): number {
 export abstract class BoundedWorkspace implements Workspace {
 	protected readonly root: string;
 	private readonly timeoutMs: number;
+	private readonly hidden: ((path: string) => boolean) | undefined;
 
-	constructor({ root, timeoutMs = defaultTimeoutMs }: { root: string; timeoutMs?: number }) {
+	constructor({
+		root,
+		timeoutMs = defaultTimeoutMs,
+		hidden,
+	}: {
+		root: string;
+		timeoutMs?: number;
+		/**
+		 * Files to treat as absent, by their path relative to the root, such as the secrets an
+		 * access policy closes. Applied before anything is counted or stored, so no count, limit
+		 * or error can tell that one matched.
+		 */
+		hidden?: (path: string) => boolean;
+	}) {
 		this.root = root;
 		this.timeoutMs = timeoutMs;
+		this.hidden = hidden;
 	}
 
 	/** Every file the program does not ignore, relative to the root, in any order. */
-	protected abstract listCandidates(signal: AbortSignal): Promise<string[]>;
+	protected abstract listUnignored(signal: AbortSignal): Promise<string[]>;
+
+	/** Every file it may show: what the program does not ignore, less what is hidden. */
+	private async listCandidates(signal: AbortSignal): Promise<string[]> {
+		const files = await this.listUnignored(signal);
+		const { hidden } = this;
+		return hidden ? files.filter(path => !hidden(path)) : files;
+	}
 
 	/**
 	 * Hands `keep` every line matching `pattern` in a file the program does not ignore, in any

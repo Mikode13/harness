@@ -3,7 +3,10 @@
 	"compilerOptions": {
 		"types": ["node"],
 		"rewriteRelativeImportExtensions": true,
-		"customConditions": ["mikode-harness-source"]
+		"customConditions": ["mikode-harness-source"],
+		// The CLI and the tests run src/ through Node's type stripping, which takes only syntax it
+		// can erase: no parameter properties, enums or namespaces.
+		"erasableSyntaxOnly": true
 	},
 	"include": ["src", "vitest.config.ts"]
 }

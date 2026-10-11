@@ -2,14 +2,35 @@ export type { ILogger } from './shared/domain/logger.ts';
 export {
 	createAgent,
 	createOrchestrator,
+	agentModels,
+	agentReasoningEfforts,
 	isAgentProvider,
+	isModelOf,
+	isReasoningEffortOf,
 	type CreateAgentOptions,
 } from './factory/infrastructure/agentFactory.ts';
 export {
+	createFileTools,
 	createLLMAgent,
 	createLLMOrchestrator,
+	isLLMModelOf,
+	isLLMReasoningEffortOf,
+	llmModels,
+	llmReasoningEfforts,
 	type CreateLLMAgentOptions,
+	type CreateLLMOrchestratorOptions,
+	type RoleSteps,
 } from './factory/infrastructure/agentLLMFactory.ts';
+export type { FileTool, WorkspaceOptions } from './tools/infrastructure/fileTools.ts';
+export type { WorkspaceRoot } from './tools/domain/accessPolicy.ts';
+export type {
+	CommandArgument,
+	CommandDefinition,
+	CommandParameter,
+	CommandRole,
+	Commands,
+} from './tools/domain/commands.ts';
+export type { SecretRules } from './tools/infrastructure/rootsAccessPolicy.ts';
 export {
 	agentProviders,
 	type AgentModel,
@@ -36,6 +57,7 @@ export {
 	type ApprovalDecision,
 	type ApprovalRequest,
 	type Approver,
+	type CommandLine,
 	type RememberableDecision,
 	type ToolRisk,
 } from './agent/domain/approval.ts';
@@ -45,3 +67,14 @@ export type { TextMatch, Workspace } from './tools/domain/workspace.ts';
 export { defineTool } from './tools/infrastructure/defineTool.ts';
 export { createWorkspace } from './tools/infrastructure/createWorkspace.ts';
 export { createWorkspaceTools } from './tools/infrastructure/workspaceTools.ts';
+export { createHistory } from './recovery/infrastructure/createHistory.ts';
+export type { History, HistoryRun, Move } from './recovery/domain/history.ts';
+export {
+	historyStart,
+	NothingToMoveError,
+	WorkspaceBusyError,
+	WorkspaceMovedError,
+	type MoveOptions,
+	type RunStatus,
+} from './recovery/domain/recoveryStore.ts';
+export { HistoryExpiredError, UnknownRunError } from './recovery/domain/runTree.ts';

@@ -8,6 +8,7 @@ import type {
 	RedactedThinkingBlockParam,
 	ThinkingBlockParam,
 	Tool as ClaudeTool,
+	ToolTextEditor20250728,
 	Usage,
 } from '@anthropic-ai/sdk/resources/messages';
 import {
@@ -28,18 +29,20 @@ import type { Tokens } from '#src/shared/domain/tokens';
 import { MaxContextError } from '../domain/errors.ts';
 import type { LLMClient, LLMResponse, StopReason } from '../domain/llm.ts';
 import type { Message, MessagePart } from '../domain/message.ts';
-import type { ToolDefinition } from '../domain/tool.ts';
+import { type NativeTool, nativeOf, type ToolDefinition } from '../domain/tool.ts';
 
 // The Messages API takes full model IDs. Callers name a model by the Agent SDK's alias, so both
 // paths share one vocabulary; this table pins the ID each alias means here, and moves by hand
-// when Anthropic releases a newer model. Haiku is left out: it has no adaptive thinking.
-export const claudeLLMModels = ['opus', 'fable', 'sonnet'] as const;
+// when Anthropic releases a newer model. Haiku runs without thinking: it has no adaptive thinking
+// and takes no reasoning effort, and it is here for short, simple calls such as a summary.
+export const claudeLLMModels = ['opus', 'fable', 'sonnet', 'haiku'] as const;
 export type ClaudeLLMModel = (typeof claudeLLMModels)[number];
 
 const claudeLLMModelIds = {
 	opus: 'claude-opus-5-5',
 	fable: 'claude-fable-5-1',
 	sonnet: 'claude-sonnet-5',
+	haiku: 'claude-haiku-4-5',
 } as const satisfies Record<ClaudeLLMModel, string>;
 
 export const claudeLLMReasoningEfforts = [
@@ -117,11 +120,28 @@ function toClaudeInput(message: Message): MessageParam[] {
 	return [{ role: message.role === 'tool' ? 'user' : message.role, content }];
 }
 
+// Anthropic fixes the text editor's name: its calls arrive under it.
+const textEditorName = 'str_replace_based_edit_tool';
+
 /**
  * Strict: the API constrains the model to the schema, so its input always parses and matches.
- * A schema outside what strict mode supports fails the request with a 400.
+ * A schema outside what strict mode supports fails the request with a 400. The native text
+ * editor has Anthropic's own schema, and its calls and results are ordinary tool blocks.
  */
-function toClaudeTool({ name, description, inputSchema }: ToolDefinition): ClaudeTool {
+function toClaudeTool(definition: ToolDefinition): ClaudeTool | ToolTextEditor20250728 {
+	const native = nativeOf(definition);
+	if (native === 'textEditor') {
+		if (definition.name !== textEditorName) {
+			throw new InvalidAgentConfigError(
+				`Claude's text editor must be named "${textEditorName}", not "${definition.name}"`,
+			);
+		}
+		return { type: 'text_editor_20250728', name: textEditorName };
+	}
+	if (native !== undefined) {
+		throw new InvalidAgentConfigError(`Claude has no native tool "${native}"`);
+	}
+	const { name, description, inputSchema } = definition;
 	return { name, description, input_schema: inputSchema, strict: true };
 }
 
@@ -273,7 +293,8 @@ function classifyClaudeFailure(error: unknown): Error {
 export class ClaudeLLMClient implements LLMClient {
 	private readonly client: Anthropic;
 	private readonly model: (typeof claudeLLMModelIds)[ClaudeLLMModel];
-	private readonly reasoningEffort: ClaudeLLMReasoningEffort;
+	// Missing for Haiku, which runs without thinking.
+	private readonly reasoningEffort: ClaudeLLMReasoningEffort | undefined;
 	private readonly systemPrompt: string;
 	private readonly logger: ILogger;
 
@@ -281,7 +302,7 @@ export class ClaudeLLMClient implements LLMClient {
 	// what Claude supports.
 	constructor({
 		model,
-		reasoningEffort = 'high',
+		reasoningEffort,
 		systemPrompt,
 		logger,
 	}: {
@@ -295,9 +316,15 @@ export class ClaudeLLMClient implements LLMClient {
 				`"${model}" is not a Claude API model; expected one of: ${claudeLLMModels.join(', ')}`,
 			);
 		}
-		if (!isOneOf(claudeLLMReasoningEfforts, reasoningEffort)) {
+		if (model === 'haiku' && reasoningEffort !== undefined) {
 			throw new InvalidAgentConfigError(
-				`"${reasoningEffort}" is not a Claude API reasoning effort; expected one of: ${claudeLLMReasoningEfforts.join(', ')}`,
+				'Claude Haiku takes no reasoning effort: it runs without thinking',
+			);
+		}
+		const effort = model === 'haiku' ? undefined : (reasoningEffort ?? 'high');
+		if (effort !== undefined && !isOneOf(claudeLLMReasoningEfforts, effort)) {
+			throw new InvalidAgentConfigError(
+				`"${effort}" is not a Claude API reasoning effort; expected one of: ${claudeLLMReasoningEfforts.join(', ')}`,
 			);
 		}
 
@@ -314,9 +341,13 @@ export class ClaudeLLMClient implements LLMClient {
 		}
 
 		this.model = claudeLLMModelIds[model];
-		this.reasoningEffort = reasoningEffort;
+		this.reasoningEffort = effort;
 		this.systemPrompt = systemPrompt;
 		this.logger = logger;
+	}
+
+	supportsNative(tool: NativeTool): boolean {
+		return tool === 'textEditor';
 	}
 
 	async send(
@@ -334,8 +365,11 @@ export class ClaudeLLMClient implements LLMClient {
 					messages: context.flatMap(toClaudeInput),
 					// Left out when empty, so a request without tools stays as it always was.
 					...(tools.length > 0 && { tools: tools.map(toClaudeTool) }),
-					thinking: { type: 'adaptive', display: 'summarized' },
-					output_config: { effort: this.reasoningEffort },
+					// Haiku has no adaptive thinking, and an effort is refused with a 400.
+					...(this.reasoningEffort !== undefined && {
+						thinking: { type: 'adaptive', display: 'summarized' },
+						output_config: { effort: this.reasoningEffort },
+					}),
 					// Anthropic caches only on request. This marks the last block, so the next call
 					// reads everything before it from the cache instead of paying for it again.
 					cache_control: { type: 'ephemeral' },

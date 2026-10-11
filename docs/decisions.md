@@ -949,7 +949,7 @@ tags: #mikode-harness #provider-integration #public-api
 
 **Decision:** `AgentProvider` is `'anthropic' | 'openai'`, for `createAgent`, `createOrchestrator` and `createLLMAgent` alike. A provider is the company that authenticates and bills the call; whether it is reached through its Agent SDK (Claude Code, Codex) or its model API is the factory's choice. The model API clients also take the Agent SDK's names, so one role of the orchestrator's table can run on either path:
 
-- `ClaudeLLMClient` takes `opus`, `fable` and `sonnet`, and sends the ID each one pins: `claude-opus-5-5`, `claude-fable-5-1` and `claude-sonnet-5`. Haiku is left out, because it has no adaptive thinking.
+- `ClaudeLLMClient` takes `opus`, `fable` and `sonnet`, and sends the ID each one pins: `claude-opus-5-5`, `claude-fable-5-1` and `claude-sonnet-5`. Haiku was left out at first, because it has no adaptive thinking; #81 added it (`claude-haiku-4-5`), without thinking or an effort, for the summary of what was undone.
 - Both clients take a `reasoningEffort`, `high` by default as on the engines: `output_config.effort` on Anthropic and `reasoning.effort` on OpenAI. Each validates its own list, from `low` to `max`. Codex's `ultra` has no API equivalent, so the API clients reject it.
 
 **Context:** slice 7 of #23 puts the planner and reviewer on the model APIs, where the provider had been `'openai'` while the SDK path called the same company `'codex'`. Calling both `'codex'` would tell a caller it reaches Codex through a ChatGPT login, when the API path needs `OPENAI_API_KEY` and bills per token. Without an effort, a role on the API path ran at the provider's default and lost the effort its role sets on the SDK path.
@@ -963,6 +963,8 @@ tags: #mikode-harness #provider-integration #public-api
 ## The model-backed orchestrator plans and reviews on the model APIs and executes on the Agent SDK
 
 tags: #mikode-harness #agent-loops #orchestration
+
+superseded by: "Each role gets its own tools, and every role of the model-backed orchestrator runs on the model APIs" (below). The executor is an `LLMAgent` now that the harness's own tools change files.
 
 **Decision:** `createLLMOrchestrator` runs the same workflow and role table as `createOrchestrator`, with the planner and reviewer from `createLLMAgent` and the read-only repository tools. The executor still comes from `createAgent`, and `autoApprove` reaches only the executor. Each role's instructions move out of the prompts `OrchestratorAgent` writes, which now carry only the round's data: the request, the plan, the executor's answer, the feedback. A model-backed role holds its instructions as its system prompt, followed by a short note on finding its way around the repository: paths are relative to the root, start with `AGENTS.md` and the architecture document it links to, then read only the files the task needs. An Agent SDK role has no system prompt, so `InstructedAgent` puts its instructions at the head of every prompt, which is what it received before. Both orchestrator factories take `systemPrompts`, per role, which replaces the harness's text word for word, repository note included; a role left out keeps the harness's own. The instructions are an opinion of the harness, not part of its contract, so a consumer can replace them without forking it; the reviewer's JSON decision is the one part the workflow depends on, and the option says so.
 
@@ -1060,3 +1062,759 @@ tags: #mikode-harness #permissions #agent-loops #public-api
 - A tool whose `risk` throws is a failing tool: its call does not run, and the model receives the error.
 - The Agent SDK engines ignore `approve`, because their own permission systems decide.
 - `rememberApprovals(ask, { key })` is the consumer's memory, offered by the harness so each consumer does not write it again. It allows a call again without asking once `ask` answered `remember`, and never remembers a denial. Its memory lives in the approver it returns, so the consumer chooses its lifetime. The CLI keeps one for the session and asks in the terminal: yes, always, or no with a reason.
+
+## One access policy decides every path a tool reads or writes
+
+tags: #mikode-harness #tools #filesystem #security
+
+**Decision:** before a tool touches a path, `RootsAccessPolicy` decides, and refuses unless every step allows it:
+
+1. **Location.** The path's real location, every symlink resolved, is inside a declared root. A symlink is followed and judged by where it leads, so `CLAUDE.md → AGENTS.md` works and a link out of the roots does not. A link that leads nowhere is refused, because writing to it would create its target wherever that is.
+2. **Access.** The root allows the access: each root is `read` or `write`, and the most specific root decides.
+3. **Protection.** It is not protected: git's metadata (`.git` as a folder or a worktree's pointer file, under any spelling), and the host's protected paths, such as the recovery store.
+4. **Secrets.** It is not a secret, by the default list and by the paths the host's `protect` adds.
+5. **`.gitignore`.** It does not exclude the path, even one that does not exist yet, nor any symlink the path goes through. git sees a link as an entry of its own, so an ignored link stays closed even when it leads somewhere that is not ignored.
+
+A file the host's `allow` names exactly, for reading or also writing, skips steps 4 and 5. A `.env` is usually both a secret and ignored, and an opening that `.gitignore` still blocked would open nothing. Nothing opens step 3.
+
+**Context:** #52 adds write tools, and the v2 plan asks for one policy on every route instead of a check per tool.
+
+**Details:**
+
+- **Error messages** name only the path the model sent, never a host path. In the research for #52, a host path in an error sent Claude looking for it.
+- **Containment** compares real paths component by component. `fs.promises.realpath` returns the case the disk stores, so a case-insensitive disk needs no lower-casing.
+- **Names are compared without case.** Secret names and `.git` are compared in lower case, because `.ENV` and `.env` are one file on macOS.
+- **The secrets list goes by names and places:**
+  - `.env` and `.env.*`, except `.example`, `.sample` and `.template`;
+  - private key names (`id_rsa`…);
+  - key and state endings (`.pem`, `.key`, `.p12`, `.pfx`, `.jks`, `.keystore`, `.tfstate`);
+  - credential folders and files under the home directory (`~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.npmrc`…).
+- **`.gitignore` is checked with `git check-ignore --no-index`,** which knows every rule source and answers for paths that do not exist yet.
+  - Outside a repository, git uses a private, empty git directory and still reads the folder's `.gitignore` files.
+  - git runs without the host's `GIT_*` variables, which could point it at another repository.
+  - git refuses a path beyond a symlink, so each link on the way is checked alone, at its real place, and then the place the path leads.
+- **A root inside git's metadata is refused when the policy is created.** Protection looks for `.git` below a root, so such a root would open what nothing may open.
+
+**Alternatives considered:**
+
+- **Refusing every symlink.** Rejected by the user: common setups link `CLAUDE.md` to `AGENTS.md`.
+- **Glob patterns for the secrets list.** Rejected: whether `**` crosses folders whose name starts with a dot is a matcher option. A list of names, endings and home folders is predictable.
+- **Lower-casing every path.** Rejected: on a case-sensitive disk, `/work/Repo` and `/work/repo` are different roots.
+
+**Consequences:**
+
+- **Not a secret detector.** The list catches the usual suspects; a key pasted into an ordinary source file is not found. The host can add paths, and open exact false positives.
+- **Requires git.** The `.gitignore` check needs git, even outside a repository.
+- **One check is not a lock.** The policy answers for one moment, so whoever writes must check again right before writing. A host that races its own agent on the filesystem is outside what it guarantees.
+- **Hard links are not detected.** `realpath` cannot reveal another name of the same file, so a hard link to a file outside the roots passes as an ordinary file.
+- **Not yet used.** The read tools keep their current boundary until the tools move to this policy, later in #52.
+
+## A writing run records what it will change, outside the repository, before changing it
+
+tags: #mikode-harness #recovery #tools #filesystem
+
+**Decision:** a run that writes to a workspace keeps a recovery record in a store outside the repository, under the platform's state directory (`$XDG_STATE_HOME`, `~/Library/Application Support` on macOS, `~/.local/state` elsewhere), in a private directory per workspace.
+
+- Before a file changes, the run stores the content the change replaces, named by its SHA-256, and appends a `prepared` line to its journal.
+- Only once both are synced to disk is the change made. Afterwards the journal marks it `applied`, or `abandoned` when it never happened.
+- A crash in the middle therefore always leaves a record of what the run may have done.
+- One run writes to a workspace at a time, through a lock that names the run and its process. A lock whose process died is taken over.
+
+**Context:** #52 lets model-backed agents change files, and the user must be able to undo the latest run without losing work that existed before the agent touched it, including uncommitted and untracked work. See the v2 plan in that issue.
+
+**Alternatives considered:**
+
+- **A git snapshot when the run starts** (`git stash create`, or a tree written through a temporary index). Rejected:
+  - `stash create` cannot recover untracked files.
+  - `git add` runs the clean filters a user configured, such as LFS, so taking a snapshot can execute programs.
+  - A snapshot copies the whole repository to protect the few files a run touches.
+- **The store inside `.git/`.** Rejected: it only exists in a git repository, and it would mix the harness's state with git's own.
+- **Memory only.** Rejected: an undo must still work after the process that ran the agent has exited or crashed.
+
+**Consequences:**
+
+- Only what a run touches is copied, and identical content is stored once.
+- The store holds source code, so its directories and files are readable by their owner only, and it must never reach a model, a log or the package.
+- The lock keeps a second run of this harness from writing at the same time. It does not stop an editor or another program, and two processes taking over a dead run's lock in the same instant could both believe they hold it.
+- Retention, quota and undo itself arrive with the recovery service in a later slice of #52.
+
+## A file change is prepared, then applied only if the file still holds what was prepared
+
+tags: #mikode-harness #tools #filesystem #recovery
+
+**Decision:** every change a write tool asks for is one of three: create, replace or delete. Each edit format, such as a patch or a text replacement, first works out the whole new content of the file.
+
+- **`FileEditor.prepare`** checks the change: the access policy allows the path, a create finds nothing there, and a replace or delete finds the file. If the caller worked from a version of the file, given by its hash, the file must still hold it. The result is a frozen `PreparedEdit` holding its own copy of the new content and that content's hash. A buffer's bytes cannot be frozen, so `apply` copies the prepared content, refuses it if it no longer matches the hash, and writes the copy: what is approved is exactly what is written, whoever changes a buffer while the approval waits.
+- **`FileEditor.apply`** checks the policy and the file again, then:
+  1. stores the content being replaced and the new content;
+  2. records the change as prepared;
+  3. writes the change;
+  4. records it as applied.
+
+**How each change is written:**
+
+- **Create:** the content goes to a temporary file beside the target, which is then linked into place. `link` fails if something took the path meanwhile, whereas `rename` would silently replace it.
+- **Replace:** the temporary file gets the old file's mode and is renamed over it in one step.
+- **Delete:** the file is unlinked.
+- **After any of them,** the folder is synced. New parent folders are recorded in the journal, so an undo can remove them while they are empty.
+
+**When a write throws,** the editor reads the file again:
+
+- If it still holds what it held, the change is abandoned and the folders it created are removed.
+- If it holds the new state, the change counts as applied.
+- Anything else cannot be explained, so the run's `WriteSession` refuses every further write. The journal must stay a complete record of what the run did.
+
+**When the record cannot confirm a change,** because recording it as applied failed or because the file's state cannot be explained, `apply` throws `EditUnconfirmedError`. It never reports a success or a refusal. The change stays in the journal as prepared, with both states, so an undo can still compare the file with them, and the session refuses every further write.
+
+**Context:** #52, whose v2 plan asks for one lifecycle (prepare, approve, apply) and for writes that never land on a version of a file that nobody looked at.
+
+**Alternatives considered:**
+
+- **Applying edits in place,** for example by splicing a patch into the file. Rejected: a crash halfway leaves half an edit, and the content to restore is not known until after the write.
+- **Reading the umask with `process.umask()`.** Rejected: with no argument it briefly changes the umask for every thread. The mode a new file gets is measured once by creating a probe file in the temporary folder.
+
+**Consequences:**
+
+- **Write sessions start lazily.** A run that only reads never holds the workspace, because the journal starts on its first write.
+- **Default limits:** 5 MB per file and 500 changes per run.
+- **Errors never show host paths.** Every message names the file as the model wrote it, and filesystem errors are reduced to their code, such as `EACCES`, because Node's own messages carry host paths.
+- **The guarantee assumes no concurrent writer.** The file is checked again just before the write, but another program can still change it between that check and the rename.
+- **Replacing a file breaks its hard links,** because a renamed new file is a new inode.
+
+## Every tool call is prepared before it is approved, and a run's context travels under a private symbol
+
+tags: #mikode-harness #tools #agent-loops #permissions
+
+**Decision:** `LLMAgent` runs every tool call through one lifecycle:
+
+1. **Prepare.** The tool checks the call and fixes what it will do. A harness-built tool, a `PreparingTool`, works out the real effect, such as the exact bytes a write will leave, and judges its risk from that. A consumer's `Tool` is brought in by `prepareCall`: its `risk` is judged, and its `execute` later runs on the input as sent. So consumers keep their contract and there is only one engine.
+2. **Approve.** As in #43, only for a `destructive` risk.
+3. **Run.** Only the prepared call runs, so what was approved is what happens. A call that cannot be prepared reaches the model as an error result.
+
+The tools of one top-level run share a `RunContext`. Whatever a tool starts for the run, such as the recovery record of what it writes, registers how to end it. The agent that created the context ends it with the run: completed, failed or cancelled.
+
+- A standalone `LLMAgent` creates its own context for each run.
+- An agent reached by an outer one runs in the context it is given and leaves ending it to that outer agent. An orchestrator will create one context for all its roles and rounds.
+- The context travels in `RunOptions` under a private `Symbol`, so decorators carry it as they carry every option, and consumers never see it.
+- A context that cannot be ended is reported through the logger, and the run keeps its result: the changes it recorded are already on disk.
+
+**Context:** #52's v2 plan asks for one lifecycle for every tool and for one recovery context per top-level run, passed internally and never stored on an instance. The CLI keeps one orchestrator for a whole session, and #29 will run several at once.
+
+**Alternatives considered:**
+
+- **A public field in `RunOptions`.** Rejected by the plan: consumers would see and could set plumbing they must not manage.
+- **`AsyncLocalStorage`.** Rejected: an implicit channel that every async boundary must preserve, harder to test and to follow than an explicit argument.
+- **Building the agents again for each run.** Rejected: each role's conversation lives in its agent, and the CLI's session relies on it surviving from one run to the next.
+- **A context on the agent instance.** Rejected: two runs at once on one agent would share it.
+
+**Consequences:**
+
+- **The symbol property survives because no agent rebuilds `options`.** A decorator that rebuilt them would drop the context silently. The existing tests that check identity forwarding guard this.
+- **`PreparingTool` is internal.** Consumers keep `Tool`, with `risk` and `execute`.
+- **Tools see the context only in `prepare`.** Run-scoped state, such as the `WriteSession` per context in `WorkspaceWrites`, is held in a `WeakMap` keyed by the context, so it goes away with the run.
+
+## An agent narrows `.gitignore` freely; widening it waits for the user
+
+tags: #mikode-harness #tools #permissions #filesystem
+
+**Decision:** `FileEditor.prepare` marks a change to a `.gitignore` that can make it hide less, and `editRisk` turns that change into a `destructive` one, which the approver must allow. A widening change is one that:
+
+- removes a rule;
+- adds a negation such as `!.env`;
+- reorders rules, because the last match decides;
+- deletes a file that had rules.
+
+Adding plain rules, comments or blank lines narrows the boundary and is an ordinary, recoverable edit. The check reads the text, so a change it cannot prove narrowing counts as widening.
+
+**Context:** `.gitignore` is the boundary of what every tool reads and writes. The v2 plan for #52 lets the agent edit it under normal authorization, with three conditions:
+
+- new exclusions narrow access immediately;
+- a widening takes effect only with explicit authorization;
+- a widening the agent wrote is never activated silently on a later run.
+
+**Alternatives considered:**
+
+- **Freezing the rules a session started with, and evaluating every path against them too.** Rejected for now. A frozen copy needs a mirror of every ignore file and a second `git check-ignore` per path. Without an approval to anchor it, a widening that survives the session would still take effect on the next one.
+- **Forbidding writes to `.gitignore`.** Rejected by the user: adding an ignore rule is ordinary work.
+
+**Consequences:**
+
+- **A widening is authorized when it is written,** by the person who allowed it, so it never takes effect silently.
+- **With `autoApprove`, a widening is allowed.** It is a confirmation, not a block, and `autoApprove` exists for hosts that answer for themselves.
+- **Only `.gitignore` files are watched.** `.git/info/exclude` is protected git metadata, and the read tools never honour ripgrep's own `.ignore` files.
+
+## Runs form a tree, so the user can go back to any of them and forward again
+
+tags: #mikode-harness #recovery #undo
+
+**Decision:** the recovery store keeps the runs that write to a workspace as a tree, like commits:
+
+- each run records the run the workspace was at when it started (`parentRunId`);
+- the store records the run the workspace is at now (`head.json`);
+- going back deletes nothing, so a run that was undone can be redone, and writing after going back starts a new branch.
+
+A run whose process died while `running` is `interrupted`. The next run to take the workspace settles each change it left `prepared` from what the file holds now: its after-state means the change was made, its before-state that it was not, and anything else leaves it `prepared`. Until then, `listRuns` and `readRun` already report it as `interrupted`.
+
+**Context:** the v2 plan for #52 offered an undo of the latest run only. The user wants to go back to any earlier point, for example after run 2 when runs 3 to 5 went wrong, then tell the model to carry on from there, and to be able to change their mind. The user also decided that per-file conflicts make a move partial instead of refusing it, that retention keeps 25 runs, and that the conversation is cut back with a summary of what was undone. The [amendment to the v2 plan](https://github.com/Mikode13/harness/issues/52#issuecomment-6048362400) on #52 records these decisions.
+
+**Alternatives considered:**
+
+- **Undo of the latest run only**, as v2 planned. Replaced by the user's idea of a history: with it, going back past several bad runs takes several undos, and nothing can be redone.
+- **Going back without redo.** The user chose redo too. It needs no more data, since the journal already holds every change's before-state and after-state. It only needs a head that is not always the newest run.
+- **Treating a dead run as `failed`**, with no new status. The user chose a status of its own, so `listRuns` tells a run that failed from one whose process vanished.
+
+**Consequences:**
+
+- Moving between runs (sub-PR 2b) undoes runs back to the common ancestor, then redoes runs forward to the target, checking each file's state on the way.
+- The head is written after the new run's record, so it never names a run that does not exist.
+- The v2 byte quota is replaced by retention by number of runs (sub-PR 2c).
+
+## Diffs come from our own Myers implementation, kept free of the harness
+
+tags: #mikode-harness #recovery #dependencies
+
+**Decision:** `showChanges` renders a run's effects as a git-style diff per file, with hunks from `unifiedDiff` in `src/diff/`, our own implementation of Myers' algorithm. The module imports nothing, so it can move to a package of its own unchanged.
+
+- The shared start and end of the two texts are cut off first, since most edits leave most of a file alone.
+- Beyond 1,000 differing lines, the search stops and the differing middle is shown as removed, then added. Memory grows with the square of that distance.
+- Lines are compared whole, a `\r` included, and a missing final newline is marked as git marks it.
+- Content with a NUL byte near its start, as git tests it, or that is not valid UTF-8 is shown as binary. Decoding invalid UTF-8 would replace its bytes, so two different files could otherwise show no difference.
+
+**Context:** the user chose a unified diff as the format of `showChanges`, both for the consumer and for the planner and reviewer tools. The package had no diff dependency.
+
+**Alternatives considered:** the `diff` package (jsdiff), the standard and well-tested choice. The user chose our own implementation for now, as a candidate to publish later as a package of our own. It also avoids a new production dependency in the published package.
+
+**Consequences:**
+
+- The tests check, over 500 random texts, that each patch rebuilds the new text and that its number of changed lines is the minimum.
+- Git's own heuristics can place a change differently in ambiguous cases, such as a repeated line. The diff is still minimal and correct, but not always identical to `git diff`.
+
+## A move through the history is taken one run at a time, and leaves alone any file the user changed
+
+tags: #mikode-harness #recovery #undo
+
+**Decision:** `goTo(target)` undoes runs one by one back to the closest common ancestor, then redoes runs one by one forward to `target`. `undo()` goes to the parent of the run the workspace is at, `redo()` to its child towards where the workspace was most recently, or the newest branch. `historyStart` is the state before any run. For each file a run changed, from before its first change to after its last:
+
+- a file that already holds the state the step leads to is left alone, so taking a step again is safe;
+- a file that holds the state the step leaves is written;
+- any other file, one under a folder that became a link, or a file someone wrote to between two of the run's changes (when undoing) is left as it is and reported as a conflict.
+
+A move with conflicts is recorded as not `complete`. Each move is appended to `revisions.jsonl` with where it came from, where it went, its conflicts and the reason the host gave. While it runs, `head.json` names the move and the run each step reached, so the next move or run finishes a move whose process stopped.
+
+**Context:** the user chose the stepwise route, in which each run knows how to go forward and back relative to its parent, like a doubly linked list, so undo and redo are the same operation in two directions. They also chose to restore the other files and report a partial move, rather than refusing a move with any conflict. The host asks for the reason when the user goes back; it reaches the model in a later sub-PR.
+
+**Alternatives considered:**
+
+- **The net change of each file across every run crossed**, applied once. Fewer writes, but a different path from undo and redo, and a crash in the middle leaves no run the workspace is at.
+- **Refusing the whole move when any file conflicts**, as v2 planned. Replaced by the user's choice.
+- **`redo` to the newest child always.** Simpler, but after going back from one branch and visiting another, it would not return where the user just was.
+
+**Consequences:**
+
+- A file in conflict when a run is undone is also in conflict for each earlier run that changed it, since it never reaches the state they expect. The user's edit always wins.
+- Moves and runs share the workspace lock, and a move first settles interrupted runs, so it never crosses a change nobody settled.
+- The busy-workspace error a write tool returns now says that a move may hold the workspace too.
+- A restored file is built in a hidden temporary beside it, created readable by its owner only and given the file's mode once whole. The temporary has a random name, recorded in the pending move before it is created, so finishing a move after a crash removes that temporary and never a file of the user's with a similar name.
+- The folders above a file are checked before anything else, so a file reached through a folder that became a link is never read, removed or counted as already moved.
+
+## Retention keeps 25 runs and never loses the start of the history
+
+tags: #mikode-harness #recovery #undo
+
+**Decision:** before a run starts, the store brings its history down so that, with the new run, it holds at most 25 runs per workspace (`keepRuns`). Each step removes one run:
+
+- **an abandoned branch first**, a leaf at a time, oldest first, removed whole since nothing depends on it;
+- **then the oldest run on the current line**, other than the run the workspace is at, **chained into the next run**. The current line runs from the start to the run the workspace is at, then on through what `redo` would take.
+
+Chaining works like removing a node of a doubly linked list. The next run now hangs from the removed run's parent and carries both runs' changes. Each file's chain is reduced to its net, from before its first change to after its last. A break, where someone wrote to the file between two changes, is kept as a second change. The new record is the commit point. A crash before it leaves the history as it was, and one after it is cleaned up before the next prune. Contents no kept run refers to are then freed.
+
+A move to a run that is gone reports `HistoryExpiredError`, naming the run that now holds its changes when it was chained.
+
+**Context:** the user chose this when asked what going back to the start should mean once the start of the current path had been pruned. The two options offered were the start of what is kept, or an error. The user answered that the start must never be removed and that removal must chain the changes, like a linked list. 25 runs is the user's "reasonable number on the short side"; a run is roughly one prompt. It replaces v2's byte quota.
+
+**Alternatives considered:**
+
+- **The start of what is kept**, the state before the oldest run kept. Rejected by the user: the original state would be lost after a long session.
+- **An expired-history error for the start.** Rejected by the user for the same reason.
+- **Keeping the chained runs' journals whole**, under the run that absorbed them. That is simpler and crash-safe by renaming folders, but it never frees the intermediate contents, and freeing disk is what retention is for.
+
+**Consequences:**
+
+- `historyStart` always restores the state before the agent's first run. Only the intermediate states are lost.
+- Going back past a break in a chained file leaves that file as it is: the state between the two runs, which would have restored the user's edit, is gone.
+- Chaining reads and rewrites at most two journals, and collecting contents reads every kept journal. Both stay small with 25 runs.
+- `keepRuns` must be at least 3. The run the workspace is at is never removed, and the last run of its line has no next run to be chained into, so two runs can remain besides the new one.
+- Retention is expected to move to the session manager (#29).
+
+## The conversation follows the workspace through its history
+
+tags: #mikode-harness #recovery #undo #llm
+
+**Decision:** an `LLMAgent` given the workspace's history (`history`) follows the user's moves through it before each run.
+
+- **A conversation is a tree of turns.** A turn that wrote is tied to the history run it wrote in. The tie lives in an object the run's context shares, so a turn recorded before the run first wrote still learns it. A turn that wrote nothing belongs to the run of the turn it followed.
+- **Which turn to continue from:** among the turns whose run is on the line from the start to the head, the one nearest the head, and of those the newest. A run chained into a later one counts as that one, and a run retention removed is off every line.
+- **Nothing is deleted.** The context is the path to that turn, and the turns left behind stay in the tree, so a redo brings them back.
+- **The note:** turns whose run left the line were undone. The next run's prompt starts with a note naming them:
+  - what they asked, or a summary from a `summarizer` (a cheap model);
+  - the files those runs had changed;
+  - the files a move left as they were;
+  - the user's reasons since the conversation last looked.
+- **A failed run records nothing**, so the next run gives the note again.
+
+**Context:** #68, under the history the user chose for #52. The user decided that the conversation is cut back and keeps what was cut, that only turns which wrote are tied to a run (a read-only turn goes with the one before it), and that the summary comes from the cheap model of the agent's own provider. The orchestrator uses the planner's provider. The note is deterministic by default.
+
+**Alternatives considered:**
+
+- **A notice in place of the turns**, keeping the conversation whole. That was v2's plan for undo of the latest run. The model would still reason over work the user threw away.
+- **Deleting the undone turns.** Simpler, but a redo could not bring them back.
+- **A note message of its own**, between turns. Some providers want turns to alternate. Folding the note into the next prompt keeps the context valid, and ties the note to the turn that read it.
+
+**Consequences:**
+
+- A turn left on another branch whose run is still on the line, such as a question asked while the workspace was back, is hidden after a redo but not counted as undone, so no note is given.
+- In the orchestrator, the planner and reviewer turns follow the executor's run only once the three roles share one run context. Today each role starts its own; #71 makes it one.
+- The factory turns this on with the workspace in #71, where it also gives the summarizer, Haiku or `gpt-5.6-luna` at high effort.
+- A conversation that was compacted cannot be cut back past the compaction; #48 decides what a move behind it does.
+
+## The history is a public object beside `Agent`, and a run names what it recorded
+
+tags: #mikode-harness #recovery #undo #api
+
+**Decision:** a consumer reaches the history of a workspace through `createHistory({ root })`, not through `Agent`:
+
+- **`History`** has `list()`, `changes(runId)`, `goTo(runId | historyStart)`, `undo()` and `redo()`. Each move takes an optional `reason`.
+- **A move can be conditional.** With `from`, the store checks where the workspace is under the lock. If it is elsewhere, the move fails with `WorkspaceMovedError` and changes nothing. A host that showed the user what a move will do passes where the workspace was, so a run that ends while the user answers cannot turn the confirmed move into another.
+- **`list()`** gives each run with its parent, status, times and the files it changed. It gives no label: a host that wants one names the run itself.
+- **A move** returns where it came from and went, whether it was `complete`, and the files it left. Paths are relative to the root, as in `changes`.
+- **`AgentResponse.runId`** names the run a writing run recorded. A run that wrote nothing, and the Agent SDK engines, leave it out.
+- **A run that changed nothing leaves the history.** That is a run whose every prepared change was abandoned, or that prepared none. When it finishes, the store points the workspace back at its parent, then removes the run. The response then has no `runId`, and the run's turns count as turns that wrote nothing.
+- The errors a consumer branches on are exported: `WorkspaceBusyError`, `WorkspaceMovedError`, `NothingToMoveError`, `UnknownRunError` and `HistoryExpiredError`. An id that is not one, or that this workspace never had, is an `UnknownRunError`.
+
+**Context:** #69. The user decided several points:
+
+- methods do not repeat the noun: `list`, not `listRuns`, and `goTo`;
+- `Agent` keeps only `run()`, and `runId` is an optional field of `AgentResponse`;
+- the Agent SDK engines offer no history, because their changes are not inferred afterwards;
+- `changes` is shown whole to the consumer;
+- `list()` carries each run's files, for the host to show or not, and no label;
+- a run that started recording but changed nothing is discarded, rather than kept as an empty step. The PR review found the case: a write that failed after the journal started.
+
+The user delegated the remaining names to me.
+
+**Alternatives considered:**
+
+- **Methods on `Agent`**, such as `agent.undo()`. Rejected by the user: every engine would have to answer them, and the Agent SDK engines have no history to give.
+- **A label per run**: the prompt cut short, or a name the consumer passes in `RunOptions`. The user chose none for now. The files and the diff identify a run, and either label can be added later without breaking anything.
+- **Keeping a run that changed nothing**, with no `runId` in the response. Smaller, but `/history` would show empty runs, and an undo would step through them doing nothing. Rejected by the user.
+- **Checking in the CLI alone**, by reading the head again after the user answers. It needs no new API, but a run can still end between that read and the move. The user chose the conditional move. The review of #70 found the case: `/undo` described undoing one run, and undid the run that ended during the confirmation.
+- **Exporting `RecoveryStore` itself.** It also exposes the journal, the content hashes and the store's own records, which would all become public API.
+
+**Consequences:**
+
+- A history opened beside a writing agent is a second view of the same files on disk. The workspace lock keeps them apart, so a move during a run fails with `WorkspaceBusyError`.
+- `list()` reads every kept run's journal, at most 25.
+- A change counts while it may have reached its file: it is prepared and its abandonment was not recorded.
+- Whether a run changed nothing is read from its journal, not from a removal that succeeded. The response leaves out its `runId` even when the removal fails. `list()` hides a dead run that changed nothing, and moves the head to its parent. The next run or move then finishes the removal under the lock. This covers a failed removal, a crash, and a run that died having changed nothing.
+- A run counts as live only while its process holds the lock and, in that process, the run has not ended. A lock left behind because releasing it failed names a run this process has ended. That lock is stale, like a dead process's: the run is listed as `interrupted`, and the next run or move takes the workspace over without waiting for the process to exit.
+- When this was decided, the write tools that record these runs were not exported, and the orchestrator's response had no `runId`. #81 did both.
+
+## An edit starts only from a version the conversation read
+
+tags: #mikode-harness #tools #llm
+
+**Decision:** each `LLMAgent` keeps a `ReadRegistry`, its conversation's map from a file's real path to the hash of the content it saw. Before a modification or a deletion, `prepareTrackedEdit` checks it:
+
+- a file the conversation never read is refused with `READ_REQUIRED`;
+- a file whose content changed since is refused with `STALE_FILE`;
+- a new file needs a path that does not exist.
+
+The registry changes in four ways:
+
+- a successful edit records what the file now holds;
+- a deletion forgets the file;
+- a move through the workspace's history forgets every file;
+- the reads of a failed run are dropped. A run's reads are staged and kept only when the run succeeds, together with the turns that made them.
+
+The harness's own `readFile` (`createTrackedReadFile`) reads through the access policy, and reads the file once, so the hash it records is the content it showed. A partial read counts.
+
+An edit returns little:
+
+- a modification returns the lines around each change as the file now reads them, numbered, with two lines of context. At most 60 lines are shown, and the rest are counted;
+- a creation returns its size;
+- a deletion returns a confirmation;
+- an error returns only what fixes the call.
+
+Messages name a file only as the model wrote it.
+
+**Context:** #79, the first part of #71. The [v2 plan](https://github.com/Mikode13/harness/issues/52#issuecomment-5984397266) for #52 decided the registry, the two errors and the shape of the responses, in its section 6. The rest is mine:
+
+- staging a run's reads;
+- keying by real path;
+- forgetting everything on a move, rather than only the files the move wrote;
+- the 60-line bound.
+
+**Alternatives considered:**
+
+- **Committing reads as they happen.** That is simpler, but after a failed run the model has not seen that content, and the registry would say it has.
+- **Forgetting only the files a move touched.** That is more precise, but needs each move's file list, and an undone turn's reads were part of the conversation it no longer holds.
+- **The public `readFile` over `Workspace`.** It reads through ripgrep or git, line by line. Recording its hash would mean reading the file twice, and the second read could differ from the first.
+
+**Consequences:**
+
+- After a move, or a failed run, the model reads a file again before editing it. That costs a call, and it never edits a version it did not see.
+- Each role keeps its own registry, so a file the planner read is not read for the executor.
+- Reads follow the policy's rules for every path, and the review of #82 tightened two of them.
+  - **A path below a secret name inside a root is a secret.** `.env/x` used to be refused for running through `.env` when that file existed, and read as missing when it did not. Folders above the root do not count, so a workspace inside `.env.d` stays open.
+    - This also closes a whole folder with a secret name, such as a Python virtual environment named `.env/`. Such a folder is usually ignored by git anyway. `allow` opens exact files only, so a host cannot open the folder whole.
+  - **A path that runs through a file** is judged from where that file really is. Its links are resolved first, so it goes through the same outside, protected, secret and ignore checks as any other path. It is refused for running through a file only when nothing else refuses it. A path through a link out of the workspace, or into `.git`, gets the same answer whether its names exist or not.
+  - **A filesystem error the policy or a read does not expect,** such as a loop of links or a file it may not open, is named by the model's path and its error code only.
+- The tracked `readFile` splits lines as the diff of an edit does: on `\n`, dropping a `\r` before it. The line numbers of a read and of an edit's response always agree. A lone `\r` stays inside its line.
+- The path convention is unchanged: a path is relative to the first root, or absolute for a file in another root. Tool responses, `showChanges` and the undo note already follow it. The system prompt that tells the model the roots arrives with the factories (#81).
+
+## Each provider edits in its native format, on the one edit engine
+
+tags: #mikode-harness #tools #llm
+
+**Decision:** an editing agent writes files with the tool its provider's models were trained on:
+
+- **OpenAI's `apply_patch`**: one `create_file`, `update_file` or `delete_file` operation per call, with V4A diffs.
+- **Claude's text editor** (`text_editor_20250728`): `view`, `str_replace`, `create` and `insert`, plus our own `delete_file`.
+
+Both formats become the same internal operations through `prepareTrackedEdit`, so the access policy, the recovery journal and the read checks apply the same way whatever the provider.
+
+- **Declaring a native tool is internal.** A symbol on the definition (`asNative`) marks it, so `ToolDefinition` is unchanged for consumers and none of their tools can claim to be native. A client declares the tools it `supportsNative`. `LLMAgent` refuses one its client cannot declare when it is built, not on the first call.
+- **OpenAI's items.** `apply_patch_call` becomes a tool call whose input is the operation. It goes back as the same item, and its result as `apply_patch_call_output`, `failed` when the call failed.
+- **Claude's tool blocks.** The text editor's calls and results are ordinary `tool_use` and `tool_result` blocks, under the name Anthropic fixes, `str_replace_based_edit_tool`.
+- **The V4A applier is ours** (`applyUpdate`). It applies each hunk after the one before it.
+  - It finds a hunk's lines exactly, then ignoring trailing whitespace, then ignoring whitespace at either end, as Codex does.
+  - Without an anchor, Codex takes the first match; here a hunk's lines must appear once in the part of the file it searches. When they do not, the error asks for an `@@` line naming the function, or more context.
+  - An `@@` anchor is found first, and must appear once. Each nested `@@` after it, and the hunk's lines, are the first match that follows, as in Codex: the anchor already says where. So `@@ class B:` then `@@ def __init__(self):` reaches B's method even when C has the same one.
+  - `*** End of File` ties a hunk to the end of the file, and nothing may follow it in that hunk.
+  - A kept line stays as the file has it, even where the patch copied it with a space lost.
+  - Every line the patch does not change keeps its own ending, so a file that mixes `\n` and `\r\n` is not rewritten. An added line ends like the removed line whose place it takes, or else like the line before it. The file keeps its final newline, or its lack of one.
+  - A diff larger than 512 KB, or one with more than 500 hunks, is refused.
+- **The text editor:**
+  - `view` reads through the access policy and counts as a read. On a folder it lists the files in it through the read `Workspace`, so ignored files stay hidden.
+  - `str_replace` needs the old text to appear exactly once. It is tried as sent first. Only when that finds nothing is text sent with `\n` tried with CRLF. Each bare `\n` in the new text is written with the ending of the line where the match sits, so a CRLF line gains no bare `\n`.
+  - `create` makes only a file that does not exist. Anthropic's reference implementation overwrites, but here a file is changed only from a version the conversation read.
+
+**Context:** #80, the second part of #71. The [v2 plan](https://github.com/Mikode13/harness/issues/52#issuecomment-5984397266) for #52 decided the native formats, that both translate into the same operations, that the V4A applier is ours, and that native declarations stay internal. `examples/edit-tools-wire-smoke.ts` verified both formats live with `gpt-5.6-luna` and `claude-sonnet-5`.
+
+**Alternatives considered:**
+
+- **One function-call edit tool for both providers.** Simpler, but the models are trained on their own tools, and the v2 plan chose the native formats.
+- **A field `native` on `ToolDefinition`.** That type is public, so consumers could declare a native tool and receive provider operations in their own `execute`.
+- **Applying a hunk at its first match**, as Codex does. That is more forgiving, but a context that appears twice can land the change in the wrong place without any error.
+
+**Consequences:**
+
+- An OpenAI executor has `readFile` beside `apply_patch`, because `apply_patch` cannot read. A Claude executor reads with `view`.
+- A conversation that moves between providers keeps each call under its tool's name. A patch call sent to a client that does not offer `apply_patch` goes as a plain function call, and an `apply_patch_call` from a response that offered no such tool is logged and dropped.
+- Which tools each role gets, and the system prompt that names the roots, come with the factories in #81.
+- A folder `view` lists through the read `Workspace`, which covers the first root. #81 decides what a folder in another root shows.
+
+## Each role gets its own tools, and every role of the model-backed orchestrator runs on the model APIs
+
+tags: #mikode-harness #tools #orchestration #llm
+
+**Decision:** an agent's file tools come from `createFileTools(provider, workspace)`, and the consumer gives them to `createLLMAgent` beside its own tools:
+
+- **OpenAI:** `listFiles`, `searchText`, `readFile` and its native `apply_patch`.
+- **Anthropic:** `listFiles`, `searchText`, its native text editor and `delete_file`.
+
+Without a `write` root they only read. `WorkspaceOptions` lists the roots, each `read` or `write`, the secret rules and where the history is kept.
+
+- **`createLLMAgent({ workspace })`** follows the workspace's history. Its system prompt is followed by the roots and how to name a file in them.
+  - **By default**, the note on what was undone carries a summary from the provider's cheap model: Claude Haiku without thinking, or `gpt-5.6-luna` at high effort. `summarizeUndone: false` turns it off.
+  - **The history opens on first use,** so the factory stays synchronous.
+- **`createLLMOrchestrator`** runs all three roles on the model APIs over one opened workspace. Without `workspace`, that is the current directory, read only.
+  - The planner and reviewer get `listFiles`, `searchText`, `readFile` and `showChanges`.
+  - The executor, an `LLMAgent`, gets its provider's file tools, `maxSteps` and `autoApprove`.
+  - The summary comes from the planner's provider.
+- **`OrchestratorAgent` creates one `RunContext` for a whole run.** That makes every round's writes one run of the history, and ties the planner's and reviewer's turns to it. It ends the context with the run, and its response names the run.
+- **Every path the file tools touch goes through the access policy.**
+  - **Closed files are hidden by name before a search counts anything.** A secret that `.gitignore` lets through is neither listed nor searched. The read workspace leaves out every file the policy closes by name (`hidesFromReading`: protected, or a secret the host did not open) before it stores or counts a match. So neither the page, nor `total`, nor the error at the 50,000 stored matches can answer whether a guess at a secret's contents was right.
+    - The check is by name and synchronous: the candidates are already free of ignored files, and running the whole policy, with git, on every file would be too slow.
+    - That filter is the whole policy for what `listFiles` and `searchText` return, which stays inside the root. The program that lists does not follow links, and links are not regular files.
+    - Running `check` on every returned path cost one `git check-ignore` each: 18 seconds to list 1,000 files, found in the review of #84. It is gone. `readFile`, given any path the model writes, still goes through the whole policy.
+  - The history's folder is made, then resolved to one real path, before the policy is built. The store and the policy name the same folder even when it is given through a link or as a relative path, and no tool reaches it when it lies inside a root.
+  - `showChanges` for the model shows only what the role may read, and counts the rest.
+- **The tool event narrates changes.** A tool call that changed a file reports the change as a unified `diff` on its `completed` event, and the CLI prints it.
+- **The CLI's `--llm`** works on the current directory with a `write` root, and leaves `autoApprove` off. Its Agent SDK path keeps the permission bypass, because nobody answers those engines' own prompts there.
+
+**Context:** #81, the last part of #71.
+
+- **Decided earlier:** the tools per role, the shared run context, the summarizer's models and the live diff, in the issue and in the [v2 plan](https://github.com/Mikode13/harness/issues/52#issuecomment-5984397266).
+- **The user then chose:**
+  - that the consumer composes the file tools, not the factory;
+  - that the summary is on by default;
+  - that Haiku runs without thinking, since it accepts neither adaptive thinking nor an effort;
+  - to keep #81 one pull request.
+- **Mine:** the policy filter on the read tools, the hidden count in `showChanges`, the lazy history, and appending the workspace to a consumer's own prompt.
+
+**Alternatives considered:**
+
+- **The factory adds the file tools itself when given a workspace.** That is one option fewer, but the consumer could not choose the set. Rejected by the user.
+- **The summary off by default.** That avoids an extra billed call after an undo, at the cost of a poorer note. The user chose on.
+- **Haiku with a thinking budget, or Sonnet at low effort, for Anthropic summaries.** Both cost more for a short summary. Rejected by the user.
+- **Splitting #81 into two pull requests.** That would mean smaller reviews but one more round. Rejected by the user.
+
+**Consequences:**
+
+- **Two collaborators, one store.** An agent from `createLLMAgent` and the tools from `createFileTools` each open the workspace's store, so they share its files on disk. The workspace lock keeps their writers apart.
+- **Reading covers the first root.** `listFiles` and `searchText` read the first root only; a file in another root is read by its full path. A folder `view` in another root lists nothing.
+- **Extra files in the state directory.** A workspace with no `write` root still opens its store, which creates its folder in the state directory.
+- **Paid models.** The executor bills per token, like the other model API roles. `createOrchestrator` stays the Agent SDK path on the provider's login.
+- **A breaking change to `createLLMOrchestrator`.** With the same options, its executor now:
+  - bills per token through the model API;
+  - writes nothing until a `write` root is given;
+  - takes `autoApprove` as the harness's own approval, no longer as an Agent SDK permission bypass.
+
+  The release needs `feat!:` and a `BREAKING CHANGE:` note, as #50 did when the planner and reviewer moved.
+
+- **A caller's own role prompt** replaces our instructions and guidance, but is still followed by the workspace's roots, as in `createLLMAgent`. The model needs them to name a file.
+
+## The executor runs configured commands by name, and each one's effects go to the history
+
+tags: #mikode-harness #tools #recovery
+
+**Decision:** with `commands`, `createFileTools` and `createLLMOrchestrator` give the executor `runCommand`, which runs one of the commands the consumer configured.
+
+- **The consumer declares each command in code** (`Commands`): a fixed `executable`, its `args`, a `cwd` inside a `write` root, extra `env`, and optional limits. It runs without a shell, so no argument is read as shell syntax.
+- **One tool, `runCommand`.** The model sends `{ command: { name, ...parameters } }`. Its schema is a union of one object per command, each with that command's parameters, and strict mode accepts it.
+- **The model fills only typed parameters,** placed among the fixed arguments:
+  - `paths`: each one checked by the access policy for reading, then given relative to the command's `cwd`. A path that would read as a flag is given as `./` and its name.
+  - `choice`: one of the values the consumer listed, which may be flags.
+  - `text`: a value that matches the consumer's pattern whole, at most 1,000 characters, and never starting with `-`.
+- **A small environment.** A command inherits only `PATH`, `HOME`, `TMPDIR`, `USER`, `SHELL`, `LANG` and `LC_*`, plus the variables its definition sets. The provider keys never reach it.
+- **Limits.** A command stops after 10 minutes by default; the model reads the last 16 KB of its output, standard output and error together. Its process group is asked to stop with `SIGTERM`, then killed after 5 seconds. What it left running in its group is stopped when it ends too. The group is confirmed gone by asking the system, never assumed.
+- **Approval.** Every call is `destructive`, so it asks the approver unless `autoApprove`. `ApprovalRequest.command` shows the program, its arguments and its `cwd` as they will run. The CLI shows that line and remembers "always" per command name, not for every command.
+- **A checkpoint around each command.** Formatters and tests write without our tools, so:
+  1. Before it runs, every covered file is read and stored by content hash, with a manifest of them. The journal records an observation that names the manifest. If any of that fails, the command does not run.
+  2. After it ends, the covered files are listed and read again. Each one that differs is recorded as its own change, `observedBy` the command, and the observation is closed with what it cost: files, bytes read, new bytes stored and time.
+  3. This first version reads and hashes everything both times, trusting neither size nor modification time. The cost is kept with each observation, to measure before optimizing.
+- **Coverage.** The covered files are those of the `write` roots that `.gitignore` does not exclude, tracked or not, less what the policy closes to writing by name: protected paths and secrets the host did not open for writing. Ignored files such as `node_modules`, files outside the roots, files over 64 MB, git history, the network and remote services are not covered. `showChanges` marks a change seen around a command apart from one a tool journaled.
+- **Never a false completion.**
+  - A timeout fails the call with its report.
+  - A cancellation records what changed, then ends as the cancellation.
+  - A program that cannot start reports that nothing ran.
+  - When the group cannot be confirmed gone, what changed so far is recorded, the observation stays open, writing stops for the run, and the call fails.
+- **An interrupted observation.** If the process dies while a command runs, the next run settles it: each file of the manifest that changed since is recorded as changed by that command. A file the command created was never in the manifest, and is missed.
+- **If the harness exits while a command runs,** as on an uncaught exception, the command's group is killed on the way out. A harness killed by a signal gets no such chance, and the command runs on until it ends.
+- **Not on Windows yet.** There is no process group to stop there, so `runCommand` cannot be built on Windows.
+- **The CLI** reads its commands from `$XDG_CONFIG_HOME/mikode-harness/commands.json`, or `~/.config/mikode-harness/commands.json`, keyed by each repository's real path. It refuses that file inside the repository, where the agent could rewrite it.
+
+**Context:** #72, the last feature of #52. The issue and the [v2 plan](https://github.com/Mikode13/harness/issues/52#issuecomment-5984397266) decided: no shell, typed arguments, a small environment, bounded duration and output, stopping the whole group, the checkpoint, approval, and no sandbox. The user then chose:
+
+- commands declared in code, and for the CLI a file outside the repository;
+- one `runCommand` tool rather than one tool per command;
+- `paths`, `choice` and `text` parameters;
+- 10 minutes and 16 KB as the defaults;
+- an inherited base plus declared variables;
+- a typed `command` field on `ApprovalRequest`;
+- Windows left unsupported for now.
+
+**Alternatives considered:**
+
+- **A configuration file inside the repository.** It would travel with the repository, but a cloned repository, or the agent, would then decide what runs. Rejected by the user.
+- **One tool per command.** Each would have a simpler schema, and "always" by tool name would already mean one command. The user chose one tool, which keeps the tool list fixed.
+- **Only paths, or paths and choices.** Safer, but no test filter. The user chose to add patterned text, never starting with `-`.
+- **Only declared variables, or inheriting more by name.** The first makes every command repeat `PATH` and `HOME`. The second would make the key protection depend on a name filter. Rejected by the user.
+- **A generic `description` on `ApprovalRequest`.** More general, but text a consumer cannot reason about. Rejected by the user.
+- **`taskkill /T /F` or Job Objects on Windows.** The first misses a process that leaves the tree; the second needs native code. Deferred.
+- **Trusting size and modification time** to skip unchanged files. Faster, but a command can change a file and keep both. Deferred until the measurements say it is needed.
+- **Keeping the last capture's contents** instead of freeing them, so the next command only reads and hashes. Much faster after the first command, at the cost of a lasting copy of the covered files in the state directory. The user chose to measure in #73 first.
+- **One sync at the end of a capture,** instead of one per stored content. Faster, but Node has no `syncfs`, so it would weaken the store's rule that nothing returns before it is on disk. Rejected by the user for now.
+
+**Consequences:**
+
+- Each command reads every covered file twice, and stores each one it captures, with a sync, unless the store already holds that content. Measured on this repository (166 files, 1.4 MB, macOS), capturing took about 1.4 s and comparing 50 ms. Capturing runs 16 files at a time. A run that changed nothing frees what it captured, so the next command stores it all again. The cost of each observation is in the journal, to decide on.
+- Folders a command creates are not recorded, so undoing it removes the files in them and leaves the folders.
+- A command that writes outside the covered files, such as to `node_modules`, a build folder or a remote service, cannot be undone by the history.
+- The user's edits made while a command runs are recorded as the command's.
+- A command counts as one change towards the run's limit of 500, however many files it changes.
+- `RunJournal` gains `observe`, `observed` and `storedBytes`, and `JournalEntry` gains `observedBy`. Journals written before read as before.
+
+## Configured commands are trusted, not sandboxed
+
+tags: #mikode-harness #tools #security
+
+**Decision:** a configured command runs as the user, with everything the user's account can reach. The harness bounds how it is started, how long it runs and what it is given, but does not isolate it.
+
+- **A test runs the repository's code,** including code the model has just written. It can read any file the user can, secrets included, write outside the roots and reach the network. The access policy of the file tools does not apply to it, and cannot be made to.
+- **What the harness does control:** which programs run, with which arguments, in which folder, with which environment, for how long, and that the user approves each one. It also records what the command changed in the covered files.
+- **The consumer chooses the commands,** and with them how much to trust the repository. The model only picks one by name and fills its declared parameters.
+
+**Context:** decided by the user on 2026-10-06, in #52. Pi's documented argument applies: a partial sandbox would be read as a security boundary it is not, and anyone relying on it would trust it for more than it gives.
+
+**Alternatives considered:**
+
+- **An OS sandbox** (`sandbox-exec` on macOS, namespaces or seccomp on Linux). It differs per platform, and is deprecated on macOS. Toolchains need wide access to work, so a sandbox that lets them run would leave most of the risk.
+- **Running the commands in a container.** A real boundary, but it needs a container runtime, and the user's toolchain set up inside it. That is out of scope for the harness.
+
+**Consequences:**
+
+- The docs say plainly that commands are trusted execution, and that their safety is the consumer's choice of commands and the user's approval.
+- The secret rules of the file tools do not cover commands. A command can print a secret, which the model then reads in its output.
+
+## The live run of #52 decided commands per role, 50 steps, a stop for loops, and each role's end
+
+tags: #mikode-harness #tools #llm
+
+**Decision:**
+
+- **A command declares the roles that get it** (`roles`: `planner`, `executor`, `reviewer`), the executor by default.
+  - Each role of `createLLMOrchestrator` gets `runCommand` with its own share.
+  - The checkpoint runs whoever runs the command, and every call asks the approver.
+  - `createFileTools` has no roles, so it offers every command.
+- **`maxSteps` defaults to 50** for every role, up from 25.
+- **A run stops when five answers in a row ask for exactly the same tool calls,** by tool and input, ids aside. It fails with `UnrecoverableError` before the fifth set runs, as at the step limit. A call repeated with anything else in between, such as tests run again after an edit, does not count.
+- **`listFiles` and `searchText` explain their glob:** `*` stays inside one folder, and `**` crosses folders.
+- **The executor finishes on green tests, and the reviewer reviews the code.**
+  - The executor's instructions tell it to run the project's tests and checks before finishing, and to finish only when they pass, or to say which fail and why.
+  - The reviewer's instructions tell it that the tests have already passed, and not to run them again. It judges the change against the request, and any issue it names: that the plan is right for it, and that the change fulfills it.
+  - This refines "The reviewer judges like a senior engineer": the request still comes first. It also explains why the CLI's commands for this repository give `issue` to every role, but `test` and `check` only to the executor.
+
+**Context:** the live run of #20 through `--llm`, the test #73 asked for, found three things:
+
+- The planner tried to read the issue with the `issue` command, which only the executor had.
+- The model took the glob `*` to be recursive.
+- The executor finished its work, then hit the limit of 25 steps while still checking it, so the run failed and the reviewer never ran.
+
+The user chose:
+
+- that the executor's end of the loop is green tests, and that the reviewer reviews the code against the issue and the plan, without running the tests again;
+- roles per command over read-only commands, so nothing depends on a command's promise not to write;
+- 50 steps;
+- the stop for five identical answers.
+
+**Alternatives considered:**
+
+- **Read-only commands for every role, without a checkpoint.** Cheaper, but "read only" would be the consumer's promise, which the harness cannot check. Rejected by the user.
+- **A final call without tools at the step limit,** to end with a summary. It would change what `maxSteps` means. Not chosen.
+- **Comparing the results of repeated calls too.** It would let a model poll something that changes, but a stuck model gets the same results anyway. The user kept the rule on calls alone; see when that stops being enough under Consequences.
+- **Counting calls to the same tool, whatever their input.** It would catch a loop that changes its input a little each time, but reading five files, or applying five patches, in a row is ordinary work. A threshold high enough to spare that would catch little the step limit does not.
+- **A `repeatable` flag on `Tool`,** to exempt a tool from the rule. Explicit, but a field more in the public contract, which a consumer has to know about. Not needed while the rule only catches identical calls.
+
+**Consequences:**
+
+- A planner or reviewer command shows in the history like the executor's, since every role shares the run.
+- A run that loops spends at most five of its steps on the loop.
+- **Where the loop rule would stop a run wrongly, and how to fix it.** It stops five identical calls in a row, by tool and input.
+  - A tool designed well passes its position as input, such as a cursor or `fromLine`, so paging through results never trips it. The harness's own tools do.
+  - **A tool that keeps hidden state,** such as `nextPage({})` with an internal cursor, would trip it while still making progress. The fix belongs in that tool: take the cursor as input.
+  - **Polling something outside,** such as a command that reports CI status until it is done, sends the same call while the answer changes. Today that is a poll with no pause, since there is no tool to wait, and stopping it is no loss.
+  - If a waiting tool is added, or polling becomes something a role should do, compare the results too. Then a run stops only when the same call returns the same result five times in a row. Hash each step's results beside its calls in `RepeatedCalls`, in `llmAgent.ts`.
+- Changing the default from 25 to 50 changes behavior for every consumer that left `maxSteps` out, inside the breaking release of #52.
+
+## Each role has its own step limit, which the consumer and the CLI can raise
+
+tags: #mikode-harness #llm #orchestration
+
+**Decision:**
+
+- **Defaults per role:** 80 calls for the executor, and 65 for the planner and the reviewer. `createLLMAgent` and `LLMAgent` take one number, 65 by default.
+- **`createLLMOrchestrator`'s `maxSteps`** takes one number for every role, or a number per role (`RoleSteps`), with no upper bound. A role left out keeps its default. A role that does not exist, such as a typo, is refused.
+- **The CLI** reads its settings from `~/.config/mikode-harness/config.json`, keyed by the repository's real path: `commands` and `maxSteps`. That replaces `commands.json`, and the old shape is refused rather than misread.
+- **Each step does more work, and the executor knows when to stop:**
+  - The model API roles are told to ask for several files or searches in one answer, because each answer is a step.
+  - The executor is told to finish as soon as the tests and checks pass and the plan is carried out, without adding work beyond the plan, because the reviewer asks for what is missing.
+
+**Context:** the second live run of #20, after #88, ended the same way as the first. The executor's work was green, and it went on polishing until it hit the limit of 50. That run's learnings are in [`learnings.md`](learnings.md). The user chose:
+
+- to raise the defaults, to 80 for the executor and 65 for the others;
+- to make the limits configurable, per role, from the API and the CLI, with no upper bound;
+- to tell the executor when it is done;
+- to ask for reads in parallel.
+
+**Alternatives considered:**
+
+- **One number, raised again.** It needs one change, but every task larger than the last one would need another raise, and nobody could adjust it without a release.
+- **A final call without tools at the limit.** It would keep a nearly finished run, but changes what `maxSteps` means. Not chosen again.
+- **The limit only through the API.** The CLI would stay on the defaults, and the live runs that found the problem could not raise it.
+
+**Consequences:**
+
+- `maxSteps` used to reach only the executor; now one number applies to every role. That is a change of behavior inside #52's breaking release.
+- `RoleSteps` joins the public API.
+- The CLI's users move their `commands.json` to `config.json`, under `commands`.
+
+## A consumer narrows a model and an effort per provider, with one pair of narrowers per path
+
+tags: #mikode-harness #public-api #provider-integration
+
+**Decision:** `src/index.ts` exports the models and efforts each provider takes, on each path, and narrowers built on them:
+
+| Path                         | Lists                                  | Narrowers                                                                  |
+| ---------------------------- | -------------------------------------- | -------------------------------------------------------------------------- |
+| Agent SDK (`createAgent`)    | `agentModels`, `agentReasoningEfforts` | `isModelOf(provider, value)`, `isReasoningEffortOf(provider, value)`       |
+| Model API (`createLLMAgent`) | `llmModels`, `llmReasoningEfforts`     | `isLLMModelOf(provider, value)`, `isLLMReasoningEffortOf(provider, value)` |
+
+- **The lists are the arrays the engines and clients already validate against,** so adding a model is still a change in one file.
+- **Each pair lives beside its path's factory:** `agentFactory.ts` and `agentLLMFactory.ts`.
+- **A narrower narrows to that provider's union,** so a consumer drops its cast.
+- **Each narrower checks one value.** A pair can still be refused when the agent is built, such as `gpt-5.6-luna` with `ultra`, or any effort for Claude Haiku on the model API. So is a value that skips the narrowers.
+- **The two paths keep their own lists,** as "Providers are named after the company" decided. Today they hold the same names except Codex's `ultra`, and a test fails if they drift apart.
+
+**Context:** #20. "Stable publication starts at `1.0.0`" deferred a model narrower until a consumer needed one, and harness-cli does. The harness's own executor wrote it through `--llm`, as the live test of #52.
+
+- In the first run, the executor took a list, as in `isModelOf(agentModels[provider], value)`. The user chose the provider instead, with one pair of functions per path.
+- The third run, which the reviewer approved, built that shape.
+
+**Alternatives considered:**
+
+- **A list as the first argument.** One pair serves both paths, but it is a renamed `isOneOf`, and a consumer can pass the wrong list. Rejected by the user.
+- **One pair with a path option,** such as `isModelOf(provider, value, { path: 'llm' })`. That is one parameter more on every call, against one function more per path. The user chose two functions.
+- **One list per provider for both paths.** It would remove the drift, but `src/llm` would then import the engines it replaces.
+
+**Consequences:** additive, so it would ship as a minor change on its own. Four functions and four lists join the public API. A model added to one path only has to change the drift test on purpose.
+
+## Prose files show their long lines whole
+
+tags: #mikode-harness #tools
+
+**Decision:**
+
+- **The limit depends on the file.** A line the model reads is cut at 5,000 characters in Markdown and plain text (`.md`, `.markdown`, `.mdx`, `.txt`), and at 300 in every other file.
+- **One limit for every tool.** `readFile`, Claude's `view`, the matches `searchText` returns and the lines an edit returns all use the same per-file limit, from `maxLineLength` in `src/tools/domain/lineLength.ts`.
+- **A cut line is still marked,** with `…` and a count, as before.
+
+**Context:** in the third live run, 9 of 22 patches failed. The model's reasoning shows why for about four of them: the rows of the module table in `docs/architecture.md` are up to 3,217 characters long. Cut at 300, a row could not be copied into a patch's context, so the patch never matched. Measured in this repository, `docs/architecture.md` has 12 lines over 300 characters and `docs/decisions.md` has 187, against 3 in every TypeScript file together. Long lines are a property of prose, which keeps a paragraph or a table row on one line. The cut exists for code, where one line can be a whole minified bundle. See [`learnings.md`](learnings.md).
+
+**Alternatives considered:**
+
+- **No cut for small ranges, in any file.** Rejected by the user: a minified file is a single line, so reading a small range protects nothing.
+- **No cut at all in prose files.** That would solve the case seen, but a generated Markdown file with enormous lines could fill the context. 5,000 characters covers the longest line here and still bounds that.
+- **A linter that keeps prose lines short.** It would only help the repositories that adopt it, not any project the harness works on.
+
+**Consequences:**
+
+- A prose line up to 5,000 characters can be copied into an edit, so `apply_patch` and `str_replace` can change it.
+- A page of 200 prose lines can now be about 16 times larger than before, at worst.
+- Long lines in code, such as a long string literal or a JSON fixture, are still cut at 300, and cannot be patched whole.
+
+## Each role is told whether the tests were run
+
+tags: #mikode-harness #orchestration #llm
+
+**Decision:**
+
+- **Two versions of the executor's and the reviewer's instructions,** chosen by `createLLMOrchestrator` when it builds the roles.
+  - **The executor has a command** (`runCommand` is among its tools): the executor finishes only once the tests and checks pass, and the reviewer is told they passed and not to run them again, as in "The live run of #52 decided commands per role, 50 steps, a stop for loops, and each role's end".
+  - **The executor has none:** the executor is told it cannot run the tests or checks, finishes once the plan is carried out, and says in its summary that they were not run. The reviewer is told nobody ran them, judges from the code whether the tests would pass, and does not approve a change whose tests could not.
+- **Any command counts.** The harness cannot tell which command runs the tests, so an executor with only `issue` gets the first version.
+- **The Agent SDK path keeps the first version.** Its executor has a shell, so it can always run them.
+- **A caller's `systemPrompts` still replaces either version** word for word.
+
+**Context:** the AI review of #93 found that, without `commands`, the executor was told to finish only on passing tests it had no way to run, and the reviewer to trust that they had passed. That is the default configuration of `createLLMOrchestrator`. The executor would spend its steps looking for a way to test, or finish without testing, and the reviewer would approve on a false premise.
+
+**Alternatives considered:**
+
+- **One wording that holds in both cases**, such as "if you have a command that runs the tests…". It is cheaper, with no branch and one text per role. The user chose two versions, which are more precise and spend no words on the case that does not apply.
+- **Leave it for an issue.** It would have shipped the false premise in the release that adds commands.
+
+**Consequences:**
+
+- Each of the two roles has two texts, both tested through the factory.
+- An executor whose commands do not include the tests is still told to run them. Telling those cases apart would need commands to declare what they are for.

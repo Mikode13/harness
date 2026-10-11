@@ -15,7 +15,7 @@ function untilAborted(signal: AbortSignal): Promise<never> {
 
 /** A program that never answers until it is stopped, as a runaway search would. */
 class HangingWorkspace extends BoundedWorkspace {
-	protected listCandidates(signal: AbortSignal): Promise<string[]> {
+	protected listUnignored(signal: AbortSignal): Promise<string[]> {
 		return untilAborted(signal);
 	}
 
@@ -30,7 +30,7 @@ class HangingWorkspace extends BoundedWorkspace {
 
 /** A program that prints far more matches outside `src/` than any search may hold. */
 class NoisyWorkspace extends BoundedWorkspace {
-	protected listCandidates(): Promise<string[]> {
+	protected listUnignored(): Promise<string[]> {
 		return Promise.resolve(['dist/bundle.js', 'src/agent.ts']);
 	}
 

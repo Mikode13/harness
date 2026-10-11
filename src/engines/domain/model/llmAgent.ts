@@ -1,7 +1,7 @@
 import {
 	type ApprovalDecision,
+	type ApprovalRequest,
 	type Approver,
-	type ToolRisk,
 	readDecision,
 } from '#src/agent/domain/approval';
 import {
@@ -13,6 +13,12 @@ import {
 	ignoreProgress,
 } from '#src/agent/domain/agent';
 import {
+	type RunEnd,
+	RunContext,
+	runContextOf,
+	withRunContext,
+} from '#src/agent/domain/runContext';
+import {
 	InvalidAgentConfigError,
 	RecoverableError,
 	UnrecoverableError,
@@ -20,6 +26,7 @@ import {
 } from '#src/shared/domain/errors';
 import {
 	classifyHostFailure,
+	classifyLocalFailure,
 	classifyProviderFailure,
 	describeFailure,
 	treatErrors,
@@ -27,9 +34,19 @@ import {
 import { Conversation } from '#src/llm/domain/conversation';
 import type { LLMClient, LLMResponse } from '#src/llm/domain/llm';
 import type { Message, MessagePart, ToolCallPart, ToolResultPart } from '#src/llm/domain/message';
-import type { ToolDefinition } from '#src/llm/domain/tool';
-import type { Tool } from '#src/tools/domain/tool';
+import { asNative, nativeOf, type ToolDefinition } from '#src/llm/domain/tool';
+import { type AgentTool, type PreparedCall, prepareCall } from '#src/tools/domain/preparedCall';
+import { ReadRegistry, type ToolCallContext } from '#src/tools/domain/readRegistry';
+import { isAbortError } from '#src/shared/domain/isAbortError';
+import type { ILogger } from '#src/shared/domain/logger';
 import { addTokens, type Tokens } from '#src/shared/domain/tokens';
+import {
+	type Followed,
+	followHistory,
+	type HistoryReader,
+	transcriptOf,
+	undoNote,
+} from './historyFollower.ts';
 
 function describePart(part: MessagePart): ProgressEvent | undefined {
 	switch (part.type) {
@@ -75,6 +92,36 @@ function emit(event: ProgressEvent, callback: Callback): void {
 	);
 }
 
+/** `value` with the keys of every object sorted, so equal inputs serialize alike. */
+function canonical(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(canonical);
+	if (typeof value !== 'object' || value === null) return value;
+	return Object.fromEntries(
+		Object.entries(value)
+			.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+			.map(([key, inner]) => [key, canonical(inner)]),
+	);
+}
+
+// A model that asks for exactly the same calls this many times in a row is stuck: it already
+// has what they return, and running them again changes nothing.
+const maxRepeatedSteps = 5;
+
+/** How many steps in a row have asked for exactly the same tool calls, with the same input. */
+class RepeatedCalls {
+	private last: string | undefined;
+	private times = 0;
+
+	count(calls: readonly ToolCallPart[]): number {
+		// Keys sorted at every level: the same input with its properties in another order is the
+		// same call. Arrays, and the order of the calls, keep theirs.
+		const key = JSON.stringify(calls.map(call => [call.name, canonical(call.input)]));
+		this.times = key === this.last ? this.times + 1 : 1;
+		this.last = key;
+		return this.times;
+	}
+}
+
 /**
  * An agent whose conversation is owned by MiKode: every run sends the whole context to a
  * stateless `LLMClient`. Within a run the model may call the agent's tools; the agent runs them
@@ -85,25 +132,48 @@ function emit(event: ProgressEvent, callback: Callback): void {
 export class LLMAgent implements Agent {
 	private readonly llmClient: LLMClient;
 	private readonly conversation: Conversation;
-	private readonly tools: Map<string, Tool>;
+	private readonly tools: Map<string, AgentTool>;
 	private readonly toolDefinitions: ToolDefinition[];
 	private readonly maxSteps: number;
 	private readonly autoApprove: boolean;
+	private readonly logger: ILogger | undefined;
+	private readonly history: HistoryReader | undefined;
+	private readonly summarizer: LLMClient | undefined;
+	// The latest move through the history this conversation has followed.
+	private seenRevision = 0;
+	// What this conversation has seen of each file, so an edit starts from a version it read.
+	private readonly reads = new ReadRegistry();
 
 	constructor({
 		llmClient,
 		messages,
 		tools = [],
-		maxSteps = 25,
+		maxSteps = 65,
 		autoApprove = false,
+		logger,
+		history,
+		summarizer,
 	}: {
 		llmClient: LLMClient;
 		messages?: Message[];
-		tools?: Tool[];
-		/** How many calls to the model one run may make before it fails. */
+		tools?: AgentTool[];
+		/** How many calls to the model one run may make before it fails. Defaults to 65. */
 		maxSteps?: number;
 		/** Runs every tool call without asking, `destructive` ones included. Meant for CI. */
 		autoApprove?: boolean;
+		/** Where a failure the agent absorbs is reported. The factories always pass one. */
+		logger?: ILogger;
+		/**
+		 * The history of the workspace this agent writes to. With it, each run first follows the
+		 * moves the user made through that history: the conversation goes back with the
+		 * workspace, and the model is told what was undone.
+		 */
+		history?: HistoryReader;
+		/**
+		 * A cheap model that summarizes what the undone turns tried and what went wrong. Without
+		 * one, the model is told what those turns asked, word for word.
+		 */
+		summarizer?: LLMClient;
 	}) {
 		if (!Number.isInteger(maxSteps) || maxSteps < 1) {
 			throw new InvalidAgentConfigError(
@@ -115,26 +185,108 @@ export class LLMAgent implements Agent {
 		this.conversation = new Conversation(messages);
 		this.maxSteps = maxSteps;
 		this.autoApprove = autoApprove;
+		this.logger = logger;
+		this.history = history;
+		this.summarizer = summarizer;
 		this.tools = new Map(tools.map(tool => [tool.name, tool]));
 		if (this.tools.size !== tools.length) {
 			// The model calls tools by name, so a second one with the same name could never run.
 			throw new InvalidAgentConfigError('Two tools share a name; each name must be unique');
 		}
 		// The client only describes the tools to the model; running them stays with the agent.
-		this.toolDefinitions = tools.map(({ name, description, inputSchema }) => ({
-			name,
-			description,
-			inputSchema,
-		}));
+		this.toolDefinitions = tools.map(tool => {
+			const definition = {
+				name: tool.name,
+				description: tool.description,
+				inputSchema: tool.inputSchema,
+			};
+			const native = nativeOf(tool);
+			if (native === undefined) return definition;
+			// Checked now, not on the first call: an agent its client cannot serve is a setup error.
+			if (llmClient.supportsNative?.(native) !== true) {
+				throw new InvalidAgentConfigError(
+					`The tool "${tool.name}" is the native "${native}" tool, which this model client cannot declare`,
+				);
+			}
+			return asNative(definition, native);
+		});
 	}
 
-	private async llmCall(runMessages: Message[], signal: AbortSignal): Promise<LLMResponse> {
+	private async followHistory(history: HistoryReader): Promise<Followed> {
+		try {
+			return await followHistory(this.conversation, history, this.seenRevision);
+		} catch (error) {
+			throw classifyLocalFailure(error, 'The workspace history could not be read');
+		}
+	}
+
+	/**
+	 * Asks the summarizer what the undone turns tried and what went wrong. A summary is a help,
+	 * not a need: one that fails is reported and the plain note is used instead.
+	 */
+	private async summarizeUndone(
+		followed: Followed,
+		signal: AbortSignal,
+	): Promise<{ text?: string; usage?: Tokens; called: boolean }> {
+		if (!this.summarizer) return { called: false };
+		const reasons = followed.revisions.flatMap(revision =>
+			revision.reason ? [revision.reason] : [],
+		);
+		const prompt = [
+			'The user undid the work in the conversation below and moved the workspace back to before it.',
+			reasons.length > 0 ? `Their reason: ${reasons.map(reason => `«${reason}»`).join(' ')}` : '',
+			'In at most five short lines, say what was tried, why it went wrong or why the user went back, and what could be done better. Plain text, no preamble.',
+			'',
+			transcriptOf(this.conversation, followed.undone),
+		].join('\n');
+
+		let response: LLMResponse;
+		try {
+			response = await this.summarizer.send(
+				{ context: [{ role: 'user', content: [{ type: 'text', text: prompt }] }], tools: [] },
+				signal,
+			);
+		} catch (error) {
+			if (isAbortError(error)) throw error;
+			this.warnSummaryFailed(describeFailure(error));
+			return { called: true };
+		}
+
+		const usage = response.usage ? { usage: response.usage } : {};
+		// A refused or cut summary is not one: the model would read it as what was tried.
+		if (response.stopReason !== 'completed') {
+			this.warnSummaryFailed(`the model stopped with "${response.stopReason}"`);
+			return { ...usage, called: true };
+		}
+		const text = response.message.content
+			.filter(part => part.type === 'text')
+			.map(part => part.text)
+			.join('\n')
+			.trim();
+		return { ...(text ? { text } : {}), ...usage, called: true };
+	}
+
+	private warnSummaryFailed(why: string): void {
+		treatErrors(
+			() => {
+				this.logger?.warn(`The summary of the undone turns failed: ${why}`);
+			},
+			classifyHostFailure,
+			'LLM agent logger failed',
+		);
+	}
+
+	private async llmCall(
+		runMessages: Message[],
+		after: number | undefined,
+		signal: AbortSignal,
+	): Promise<LLMResponse> {
 		let response: LLMResponse;
 		try {
 			// Sent as a copy, so what the run records is what the agent built, whatever the client does.
 			response = await this.llmClient.send(
 				{
-					context: [...this.conversation.getContext(), ...structuredClone(runMessages)],
+					context: [...this.conversation.contextAfter(after), ...structuredClone(runMessages)],
 					tools: this.toolDefinitions,
 				},
 				signal,
@@ -162,7 +314,7 @@ export class LLMAgent implements Agent {
 	 */
 	private async denial(
 		call: ToolCallPart,
-		risk: ToolRisk,
+		{ risk, command }: PreparedCall,
 		signal: AbortSignal,
 		approve: Approver | undefined,
 	): Promise<string | undefined> {
@@ -179,7 +331,14 @@ export class LLMAgent implements Agent {
 			const input: unknown = structuredClone(call.input);
 			// Read inside the boundary: an untyped approver can answer anything, and a bad answer
 			// is its failure, which must carry the run's tokens like any other.
-			decision = readDecision(await approve({ tool: call.name, input, risk }, signal));
+			const request: ApprovalRequest = {
+				tool: call.name,
+				input,
+				risk,
+				// A copy too: the approver must not be able to change what runs.
+				...(command ? { command: structuredClone(command) } : {}),
+			};
+			decision = readDecision(await approve(request, signal));
 		} catch (error) {
 			// An approver that gives up on a cancellation, whatever it throws, did not fail.
 			signal.throwIfAborted();
@@ -202,7 +361,8 @@ export class LLMAgent implements Agent {
 		call: ToolCallPart,
 		{ signal, onProgress: callback = ignoreProgress, approve }: RunOptions,
 		effects: RunEffects,
-	): Promise<{ result: ToolResultPart; denied: boolean }> {
+		toolCall: ToolCallContext,
+	): Promise<{ result: ToolResultPart; denied: boolean; diff?: string }> {
 		const result = { type: 'toolResult' as const, callId: call.id, name: call.name };
 		const tool = this.tools.get(call.name);
 		if (!tool) {
@@ -216,18 +376,23 @@ export class LLMAgent implements Agent {
 			};
 		}
 
-		let risk: ToolRisk;
+		let prepared: PreparedCall;
 		try {
-			risk = tool.risk(call.input);
+			prepared = await prepareCall(tool, call.input, signal, toolCall);
 		} catch (error) {
-			// A tool that cannot judge its own call is a failing tool, and the call does not run.
+			signal.throwIfAborted();
+			// A call that cannot be prepared, or whose tool cannot judge it, does not run; the
+			// model reads why, such as a refused path, and can correct itself.
 			return {
 				result: { ...result, output: describeFailure(error), isError: true },
 				denied: false,
 			};
 		}
 
-		const denial = await this.denial(call, risk, signal, approve);
+		// Preparing may have finished after a cancellation it did not notice; nobody is asked to
+		// approve a call in a run that has already stopped.
+		signal.throwIfAborted();
+		const denial = await this.denial(call, prepared, signal, approve);
 		if (denial !== undefined) {
 			return { result: { ...result, output: denial, isError: true }, denied: true };
 		}
@@ -242,8 +407,9 @@ export class LLMAgent implements Agent {
 		effects.toolRan = true;
 		try {
 			return {
-				result: { ...result, output: await tool.execute(call.input, signal), isError: false },
+				result: { ...result, output: await prepared.run(signal), isError: false },
 				denied: false,
+				...(prepared.diff === undefined ? {} : { diff: prepared.diff }),
 			};
 		} catch (error) {
 			signal.throwIfAborted();
@@ -259,6 +425,7 @@ export class LLMAgent implements Agent {
 		calls: ToolCallPart[],
 		options: RunOptions,
 		effects: RunEffects,
+		toolCall: ToolCallContext,
 	): Promise<Message> {
 		const { signal, onProgress: callback = ignoreProgress } = options;
 		const results: MessagePart[] = [];
@@ -268,16 +435,67 @@ export class LLMAgent implements Agent {
 			signal.throwIfAborted();
 			// `runTool` announces the call only once it is allowed to run, so a consumer never
 			// shows a call as running early, nor while the user is still being asked.
-			const { result, denied } = await this.runTool(call, options, effects);
+			const { result, denied, diff } = await this.runTool(call, options, effects, toolCall);
 			if (denied) emit({ type: 'tool', id: call.id, name: call.name, status: 'denied' }, callback);
-			else narrate(result, callback);
+			// The diff of a change it made, for the person watching; only once it was made.
+			else if (diff !== undefined) {
+				emit({ type: 'tool', id: call.id, name: call.name, status: 'completed', diff }, callback);
+			} else narrate(result, callback);
 			results.push(result);
 		}
 
 		return { role: 'tool', content: results };
 	}
 
+	/**
+	 * Runs inside the context of the run that reached it, or in one of its own that it ends with
+	 * the run: completed, failed or cancelled. Only a run that owns its context names the history
+	 * run it recorded, since the run is over only when that context ends.
+	 */
 	async run(prompt: string, options: RunOptions): Promise<AgentResponse> {
+		const inherited = runContextOf(options);
+		if (inherited) return this.runSteps(prompt, options, inherited);
+
+		const context = new RunContext();
+		let end: RunEnd = 'failed';
+		let response: AgentResponse;
+		try {
+			response = await this.runSteps(prompt, withRunContext(options, context), context);
+			end = 'completed';
+		} catch (error) {
+			if (isAbortError(error)) end = 'cancelled';
+			throw error;
+		} finally {
+			await this.finishContext(context, end);
+		}
+		// Read once the run ended: a run that changed nothing left the history then.
+		const { runId } = context.historyRun;
+		return runId ? { ...response, runId } : response;
+	}
+
+	/**
+	 * What the run started ends here, but its result stands: the changes it recorded are already
+	 * on disk, so a record that could not be closed is reported, not turned into a failure.
+	 */
+	private async finishContext(context: RunContext, end: RunEnd): Promise<void> {
+		try {
+			await context.finish(end);
+		} catch (error) {
+			treatErrors(
+				() => {
+					this.logger?.warn(`The run could not close its records: ${describeFailure(error)}`);
+				},
+				classifyHostFailure,
+				'LLM agent logger failed',
+			);
+		}
+	}
+
+	private async runSteps(
+		prompt: string,
+		options: RunOptions,
+		context: RunContext,
+	): Promise<AgentResponse> {
 		const { signal, onProgress: callback = ignoreProgress } = options;
 		const start = Date.now();
 		const runMessages: Message[] = [{ role: 'user', content: [{ type: 'text', text: prompt }] }];
@@ -286,10 +504,37 @@ export class LLMAgent implements Agent {
 		let unreported = false;
 		// Per run, not per instance: what one run executed says nothing about another.
 		const effects: RunEffects = { toolRan: false };
+		// The turn this one follows: the last recorded, unless the workspace moved since.
+		let after = this.conversation.currentTurn;
+		let followed: Followed | undefined;
 
 		try {
+			if (this.history) {
+				followed = await this.followHistory(this.history);
+				after = followed.turn;
+				// The files may no longer hold what the conversation saw of them.
+				if (followed.revisions.length > 0) this.reads.clear();
+				if (followed.undone.length > 0) {
+					const summary = await this.summarizeUndone(followed, signal);
+					tokens = addTokens(tokens, summary.usage);
+					unreported ||= summary.called && !summary.usage;
+					const note = await undoNote({
+						conversation: this.conversation,
+						history: this.history,
+						followed,
+						...(summary.text ? { summary: summary.text } : {}),
+					}).catch((error: unknown) => {
+						throw classifyLocalFailure(error, 'The workspace history could not be read');
+					});
+					runMessages[0]?.content.unshift({ type: 'text', text: note });
+				}
+			}
+
+			// After following the history, which may have made every earlier read stale.
+			const reads = this.reads.begin();
+			const repeats = new RepeatedCalls();
 			for (let step = 1; step <= this.maxSteps; step++) {
-				const response = await this.llmCall(runMessages, signal);
+				const response = await this.llmCall(runMessages, after, signal);
 				tokens = addTokens(tokens, response.usage);
 				unreported ||= !response.usage;
 				runMessages.push(response.message);
@@ -301,8 +546,12 @@ export class LLMAgent implements Agent {
 
 				const calls = response.message.content.filter(part => part.type === 'toolCall');
 				if (calls.length === 0) {
-					// Recorded only now, so a failed run leaves no tool call without its result.
-					this.conversation.addRun(runMessages);
+					// Recorded only now, so a failed run leaves no tool call without its result, and a
+					// note about what was undone is given again to the next run.
+					this.conversation.addRunAfter(after, runMessages, context.historyRun);
+					// With the turns that read them, and only then: a failed run is not remembered.
+					reads.commit();
+					if (followed) this.seenRevision = followed.latestRevision;
 
 					return {
 						// Only the final answer: text from earlier steps was narrated as it came.
@@ -315,9 +564,16 @@ export class LLMAgent implements Agent {
 					};
 				}
 
+				// Before running them again: the model has already seen what they return.
+				if (repeats.count(calls) >= maxRepeatedSteps) {
+					throw new UnrecoverableError('The LLM repeated the same tool calls', {
+						cause: `The model asked for the same tool calls ${String(maxRepeatedSteps)} times in a row.`,
+					});
+				}
+
 				// On the last step no call is left to send the results to, so the tools do not run.
 				if (step < this.maxSteps) {
-					runMessages.push(await this.runTools(calls, options, effects));
+					runMessages.push(await this.runTools(calls, options, effects, { run: context, reads }));
 				}
 			}
 

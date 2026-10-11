@@ -42,6 +42,16 @@ describe('runProcess', () => {
 	});
 
 	// A model's argument must never become a command.
+	it('gives the program the environment it is passed instead of its own', async () => {
+		const { stdout } = await runProcess(
+			node,
+			['-e', 'process.stdout.write(`${process.env.ONLY ?? ""}|${process.env.HOME ?? ""}`)'],
+			{ cwd, signal, env: { ONLY: 'yes' } },
+		);
+
+		expect(stdout).toBe('yes|');
+	});
+
 	it('passes every argument as it is, never through a shell', async () => {
 		const { stdout } = await runProcess(
 			node,

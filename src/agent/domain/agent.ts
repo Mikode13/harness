@@ -15,6 +15,12 @@ export interface AgentResponse {
 	tokens?: Tokens;
 	/** Wall-clock seconds the consumer waited for the run, retries and every role included. */
 	duration: number;
+	/**
+	 * The run the workspace's history recorded, when this run wrote through the harness's write
+	 * tools. Absent for a run that wrote nothing, and from the Agent SDK engines, whose changes
+	 * the history does not record.
+	 */
+	runId?: string;
 }
 
 export type Callback = (item: ProgressEvent) => void;
@@ -58,6 +64,12 @@ export type ProgressEvent =
 			 * it never ran because no one allowed it, with no `in_progress` before it.
 			 */
 			status: 'in_progress' | 'completed' | 'error' | 'denied';
+			/**
+			 * On `completed`, for a call that changed a file through the harness's write tools: the
+			 * change as a unified diff, for the person watching. Narration only; the run's whole
+			 * record is the history's `changes`.
+			 */
+			diff?: string;
 	  }
 	| { type: 'todoList'; items: { text: string; completed: boolean }[] }
 	| { type: 'turnStarted' }
