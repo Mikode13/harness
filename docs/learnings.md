@@ -122,11 +122,14 @@ Same task, after #90: 80 steps for the executor, the executor told to stop once 
 - **Evidence:** the reviewer's reasoning, before `{"decision":"approved"}`.
 - **What changed:** the entry was added before merging. A missing decision record is something to tell the executor to write, not something to leave for the review.
 
-### A model patches badly more often in a longer run
+### A line cut at 300 characters cannot be patched
 
-- **What happened:** 9 of 22 `apply_patch` calls failed, against 2 of 17 in the second run.
-- **Evidence:** the CLI's tool events.
-- **Where it is enforced:** nowhere yet. The CLI did not show why each patch failed, which #89 is to fix, so the cause, such as context that did not match or a file changed since it was read, is unknown.
+- **What happened:** 9 of 22 `apply_patch` calls failed, against 2 of 17 in the second run. The CLI did not show why, but the model's reasoning after each failure did:
+  - about four came from `readFile` cutting lines at 300 characters. The rows of the module table in `docs/architecture.md` are up to 3,217 characters long, and a cut line cannot be copied into a patch's context. The model's reasoning: "the line might be quite long", "use targeted substring contexts instead of whole lines";
+  - about three came from context the model wrote from memory instead of copying it. Its reasoning: "I assumed the type of expectation was existing", "I forgot to include afterEach";
+  - one or two came after `format` changed a file the model had read, and it read the file again, as designed.
+- **Evidence:** the third run's log, around each `apply_patch, status: error`. No failed patch changed a file. The failures cost about 14 of the executor's 80 steps, and about 14% of the cache reads.
+- **Where it is enforced:** prose lines are shown whole up to 5,000 characters. See "Prose files show their long lines whole" in decisions.md. Showing why a patch failed is #89.
 
 ### Batching reads did not shorten a run
 

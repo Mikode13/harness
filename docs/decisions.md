@@ -1769,3 +1769,27 @@ tags: #mikode-harness #public-api #provider-integration
 - **One list per provider for both paths.** It would remove the drift, but `src/llm` would then import the engines it replaces.
 
 **Consequences:** additive, so it would ship as a minor change on its own. Four functions and four lists join the public API. A model added to one path only has to change the drift test on purpose.
+
+## Prose files show their long lines whole
+
+tags: #mikode-harness #tools
+
+**Decision:**
+
+- **The limit depends on the file.** A line the model reads is cut at 5,000 characters in Markdown and plain text (`.md`, `.markdown`, `.mdx`, `.txt`), and at 300 in every other file.
+- **One limit for every tool.** `readFile`, Claude's `view`, the matches `searchText` returns and the lines an edit returns all use the same per-file limit, from `maxLineLength` in `src/tools/domain/lineLength.ts`.
+- **A cut line is still marked,** with `…` and a count, as before.
+
+**Context:** in the third live run, 9 of 22 patches failed. The model's reasoning shows why for about four of them: the rows of the module table in `docs/architecture.md` are up to 3,217 characters long. Cut at 300, a row could not be copied into a patch's context, so the patch never matched. Measured in this repository, `docs/architecture.md` has 12 lines over 300 characters and `docs/decisions.md` has 187, against 3 in every TypeScript file together. Long lines are a property of prose, which keeps a paragraph or a table row on one line. The cut exists for code, where one line can be a whole minified bundle. See [`learnings.md`](learnings.md).
+
+**Alternatives considered:**
+
+- **No cut for small ranges, in any file.** Rejected by the user: a minified file is a single line, so reading a small range protects nothing.
+- **No cut at all in prose files.** That would solve the case seen, but a generated Markdown file with enormous lines could fill the context. 5,000 characters covers the longest line here and still bounds that.
+- **A linter that keeps prose lines short.** It would only help the repositories that adopt it, not any project the harness works on.
+
+**Consequences:**
+
+- A prose line up to 5,000 characters can be copied into an edit, so `apply_patch` and `str_replace` can change it.
+- A page of 200 prose lines can now be about 16 times larger than before, at worst.
+- Long lines in code, such as a long string literal or a JSON fixture, are still cut at 300, and cannot be patched whole.

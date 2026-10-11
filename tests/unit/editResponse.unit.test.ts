@@ -61,3 +61,14 @@ describe('what an edit returns', () => {
 		expect(describeDeletion('a.txt')).toBe('Deleted a.txt.');
 	});
 });
+
+describe('the lines an edit returns', () => {
+	it('shows a long Markdown line whole, and cuts the same line in code', () => {
+		const row = `| ${'z'.repeat(1000)} |`;
+
+		expect(describeModification('docs/map.md', 'a\n', `a\n${row}\n`)).toContain(`2: ${row}`);
+		expect(describeModification('src/map.ts', 'a\n', `a\n${row}\n`)).toContain(
+			`2: ${row.slice(0, 300)}…`,
+		);
+	});
+});

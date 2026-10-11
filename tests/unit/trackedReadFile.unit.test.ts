@@ -161,3 +161,18 @@ describe('the readFile of an editing agent', () => {
 		expect(withIt).toMatch(/may hold secrets/);
 	});
 });
+
+describe('long lines', () => {
+	it('shows a Markdown or text line whole, so an edit can copy it, and cuts one in code', async () => {
+		const row = `| \`src/tools/\` | ${'owns a great many things; '.repeat(120)}|`;
+		writeFileSync(join(root, 'architecture.md'), `# Map\n${row}\n`);
+		writeFileSync(join(root, 'notes.txt'), `${row}\n`);
+		writeFileSync(join(root, 'bundle.js'), `${row}\n`);
+
+		await expect(readFile('architecture.md')).resolves.toContain(`2: ${row}`);
+		await expect(readFile('notes.txt')).resolves.toContain(`1: ${row}`);
+		const code = await readFile('bundle.js');
+		expect(code).toContain(`1: ${row.slice(0, 300)}…`);
+		expect(code).toContain('[1 lines were longer than 300 characters and were cut.]');
+	});
+});

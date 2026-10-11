@@ -1,16 +1,13 @@
 import { unifiedDiff } from '#src/diff/domain/unifiedDiff';
+import { cutLine } from './lineLength.ts';
 
 // Enough to place a change without reading the file again.
 const contextLines = 2;
 // What one response may show: a large rewrite is named, not repeated.
 const maxShownLines = 60;
-// One minified line can be larger than everything else the model reads.
-const maxLineLength = 300;
-
-/** A line as the model reads it: without the `\r` of a CRLF ending, and not too long. */
-function cutLine(text: string): string {
-	const line = text.endsWith('\r') ? text.slice(0, -1) : text;
-	return line.length > maxLineLength ? `${line.slice(0, maxLineLength)}…` : line;
+/** A line of `path` as the model reads it: without the `\r` of a CRLF ending, and not too long. */
+function shownLine(path: string, text: string): string {
+	return cutLine(path, text.endsWith('\r') ? text.slice(0, -1) : text);
 }
 
 function lineCount(text: string): number {
@@ -38,8 +35,9 @@ export function describeModification(path: string, before: string, after: string
 		}
 		// Removed lines are gone from the file, and git's marker is not a line of it.
 		if (!text.startsWith(' ') && !text.startsWith('+')) continue;
-		if (shown.length < maxShownLines) shown.push(`${String(line)}: ${cutLine(text.slice(1))}`);
-		else hidden++;
+		if (shown.length < maxShownLines) {
+			shown.push(`${String(line)}: ${shownLine(path, text.slice(1))}`);
+		} else hidden++;
 		line++;
 	}
 
