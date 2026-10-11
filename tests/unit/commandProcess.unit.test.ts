@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runCommandProcess } from '../../src/tools/infrastructure/commandProcess.ts';
+import { liveGroupIds, runCommandProcess } from '../../src/tools/infrastructure/commandProcess.ts';
 
 let folder: string;
 
@@ -121,6 +121,55 @@ describe('runCommandProcess', () => {
 
 		expect(result).toMatchObject({ outcome: 'timedOut', stopped: true });
 		expect(isAlive(await pidIn('leader'))).toBe(false);
+	});
+
+	it('stays a cancellation when the timeout passes while the group is being stopped', async () => {
+		const controller = new AbortController();
+		// Ignores SIGTERM, so it is still in its grace period when the timeout passes.
+		const running = runCommandProcess(
+			'sh',
+			['-c', "trap '' TERM; echo $$ > leader; while :; do sleep 0.05; done"],
+			{
+				cwd: folder,
+				env,
+				timeoutMs: 1_000,
+				outputBytes: 100,
+				signal: controller.signal,
+				gracePeriodMs: 2_000,
+			},
+		);
+		await pidIn('leader');
+
+		controller.abort();
+		const result = await running;
+
+		expect(result).toMatchObject({ outcome: 'cancelled', stopped: true });
+		expect(result.durationMs).toBeGreaterThan(1_000);
+	});
+
+	it('forgets a group it could not confirm gone once the system says it is', async () => {
+		// With no time for the kill to take, the group is still there when it is checked.
+		const result = await runCommandProcess(
+			'sh',
+			['-c', "trap '' TERM; echo $$ > leader; while :; do sleep 0.05; done"],
+			{
+				cwd: folder,
+				env,
+				timeoutMs: 100,
+				outputBytes: 100,
+				signal,
+				gracePeriodMs: 50,
+				killWaitMs: 0,
+				recheckMs: 20,
+			},
+		);
+		const leader = await pidIn('leader');
+
+		expect(result).toMatchObject({ outcome: 'timedOut', stopped: false });
+		for (let attempt = 0; attempt < 50 && liveGroupIds().includes(leader); attempt++) {
+			await delay(20);
+		}
+		expect(liveGroupIds()).not.toContain(leader);
 	});
 
 	it('stops what a command left running in its group once it ends', async () => {

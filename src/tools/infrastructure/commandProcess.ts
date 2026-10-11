@@ -3,7 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 // How long a group asked to stop gets before it is killed, and how long a kill gets to take.
 const defaultGracePeriodMs = 5_000;
-const killWaitMs = 5_000;
+const defaultKillWaitMs = 5_000;
 const pollMs = 25;
 // Output still in the pipes once every process is gone arrives at once; a process that left
 // the group and holds a pipe open must not hold up the result.
@@ -52,6 +52,8 @@ export function runCommandProcess(
 		outputBytes,
 		signal,
 		gracePeriodMs = defaultGracePeriodMs,
+		killWaitMs = defaultKillWaitMs,
+		recheckMs = defaultRecheckMs,
 	}: {
 		cwd: string;
 		env: NodeJS.ProcessEnv;
@@ -60,6 +62,10 @@ export function runCommandProcess(
 		signal: AbortSignal;
 		/** How long the group gets to stop on `SIGTERM` before it is killed. Defaults to 5 s. */
 		gracePeriodMs?: number;
+		/** How long a killed group gets to disappear before it counts as unconfirmed. 5 s. */
+		killWaitMs?: number;
+		/** How often an unconfirmed group is asked about again. Defaults to 1 s. */
+		recheckMs?: number;
 	},
 ): Promise<CommandProcessResult> {
 	// A rejection, not a throw: a caller awaiting the result must see it as one.
@@ -97,10 +103,13 @@ export function runCommandProcess(
 			tail.push(chunk);
 		});
 
-		const stop = (why: 'timedOut' | 'cancelled') => {
-			if (exit || child.pid === undefined) return;
+		const stop = (why: 'timedOut' | 'cancelled'): void => {
+			// The first reason stands: a timeout during a cancellation's grace period is still a
+			// cancellation, and must end the run as one.
+			if (exit || stopping || child.pid === undefined) return;
 			outcome = why;
-			stopping ??= stopGroup(child.pid, gracePeriodMs);
+			detach();
+			stopping = stopGroup(child.pid, { gracePeriodMs, killWaitMs });
 			// A leader that outlives even the kill never exits, so the result cannot wait for it.
 			void stopping.then(gone => {
 				if (!gone) void finish(false);
@@ -123,7 +132,10 @@ export function runCommandProcess(
 			if (finished) return;
 			finished = true;
 			detach();
-			if (stopped && child.pid !== undefined) liveGroups.delete(child.pid);
+			if (child.pid !== undefined) {
+				if (stopped) liveGroups.delete(child.pid);
+				else forgetWhenGone(child.pid, recheckMs);
+			}
 			await Promise.race([streamsClosed, delay(drainMs)]);
 			child.stdout.destroy();
 			child.stderr.destroy();
@@ -150,7 +162,8 @@ export function runCommandProcess(
 			const pid = child.pid;
 			// What it left in its group is stopped as well; an empty group is gone at once.
 			void (
-				stopping ?? (pid === undefined ? Promise.resolve(true) : stopGroup(pid, gracePeriodMs))
+				stopping ??
+				(pid === undefined ? Promise.resolve(true) : stopGroup(pid, { gracePeriodMs, killWaitMs }))
 			).then(finish);
 		});
 	});
@@ -164,6 +177,29 @@ export function runCommandProcess(
  */
 const liveGroups = new Set<number>();
 let exitHookInstalled = false;
+
+const defaultRecheckMs = 1_000;
+
+/** The groups of the commands still running, for tests. */
+export function liveGroupIds(): number[] {
+	return [...liveGroups];
+}
+
+/**
+ * Keeps an unconfirmed group in `liveGroups` until the system says it is gone, then forgets
+ * it: once the group is empty its id can be given to another, which the exit hook must never
+ * kill. It asks every second, so a reuse in between is the only gap; nothing short of a pidfd
+ * closes it.
+ */
+function forgetWhenGone(pgid: number, intervalMs: number): void {
+	const timer = setInterval(() => {
+		if (signalGroup(pgid, 0)) return;
+		liveGroups.delete(pgid);
+		clearInterval(timer);
+	}, intervalMs);
+	// It must not keep this process alive on its own.
+	timer.unref();
+}
 
 function watchForExit(pgid: number): void {
 	liveGroups.add(pgid);
@@ -180,7 +216,10 @@ function watchForExit(pgid: number): void {
  *
  * @returns whether the group is confirmed gone.
  */
-async function stopGroup(pgid: number, gracePeriodMs: number): Promise<boolean> {
+async function stopGroup(
+	pgid: number,
+	{ gracePeriodMs, killWaitMs }: { gracePeriodMs: number; killWaitMs: number },
+): Promise<boolean> {
 	if (!signalGroup(pgid, 'SIGTERM')) return true;
 	if (await goneWithin(pgid, gracePeriodMs)) return true;
 	if (!signalGroup(pgid, 'SIGKILL')) return true;
