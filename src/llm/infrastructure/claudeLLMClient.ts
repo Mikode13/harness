@@ -295,7 +295,7 @@ export class ClaudeLLMClient implements LLMClient {
 	private readonly model: (typeof claudeLLMModelIds)[ClaudeLLMModel];
 	// Missing for Haiku, which runs without thinking.
 	private readonly reasoningEffort: ClaudeLLMReasoningEffort | undefined;
-	private readonly systemPrompt: string;
+	readonly systemPrompt: string;
 	private readonly logger: ILogger;
 
 	// `model` and `reasoningEffort` are untyped on purpose: this adapter is the one that knows

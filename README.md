@@ -550,7 +550,9 @@ A denied call is marked `denied`. Messages remain normal text under a bold role
 heading. Reasoning is dim italic and complete by default; pass
 `--thinking-headings` to show only Markdown bold headings as `∴ …`. A tool start
 updates the spinner rather than printing a second line, and cancelling a turn clears
-its pending spinner state.
+its pending spinner state. Pass `--steps <file>` to append one JSON line per call to the
+model to that file: the call's tokens and what its context held, by origin, for measuring
+what a run spends.
 
 `cli/cli.ts` currently enables `autoApprove` for its Agent SDK agents, not for `--llm`.
 This maps to each provider's permission-bypass mode and grants those processes

@@ -9,6 +9,7 @@ import {
 } from '../src/index.ts';
 import { ConversationLoop } from './conversationLoop.ts';
 import { ProgressEventFormatter } from './progressEventFormatter.ts';
+import { appendFileSync } from 'node:fs';
 import { clearLine, cursorTo } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { Output } from './adapters/output.ts';
@@ -57,8 +58,11 @@ const { values: flags } = parseArgs({
 	options: {
 		llm: { type: 'boolean', default: false },
 		'thinking-headings': { type: 'boolean', default: false },
+		// A file that gets one JSON line per call to the model: what it sent and what it cost.
+		steps: { type: 'string' },
 	},
 });
+const stepsFile = flags.steps;
 const progressFormatter = new ProgressEventFormatter({
 	thinkingHeadings: flags['thinking-headings'],
 });
@@ -114,6 +118,12 @@ const loop = new ConversationLoop(
 			turnActive = false;
 			progressFormatter.reset();
 			stopSpinner();
+			return;
+		}
+
+		if (item.type === 'step') {
+			if (stepsFile)
+				appendFileSync(stepsFile, `${JSON.stringify({ at: new Date().toISOString(), ...item })}\n`);
 			return;
 		}
 

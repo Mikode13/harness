@@ -16,6 +16,8 @@ export interface LLMResponse {
 }
 
 export interface LLMClient {
+	/** The system prompt every call sends, for measuring what a call carries. */
+	readonly systemPrompt?: string;
 	/** Whether this client can declare a native tool. Missing means it declares none. */
 	supportsNative?(tool: NativeTool): boolean;
 	send(

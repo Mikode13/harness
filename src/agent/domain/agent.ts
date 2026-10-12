@@ -85,7 +85,41 @@ export type ProgressEvent =
 	  }
 	| { type: 'todoList'; items: { text: string; completed: boolean }[]; agent?: ProgressAgent }
 	| { type: 'turnStarted'; agent?: ProgressAgent }
-	| { type: 'turnEnded'; agent?: ProgressAgent };
+	| { type: 'turnEnded'; agent?: ProgressAgent }
+	/**
+	 * One call to the model by an agent on the model APIs, once it answered: what the call
+	 * sent and what it cost. Narration only; the run's total is `AgentResponse.tokens`.
+	 */
+	| {
+			type: 'step';
+			/** 1 for the first call of the run. */
+			step: number;
+			/** Missing when the provider did not report this call's usage. */
+			tokens?: Tokens;
+			context: StepContext;
+			agent?: ProgressAgent;
+	  };
+
+/**
+ * What one call to the model sent, in characters by where it came from: an estimate of size
+ * for finding what fills a context, not a token count.
+ */
+export interface StepContext {
+	/** The system prompt. */
+	instructions: number;
+	/** The tool definitions. */
+	tools: number;
+	/** The text of the user's prompts and the model's answers. */
+	messages: number;
+	/** Reasoning the model produced earlier, sent back to it, including provider-signed blocks. */
+	reasoning: number;
+	/** The input of every tool call so far. */
+	toolCalls: number;
+	/** Every tool result so far, by tool, largest first. */
+	toolResults: { tool: string; characters: number; calls: number }[];
+	/** The largest single results, each with its call's summary when the tool gives one. */
+	largestResults: { tool: string; characters: number; summary?: string }[];
+}
 
 /** A role in the fixed planner → executor → reviewer workflow. */
 export type ProgressAgent = 'planner' | 'executor' | 'reviewer';
