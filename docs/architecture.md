@@ -116,14 +116,14 @@ history through the `src/recovery/` domain; the conversation itself knows only a
 why it is the only place that knows every provider.
 
 `src/index.ts` is the public API: `createAgent`, `createOrchestrator`, `createLLMAgent`,
-`createLLMOrchestrator`, the `Agent`, `RunOptions`, `AgentResponse`, `Callback`, `ProgressEvent`
-and `Tokens` types, the approval contract (`rememberApprovals` and the `Approver`,
+`createLLMOrchestrator`, the `Agent`, `RunOptions`, `AgentResponse`, `Callback`, `ProgressEvent`,
+`ProgressAgent` and `Tokens` types, the approval contract (`rememberApprovals` and the `Approver`,
 `ApprovalRequest`, `ApprovalDecision`, `RememberableDecision`, `ToolRisk` and `CommandLine` types), the three
 failure types an agent rejects with, `isAbortError`, `isAgentProvider`, `agentProviders`, the
 provider-indexed `agentModels` and `agentReasoningEfforts` catalogs with their `isModelOf` and
 `isReasoningEffortOf` narrowers, and the model-API `llmModels` and `llmReasoningEfforts` catalogs
 with `isLLMModelOf` and `isLLMReasoningEffortOf`. It also exports the option and model types. For
-the model-backed agent's tools it also exports the `Tool`,
+the model-backed agent's tools it also exports the `Tool`, `ToolSummarizer`,
 `ToolDefinition`, `JSONSchema`, `Workspace` and `TextMatch` types, `defineTool`,
 `createWorkspace` and `createWorkspaceTools`. For agents that change files it exports
 `createFileTools` and the `FileTool`, `WorkspaceOptions`, `WorkspaceRoot`, `SecretRules`,

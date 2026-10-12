@@ -167,6 +167,8 @@ tags: #mikode-harness #api-design #structured-output
 
 tags: #mikode-harness #ui-design #streaming
 
+partially superseded by: "Issue #89: progress is concise, attributed, and still useful live" (below) — progress and the final response remain separate, but the orchestrator now wraps the callback for each role and overwrites role attribution instead of forwarding the callback unchanged.
+
 **Decision:** agents report ongoing activity via an injected `callback: (event: ProgressEvent) => void`, never via `console.log` inside the agent itself. `AgentResponse.response` stays just the model's own words.
 
 **Context:** originally everything an engine's SDK reported (tool calls and the model's actual text) was concatenated into one string — meaning if that string were ever handed to another agent, the next agent would receive operational noise mixed in with the substantive answer.
@@ -1012,6 +1014,8 @@ tags: #mikode-harness #agent-loops #state #public-api
 ## `run` takes its options as one object, passed on whole
 
 tags: #mikode-harness #public-api #agent-loops
+
+partially superseded by: "Issue #89: progress is concise, attributed, and still useful live" (below) — `RetryingAgent` and `InstructedAgent` still pass the original object whole; `OrchestratorAgent` now makes a shallow copy per role that retains every own enumerable field and replaces only `onProgress`.
 
 **Decision:** `Agent.run(prompt, signal, callback)` becomes `run(prompt, { signal, onProgress })`.
 
