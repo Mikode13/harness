@@ -212,6 +212,10 @@ describe('OrchestratorAgent', () => {
 		);
 		expect(plannerInstructions).toContain('engineering-grade plan');
 		expect(plannerInstructions).toContain('do not require an architecture redesign yet');
+		for (const instructions of [plannerInstructions, executorInstructions, reviewerInstructions]) {
+			expect(instructions).toContain('Do not narrate routine intentions');
+			expect(instructions).toContain('act immediately');
+		}
 		expect(executorInstructions).toContain('Preserve contracts and boundaries');
 		expect(executorInstructions).toContain('finish only when they pass');
 		expect(reviewerInstructions).toContain('Independently inspect the repository');
