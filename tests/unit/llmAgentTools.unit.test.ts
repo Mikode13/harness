@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
 import {
 	rememberApprovals,
@@ -21,6 +22,7 @@ import {
 	toolResult,
 	userMessage,
 } from '../support/fakeLlmClient.ts';
+import { defineTool } from '../../src/tools/infrastructure/defineTool.ts';
 
 const signal = new AbortController().signal;
 
@@ -38,6 +40,7 @@ function fakeTool(
 	name: string,
 	execute: Tool['execute'] = input => Promise.resolve(`${(input as { city: string }).city}: sunny`),
 	risk: Tool['risk'] = () => 'safe',
+	summarize?: Tool['summarize'],
 ) {
 	return {
 		name,
@@ -45,6 +48,7 @@ function fakeTool(
 		inputSchema: citySchema,
 		risk: vi.fn(risk),
 		execute: vi.fn(execute),
+		...(summarize ? { summarize: vi.fn(summarize) } : {}),
 	};
 }
 
@@ -162,6 +166,133 @@ describe('LLMAgent with tools', () => {
 			{ type: 'tool', id: 'call-1', name: 'weather', status: 'completed' },
 			{ type: 'agentMessage', message: 'Sunny in Madrid' },
 		]);
+	});
+
+	it('calculates one summary and reuses it for the start and completion events', async () => {
+		const summarize = vi.fn((input: unknown) => `weather for ${(input as { city: string }).city}`);
+		const llmClient = new FakeLLMClient(assistantResponse([madridCall]), textResponse('answer'));
+		const events: ProgressEvent[] = [];
+
+		await new LLMAgent({
+			llmClient,
+			tools: [fakeTool('weather', undefined, undefined, summarize)],
+		}).run('prompt', {
+			signal,
+			onProgress: event => events.push(event),
+		});
+
+		expect(summarize).toHaveBeenCalledOnce();
+		expect(events.filter(event => event.type === 'tool')).toEqual([
+			{
+				type: 'tool',
+				id: 'call-1',
+				name: 'weather',
+				status: 'in_progress',
+				summary: 'weather for Madrid',
+			},
+			{
+				type: 'tool',
+				id: 'call-1',
+				name: 'weather',
+				status: 'completed',
+				summary: 'weather for Madrid',
+			},
+		]);
+	});
+
+	it('reuses a summary when a tool fails and when a destructive call is denied', async () => {
+		const failingSummary = vi.fn(() => 'failed weather');
+		const failing = fakeTool(
+			'weather',
+			() => Promise.reject(new Error('city not found')),
+			() => 'safe',
+			failingSummary,
+		);
+		const failedEvents: ProgressEvent[] = [];
+		await new LLMAgent({
+			llmClient: new FakeLLMClient(assistantResponse([madridCall]), textResponse('answer')),
+			tools: [failing],
+		}).run('prompt', { signal, onProgress: event => failedEvents.push(event) });
+		expect(failingSummary).toHaveBeenCalledOnce();
+		expect(failedEvents).toContainEqual({
+			type: 'tool',
+			id: 'call-1',
+			name: 'weather',
+			status: 'error',
+			summary: 'failed weather',
+		});
+
+		const deniedSummary = vi.fn(() => 'write Madrid');
+		const denied = fakeTool('weather', undefined, () => 'destructive', deniedSummary);
+		const deniedEvents: ProgressEvent[] = [];
+		await new LLMAgent({
+			llmClient: new FakeLLMClient(assistantResponse([madridCall]), textResponse('answer')),
+			tools: [denied],
+		}).run('prompt', { signal, onProgress: event => deniedEvents.push(event) });
+		expect(deniedSummary).toHaveBeenCalledOnce();
+		expect(deniedEvents).toEqual([
+			{
+				type: 'tool',
+				id: 'call-1',
+				name: 'weather',
+				status: 'denied',
+				summary: 'write Madrid',
+			},
+			{ type: 'agentMessage', message: 'answer' },
+		]);
+		expect(denied.execute).not.toHaveBeenCalled();
+	});
+
+	it('classifies a consumer summarizer failure before preparation or execution', async () => {
+		const execute = vi.fn(() => Promise.resolve('should not run'));
+		const summarize = vi.fn(() => {
+			throw new Error('summary failed');
+		});
+		const weather = fakeTool('weather', execute, () => 'safe', summarize);
+
+		await expect(
+			new LLMAgent({
+				llmClient: new FakeLLMClient(assistantResponse([madridCall])),
+				tools: [weather],
+			}).run('prompt', { signal }),
+		).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			message: 'The tool call summarizer failed',
+			cause: 'summary failed',
+		});
+		expect(execute).not.toHaveBeenCalled();
+	});
+
+	it('returns invalid schema input to the model without treating it as a host failure', async () => {
+		const execute = vi.fn(() => Promise.resolve('should not run'));
+		const summarize = vi.fn(({ city }: { city: string }) => city);
+		const weather = defineTool({
+			name: 'weather',
+			description: 'Weather',
+			input: z.object({ city: z.string() }),
+			risk: 'safe',
+			summarize,
+			execute,
+		});
+		const llmClient = new FakeLLMClient(
+			assistantResponse([toolCall('call-1', 'weather', { city: 42 })]),
+			textResponse('answer'),
+		);
+		const events: ProgressEvent[] = [];
+
+		await new LLMAgent({ llmClient, tools: [weather] }).run('prompt', {
+			signal,
+			onProgress: event => events.push(event),
+		});
+
+		expect(summarize).not.toHaveBeenCalled();
+		expect(execute).not.toHaveBeenCalled();
+		expect(events).toContainEqual({
+			type: 'tool',
+			id: 'call-1',
+			name: 'weather',
+			status: 'error',
+		});
 	});
 
 	it('tells apart two calls to the same tool in one step by their ids', async () => {

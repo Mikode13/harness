@@ -88,6 +88,29 @@ export function readRange({
 	return { from, count: Math.min(requested, maxLines) };
 }
 
+/** A stable description of a read request, using only the range the model supplied. */
+export function readFileSummary({
+	path,
+	fromLine,
+	lineCount,
+}: {
+	path: string;
+	fromLine: number | null;
+	lineCount: number | null;
+}): string {
+	const suppliedFrom = fromLine ?? 1;
+	const from = Number.isInteger(suppliedFrom) && suppliedFrom > 0 ? suppliedFrom : 1;
+	const suppliedCount = lineCount ?? maxLines;
+	const requested = Number.isInteger(suppliedCount) && suppliedCount > 0 ? suppliedCount : maxLines;
+	const count = Math.min(requested, maxLines);
+	return `${path}:${String(from)}-${String(from + count - 1)}`;
+}
+
+function scopeSummary(path: string | null, glob: string | null): string {
+	const scopePath = path ?? '.';
+	return glob ? `${scopePath === '.' ? '' : `${scopePath}/`}${glob}` : scopePath;
+}
+
 function assertPositiveInteger(name: string, value: number): void {
 	if (!Number.isInteger(value) || value < 1) {
 		throw new Error(`${name} must be a whole number of at least 1; got ${String(value)}`);
@@ -103,6 +126,7 @@ export function createWorkspaceTools(workspace: Workspace): Tool[] {
 				'Lists the files of the repository, sorted. Ignored files such as dependencies are left out.',
 			risk: 'safe',
 			input: z.object(scope),
+			summarize: ({ path, glob }) => scopeSummary(path, glob),
 			execute: async ({ path, glob }, signal) => {
 				// The port takes "no scope" as a missing field.
 				const { files, total, truncated } = await workspace.listFiles(
@@ -132,6 +156,7 @@ export function createWorkspaceTools(workspace: Workspace): Tool[] {
 				ignoreCase: z.boolean().nullable().describe('Match regardless of case. Defaults to false.'),
 				...scope,
 			}),
+			summarize: ({ path, glob, pattern }) => `"${pattern}" in ${scopeSummary(path, glob)}`,
 			execute: async ({ path, glob, ignoreCase, pattern }, signal) => {
 				const { matches, total, truncated } = await workspace.searchText(
 					{
@@ -164,6 +189,7 @@ export function createWorkspaceTools(workspace: Workspace): Tool[] {
 			description: readFileDescription,
 			risk: 'safe',
 			input: readFileInput,
+			summarize: readFileSummary,
 			execute: async ({ fromLine, lineCount, path }, signal) => {
 				// Checked before reading.
 				const { from, count } = readRange({ fromLine, lineCount });

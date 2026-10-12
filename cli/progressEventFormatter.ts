@@ -1,42 +1,203 @@
+import { styleText } from 'node:util';
 import type { ProgressEvent } from '../src/index.ts';
 
-/** Renders a progress event as one terminal line; `undefined` means nothing worth showing. */
-export function formatProgressEvent(item: ProgressEvent): string | undefined {
-	switch (item.type) {
-		case 'agentMessage':
-		case 'reasoning':
-			return item.message;
-		case 'command':
-			if (!item.command) return undefined;
+type StyleFormat = Parameters<typeof styleText>[0];
+export type ProgressStyler = (format: StyleFormat, text: string) => string;
 
-			return `command: ${item.command}, exit ${String(item.exitCode ?? '?')}`;
-		case 'mcpTool':
-			if (!item.server || !item.status) return undefined;
-			return `tool: ${item.tool}, server: ${item.server}, status: ${item.status}`;
-		case 'tool': {
-			const line = `tool: ${item.name}, status: ${item.status}`;
-			// The change a write tool made, as it happens.
-			return item.diff === undefined ? line : `${line}\n${item.diff}`;
-		}
-		case 'search':
-			if (!item.query) return undefined;
-			return `searching... query:${item.query}`;
-		case 'fileChange':
-			if (!item.changes.length) return undefined;
+export interface ProgressEventFormatterOptions {
+	/** Injected in tests and otherwise the wall clock. */
+	now?: () => number;
+	/** Show only bold Markdown headings from reasoning events. */
+	thinkingHeadings?: boolean;
+	/** Styles terminal text; defaults to Node's `styleText`. */
+	style?: ProgressStyler;
+}
 
-			return item.changes.map(change => `${change.path} - ${change.kind}`).join('\n');
-		case 'todoList':
-			if (!item.items.length) return undefined;
+interface PendingTool {
+	startedAt: number;
+	description: string;
+}
 
-			return item.items
-				.map(todoItem => `${todoItem.text} - status:${todoItem.completed ? '✔' : 'X'}`)
-				.join('\n');
-		case 'turnStarted':
-		case 'turnEnded':
-			return undefined;
-		default:
-			// The harness can add event types in a minor release; skip the ones this
-			// formatter does not know yet.
-			return undefined;
+const statusIcon = {
+	completed: '✓',
+	error: '✗',
+	denied: '⊘',
+} as const;
+const summaryWidth = 30;
+
+/**
+ * Presents progress without making the terminal consumer part of the published package.
+ *
+ * Tool starts are deliberately state, not output: the active call belongs in the spinner and its
+ * one terminal line is produced only when the call ends.
+ */
+export class ProgressEventFormatter {
+	private readonly now: () => number;
+	private readonly thinkingHeadings: boolean;
+	private readonly style: ProgressStyler;
+	private readonly pending = new Map<string, PendingTool>();
+	private lastAgent: ProgressEvent['agent'];
+
+	constructor({
+		now = Date.now,
+		thinkingHeadings = false,
+		style = styleText,
+	}: ProgressEventFormatterOptions = {}) {
+		this.now = now;
+		this.thinkingHeadings = thinkingHeadings;
+		this.style = style;
 	}
+
+	format(item: ProgressEvent): string | undefined {
+		switch (item.type) {
+			case 'agentMessage':
+				return this.withRole(item.agent, item.message);
+			case 'reasoning':
+				return this.formatReasoning(item);
+			case 'command':
+				if (!item.command) return undefined;
+				return this.withRole(item.agent, this.operational(this.commandLine(item)));
+			case 'tool':
+				return this.formatTool(item);
+			case 'mcpTool':
+				if (!item.server || !item.status) return undefined;
+				return this.withRole(
+					item.agent,
+					this.operational(`tool: ${item.tool}, server: ${item.server}, status: ${item.status}`),
+				);
+			case 'search':
+				if (!item.query) return undefined;
+				return this.withRole(item.agent, this.operational(`searching... query:${item.query}`));
+			case 'fileChange':
+				if (!item.changes.length) return undefined;
+				return this.withRole(
+					item.agent,
+					this.operational(
+						item.changes.map(change => `${change.path} - ${change.kind}`).join('\n'),
+					),
+				);
+			case 'todoList':
+				if (!item.items.length) return undefined;
+				return this.withRole(
+					item.agent,
+					this.operational(
+						item.items
+							.map(todoItem => `${todoItem.text} - status:${todoItem.completed ? '✔' : 'X'}`)
+							.join('\n'),
+					),
+				);
+			case 'turnStarted':
+			case 'turnEnded':
+				return undefined;
+			default:
+				// The harness can add event types in a minor release; skip the ones this
+				// formatter does not know yet.
+				return undefined;
+		}
+	}
+
+	/** A description for the current spinner, or undefined when no tool is running. */
+	spinnerDescription(): string | undefined {
+		return this.pending.values().next().value?.description;
+	}
+
+	/** Ends a turn's presentation state, including a call interrupted by cancellation. */
+	reset(): void {
+		this.pending.clear();
+		this.lastAgent = undefined;
+	}
+
+	private formatTool(item: Extract<ProgressEvent, { type: 'tool' }>): string | undefined {
+		const key = `${item.agent ?? ''}:${item.id}`;
+		if (item.status === 'in_progress') {
+			this.pending.set(key, {
+				startedAt: this.now(),
+				description: this.toolDescription(item),
+			});
+			return undefined;
+		}
+
+		const pending = this.pending.get(key);
+		this.pending.delete(key);
+		const duration = pending
+			? formatDuration(Math.max(0, this.now() - pending.startedAt))
+			: undefined;
+		const icon = statusIcon[item.status];
+		const role = item.agent ?? 'agent';
+		const summary = truncate(compact(item.summary ?? ''), summaryWidth);
+		const ending =
+			item.status === 'denied'
+				? 'denied'
+				: [
+						item.status === 'error'
+							? item.exitCode === undefined
+								? 'error'
+								: `exit ${String(item.exitCode)}`
+							: undefined,
+						duration,
+					]
+						.filter(Boolean)
+						.join(' · ');
+		const columns = [`  ${icon} ${role}`, item.name, summary];
+		if (ending) columns.push(ending);
+		const line = columns.join(' | ');
+		return this.withRole(item.agent, this.operational(line));
+	}
+
+	private commandLine(item: Extract<ProgressEvent, { type: 'command' }>): string {
+		return `  ${item.agent ?? 'agent'}  command  ${item.command || '?'}  exit ${String(item.exitCode ?? '?')}`;
+	}
+
+	private toolDescription(item: Extract<ProgressEvent, { type: 'tool' }>): string {
+		return [item.agent, item.name, compact(item.summary ?? '')]
+			.filter((value): value is string => Boolean(value))
+			.join(' ');
+	}
+
+	private formatReasoning(item: Extract<ProgressEvent, { type: 'reasoning' }>): string | undefined {
+		if (!this.thinkingHeadings) {
+			return this.withRole(item.agent, this.thinking(item.message));
+		}
+
+		const headings = [...item.message.matchAll(/^\s*\*\*([^*\n]+)\*\*\s*$/gm)].map(
+			match => `∴ ${match[1] ?? ''}`,
+		);
+		// Heading mode is a filter, not a role announcement: a reasoning part without a
+		// Markdown heading must not produce any other text.
+		return headings.length > 0
+			? this.withRole(item.agent, this.thinking(headings.join('\n')))
+			: undefined;
+	}
+
+	private thinking(text: string): string {
+		return this.style('dim', this.style('italic', text));
+	}
+
+	private operational(text: string): string {
+		return this.style('dim', text);
+	}
+
+	private withRole(agent: ProgressEvent['agent'], text: string | undefined): string | undefined {
+		if (!agent) return text;
+		const changed = agent !== this.lastAgent;
+		this.lastAgent = agent;
+		if (!text) return changed ? `\n${this.style('bold', agent)}` : undefined;
+		return changed ? `\n${this.style('bold', agent)}\n${text}` : text;
+	}
+}
+
+function formatDuration(milliseconds: number): string {
+	if (milliseconds < 1000) return `${String(Math.round(milliseconds))} ms`;
+	const seconds = milliseconds / 1000;
+	return `${seconds.toFixed(1).replace(/\.0$/, '')} s`;
+}
+
+/** A consumer summary is narration, so it must not turn the one-call line into a paragraph. */
+function compact(value: string): string {
+	return value.replace(/\s+/g, ' ').trim();
+}
+
+function truncate(value: string, width: number): string {
+	if (value.length <= width) return value;
+	return `${value.slice(0, Math.max(0, width - 1))}…`;
 }

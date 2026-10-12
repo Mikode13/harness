@@ -37,6 +37,26 @@ describe('the workspace tools', () => {
 		}
 	});
 
+	it('summarizes scopes and ranges using only the model-supplied paths', () => {
+		const { tools } = setUp();
+		const listFiles = tools.find(tool => tool.name === 'listFiles');
+		const searchText = tools.find(tool => tool.name === 'searchText');
+		const readFile = tools.find(tool => tool.name === 'readFile');
+
+		expect(listFiles?.summarize?.({ path: 'src', glob: '**/*.ts' })).toBe('src/**/*.ts');
+		expect(
+			searchText?.summarize?.({
+				path: null,
+				glob: '*.ts',
+				pattern: 'needle',
+				ignoreCase: null,
+			}),
+		).toBe('"needle" in *.ts');
+		expect(readFile?.summarize?.({ path: 'src/index.ts', fromLine: 10, lineCount: 4 })).toBe(
+			'src/index.ts:10-13',
+		);
+	});
+
 	describe('listFiles', () => {
 		it('asks for at most 200 files and answers one path per line', async () => {
 			const { workspace, run } = setUp();

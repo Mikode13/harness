@@ -1,7 +1,7 @@
 import type { CommandLine, ToolRisk } from '#src/agent/domain/approval';
 import type { ToolDefinition } from '#src/llm/domain/tool';
 import type { ToolCallContext } from './readRegistry.ts';
-import type { Tool } from './tool.ts';
+import type { Tool, ToolSummarizer } from './tool.ts';
 
 /**
  * A tool call checked and fixed before anyone approves it: its risk is judged on what will
@@ -17,10 +17,26 @@ export interface PreparedCall {
 }
 
 /**
+ * A tool ran and produced a result the model should see as an error. Internal tools use this
+ * instead of a plain error when the result also carries narrative metadata, such as a command's
+ * non-zero exit code.
+ */
+export class ToolExecutionError extends Error {
+	readonly exitCode: number | undefined;
+
+	constructor(message: string, { exitCode }: { exitCode?: number } = {}) {
+		super(message);
+		this.exitCode = exitCode;
+	}
+}
+
+/**
  * A tool built by the harness, such as a write tool, which prepares each call against the
  * state of the run before it is approved. Internal: consumers build a `Tool`.
  */
 export interface PreparingTool extends ToolDefinition {
+	/** Describes the model's input without exposing preparation details to the provider. */
+	summarize?: ToolSummarizer;
 	/** Rejects with a message for the model when the call cannot run. */
 	prepare(input: unknown, signal: AbortSignal, call: ToolCallContext): Promise<PreparedCall>;
 }

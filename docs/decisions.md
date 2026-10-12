@@ -467,7 +467,9 @@ tags: #mikode-harness #correctness #boundaries #retry
 
 tags: #mikode-harness #boundaries #api-surface
 
-**Decision:** `handleEvents` moved from `src/agent/domain/agent.ts` to `cli/progressEventFormatter.ts` as `formatProgressEvent`, and is no longer exported from the package.
+**Decision:** `handleEvents` moved from `src/agent/domain/agent.ts` to the instance-based
+`ProgressEventFormatter` in `cli/progressEventFormatter.ts`, and is no longer exported from the
+package.
 
 **Context:** it renders `ProgressEvent` into terminal-shaped strings — labels, `✔`/`X`, newline-joined lists — and its only consumer was `cli/cli.ts`. Keeping it in `agent/domain` put presentation logic in the public core of a package whose stated seam is the provider-agnostic event itself, which is the boundary the CLI split existed to draw.
 

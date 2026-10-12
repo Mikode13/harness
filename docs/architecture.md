@@ -156,7 +156,22 @@ Four contracts have rules of their own:
 
 - **`ProgressEvent` grows in minor releases.** Consumers are told to render the types they
   know and ignore the rest, so a new type must never carry information a consumer needs to be
-  correct. The result of a run travels in `AgentResponse`; progress is narration.
+  correct. The result of a run travels in `AgentResponse`; progress is narration. Existing event
+  shapes remain valid because `agent` is optional on every event and `summary` and `exitCode` are
+  optional on `tool` events. `OrchestratorAgent` supplies
+  `agent: 'planner' | 'executor' | 'reviewer'` for every event received from a role, including
+  retries and later rounds, and overwrites an inner value rather than trusting it. A
+  `tool.summary` is owned by the tool and is only a short description of the model-supplied call;
+  `tool.exitCode` narrates the exit code of a configured command that failed. Neither replaces the
+  tool result, diff or `AgentResponse`.
+- **`Tool` narration stays outside the provider definition.** A tool may provide
+  `summarize(input)`, but `ToolDefinition` sent to an `LLMClient` contains only `name`,
+  `description` and `inputSchema`. `defineTool` validates the model input and passes that
+  validated value to `summarize`; `LLMAgent` calls it once, before preparation or effects, and
+  reuses the value on the `in_progress`, `completed`, `error` or `denied` events. A missing
+  summarizer emits no summary. A consumer summarizer that throws is host code and becomes an
+  `UnrecoverableError`, before a call can prepare or run; schema rejection remains an error
+  result the model can correct.
 - **A model or reasoning effort is the engine or client's to accept.** The factory publishes
   provider-indexed catalogs and path-specific narrowers: `agentModels` and
   `agentReasoningEfforts` for the Agent SDKs, and `llmModels` and `llmReasoningEfforts` for the
@@ -248,7 +263,10 @@ and again when it ends, so a call the run never starts is never shown as running
 goes through `classifyHostFailure`; the response carries the text of the final answer alone. Tokens are
 summed over every call of the run: one call without usage leaves the total unknown, and a
 failure carries what the earlier calls spent. The agent emits no `turnStarted` or
-`turnEnded`: like the other engines, it leaves turn boundaries to the consumer.
+`turnEnded`: like the other engines, it leaves turn boundaries to the consumer. The tool-to-consumer
+narration path is `Tool.summarize` → `LLMAgent`'s optional `tool.summary` events →
+`OrchestratorAgent`'s authoritative role label → the consumer's progress callback. No stage makes
+the summary part of the model context or the run result.
 
 **A configured command.** `runCommand` is prepared like any harness tool: the command's
 parameters are checked, each path through the access policy, and the program, its arguments
@@ -259,9 +277,10 @@ observation; if that fails, the command does not run. `runCommandProcess` starts
 shell, in its own process group and with a small environment, and returns once the group is
 confirmed gone: after it ends, after a timeout, or after a cancellation. The checkpoint then
 records each covered file that changed as a change `observedBy` the command, and closes the
-observation. A timeout fails the call and a cancellation ends the run, both after the changes
-are recorded. A group that cannot be confirmed gone leaves the observation open and stops
-writing for the run. See "The executor runs configured commands by name" and "Configured
+observation. A non-zero exit code is an error result for the model, but the command's output and
+recorded changes are retained; its progress event may carry that `exitCode`. A timeout fails
+the call and a cancellation ends the run, both after the changes are recorded. A group that
+cannot be confirmed gone leaves the observation open and stops writing for the run. See "The executor runs configured commands by name" and "Configured
 commands are trusted, not sandboxed" in [`decisions.md`](decisions.md).
 
 **Usage accounting belongs to a `run()`, not to an instance.** The totals are created inside

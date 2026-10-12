@@ -1,4 +1,10 @@
-import type { Agent, AgentResponse, RunOptions } from '#src/agent/domain/agent';
+import type {
+	Agent,
+	AgentResponse,
+	ProgressAgent,
+	ProgressEvent,
+	RunOptions,
+} from '#src/agent/domain/agent';
 import { addTokens, type Tokens } from '#src/shared/domain/tokens';
 import { RecoverableError, UnrecoverableError, withSpentTokens } from '#src/shared/domain/errors';
 import type { ReviewerDecision } from './reviewerDecision.ts';
@@ -229,7 +235,7 @@ export class OrchestratorAgent implements Agent {
 
 			const plannerResponse = await this.plannerAgent.run(
 				getPlannerPrompt(prompt, lastFailureReason),
-				options,
+				this.optionsForRole(options, 'planner'),
 			);
 			addToTotals(totals, plannerResponse);
 
@@ -246,7 +252,7 @@ export class OrchestratorAgent implements Agent {
 
 			const executorResponse = await this.executorAgent.run(
 				getExecutorPrompt(prompt, plannerResponse.response),
-				options,
+				this.optionsForRole(options, 'executor'),
 			);
 			addToTotals(totals, executorResponse);
 
@@ -303,7 +309,7 @@ export class OrchestratorAgent implements Agent {
 		for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
 			const reviewerResponse = await this.reviewerAgent.run(
 				getReviewerPrompt(userPrompt, plannerPrompt, executorResult, parseFailureReason),
-				options,
+				this.optionsForRole(options, 'reviewer'),
 			);
 
 			addToTotals(totals, reviewerResponse);
@@ -338,5 +344,27 @@ export class OrchestratorAgent implements Agent {
 			classifyHostFailure,
 			'Orchestrator logger failed while reporting a retry',
 		);
+	}
+
+	/**
+	 * Keep the options object extensible and the private run context intact while making the
+	 * orchestrator's attribution authoritative over anything a nested agent supplied.
+	 */
+	private optionsForRole(options: RunOptions, agent: ProgressAgent): RunOptions {
+		const onProgress = options.onProgress;
+		return {
+			...options,
+			onProgress: onProgress
+				? (event: ProgressEvent) => {
+						treatErrors(
+							() => {
+								onProgress({ ...event, agent });
+							},
+							classifyHostFailure,
+							'Orchestrator progress callback failed',
+						);
+					}
+				: undefined,
+		};
 	}
 }

@@ -219,6 +219,15 @@ describe('OpenAI apply_patch on the shared edit engine', () => {
 		});
 	});
 
+	it('summarizes patch operations with the path sent by the model', () => {
+		const tool = createApplyPatchTool(writes);
+
+		expect(
+			tool.summarize?.({ type: 'update_file', path: 'src/greet.ts', diff: '@@\n-old\n+new' }),
+		).toBe('update src/greet.ts');
+		expect(tool.summarize?.({ type: 'delete_file', path: 'notes.txt' })).toBe('delete notes.txt');
+	});
+
 	it('cannot be offered to Claude', () => {
 		vi.mocked(Anthropic).mockImplementation(function () {
 			return { messages: { create: vi.fn() } } as unknown as Anthropic;
@@ -345,6 +354,21 @@ describe("Claude's text editor on the shared edit engine", () => {
 		);
 		expect(onDisk('docs/greet.md')).toBe('Says hello.\n');
 		expect(onDisk('notes.txt')).toBe('obsolete\n');
+	});
+
+	it('summarizes editor operations without reading their content', async () => {
+		const tool = createTextEditorTool({
+			writes,
+			policy,
+			workspace: await createWorkspace({ root }),
+		});
+
+		expect(tool.summarize?.({ command: 'str_replace', path: 'src/greet.ts', old_str: 'x' })).toBe(
+			'replace src/greet.ts',
+		);
+		expect(tool.summarize?.({ command: 'view', path: 'src/greet.ts', view_range: [2, 4] })).toBe(
+			'view src/greet.ts:2-4',
+		);
 	});
 
 	it('matches the text the model sends with \\n in a CRLF file, and keeps CRLF', async () => {

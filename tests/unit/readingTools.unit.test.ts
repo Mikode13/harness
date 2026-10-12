@@ -158,6 +158,13 @@ describe('showChanges for the planner and the reviewer', () => {
 		return prepared.run(signal);
 	}
 
+	it('has a stable summary that does not expose preparation details', async () => {
+		const store = await FileRecoveryStore.open({ root, directory: join(parent, 'state') });
+		const tool = createShowChangesTool({ store, policy });
+
+		expect(tool.summarize?.({})).toBe('changes in this task');
+	});
+
 	it('says when the task has changed nothing yet', async () => {
 		await expect(showChanges(new RunContext())).resolves.toBe(
 			'Nothing has been changed in this task yet.',
