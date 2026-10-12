@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
 import { RecoverableError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
+import { MaxContextError } from '../../src/llm/domain/errors.ts';
 import type { LLMClient, LLMResponse } from '../../src/llm/domain/llm.ts';
 import type { Message } from '../../src/llm/domain/message.ts';
 import {
@@ -149,6 +150,50 @@ describe('LLMAgent', () => {
 		expect(events.filter(event => event.type === 'step')).toEqual([
 			expect.objectContaining({ step: 1, tokens: textResponse('').usage }),
 		]);
+	});
+
+	it('narrates a billed answer the client turned into an error as a step, and no unbilled one', async () => {
+		const usage = { inputTokens: 9, readCacheTokens: 0, writtenCacheTokens: 0, outputTokens: 0 };
+		const billed = new MaxContextError('The context no longer fits', {
+			cause: 'stopped at the window',
+			tokens: usage,
+		});
+		const events: ProgressEvent[] = [];
+		const onProgress = (event: ProgressEvent) => events.push(event);
+
+		await expect(
+			new LLMAgent({ llmClient: new FakeLLMClient(billed) }).run('prompt', { signal, onProgress }),
+		).rejects.toMatchObject({ tokens: usage });
+		// A request the provider refused before answering spent nothing.
+		await expect(
+			new LLMAgent({ llmClient: new FakeLLMClient(new Error('400')) }).run('prompt', {
+				signal,
+				onProgress,
+			}),
+		).rejects.toBeInstanceOf(RecoverableError);
+
+		expect(events.filter(event => event.type === 'step')).toEqual([
+			expect.objectContaining({ step: 1, tokens: usage }),
+		]);
+	});
+
+	it("keeps a billed failure's tokens when the callback throws on its step", async () => {
+		const usage = { inputTokens: 9, readCacheTokens: 0, writtenCacheTokens: 0, outputTokens: 0 };
+		const llmClient = new FakeLLMClient(
+			new MaxContextError('Too long', { cause: 'stopped at the window', tokens: usage }),
+		);
+
+		await expect(
+			new LLMAgent({ llmClient }).run('prompt', {
+				signal,
+				onProgress: () => {
+					throw new Error('render failed');
+				},
+			}),
+		).rejects.toMatchObject({
+			message: 'LLM agent progress callback failed',
+			tokens: usage,
+		});
 	});
 
 	it('marks a stop without usage as unreported', async () => {

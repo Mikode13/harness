@@ -87,10 +87,9 @@ export type ProgressEvent =
 	| { type: 'turnStarted'; agent?: ProgressAgent }
 	| { type: 'turnEnded'; agent?: ProgressAgent }
 	/**
-	 * One call to the model by an agent on the model APIs whose answer the client returned,
-	 * even one the model stopped early: what the call sent and what it cost. Narration only:
-	 * a call the client turned into an error is not a step, so the run's total is
-	 * `AgentResponse.tokens`, or the failure's `tokens`.
+	 * One billed call to the model by an agent on the model APIs, including one the model
+	 * stopped early or the client turned into an error: what the call sent and what it cost.
+	 * Narration only: the run's total is `AgentResponse.tokens`, or the failure's `tokens`.
 	 */
 	| {
 			type: 'step';
