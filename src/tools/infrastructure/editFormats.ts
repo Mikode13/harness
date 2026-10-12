@@ -5,13 +5,13 @@ import type { AccessPolicy } from '../domain/accessPolicy.ts';
 import { EditRefusedError } from '../domain/fileEdits.ts';
 import type { PreparedCall, PreparingTool } from '../domain/preparedCall.ts';
 import type { ToolCallContext } from '../domain/readRegistry.ts';
-import { InvalidToolInputError } from '../domain/tool.ts';
 import { addedLine, joinLines, type Line, splitLines, textsOf } from '../domain/textLines.ts';
 import { applyUpdate, createdContent } from '../domain/v4aPatch.ts';
 import type { Workspace } from '../domain/workspace.ts';
 import { definePreparingTool } from './defineTool.ts';
 import { prepareTrackedEdit } from './trackedEdits.ts';
 import { readTracked } from './trackedReadFile.ts';
+import { validatedSummarizer } from './validatedSummarizer.ts';
 import { readRange } from './workspaceTools.ts';
 import type { WorkspaceWrites } from './workspaceWrites.ts';
 
@@ -41,21 +41,14 @@ function nativeTool<Schema extends z.ZodType>({
 		call: ToolCallContext,
 	) => Promise<PreparedCall>;
 }): PreparingTool {
-	const summarizeInput = summarize;
 	return asNative(
 		{
 			name,
 			description,
 			inputSchema: { type: 'object' },
-			...(summarizeInput
+			...(summarize
 				? {
-						summarize: (raw: unknown) => {
-							const parsed = input.safeParse(raw);
-							if (!parsed.success) {
-								throw new InvalidToolInputError(z.prettifyError(parsed.error));
-							}
-							return summarizeInput(parsed.data);
-						},
+						summarize: validatedSummarizer(input, summarize),
 					}
 				: {}),
 			prepare: (raw: unknown, signal: AbortSignal, call: ToolCallContext) => {

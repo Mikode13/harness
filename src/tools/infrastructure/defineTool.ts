@@ -4,7 +4,8 @@ import { InvalidAgentConfigError } from '#src/shared/domain/errors';
 import type { JSONSchema } from '#src/llm/domain/tool';
 import type { PreparedCall, PreparingTool } from '../domain/preparedCall.ts';
 import type { ToolCallContext } from '../domain/readRegistry.ts';
-import { InvalidToolInputError, type Tool } from '../domain/tool.ts';
+import { type Tool } from '../domain/tool.ts';
+import { validatedSummarizer } from './validatedSummarizer.ts';
 
 // Both providers take tools in strict mode, which supports only part of JSON Schema. Claude
 // rejects these bounds; a tool that needs one checks it in its own code instead.
@@ -108,13 +109,7 @@ export function defineTool<Schema extends z.ZodObject>({
 		inputSchema: strictSchema(input, name),
 		...(summarize
 			? {
-					summarize: (raw: unknown) => {
-						const parsed = input.safeParse(raw);
-						if (!parsed.success) {
-							throw new InvalidToolInputError(z.prettifyError(parsed.error));
-						}
-						return summarize(parsed.data);
-					},
+					summarize: validatedSummarizer(input, summarize),
 				}
 			: {}),
 		risk: raw => {
@@ -171,13 +166,7 @@ export function definePreparingTool<Schema extends z.ZodObject>({
 		inputSchema: strictSchema(input, name),
 		...(summarize
 			? {
-					summarize: (raw: unknown) => {
-						const parsed = input.safeParse(raw);
-						if (!parsed.success) {
-							throw new InvalidToolInputError(z.prettifyError(parsed.error));
-						}
-						return summarize(parsed.data);
-					},
+					summarize: validatedSummarizer(input, summarize),
 				}
 			: {}),
 		prepare: (raw, signal, call) => {
