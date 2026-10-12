@@ -173,7 +173,8 @@ describe('ProgressEventFormatter', () => {
 	it('allows tests to verify role, message, tool and reasoning styles', () => {
 		const style: ProgressStyler = (format, text) =>
 			`<${String(format)}>${text}</${String(format)}>`;
-		const formatter = new ProgressEventFormatter({ style });
+		// A fixed clock: the real one can tick between a tool's start and its end on a slow runner.
+		const formatter = new ProgressEventFormatter({ style, now: () => 0 });
 
 		expect(formatter.format({ type: 'agentMessage', agent: 'planner', message: 'Plan' })).toBe(
 			'\n<bold>planner</bold>\nPlan',
