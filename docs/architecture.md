@@ -70,10 +70,13 @@ Two boundaries carry most of the design:
 `signal`, its optional `onProgress`, and its optional `approve`, asked before a model-backed
 agent runs a `destructive` tool call. A decorator and a whole multi-agent workflow are
 therefore substitutable for a bare engine anywhere, and a consumer's loop cannot tell which it
-is driving. A decorator passes `options` on whole, never rebuilt, so a field added to it
-reaches every agent without each decorator learning about it. The same holds for the internal `RunContext`
-an outer agent adds under a private symbol: every agent the run reaches sees it, and no
-consumer can.
+is driving. Decorators such as `RetryingAgent` and `InstructedAgent` pass `options` on whole,
+never rebuilt, so a field added to it reaches every agent without each decorator learning about it.
+`OrchestratorAgent` is the deliberate exception: it makes one shallow copy per role with object
+spread, carrying the own enumerable string- and symbol-keyed fields, including the internal
+`RunContext`, and replaces only `onProgress` with a wrapper that makes the role attribution
+authoritative. The same context therefore reaches every agent the run reaches, and no consumer can
+see or set it.
 
 **Nothing escapes an `Agent` unclassified.** Every consumer branches on `RecoverableError`
 versus `UnrecoverableError`, so an unclassified error bypasses that decision entirely: it is
@@ -226,9 +229,11 @@ executor → reviewer. The reviewer is asked for JSON and its answer goes throug
 `{ decision: 'rejected', feedback }` and never free text. An unusable reviewer answer retries
 only the reviewer call, with the parse failure fed back — a malformed decision is not evidence
 that the plan or the implementation were wrong. A rejection starts another round with the
-feedback carried into the planner prompt. All three roles receive the same run options, so one
-cancellation stops the whole workflow and progress from every role reaches the consumer
-through one stream.
+feedback carried into the planner prompt. Each role receives its own shallow copy of the run
+options, carrying the own enumerable fields such as `signal`, `approve` and the shared
+`RunContext`; only `onProgress` is replaced with the role's authoritative wrapper. The shared signal
+therefore lets one cancellation stop the whole workflow, and every wrapper forwards progress to the
+consumer through one stream.
 
 **A model-backed turn.** `LLMAgent.run` sends the stored context, the new prompt and the
 definitions of its tools to its `LLMClient`, inside `classifyProviderFailure`; the client

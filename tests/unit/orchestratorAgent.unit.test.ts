@@ -56,8 +56,7 @@ describe('OrchestratorAgent', () => {
 		vi.restoreAllMocks();
 	});
 
-	// Rebuilding the options would drop any field the orchestrator does not know about.
-	it('passes the run options on whole to every role, with one run context for all of them', async () => {
+	it('copies enumerable run options for every role and shares one run context', async () => {
 		const role = (response: string) =>
 			vi.fn<Agent['run']>(() => Promise.resolve(createResponse({ response })));
 		const planner = role('plan');
@@ -70,14 +69,29 @@ describe('OrchestratorAgent', () => {
 			reviewerDecisionValidator: new ReviewerDecisionValidator(),
 			logger,
 		});
-		const options: RunOptions = { signal: new AbortController().signal, onProgress: vi.fn() };
+		const signal = new AbortController().signal;
+		const onProgress = vi.fn();
+		const approve: NonNullable<RunOptions['approve']> = vi.fn(() => ({ approved: true }));
+		const futureField = { preserved: true };
+		const options = {
+			signal,
+			onProgress,
+			approve,
+			futureField,
+		} as RunOptions & { futureField: typeof futureField };
 
 		await orchestrator.run('ship feature', options);
 
-		const received = [planner, executor, reviewer].map(run => run.mock.calls[0]?.[1]);
+		const received = [planner, executor, reviewer].map(
+			run =>
+				run.mock.calls[0]?.[1] as (RunOptions & { futureField: typeof futureField }) | undefined,
+		);
 		for (const roleOptions of received) {
-			expect(roleOptions?.signal).toBe(options.signal);
+			expect(roleOptions?.signal).toBe(signal);
+			expect(roleOptions?.approve).toBe(approve);
+			expect(roleOptions?.futureField).toBe(futureField);
 			expect(roleOptions?.onProgress).toEqual(expect.any(Function));
+			expect(roleOptions?.onProgress).not.toBe(onProgress);
 		}
 		// One run context for every role, so the executor's writes are one run of the history.
 		const [first, ...rest] = received.map(roleOptions => roleOptions && runContextOf(roleOptions));

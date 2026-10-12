@@ -141,7 +141,12 @@ export class ProgressEventFormatter {
 		const columns = [`  ${icon} ${role}`, item.name, summary];
 		if (ending) columns.push(ending);
 		const line = columns.join(' | ');
-		return this.withRole(item.agent, this.operational(line));
+		const formatted = this.withRole(item.agent, this.operational(line));
+		if (item.status === 'completed' && item.diff !== undefined) {
+			if (formatted === undefined) return this.style('dim', item.diff);
+			return `${formatted}\n${this.style('dim', item.diff)}`;
+		}
+		return formatted;
 	}
 
 	private commandLine(item: Extract<ProgressEvent, { type: 'command' }>): string {

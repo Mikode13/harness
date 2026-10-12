@@ -16,6 +16,7 @@ import { PromptEmitter } from './adapters/promptEmitter.ts';
 import { approvalKey, createTerminalApprover } from './terminalApprover.ts';
 import { loadUserConfig, userConfigPath } from './userConfig.ts';
 import { HistoryCommands } from './historyCommands.ts';
+import { formatSpinnerLine } from './spinner.ts';
 
 const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 let spinnerFrame = 0;
@@ -28,7 +29,11 @@ function startSpinner(description?: string): void {
 		cursorTo(process.stdout, 0);
 		clearLine(process.stdout, 0);
 		process.stdout.write(
-			`${spinnerFrames[spinnerFrame % spinnerFrames.length] ?? ''}${spinnerDescription ? ` ${spinnerDescription}` : ''}`,
+			formatSpinnerLine(
+				spinnerFrames[spinnerFrame % spinnerFrames.length] ?? '',
+				spinnerDescription,
+				process.stdout.columns,
+			),
 		);
 		spinnerFrame++;
 	}, 80);

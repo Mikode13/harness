@@ -28,7 +28,36 @@ describe('ProgressEventFormatter', () => {
 		expect(formatter.spinnerDescription()).toBeUndefined();
 	});
 
-	it('uses separate icons for errors and denials, without appending a diff', () => {
+	it('prints a completed tool diff below its summary', () => {
+		let now = 10;
+		const formatter = new ProgressEventFormatter({ now: () => now });
+		formatter.format({
+			type: 'tool',
+			id: 'edit',
+			name: 'editFile',
+			agent: 'executor',
+			status: 'in_progress',
+			summary: 'src/index.ts',
+		});
+		now = 10;
+		const line = plain(
+			formatter.format({
+				type: 'tool',
+				id: 'edit',
+				name: 'editFile',
+				agent: 'executor',
+				status: 'completed',
+				summary: 'src/index.ts',
+				diff: '--- a/src/index.ts\n+++ b/src/index.ts\n@@ -1 +1 @@\n-old\n+new',
+			}),
+		);
+
+		expect(line).toBe(
+			'\nexecutor\n  ✓ executor | editFile | src/index.ts | 0 ms\n--- a/src/index.ts\n+++ b/src/index.ts\n@@ -1 +1 @@\n-old\n+new',
+		);
+	});
+
+	it('uses separate icons for errors and denials, without appending a denied diff', () => {
 		const formatter = new ProgressEventFormatter({ now: () => 10 });
 
 		const errorLine = plain(
@@ -39,10 +68,12 @@ describe('ProgressEventFormatter', () => {
 				agent: 'executor',
 				status: 'error',
 				summary: 'pnpm run check',
+				diff: 'must not be printed in an error',
 			}),
 		);
 		expect(errorLine).toContain('✗ executor | runCommand | pnpm run check | error');
 		expect(errorLine).toMatch(/error$/);
+		expect(errorLine).not.toContain('must not be printed in an error');
 		expect(
 			plain(
 				formatter.format({

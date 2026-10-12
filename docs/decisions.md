@@ -1820,3 +1820,52 @@ tags: #mikode-harness #orchestration #llm
 
 - Each of the two roles has two texts, both tested through the factory.
 - An executor whose commands do not include the tests is still told to run them. Telling those cases apart would need commands to declare what they are for.
+
+---
+
+## Issue #89: progress is concise, attributed, and still useful live
+
+tags: #mikode-harness #progress #cli #orchestration
+
+**Decision:**
+
+- A tool owns its short `summary`. The harness computes it once from the model's validated input
+  and reuses it for the call's progress events. If a consumer-provided `summarize` fails
+  irrecoverably, that failure ends the call before preparation, approval, or execution can leave
+  ambiguous side effects.
+- `OrchestratorAgent` is authoritative about roles. It uses object spread to make one shallow
+  options copy per role, retaining own enumerable string- and symbol-keyed properties, including
+  the signal, approval callback, future fields and shared run context, and wraps only `onProgress`
+  to overwrite any inner role label.
+- The CLI prints one final line per tool, keeps active calls in a spinner, dims operational and
+  reasoning text, and supports `--thinking-headings` for heading-only reasoning. A completed write
+  keeps its live unified diff below that line.
+- A configured command that exits non-zero is a tool error result carrying its `exitCode`. This
+  reverses the earlier #72 behaviour that treated such an exit as a successful tool result: the
+  model must now see the failure while the progress stream narrates its code.
+- The default planner, executor, and reviewer instructions require concise, professional
+  communication and stop routine narration. `systemPrompts` continues to replace those defaults
+  word for word for consumers that need their own instructions.
+
+**Context:** the live validation of #89 needed progress that distinguished the acting role and
+the operation without flooding a terminal, while preserving the information needed to understand
+file changes and command failures. The summary belongs to the tool rather than the renderer so
+every consumer receives the same call description, and role labels belong to the orchestrator
+rather than nested agents so an inner value cannot be misleading.
+
+**Alternatives considered:**
+
+- **Let the formatter derive summaries, or retry a failing summarizer.** Rejected: rendering
+  would need tool-specific input knowledge, and retrying consumer code after a provider turn could
+  replay side effects.
+- **Trust role labels from each nested agent.** Rejected: a role's progress must remain
+  attributable across retries and later rounds.
+- **Drop diffs, or print every active event as a line.** Rejected: the first loses the live view
+  of writes, while the second scrolls a terminal and hides the useful final state.
+- **Treat a non-zero command exit as successful output, as #72 did.** Rejected: the model needs
+  an error result to correct its next action, with the code retained as narration.
+
+**Consequences:** consumers can render a stable tool lifecycle without knowing tool inputs, and
+the CLI remains readable in both normal and heading-only thinking modes. A new option field
+continues through the orchestrator without another forwarding change, while role attribution
+remains presentation metadata rather than a value supplied by a provider.
