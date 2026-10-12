@@ -46,6 +46,7 @@ import { InvalidToolInputError } from '#src/tools/domain/tool';
 import { isAbortError } from '#src/shared/domain/isAbortError';
 import type { ILogger } from '#src/shared/domain/logger';
 import { addTokens, type Tokens } from '#src/shared/domain/tokens';
+import { measureContext } from './stepContext.ts';
 import {
 	type Followed,
 	followHistory,
@@ -145,6 +146,9 @@ export class LLMAgent implements Agent {
 	private readonly conversation: Conversation;
 	private readonly tools: Map<string, AgentTool>;
 	private readonly toolDefinitions: ToolDefinition[];
+	// Each call's summary, as its tool gave it when the call ran, so measuring a step that
+	// resends the call never runs a consumer's summarizer again.
+	private readonly callSummaries = new Map<string, string>();
 	private readonly maxSteps: number;
 	private readonly autoApprove: boolean;
 	private readonly logger: ILogger | undefined;
@@ -291,31 +295,35 @@ export class LLMAgent implements Agent {
 		runMessages: Message[],
 		after: number | undefined,
 		signal: AbortSignal,
-	): Promise<LLMResponse> {
+	): Promise<{ response: LLMResponse; context: Message[] }> {
+		// Sent as a copy, so what the run records is what the agent built, whatever the client does.
+		const context = [...this.conversation.contextAfter(after), ...structuredClone(runMessages)];
 		let response: LLMResponse;
 		try {
-			// Sent as a copy, so what the run records is what the agent built, whatever the client does.
-			response = await this.llmClient.send(
-				{
-					context: [...this.conversation.contextAfter(after), ...structuredClone(runMessages)],
-					tools: this.toolDefinitions,
-				},
-				signal,
-			);
+			response = await this.llmClient.send({ context, tools: this.toolDefinitions }, signal);
 		} catch (error) {
 			throw classifyProviderFailure(error, 'The LLM call failed');
 		}
 
-		if (response.stopReason !== 'completed') {
-			throw new UnrecoverableError('The LLM stopped before completing its answer', {
-				cause: `The model stopped with "${response.stopReason}".`,
-				// The call was billed even though its answer is unusable.
-				tokens: response.usage,
-				usageUnreported: !response.usage,
-			});
-		}
+		return { response, context };
+	}
 
-		return response;
+	private narrateStep(step: number, response: LLMResponse, sent: Message[], callback: Callback) {
+		emit(
+			{
+				type: 'step',
+				step,
+				...(response.usage ? { tokens: response.usage } : {}),
+				context: measureContext({
+					instructions: this.llmClient.systemPrompt,
+					providerDataSource: this.llmClient.providerDataSource,
+					tools: this.toolDefinitions,
+					context: sent,
+					summarize: call => this.callSummaries.get(call.id),
+				}),
+			},
+			callback,
+		);
 	}
 
 	/**
@@ -400,6 +408,7 @@ export class LLMAgent implements Agent {
 			// summarizer is host code, and a failed one must never leave an ambiguous call that
 			// could be replayed by RetryingAgent.
 			summary = tool.summarize?.(call.input);
+			if (summary !== undefined) this.callSummaries.set(call.id, summary);
 		} catch (error) {
 			signal.throwIfAborted();
 			if (error instanceof InvalidToolInputError) {
@@ -614,9 +623,18 @@ export class LLMAgent implements Agent {
 			const reads = this.reads.begin();
 			const repeats = new RepeatedCalls();
 			for (let step = 1; step <= this.maxSteps; step++) {
-				const response = await this.llmCall(runMessages, after, signal);
+				const { response, context: sent } = await this.llmCall(runMessages, after, signal);
 				tokens = addTokens(tokens, response.usage);
 				unreported ||= !response.usage;
+				// After the tokens are counted, so a throwing callback still reports them, and for an
+				// unusable answer too: the call was sent, and billed.
+				this.narrateStep(step, response, sent, callback);
+				if (response.stopReason !== 'completed') {
+					// Its tokens are already counted with the run's, which the failure carries.
+					throw new UnrecoverableError('The LLM stopped before completing its answer', {
+						cause: `The model stopped with "${response.stopReason}".`,
+					});
+				}
 				runMessages.push(response.message);
 
 				// Tool calls are narrated as they start, in `runTools`, and never if they do not run.

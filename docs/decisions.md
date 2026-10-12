@@ -1884,3 +1884,35 @@ One minimal live request confirmed that `concise` is accepted by each catalogued
 the CLI remains readable in both normal and heading-only thinking modes. A new option field
 continues through the orchestrator without another forwarding change, while role attribution
 remains presentation metadata rather than a value supplied by a provider.
+
+## Each call to the model is narrated as a step, with what it sent
+
+tags: #mikode-harness #llm #progress
+
+**Decision:**
+
+- **A `step` `ProgressEvent`.** `LLMAgent` emits one after each call to the model whose answer the client returns, once the call's tokens are counted. That includes an answer the model stopped early, which was billed too. It carries the step number, the call's `tokens` when the provider reported them, and a `StepContext`.
+- **Two billed calls are not steps.** A call the client turns into an error, such as Claude's `model_context_window_exceeded`, has no answer to narrate: its failure carries what it spent. Neither has the cheap summary of what an undo left behind, which is not a step of the run's own model. So after either, the steps' tokens add up to less than the run's total, which stays the authority.
+- **`StepContext` counts characters by where they come from:**
+  - the system prompt and the tool definitions;
+  - the text of prompts and answers;
+  - reasoning sent back: only the client's own signed or encrypted blocks, which hold the readable text, since a client drops readable reasoning and another provider's blocks;
+  - the input of the tool calls;
+  - each tool's results, largest first;
+  - the five largest single results, each named by the summary its call got when it ran.
+- **Characters, not tokens.** The harness does not tokenize, and the provider's count arrives with the answer. The breakdown says what fills the context; `tokens` says what it cost.
+- **Measuring never runs a consumer's summarizer again.** `LLMAgent` keeps the summary each call got when it ran, so a call resent on every step is summarized once.
+- **The CLI writes the events to a file** with `--steps <file>`, one JSON line each, and does not print them.
+
+**Context:** #100. The `--llm` run of #22 and #98 resent about 122k tokens of context on each of its 140 steps, and only its total was known. Reading the log showed some causes, such as the architecture document and 25 outputs of `check`, but not how much each weighed. Every lever in #100 needs a before and an after to compare on the same benchmark.
+
+**Alternatives considered:**
+
+- **A debug log behind an environment variable.** It changes no public type, but only this repository could measure. The user chose a public event, which #89 and job-search can use too.
+- **Counting tokens per part with a tokenizer.** It would be exact, but per provider, and it would add a dependency. Characters are enough to rank what fills a context.
+
+**Consequences:**
+
+- A `feat`: a new event type, which consumers that switch exhaustively over `ProgressEvent` must ignore, as the type tells them.
+- Measuring walks the whole context once per step, which is linear in its size and small next to the call itself.
+- `LLMClient` gained an optional `systemPrompt`, which both clients already held, and `providerDataSource`, the one source each sends back.

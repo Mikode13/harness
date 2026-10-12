@@ -26,6 +26,11 @@ import { defineTool } from '../../src/tools/infrastructure/defineTool.ts';
 
 const signal = new AbortController().signal;
 
+// What a run narrates, without the step events, which "step events" checks on its own.
+const narration = (events: ProgressEvent[]) => (event: ProgressEvent) => {
+	if (event.type !== 'step') events.push(event);
+};
+
 const citySchema = {
 	type: 'object' as const,
 	properties: { city: { type: 'string' } },
@@ -157,7 +162,7 @@ describe('LLMAgent with tools', () => {
 
 		await new LLMAgent({ llmClient, tools: [fakeTool('weather')] }).run('prompt', {
 			signal,
-			onProgress: event => events.push(event),
+			onProgress: narration(events),
 		});
 
 		expect(events).toEqual([
@@ -166,6 +171,44 @@ describe('LLMAgent with tools', () => {
 			{ type: 'tool', id: 'call-1', name: 'weather', status: 'completed' },
 			{ type: 'agentMessage', message: 'Sunny in Madrid' },
 		]);
+	});
+
+	it('narrates each call to the model as a step, with what it sent and what it cost', async () => {
+		const usage = { inputTokens: 2, readCacheTokens: 3, writtenCacheTokens: 0, outputTokens: 1 };
+		const llmClient = Object.assign(
+			new FakeLLMClient(
+				assistantResponse([madridCall], { usage }),
+				assistantResponse([{ type: 'text', text: 'answer' }], { usage: null }),
+			),
+			{ systemPrompt: 'Be brief.' },
+		);
+		const summarize = vi.fn(() => 'weather for Madrid');
+		const events: ProgressEvent[] = [];
+
+		await new LLMAgent({
+			llmClient,
+			tools: [fakeTool('weather', undefined, undefined, summarize)],
+		}).run('prompt', { signal, onProgress: event => events.push(event) });
+
+		const steps = events.filter(event => event.type === 'step');
+		expect(steps).toHaveLength(2);
+		expect(steps[0]).toMatchObject({ step: 1, tokens: usage });
+		// The provider reported no usage for the second call.
+		expect(steps[1] && 'tokens' in steps[1]).toBe(false);
+		expect(steps[0]?.context).toMatchObject({
+			instructions: 'Be brief.'.length,
+			messages: 'prompt'.length,
+			toolResults: [],
+		});
+		expect(steps[1]).toMatchObject({
+			step: 2,
+			context: {
+				toolResults: [{ tool: 'weather', characters: 'Madrid: sunny'.length, calls: 1 }],
+				largestResults: [{ tool: 'weather', characters: 13, summary: 'weather for Madrid' }],
+			},
+		});
+		// The summary the call got when it ran, not a second run of the tool's summarizer.
+		expect(summarize).toHaveBeenCalledOnce();
 	});
 
 	it('calculates one summary and reuses it for the start and completion events', async () => {
@@ -178,7 +221,7 @@ describe('LLMAgent with tools', () => {
 			tools: [fakeTool('weather', undefined, undefined, summarize)],
 		}).run('prompt', {
 			signal,
-			onProgress: event => events.push(event),
+			onProgress: narration(events),
 		});
 
 		expect(summarize).toHaveBeenCalledOnce();
@@ -212,7 +255,7 @@ describe('LLMAgent with tools', () => {
 		await new LLMAgent({
 			llmClient: new FakeLLMClient(assistantResponse([madridCall]), textResponse('answer')),
 			tools: [failing],
-		}).run('prompt', { signal, onProgress: event => failedEvents.push(event) });
+		}).run('prompt', { signal, onProgress: narration(failedEvents) });
 		expect(failingSummary).toHaveBeenCalledOnce();
 		expect(failedEvents).toContainEqual({
 			type: 'tool',
@@ -228,7 +271,7 @@ describe('LLMAgent with tools', () => {
 		await new LLMAgent({
 			llmClient: new FakeLLMClient(assistantResponse([madridCall]), textResponse('answer')),
 			tools: [denied],
-		}).run('prompt', { signal, onProgress: event => deniedEvents.push(event) });
+		}).run('prompt', { signal, onProgress: narration(deniedEvents) });
 		expect(deniedSummary).toHaveBeenCalledOnce();
 		expect(deniedEvents).toEqual([
 			{
@@ -282,7 +325,7 @@ describe('LLMAgent with tools', () => {
 
 		await new LLMAgent({ llmClient, tools: [weather] }).run('prompt', {
 			signal,
-			onProgress: event => events.push(event),
+			onProgress: narration(events),
 		});
 
 		expect(summarize).not.toHaveBeenCalled();
@@ -304,7 +347,7 @@ describe('LLMAgent with tools', () => {
 
 		await new LLMAgent({ llmClient, tools: [fakeTool('weather')] }).run('prompt', {
 			signal,
-			onProgress: event => events.push(event),
+			onProgress: narration(events),
 		});
 
 		// Each call is announced only when its turn comes, never while another is running.
@@ -347,7 +390,7 @@ describe('LLMAgent with tools', () => {
 
 		const response = await new LLMAgent({ llmClient, tools: [weather] }).run('prompt', {
 			signal,
-			onProgress: event => events.push(event),
+			onProgress: narration(events),
 		});
 
 		expect(llmClient.contexts[1]?.[2]).toEqual(
@@ -402,7 +445,7 @@ describe('LLMAgent with tools', () => {
 		await expect(
 			new LLMAgent({ llmClient, tools: [first, second] }).run('prompt', {
 				signal: controller.signal,
-				onProgress: event => events.push(event),
+				onProgress: narration(events),
 			}),
 		).rejects.toMatchObject({ name: 'AbortError' });
 		expect(second.execute).not.toHaveBeenCalled();
@@ -445,7 +488,7 @@ describe('LLMAgent with tools', () => {
 		await expect(
 			new LLMAgent({ llmClient, tools: [weather], maxSteps: 2 }).run('prompt', {
 				signal,
-				onProgress: event => events.push(event),
+				onProgress: narration(events),
 			}),
 		).rejects.toMatchObject({
 			constructor: UnrecoverableError,
@@ -901,7 +944,7 @@ describe('LLMAgent tool approval', () => {
 		await new LLMAgent({ llmClient: answerAfterOneCall(), tools: [destructive()] }).run('prompt', {
 			signal,
 			approve,
-			onProgress: event => events.push(event),
+			onProgress: narration(events),
 		});
 
 		expect(eventsWhenAsked.filter(event => event.type === 'tool')).toEqual([]);
@@ -919,7 +962,7 @@ describe('LLMAgent tool approval', () => {
 
 		await new LLMAgent({ llmClient: answerAfterOneCall(), tools: [tool()] }).run('prompt', {
 			signal,
-			onProgress: event => events.push(event),
+			onProgress: narration(events),
 		});
 
 		expect(events.filter(event => event.type === 'tool')).toEqual([

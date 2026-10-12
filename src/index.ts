@@ -44,6 +44,7 @@ export {
 	type Callback,
 	type ProgressAgent,
 	type ProgressEvent,
+	type StepContext,
 	type RunOptions,
 } from './agent/domain/agent.ts';
 export {

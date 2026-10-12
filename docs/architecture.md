@@ -117,7 +117,7 @@ why it is the only place that knows every provider.
 
 `src/index.ts` is the public API: `createAgent`, `createOrchestrator`, `createLLMAgent`,
 `createLLMOrchestrator`, the `Agent`, `RunOptions`, `AgentResponse`, `Callback`, `ProgressEvent`,
-`ProgressAgent` and `Tokens` types, the approval contract (`rememberApprovals` and the `Approver`,
+`ProgressAgent`, `StepContext` and `Tokens` types, the approval contract (`rememberApprovals` and the `Approver`,
 `ApprovalRequest`, `ApprovalDecision`, `RememberableDecision`, `ToolRisk` and `CommandLine` types), the three
 failure types an agent rejects with, `isAbortError`, `isAgentProvider`, `agentProviders`, the
 provider-indexed `agentModels` and `agentReasoningEfforts` catalogs with their `isModelOf` and
@@ -271,7 +271,12 @@ failure carries what the earlier calls spent. The agent emits no `turnStarted` o
 `turnEnded`: like the other engines, it leaves turn boundaries to the consumer. The tool-to-consumer
 narration path is `Tool.summarize` → `LLMAgent`'s optional `tool.summary` events →
 `OrchestratorAgent`'s authoritative role label → the consumer's progress callback. No stage makes
-the summary part of the model context or the run result.
+the summary part of the model context or the run result. After each call to the model, once its
+tokens are counted, `LLMAgent` emits a `step` event: the call's tokens and a `StepContext`, the
+characters it sent by origin (system prompt, tool definitions, text, reasoning, tool calls, each
+tool's results, and the five largest results named by the summary their call got when it ran).
+`measureContext` in `src/engines/domain/model/stepContext.ts` computes it; it is an estimate for
+finding what fills a context, not a token count, and never calls a summarizer again.
 
 **A configured command.** `runCommand` is prepared like any harness tool: the command's
 parameters are checked, each path through the access policy, and the program, its arguments

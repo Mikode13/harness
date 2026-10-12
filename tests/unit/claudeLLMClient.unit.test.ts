@@ -72,6 +72,11 @@ function apiError(status: number, type: string, message = `${type} happened`): A
 }
 
 describe('ClaudeLLMClient', () => {
+	// What `measureContext` counts as sent back is the source this client replays.
+	it('names the source of the provider data it sends back', () => {
+		expect(createClient().providerDataSource).toBe('claude');
+	});
+
 	afterEach(() => {
 		vi.clearAllMocks();
 	});

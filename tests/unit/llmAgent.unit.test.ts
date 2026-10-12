@@ -13,6 +13,11 @@ import {
 
 const signal = new AbortController().signal;
 
+// What a run narrates, without the step events, which "step events" checks on its own.
+const narration = (events: ProgressEvent[]) => (event: ProgressEvent) => {
+	if (event.type !== 'step') events.push(event);
+};
+
 function reasonedResponse(reasoning: string, text?: string): LLMResponse {
 	const response = textResponse(text ?? '');
 	response.message.content = [
@@ -95,7 +100,7 @@ describe('LLMAgent', () => {
 
 		const response = await new LLMAgent({ llmClient }).run('prompt', {
 			signal,
-			onProgress: event => events.push(event),
+			onProgress: narration(events),
 		});
 
 		expect(events).toEqual([
@@ -113,7 +118,7 @@ describe('LLMAgent', () => {
 		const agent = new LLMAgent({ llmClient });
 		const events: ProgressEvent[] = [];
 
-		const response = await agent.run('first', { signal, onProgress: event => events.push(event) });
+		const response = await agent.run('first', { signal, onProgress: narration(events) });
 		await agent.run('second', { signal });
 
 		expect(events).toEqual([{ type: 'agentMessage', message: 'answer' }]);
@@ -128,6 +133,22 @@ describe('LLMAgent', () => {
 		const response = await new LLMAgent({ llmClient }).run('prompt', { signal });
 
 		expect(response).toMatchObject({ response: '', tokens: textResponse('').usage });
+	});
+
+	it('narrates a call the model stopped early as a step, since it was billed', async () => {
+		const llmClient = new FakeLLMClient(textResponse('partial', { stopReason: 'truncated' }));
+		const events: ProgressEvent[] = [];
+
+		await expect(
+			new LLMAgent({ llmClient }).run('prompt', {
+				signal,
+				onProgress: event => events.push(event),
+			}),
+		).rejects.toBeInstanceOf(UnrecoverableError);
+
+		expect(events.filter(event => event.type === 'step')).toEqual([
+			expect.objectContaining({ step: 1, tokens: textResponse('').usage }),
+		]);
 	});
 
 	it('marks a stop without usage as unreported', async () => {
