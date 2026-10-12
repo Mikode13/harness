@@ -63,6 +63,9 @@ const { values: flags } = parseArgs({
 	},
 });
 const stepsFile = flags.steps;
+// Opened now, so a path that cannot be written fails before any call to the model is billed.
+if (stepsFile) appendFileSync(stepsFile, '');
+let recordingSteps = stepsFile !== undefined;
 const progressFormatter = new ProgressEventFormatter({
 	thinkingHeadings: flags['thinking-headings'],
 });
@@ -122,8 +125,18 @@ const loop = new ConversationLoop(
 		}
 
 		if (item.type === 'step') {
-			if (stepsFile)
+			if (!stepsFile || !recordingSteps) return;
+			try {
 				appendFileSync(stepsFile, `${JSON.stringify({ at: new Date().toISOString(), ...item })}\n`);
+			} catch (error) {
+				// Measuring must never end the run it measures: say so once, and stop recording.
+				recordingSteps = false;
+				output.printError(
+					new Error(`Could not write to ${stepsFile}; steps are no longer recorded`, {
+						cause: error,
+					}),
+				);
+			}
 			return;
 		}
 
