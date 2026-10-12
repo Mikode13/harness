@@ -135,6 +135,22 @@ describe('LLMAgent', () => {
 		expect(response).toMatchObject({ response: '', tokens: textResponse('').usage });
 	});
 
+	it('narrates a call the model stopped early as a step, since it was billed', async () => {
+		const llmClient = new FakeLLMClient(textResponse('partial', { stopReason: 'truncated' }));
+		const events: ProgressEvent[] = [];
+
+		await expect(
+			new LLMAgent({ llmClient }).run('prompt', {
+				signal,
+				onProgress: event => events.push(event),
+			}),
+		).rejects.toBeInstanceOf(UnrecoverableError);
+
+		expect(events.filter(event => event.type === 'step')).toEqual([
+			expect.objectContaining({ step: 1, tokens: textResponse('').usage }),
+		]);
+	});
+
 	it('marks a stop without usage as unreported', async () => {
 		const llmClient = new FakeLLMClient(
 			textResponse('partial', { stopReason: 'truncated', usage: null }),

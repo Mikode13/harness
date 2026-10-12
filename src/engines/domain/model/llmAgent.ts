@@ -305,15 +305,6 @@ export class LLMAgent implements Agent {
 			throw classifyProviderFailure(error, 'The LLM call failed');
 		}
 
-		if (response.stopReason !== 'completed') {
-			throw new UnrecoverableError('The LLM stopped before completing its answer', {
-				cause: `The model stopped with "${response.stopReason}".`,
-				// The call was billed even though its answer is unusable.
-				tokens: response.usage,
-				usageUnreported: !response.usage,
-			});
-		}
-
 		return { response, context };
 	}
 
@@ -634,8 +625,15 @@ export class LLMAgent implements Agent {
 				const { response, context: sent } = await this.llmCall(runMessages, after, signal);
 				tokens = addTokens(tokens, response.usage);
 				unreported ||= !response.usage;
-				// After the tokens are counted, so a throwing callback still reports them.
+				// After the tokens are counted, so a throwing callback still reports them, and for an
+				// unusable answer too: the call was sent, and billed.
 				this.narrateStep(step, response, sent, callback);
+				if (response.stopReason !== 'completed') {
+					// Its tokens are already counted with the run's, which the failure carries.
+					throw new UnrecoverableError('The LLM stopped before completing its answer', {
+						cause: `The model stopped with "${response.stopReason}".`,
+					});
+				}
 				runMessages.push(response.message);
 
 				// Tool calls are narrated as they start, in `runTools`, and never if they do not run.
