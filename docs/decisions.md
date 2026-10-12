@@ -1896,7 +1896,7 @@ tags: #mikode-harness #llm #progress
 - **`StepContext` counts characters by where they come from:**
   - the system prompt and the tool definitions;
   - the text of prompts and answers;
-  - reasoning sent back, provider-signed blocks included;
+  - reasoning sent back: only the client's own signed or encrypted blocks, which hold the readable text, since a client drops readable reasoning and another provider's blocks;
   - the input of the tool calls;
   - each tool's results, largest first;
   - the five largest single results, each named by the summary its call got when it ran.
@@ -1915,4 +1915,4 @@ tags: #mikode-harness #llm #progress
 
 - A `feat`: a new event type, which consumers that switch exhaustively over `ProgressEvent` must ignore, as the type tells them.
 - Measuring walks the whole context once per step, which is linear in its size and small next to the call itself.
-- `LLMClient` gained an optional `systemPrompt`, which both clients already held.
+- `LLMClient` gained an optional `systemPrompt`, which both clients already held, and `providerDataSource`, the one source each sends back.

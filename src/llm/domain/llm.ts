@@ -18,6 +18,11 @@ export interface LLMResponse {
 export interface LLMClient {
 	/** The system prompt every call sends, for measuring what a call carries. */
 	readonly systemPrompt?: string;
+	/**
+	 * The `source` of the `providerData` this client sends back; it drops every other. For
+	 * measuring what a call carries.
+	 */
+	readonly providerDataSource?: string;
 	/** Whether this client can declare a native tool. Missing means it declares none. */
 	supportsNative?(tool: NativeTool): boolean;
 	send(

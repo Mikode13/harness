@@ -316,6 +316,7 @@ export class LLMAgent implements Agent {
 				...(response.usage ? { tokens: response.usage } : {}),
 				context: measureContext({
 					instructions: this.llmClient.systemPrompt,
+					providerDataSource: this.llmClient.providerDataSource,
 					tools: this.toolDefinitions,
 					context: sent,
 					summarize: call => this.callSummaries.get(call.id),

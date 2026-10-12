@@ -113,7 +113,7 @@ export interface StepContext {
 	tools: number;
 	/** The text of the user's prompts and the model's answers. */
 	messages: number;
-	/** Reasoning the model produced earlier, sent back to it, including provider-signed blocks. */
+	/** Reasoning the model produced earlier and is sent back: its provider's own signed or encrypted blocks. */
 	reasoning: number;
 	/** The input of every tool call so far. */
 	toolCalls: number;

@@ -85,6 +85,11 @@ function apiError(status: number, code: string): APIError {
 }
 
 describe('OpenAILLMClient', () => {
+	// What `measureContext` counts as sent back is the source this client replays.
+	it('names the source of the provider data it sends back', () => {
+		expect(createClient().providerDataSource).toBe('openai');
+	});
+
 	afterEach(() => {
 		vi.clearAllMocks();
 	});

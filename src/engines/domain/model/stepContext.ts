@@ -12,11 +12,14 @@ const largestResults = 5;
  */
 export function measureContext({
 	instructions,
+	providerDataSource,
 	tools,
 	context,
 	summarize,
 }: {
 	instructions: string | undefined;
+	/** The only `providerData` the client sends back; every other is dropped. */
+	providerDataSource: string | undefined;
 	tools: ToolDefinition[];
 	context: Message[];
 	summarize: (call: ToolCallPart) => string | undefined;
@@ -39,11 +42,14 @@ export function measureContext({
 			case 'text':
 				measured.messages += part.text.length;
 				break;
+			// Readable reasoning is never sent back: only the provider's own blocks are, which
+			// already hold it, signed or encrypted.
 			case 'reasoning':
-				measured.reasoning += part.text.length;
 				break;
 			case 'providerData':
-				measured.reasoning += JSON.stringify(part.data).length;
+				if (providerDataSource === undefined || part.source === providerDataSource) {
+					measured.reasoning += JSON.stringify(part.data).length;
+				}
 				break;
 			case 'toolCall':
 				calls.set(part.id, part);

@@ -331,6 +331,7 @@ export class OpenAILLMClient implements LLMClient {
 	private readonly model: OpenAIModel;
 	private readonly reasoningEffort: OpenAIReasoningEffort;
 	readonly systemPrompt: string;
+	readonly providerDataSource = openAISource;
 	private readonly logger: ILogger;
 
 	// `model` and `reasoningEffort` are untyped on purpose: this adapter is the one that knows

@@ -12,7 +12,7 @@ const read = (id: string, path: string, output: string): Message[] => [
 ];
 
 describe('measureContext', () => {
-	it('counts the characters of a call by where they come from', () => {
+	it('counts the characters a call sends, by where they come from', () => {
 		const tools: ToolDefinition[] = [
 			{ name: 'readFile', description: 'Reads', inputSchema: { type: 'object' } },
 		];
@@ -23,6 +23,8 @@ describe('measureContext', () => {
 				content: [
 					{ type: 'reasoning', text: 'think' },
 					{ type: 'providerData', source: 'openai', data: { id: 'r' } },
+					// Another provider's block, which this client drops.
+					{ type: 'providerData', source: 'claude', data: { signature: 'never sent' } },
 					{ type: 'text', text: 'hi' },
 				],
 			},
@@ -30,12 +32,19 @@ describe('measureContext', () => {
 		];
 
 		expect(
-			measureContext({ instructions: 'Be brief.', tools, context, summarize: () => undefined }),
+			measureContext({
+				instructions: 'Be brief.',
+				providerDataSource: 'openai',
+				tools,
+				context,
+				summarize: () => undefined,
+			}),
 		).toEqual({
 			instructions: 9,
 			tools: JSON.stringify(tools).length,
 			messages: 'hello'.length + 'hi'.length,
-			reasoning: 'think'.length + JSON.stringify({ id: 'r' }).length,
+			// The readable text is not sent back: the client's own block is, and it holds it.
+			reasoning: JSON.stringify({ id: 'r' }).length,
 			toolCalls: JSON.stringify({ path: 'a.md' }).length,
 			toolResults: [{ tool: 'readFile', characters: 10, calls: 1 }],
 			largestResults: [{ tool: 'readFile', characters: 10 }],
@@ -59,6 +68,7 @@ describe('measureContext', () => {
 
 		const measured = measureContext({
 			instructions: undefined,
+			providerDataSource: undefined,
 			tools: [],
 			context,
 			summarize: call => summaries.get(call.id),
