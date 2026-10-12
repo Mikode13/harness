@@ -167,6 +167,8 @@ tags: #mikode-harness #api-design #structured-output
 
 tags: #mikode-harness #ui-design #streaming
 
+partially superseded by: "Issue #89: progress is concise, attributed, and still useful live" (below) — progress and the final response remain separate, but the orchestrator now wraps the callback for each role and overwrites role attribution instead of forwarding the callback unchanged.
+
 **Decision:** agents report ongoing activity via an injected `callback: (event: ProgressEvent) => void`, never via `console.log` inside the agent itself. `AgentResponse.response` stays just the model's own words.
 
 **Context:** originally everything an engine's SDK reported (tool calls and the model's actual text) was concatenated into one string — meaning if that string were ever handed to another agent, the next agent would receive operational noise mixed in with the substantive answer.
@@ -467,7 +469,9 @@ tags: #mikode-harness #correctness #boundaries #retry
 
 tags: #mikode-harness #boundaries #api-surface
 
-**Decision:** `handleEvents` moved from `src/agent/domain/agent.ts` to `cli/progressEventFormatter.ts` as `formatProgressEvent`, and is no longer exported from the package.
+**Decision:** `handleEvents` moved from `src/agent/domain/agent.ts` to the instance-based
+`ProgressEventFormatter` in `cli/progressEventFormatter.ts`, and is no longer exported from the
+package.
 
 **Context:** it renders `ProgressEvent` into terminal-shaped strings — labels, `✔`/`X`, newline-joined lists — and its only consumer was `cli/cli.ts`. Keeping it in `agent/domain` put presentation logic in the public core of a package whose stated seam is the provider-agnostic event itself, which is the boundary the CLI split existed to draw.
 
@@ -1011,6 +1015,8 @@ tags: #mikode-harness #agent-loops #state #public-api
 
 tags: #mikode-harness #public-api #agent-loops
 
+partially superseded by: "Issue #89: progress is concise, attributed, and still useful live" (below) — `RetryingAgent` and `InstructedAgent` still pass the original object whole; `OrchestratorAgent` now makes a shallow copy per role that retains every own enumerable field and replaces only `onProgress`.
+
 **Decision:** `Agent.run(prompt, signal, callback)` becomes `run(prompt, { signal, onProgress })`.
 
 - The prompt stays positional, because every run needs one.
@@ -1184,6 +1190,8 @@ tags: #mikode-harness #tools #filesystem #recovery
 ## Every tool call is prepared before it is approved, and a run's context travels under a private symbol
 
 tags: #mikode-harness #tools #agent-loops #permissions
+
+partially superseded by: "Issue #89: progress is concise, attributed, and still useful live" (below) — the private symbol still carries one context through the run, but `OrchestratorAgent` now makes a shallow copy per role; the enumerable symbol survives that spread instead of object identity carrying it through every agent.
 
 **Decision:** `LLMAgent` runs every tool call through one lifecycle:
 
@@ -1818,3 +1826,61 @@ tags: #mikode-harness #orchestration #llm
 
 - Each of the two roles has two texts, both tested through the factory.
 - An executor whose commands do not include the tests is still told to run them. Telling those cases apart would need commands to declare what they are for.
+
+---
+
+## Issue #89: progress is concise, attributed, and still useful live
+
+tags: #mikode-harness #progress #cli #orchestration
+
+**Decision:**
+
+- A tool owns its short `summary`. The harness computes it once from the model's validated input
+  and reuses it for the call's progress events. If a consumer-provided `summarize` fails
+  irrecoverably, that failure ends the call before preparation, approval, or execution can leave
+  ambiguous side effects.
+- `OrchestratorAgent` is authoritative about roles. It uses object spread to make one shallow
+  options copy per role, retaining own enumerable string- and symbol-keyed properties, including
+  the signal, approval callback, future fields and shared run context, and wraps only `onProgress`
+  to overwrite any inner role label.
+- The CLI prints one final line per tool, keeps active calls in a spinner, dims operational and
+  reasoning text, and supports `--thinking-headings` for heading-only reasoning. A completed write
+  keeps its live unified diff below that line.
+- A configured command that exits non-zero is a tool error result carrying its `exitCode`. This
+  reverses the earlier #72 behaviour that treated such an exit as a successful tool result: the
+  model must now see the failure while the progress stream narrates its code.
+- The default planner, executor, and reviewer instructions require concise, professional
+  communication and stop routine narration. `systemPrompts` continues to replace those defaults
+  word for word for consumers that need their own instructions.
+- Every OpenAI model-API request asks for a `concise` reasoning summary instead of leaving its
+  length on `auto`. This affects both `createLLMAgent` and `createLLMOrchestrator`; the summary is
+  optional narration, while the opaque reasoning item used for replay is unchanged.
+
+**Context:** the live validation of #89 needed progress that distinguished the acting role and
+the operation without flooding a terminal, while preserving the information needed to understand
+file changes and command failures. The summary belongs to the tool rather than the renderer so
+every consumer receives the same call description, and role labels belong to the orchestrator
+rather than nested agents so an inner value cannot be misleading. Live validation found that
+OpenAI's `auto` summaries still narrated routine intentions despite the concise role instructions.
+One minimal live request confirmed that `concise` is accepted by each catalogued OpenAI model:
+`gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-luna` and `gpt-5.6-terra`.
+
+**Alternatives considered:**
+
+- **Let the formatter derive summaries, or retry a failing summarizer.** Rejected: rendering
+  would need tool-specific input knowledge, and retrying consumer code after a provider turn could
+  replay side effects.
+- **Trust role labels from each nested agent.** Rejected: a role's progress must remain
+  attributable across retries and later rounds.
+- **Drop diffs, or print every active event as a line.** Rejected: the first loses the live view
+  of writes, while the second scrolls a terminal and hides the useful final state.
+- **Treat a non-zero command exit as successful output, as #72 did.** Rejected: the model needs
+  an error result to correct its next action, with the code retained as narration.
+- **Keep OpenAI reasoning summaries on `auto` and hide them only in the CLI.** Rejected: hiding
+  them changes presentation but still generates and bills narration that live validation found
+  unnecessarily long.
+
+**Consequences:** consumers can render a stable tool lifecycle without knowing tool inputs, and
+the CLI remains readable in both normal and heading-only thinking modes. A new option field
+continues through the orchestrator without another forwarding change, while role attribution
+remains presentation metadata rather than a value supplied by a provider.

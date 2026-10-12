@@ -18,7 +18,7 @@ import {
 	validateCommands,
 } from '../domain/commands.ts';
 import { EditRefusedError, EditUnconfirmedError } from '../domain/fileEdits.ts';
-import type { PreparingTool } from '../domain/preparedCall.ts';
+import { ToolExecutionError, type PreparingTool } from '../domain/preparedCall.ts';
 import { CommandCheckpoint, type CoveredFiles } from './commandCheckpoint.ts';
 import { type CommandProcessResult, runCommandProcess } from './commandProcess.ts';
 import { definePreparingTool } from './defineTool.ts';
@@ -87,6 +87,12 @@ export async function createCommandTool({
 		name: 'runCommand',
 		description: describeTool(commands),
 		input: inputSchema(commands),
+		summarize: ({ command: { name, ...values } }) => {
+			const definition = commands[name];
+			// The schema only permits configured names, but keep this defensive for callers that
+			// use a tool outside LLMAgent. This description never uses the resolved cwd.
+			return definition ? visibleCommand(definition, values) : name;
+		},
 		prepare: async ({ command: { name, ...values } }, signal, { run }) => {
 			const command = resolved.get(name);
 			// The schema allows only the configured names.
@@ -188,7 +194,12 @@ export async function createCommandTool({
 		}
 		// After its changes are recorded: a cancelled command is never reported as finished.
 		if (result.outcome === 'cancelled') signal.throwIfAborted();
-		if (result.outcome !== 'exited') throw new Error(report);
+		if (result.outcome !== 'exited') throw new ToolExecutionError(report);
+		if (result.exitCode !== 0) {
+			throw new ToolExecutionError(report, {
+				...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
+			});
+		}
 		return report;
 	}
 
@@ -240,6 +251,29 @@ export async function createCommandTool({
 
 function kilobytes(bytes: number): string {
 	return `${String(Math.ceil(bytes / 1024))} KB`;
+}
+
+/** The command line the model can see, before paths are resolved against the host workspace. */
+function visibleCommand(
+	definition: CommandDefinition,
+	values: Record<string, ParameterValue | undefined>,
+): string {
+	const args: string[] = [];
+	for (const argument of definition.args ?? []) {
+		if (typeof argument === 'string') {
+			args.push(argument);
+			continue;
+		}
+
+		const value = values[argument.name] ?? null;
+		if (argument.type === 'paths') {
+			if (Array.isArray(value)) args.push(...value);
+		} else if (value !== null && typeof value === 'string') {
+			args.push(value);
+		}
+	}
+
+	return [definition.executable, ...args].join(' ');
 }
 
 /** Its working directory, as a real path inside a `write` root. */

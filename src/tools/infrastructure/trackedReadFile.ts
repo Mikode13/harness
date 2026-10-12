@@ -5,7 +5,13 @@ import type { AccessPolicy, AllowedPath } from '../domain/accessPolicy.ts';
 import type { PreparingTool } from '../domain/preparedCall.ts';
 import type { RunReads } from '../domain/readRegistry.ts';
 import { definePreparingTool } from './defineTool.ts';
-import { readFileDescription, readFileInput, readRange, renderLines } from './workspaceTools.ts';
+import {
+	readFileDescription,
+	readFileInput,
+	readFileSummary,
+	readRange,
+	renderLines,
+} from './workspaceTools.ts';
 
 // The same bound as an edit: a file too large to change need not be read whole to track it.
 const maxFileBytes = 5 * 1024 * 1024;
@@ -85,6 +91,7 @@ export function createTrackedReadFile(policy: AccessPolicy): PreparingTool {
 		name: 'readFile',
 		description: readFileDescription,
 		input: readFileInput,
+		summarize: readFileSummary,
 		prepare: async ({ path, fromLine, lineCount }, signal, { reads }) => {
 			const { from, count } = readRange({ fromLine, lineCount });
 			const target = await policy.check(path, 'read', signal);

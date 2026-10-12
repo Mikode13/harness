@@ -412,7 +412,7 @@ describe('createLLMAgent', () => {
 			expect.objectContaining({
 				model: 'gpt-5.6-luna',
 				instructions: 'Be brief.',
-				reasoning: { effort: 'high', summary: 'auto' },
+				reasoning: { effort: 'high', summary: 'concise' },
 			}),
 			{ signal },
 		);
@@ -532,7 +532,7 @@ describe('createLLMAgent', () => {
 		expect(openAICreate).toHaveBeenCalledWith(
 			expect.objectContaining({
 				model: 'gpt-5.6-sol',
-				reasoning: { effort: 'max', summary: 'auto' },
+				reasoning: { effort: 'max', summary: 'concise' },
 			}),
 			{ signal },
 		);
@@ -749,11 +749,11 @@ describe('createLLMOrchestrator', () => {
 		const [planner, executor] = requestsOf(openAICreate);
 		expect(planner).toMatchObject({
 			model: 'gpt-5.6-sol',
-			reasoning: { effort: 'high', summary: 'auto' },
+			reasoning: { effort: 'high', summary: 'concise' },
 		});
 		expect(executor).toMatchObject({
 			model: 'gpt-5.6-luna',
-			reasoning: { effort: 'xhigh', summary: 'auto' },
+			reasoning: { effort: 'xhigh', summary: 'concise' },
 		});
 		expect(claudeCreate).toHaveBeenCalledWith(
 			expect.objectContaining({ model: 'claude-opus-5-5', output_config: { effort: 'high' } }),

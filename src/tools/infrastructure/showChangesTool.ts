@@ -27,6 +27,7 @@ export function createShowChangesTool({
 		description:
 			'Shows what this task has changed in the repository so far, as a diff per file, in the order each file was first changed.',
 		input: z.object({}),
+		summarize: () => 'changes in this task',
 		prepare: (_, __, { run }) =>
 			Promise.resolve({
 				risk: 'safe',

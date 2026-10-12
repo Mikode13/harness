@@ -394,7 +394,7 @@ export class OpenAILLMClient implements LLMClient {
 					// Left out when empty, so a request without tools stays as it always was.
 					...(tools.length > 0 && { tools: tools.map(toOpenAITool) }),
 					store: false,
-					reasoning: { effort: this.reasoningEffort, summary: 'auto' },
+					reasoning: { effort: this.reasoningEffort, summary: 'concise' },
 					// With `store: false` this is the only way to send the reasoning back.
 					include: ['reasoning.encrypted_content'],
 				},

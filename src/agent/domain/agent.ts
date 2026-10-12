@@ -25,7 +25,10 @@ export interface AgentResponse {
 
 export type Callback = (item: ProgressEvent) => void;
 
-/** What a run needs besides its prompt. Decorators pass it on whole, so a new field reaches every agent. */
+/**
+ * What a run needs besides its prompt. RetryingAgent and InstructedAgent pass it on whole;
+ * OrchestratorAgent copies its own enumerable fields and replaces only `onProgress` per role.
+ */
 export interface RunOptions {
 	/** Cancels the run, which then rejects with the signal's `AbortError`. */
 	signal: AbortSignal;
@@ -48,17 +51,26 @@ export const ignoreProgress: Callback = () => undefined;
  * the rest instead of switching over them exhaustively with a `never` check.
  */
 export type ProgressEvent =
-	| { type: 'command'; command: string; exitCode?: number }
-	| { type: 'reasoning'; message: string }
-	| { type: 'search'; query: string }
-	| { type: 'fileChange'; changes: { path: string; kind: 'add' | 'update' | 'delete' }[] }
-	| { type: 'mcpTool'; server: string; tool: string; status: string }
-	| { type: 'agentMessage'; message: string }
+	| { type: 'command'; command: string; exitCode?: number; agent?: ProgressAgent }
+	| { type: 'reasoning'; message: string; agent?: ProgressAgent }
+	| { type: 'search'; query: string; agent?: ProgressAgent }
+	| {
+			type: 'fileChange';
+			changes: { path: string; kind: 'add' | 'update' | 'delete' }[];
+			agent?: ProgressAgent;
+	  }
+	| { type: 'mcpTool'; server: string; tool: string; status: string; agent?: ProgressAgent }
+	| { type: 'agentMessage'; message: string; agent?: ProgressAgent }
 	/** `id` pairs a call's end with its start when one step calls the same tool more than once. */
 	| {
 			type: 'tool';
 			id: string;
 			name: string;
+			agent?: ProgressAgent;
+			/** A short, tool-owned description of the call. Narration only. */
+			summary?: string;
+			/** The exit code of a configured command that ended with an error. Narration only. */
+			exitCode?: number;
 			/**
 			 * `in_progress` only once the call is about to run, after any approval. `denied` when
 			 * it never ran because no one allowed it, with no `in_progress` before it.
@@ -71,9 +83,12 @@ export type ProgressEvent =
 			 */
 			diff?: string;
 	  }
-	| { type: 'todoList'; items: { text: string; completed: boolean }[] }
-	| { type: 'turnStarted' }
-	| { type: 'turnEnded' };
+	| { type: 'todoList'; items: { text: string; completed: boolean }[]; agent?: ProgressAgent }
+	| { type: 'turnStarted'; agent?: ProgressAgent }
+	| { type: 'turnEnded'; agent?: ProgressAgent };
+
+/** A role in the fixed planner → executor → reviewer workflow. */
+export type ProgressAgent = 'planner' | 'executor' | 'reviewer';
 
 /**
  * The contract every engine (CodexAgent, ClaudeAgent, future providers) and every

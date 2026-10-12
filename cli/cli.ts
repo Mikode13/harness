@@ -8,7 +8,7 @@ import {
 	type ProgressEvent,
 } from '../src/index.ts';
 import { ConversationLoop } from './conversationLoop.ts';
-import { formatProgressEvent } from './progressEventFormatter.ts';
+import { ProgressEventFormatter } from './progressEventFormatter.ts';
 import { clearLine, cursorTo } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { Output } from './adapters/output.ts';
@@ -16,15 +16,25 @@ import { PromptEmitter } from './adapters/promptEmitter.ts';
 import { approvalKey, createTerminalApprover } from './terminalApprover.ts';
 import { loadUserConfig, userConfigPath } from './userConfig.ts';
 import { HistoryCommands } from './historyCommands.ts';
+import { formatSpinnerLine } from './spinner.ts';
 
 const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 let spinnerFrame = 0;
 let spinnerInterval: NodeJS.Timeout | undefined;
+let spinnerDescription: string | undefined;
 
-function startSpinner(): void {
+function startSpinner(description?: string): void {
+	spinnerDescription = description;
 	spinnerInterval ??= setInterval(() => {
 		cursorTo(process.stdout, 0);
-		process.stdout.write(spinnerFrames[spinnerFrame % spinnerFrames.length] ?? '');
+		clearLine(process.stdout, 0);
+		process.stdout.write(
+			formatSpinnerLine(
+				spinnerFrames[spinnerFrame % spinnerFrames.length] ?? '',
+				spinnerDescription,
+				process.stdout.columns,
+			),
+		);
 		spinnerFrame++;
 	}, 80);
 }
@@ -32,6 +42,7 @@ function startSpinner(): void {
 function stopSpinner(): void {
 	clearInterval(spinnerInterval);
 	spinnerInterval = undefined;
+	spinnerDescription = undefined;
 	cursorTo(process.stdout, 0);
 	clearLine(process.stdout, 0);
 }
@@ -42,7 +53,15 @@ const autoApprove = true;
 const output = new Output();
 
 // `--llm` runs all three roles on the model APIs, which need ANTHROPIC_API_KEY and OPENAI_API_KEY.
-const { values: flags } = parseArgs({ options: { llm: { type: 'boolean', default: false } } });
+const { values: flags } = parseArgs({
+	options: {
+		llm: { type: 'boolean', default: false },
+		'thinking-headings': { type: 'boolean', default: false },
+	},
+});
+const progressFormatter = new ProgressEventFormatter({
+	thinkingHeadings: flags['thinking-headings'],
+});
 
 // The commands the agents may run here, and their step limits, from the user's own file.
 const { commands, maxSteps } = flags.llm ? await loadUserConfig(process.cwd()) : {};
@@ -87,21 +106,29 @@ const loop = new ConversationLoop(
 	(item: ProgressEvent) => {
 		if (item.type === 'turnStarted') {
 			turnActive = true;
+			progressFormatter.reset();
 			startSpinner();
 			return;
 		}
 		if (item.type === 'turnEnded') {
 			turnActive = false;
+			progressFormatter.reset();
 			stopSpinner();
 			return;
 		}
 
+		const message = progressFormatter.format(item);
+		if (item.type === 'tool' && item.status === 'in_progress') {
+			// Starts are state for the spinner, never a completed terminal line.
+			startSpinner(progressFormatter.spinnerDescription());
+			return;
+		}
+
 		stopSpinner();
-		const message = formatProgressEvent(item);
 		if (message) {
 			output.print(message);
 		}
-		startSpinner();
+		startSpinner(progressFormatter.spinnerDescription());
 	},
 	promptEmitter,
 	output,

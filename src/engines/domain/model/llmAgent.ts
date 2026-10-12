@@ -35,8 +35,14 @@ import { Conversation } from '#src/llm/domain/conversation';
 import type { LLMClient, LLMResponse } from '#src/llm/domain/llm';
 import type { Message, MessagePart, ToolCallPart, ToolResultPart } from '#src/llm/domain/message';
 import { asNative, nativeOf, type ToolDefinition } from '#src/llm/domain/tool';
-import { type AgentTool, type PreparedCall, prepareCall } from '#src/tools/domain/preparedCall';
+import {
+	type AgentTool,
+	type PreparedCall,
+	prepareCall,
+	ToolExecutionError,
+} from '#src/tools/domain/preparedCall';
 import { ReadRegistry, type ToolCallContext } from '#src/tools/domain/readRegistry';
+import { InvalidToolInputError } from '#src/tools/domain/tool';
 import { isAbortError } from '#src/shared/domain/isAbortError';
 import type { ILogger } from '#src/shared/domain/logger';
 import { addTokens, type Tokens } from '#src/shared/domain/tokens';
@@ -77,9 +83,14 @@ interface RunEffects {
 	toolRan: boolean;
 }
 
-function narrate(part: MessagePart, callback: Callback): void {
+function narrate(part: MessagePart, callback: Callback, summary?: string, exitCode?: number): void {
 	const event = describePart(part);
-	if (event) emit(event, callback);
+	if (!event) return;
+	if (event.type === 'tool') {
+		if (summary !== undefined) event.summary = summary;
+		if (exitCode !== undefined) event.exitCode = exitCode;
+	}
+	emit(event, callback);
 }
 
 function emit(event: ProgressEvent, callback: Callback): void {
@@ -362,8 +373,15 @@ export class LLMAgent implements Agent {
 		{ signal, onProgress: callback = ignoreProgress, approve }: RunOptions,
 		effects: RunEffects,
 		toolCall: ToolCallContext,
-	): Promise<{ result: ToolResultPart; denied: boolean; diff?: string }> {
+	): Promise<{
+		result: ToolResultPart;
+		denied: boolean;
+		diff?: string;
+		summary?: string;
+		exitCode?: number;
+	}> {
 		const result = { type: 'toolResult' as const, callId: call.id, name: call.name };
+		signal.throwIfAborted();
 		const tool = this.tools.get(call.name);
 		if (!tool) {
 			return {
@@ -376,6 +394,23 @@ export class LLMAgent implements Agent {
 			};
 		}
 
+		let summary: string | undefined;
+		try {
+			// This is deliberately before preparation and approval. A consumer-supplied
+			// summarizer is host code, and a failed one must never leave an ambiguous call that
+			// could be replayed by RetryingAgent.
+			summary = tool.summarize?.(call.input);
+		} catch (error) {
+			signal.throwIfAborted();
+			if (error instanceof InvalidToolInputError) {
+				return {
+					result: { ...result, output: describeFailure(error), isError: true },
+					denied: false,
+				};
+			}
+			throw classifyHostFailure(error, 'The tool call summarizer failed');
+		}
+
 		let prepared: PreparedCall;
 		try {
 			prepared = await prepareCall(tool, call.input, signal, toolCall);
@@ -386,6 +421,7 @@ export class LLMAgent implements Agent {
 			return {
 				result: { ...result, output: describeFailure(error), isError: true },
 				denied: false,
+				...(summary === undefined ? {} : { summary }),
 			};
 		}
 
@@ -394,13 +430,26 @@ export class LLMAgent implements Agent {
 		signal.throwIfAborted();
 		const denial = await this.denial(call, prepared, signal, approve);
 		if (denial !== undefined) {
-			return { result: { ...result, output: denial, isError: true }, denied: true };
+			return {
+				result: { ...result, output: denial, isError: true },
+				denied: true,
+				...(summary === undefined ? {} : { summary }),
+			};
 		}
 
 		// Deciding took at least one await, and the run may have been cancelled meanwhile.
 		signal.throwIfAborted();
 		// Announced only once it will run: a missing, failing-to-judge or denied call never is.
-		narrate(call, callback);
+		emit(
+			{
+				type: 'tool',
+				id: call.id,
+				name: call.name,
+				status: 'in_progress',
+				...(summary === undefined ? {} : { summary }),
+			},
+			callback,
+		);
 		// Checked again at the last moment: the consumer may cancel on the announcement itself.
 		signal.throwIfAborted();
 		// Set before `execute`, so a tool that fails halfway still counts: it may have had effects.
@@ -409,6 +458,7 @@ export class LLMAgent implements Agent {
 			return {
 				result: { ...result, output: await prepared.run(signal), isError: false },
 				denied: false,
+				...(summary === undefined ? {} : { summary }),
 				...(prepared.diff === undefined ? {} : { diff: prepared.diff }),
 			};
 		} catch (error) {
@@ -416,6 +466,10 @@ export class LLMAgent implements Agent {
 			return {
 				result: { ...result, output: describeFailure(error), isError: true },
 				denied: false,
+				...(summary === undefined ? {} : { summary }),
+				...(error instanceof ToolExecutionError && error.exitCode !== undefined
+					? { exitCode: error.exitCode }
+					: {}),
 			};
 		}
 	}
@@ -435,12 +489,38 @@ export class LLMAgent implements Agent {
 			signal.throwIfAborted();
 			// `runTool` announces the call only once it is allowed to run, so a consumer never
 			// shows a call as running early, nor while the user is still being asked.
-			const { result, denied, diff } = await this.runTool(call, options, effects, toolCall);
-			if (denied) emit({ type: 'tool', id: call.id, name: call.name, status: 'denied' }, callback);
+			const { result, denied, diff, summary, exitCode } = await this.runTool(
+				call,
+				options,
+				effects,
+				toolCall,
+			);
+			if (denied) {
+				emit(
+					{
+						type: 'tool',
+						id: call.id,
+						name: call.name,
+						status: 'denied',
+						...(summary === undefined ? {} : { summary }),
+					},
+					callback,
+				);
+			}
 			// The diff of a change it made, for the person watching; only once it was made.
 			else if (diff !== undefined) {
-				emit({ type: 'tool', id: call.id, name: call.name, status: 'completed', diff }, callback);
-			} else narrate(result, callback);
+				emit(
+					{
+						type: 'tool',
+						id: call.id,
+						name: call.name,
+						status: 'completed',
+						diff,
+						...(summary === undefined ? {} : { summary }),
+					},
+					callback,
+				);
+			} else narrate(result, callback, summary, exitCode);
 			results.push(result);
 		}
 

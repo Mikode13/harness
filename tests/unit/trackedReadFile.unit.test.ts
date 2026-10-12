@@ -68,6 +68,15 @@ function file(name: string, content: string | Buffer): string {
 }
 
 describe('the readFile of an editing agent', () => {
+	it('summarizes the requested range without exposing the host path', () => {
+		expect(tool.summarize?.({ path: 'src/index.ts', fromLine: 10, lineCount: 4 })).toBe(
+			'src/index.ts:10-13',
+		);
+		expect(tool.summarize?.({ path: 'src/index.ts', fromLine: null, lineCount: null })).toBe(
+			'src/index.ts:1-200',
+		);
+	});
+
 	it('shows the lines without their CRLF endings, and records the version it showed', async () => {
 		const path = file('a.txt', 'one\r\ntwo\r\nthree');
 

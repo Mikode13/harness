@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApprovalRequest, Approver } from '../../src/agent/domain/approval.ts';
+import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
 import { RunContext } from '../../src/agent/domain/runContext.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import { historyStart } from '../../src/recovery/domain/recoveryStore.ts';
@@ -117,6 +118,9 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			format: shell("sed -i.bak 's/ ;/;/' src/a.ts && rm src/a.ts.bak"),
 		});
 
+		expect((tool as PreparingTool).summarize?.({ command: { name: 'format' } })).toBe(
+			"sh -c sed -i.bak 's/ ;/;/' src/a.ts && rm src/a.ts.bak",
+		);
 		const { output, context } = await call(tool as PreparingTool, { command: { name: 'format' } });
 
 		expect(output).toContain('"format" exited with code 0');
@@ -143,7 +147,8 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			),
 		});
 
-		const { output } = await call(tool as PreparingTool, { command: { name: 'test' } });
+		const { error } = await call(tool as PreparingTool, { command: { name: 'test' } });
+		const output = (error as Error).message;
 
 		expect(output).toContain('"test" exited with code 1');
 		expect(output).toContain('src/__snapshots__/a.snap');
@@ -152,6 +157,37 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		await opened.store.undo();
 		expect(read('src/__snapshots__/a.snap')).toBeUndefined();
 		expect(read('src/b.ts')).toBe('export const b = 2;\n');
+	});
+
+	it('returns a non-zero exit as an error result with its exit code in progress', async () => {
+		const opened = await open();
+		const tool = await commandToolFor(opened, {
+			test: shell('echo "1 failed"; exit 1'),
+		});
+		const llmClient = new FakeLLMClient(
+			assistantResponse([toolCall('call-1', 'runCommand', { command: { name: 'test' } })]),
+			textResponse('done'),
+		);
+		const events: ProgressEvent[] = [];
+
+		await new LLMAgent({ llmClient, tools: [tool], autoApprove: true }).run('run the tests', {
+			signal,
+			onProgress: event => events.push(event),
+		});
+
+		const result = llmClient.contexts[1]?.at(-1)?.content[0];
+		expect(result?.type).toBe('toolResult');
+		if (result?.type !== 'toolResult') throw new Error('Expected a tool result');
+		expect(result.callId).toBe('call-1');
+		expect(result.isError).toBe(true);
+		expect(result.output).toContain('"test" exited with code 1');
+		expect(result.output).toContain('Output:\n1 failed\n');
+		const toolEvents = events.filter(
+			(event): event is Extract<ProgressEvent, { type: 'tool' }> => event.type === 'tool',
+		);
+		expect(toolEvents).toHaveLength(2);
+		expect(toolEvents[0]).toMatchObject({ status: 'in_progress', id: 'call-1' });
+		expect(toolEvents[1]).toMatchObject({ status: 'error', id: 'call-1', exitCode: 1 });
 	});
 
 	it('leaves out what .gitignore excludes and secrets the host did not open', async () => {

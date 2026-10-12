@@ -70,10 +70,13 @@ Two boundaries carry most of the design:
 `signal`, its optional `onProgress`, and its optional `approve`, asked before a model-backed
 agent runs a `destructive` tool call. A decorator and a whole multi-agent workflow are
 therefore substitutable for a bare engine anywhere, and a consumer's loop cannot tell which it
-is driving. A decorator passes `options` on whole, never rebuilt, so a field added to it
-reaches every agent without each decorator learning about it. The same holds for the internal `RunContext`
-an outer agent adds under a private symbol: every agent the run reaches sees it, and no
-consumer can.
+is driving. Decorators such as `RetryingAgent` and `InstructedAgent` pass `options` on whole,
+never rebuilt, so a field added to it reaches every agent without each decorator learning about it.
+`OrchestratorAgent` is the deliberate exception: it makes one shallow copy per role with object
+spread, carrying the own enumerable string- and symbol-keyed fields, including the internal
+`RunContext`, and replaces only `onProgress` with a wrapper that makes the role attribution
+authoritative. The same context therefore reaches every agent the run reaches, and no consumer can
+see or set it.
 
 **Nothing escapes an `Agent` unclassified.** Every consumer branches on `RecoverableError`
 versus `UnrecoverableError`, so an unclassified error bypasses that decision entirely: it is
@@ -113,14 +116,14 @@ history through the `src/recovery/` domain; the conversation itself knows only a
 why it is the only place that knows every provider.
 
 `src/index.ts` is the public API: `createAgent`, `createOrchestrator`, `createLLMAgent`,
-`createLLMOrchestrator`, the `Agent`, `RunOptions`, `AgentResponse`, `Callback`, `ProgressEvent`
-and `Tokens` types, the approval contract (`rememberApprovals` and the `Approver`,
+`createLLMOrchestrator`, the `Agent`, `RunOptions`, `AgentResponse`, `Callback`, `ProgressEvent`,
+`ProgressAgent` and `Tokens` types, the approval contract (`rememberApprovals` and the `Approver`,
 `ApprovalRequest`, `ApprovalDecision`, `RememberableDecision`, `ToolRisk` and `CommandLine` types), the three
 failure types an agent rejects with, `isAbortError`, `isAgentProvider`, `agentProviders`, the
 provider-indexed `agentModels` and `agentReasoningEfforts` catalogs with their `isModelOf` and
 `isReasoningEffortOf` narrowers, and the model-API `llmModels` and `llmReasoningEfforts` catalogs
 with `isLLMModelOf` and `isLLMReasoningEffortOf`. It also exports the option and model types. For
-the model-backed agent's tools it also exports the `Tool`,
+the model-backed agent's tools it also exports the `Tool`, `ToolSummarizer`,
 `ToolDefinition`, `JSONSchema`, `Workspace` and `TextMatch` types, `defineTool`,
 `createWorkspace` and `createWorkspaceTools`. For agents that change files it exports
 `createFileTools` and the `FileTool`, `WorkspaceOptions`, `WorkspaceRoot`, `SecretRules`,
@@ -156,7 +159,22 @@ Four contracts have rules of their own:
 
 - **`ProgressEvent` grows in minor releases.** Consumers are told to render the types they
   know and ignore the rest, so a new type must never carry information a consumer needs to be
-  correct. The result of a run travels in `AgentResponse`; progress is narration.
+  correct. The result of a run travels in `AgentResponse`; progress is narration. Existing event
+  shapes remain valid because `agent` is optional on every event and `summary` and `exitCode` are
+  optional on `tool` events. `OrchestratorAgent` supplies
+  `agent: 'planner' | 'executor' | 'reviewer'` for every event received from a role, including
+  retries and later rounds, and overwrites an inner value rather than trusting it. A
+  `tool.summary` is owned by the tool and is only a short description of the model-supplied call;
+  `tool.exitCode` narrates the exit code of a configured command that failed. Neither replaces the
+  tool result, diff or `AgentResponse`.
+- **`Tool` narration stays outside the provider definition.** A tool may provide
+  `summarize(input)`, but `ToolDefinition` sent to an `LLMClient` contains only `name`,
+  `description` and `inputSchema`. `defineTool` validates the model input and passes that
+  validated value to `summarize`; `LLMAgent` calls it once, before preparation or effects, and
+  reuses the value on the `in_progress`, `completed`, `error` or `denied` events. A missing
+  summarizer emits no summary. A consumer summarizer that throws is host code and becomes an
+  `UnrecoverableError`, before a call can prepare or run; schema rejection remains an error
+  result the model can correct.
 - **A model or reasoning effort is the engine or client's to accept.** The factory publishes
   provider-indexed catalogs and path-specific narrowers: `agentModels` and
   `agentReasoningEfforts` for the Agent SDKs, and `llmModels` and `llmReasoningEfforts` for the
@@ -211,9 +229,11 @@ executor → reviewer. The reviewer is asked for JSON and its answer goes throug
 `{ decision: 'rejected', feedback }` and never free text. An unusable reviewer answer retries
 only the reviewer call, with the parse failure fed back — a malformed decision is not evidence
 that the plan or the implementation were wrong. A rejection starts another round with the
-feedback carried into the planner prompt. All three roles receive the same run options, so one
-cancellation stops the whole workflow and progress from every role reaches the consumer
-through one stream.
+feedback carried into the planner prompt. Each role receives its own shallow copy of the run
+options, carrying the own enumerable fields such as `signal`, `approve` and the shared
+`RunContext`; only `onProgress` is replaced with the role's authoritative wrapper. The shared signal
+therefore lets one cancellation stop the whole workflow, and every wrapper forwards progress to the
+consumer through one stream.
 
 **A model-backed turn.** `LLMAgent.run` sends the stored context, the new prompt and the
 definitions of its tools to its `LLMClient`, inside `classifyProviderFailure`; the client
@@ -248,7 +268,10 @@ and again when it ends, so a call the run never starts is never shown as running
 goes through `classifyHostFailure`; the response carries the text of the final answer alone. Tokens are
 summed over every call of the run: one call without usage leaves the total unknown, and a
 failure carries what the earlier calls spent. The agent emits no `turnStarted` or
-`turnEnded`: like the other engines, it leaves turn boundaries to the consumer.
+`turnEnded`: like the other engines, it leaves turn boundaries to the consumer. The tool-to-consumer
+narration path is `Tool.summarize` → `LLMAgent`'s optional `tool.summary` events →
+`OrchestratorAgent`'s authoritative role label → the consumer's progress callback. No stage makes
+the summary part of the model context or the run result.
 
 **A configured command.** `runCommand` is prepared like any harness tool: the command's
 parameters are checked, each path through the access policy, and the program, its arguments
@@ -259,9 +282,10 @@ observation; if that fails, the command does not run. `runCommandProcess` starts
 shell, in its own process group and with a small environment, and returns once the group is
 confirmed gone: after it ends, after a timeout, or after a cancellation. The checkpoint then
 records each covered file that changed as a change `observedBy` the command, and closes the
-observation. A timeout fails the call and a cancellation ends the run, both after the changes
-are recorded. A group that cannot be confirmed gone leaves the observation open and stops
-writing for the run. See "The executor runs configured commands by name" and "Configured
+observation. A non-zero exit code is an error result for the model, but the command's output and
+recorded changes are retained; its progress event may carry that `exitCode`. A timeout fails
+the call and a cancellation ends the run, both after the changes are recorded. A group that
+cannot be confirmed gone leaves the observation open and stops writing for the run. See "The executor runs configured commands by name" and "Configured
 commands are trusted, not sandboxed" in [`decisions.md`](decisions.md).
 
 **Usage accounting belongs to a `run()`, not to an instance.** The totals are created inside

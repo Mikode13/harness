@@ -81,6 +81,46 @@ describe('defineTool', () => {
 		expect(execute).toHaveBeenCalledWith({ city: 'Madrid', unit: null }, signal);
 	});
 
+	it('summarizes the validated input, while keeping narration out of the provider definition', () => {
+		const summarize = vi.fn(
+			({ city, unit }: { city: string; unit: 'c' | 'f' | null }) =>
+				`${city} (${unit ?? 'default'})`,
+		);
+		const tool = defineTool({
+			name: 'weather',
+			description: 'Weather in a city.',
+			input: z.object({ city: z.string(), unit: z.enum(['c', 'f']).nullable() }),
+			risk: 'safe',
+			summarize,
+			execute: () => Promise.resolve('sunny'),
+		});
+
+		expect(tool.summarize?.({ city: 'Madrid', unit: null })).toBe('Madrid (default)');
+		expect(summarize).toHaveBeenCalledWith({ city: 'Madrid', unit: null });
+		expect(tool.name).toBe('weather');
+		expect(tool.description).toBe('Weather in a city.');
+		expect(tool.inputSchema).toBeDefined();
+		expect(typeof tool.summarize).toBe('function');
+		expect(typeof tool.risk).toBe('function');
+		expect(typeof tool.execute).toBe('function');
+		expect(Object.keys(tool)).not.toContain('summarizeForProvider');
+	});
+
+	it('does not call the consumer summarizer for invalid input', () => {
+		const summarize = vi.fn(() => 'unreachable');
+		const tool = defineTool({
+			name: 'weather',
+			description: 'Weather in a city.',
+			input: z.object({ city: z.string(), unit: z.enum(['c', 'f']).nullable() }),
+			risk: 'safe',
+			summarize,
+			execute: () => Promise.resolve('sunny'),
+		});
+
+		expect(() => tool.summarize?.({ city: 42, unit: null })).toThrow(/city/);
+		expect(summarize).not.toHaveBeenCalled();
+	});
+
 	// The rejection goes back to the model as an error result, so it must say what to fix.
 	it.each([
 		['a missing field', { unit: null }],

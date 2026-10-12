@@ -5,6 +5,7 @@ import type { AccessPolicy } from '../domain/accessPolicy.ts';
 import { EditRefusedError } from '../domain/fileEdits.ts';
 import type { PreparedCall, PreparingTool } from '../domain/preparedCall.ts';
 import type { ToolCallContext } from '../domain/readRegistry.ts';
+import { InvalidToolInputError } from '../domain/tool.ts';
 import { addedLine, joinLines, type Line, splitLines, textsOf } from '../domain/textLines.ts';
 import { applyUpdate, createdContent } from '../domain/v4aPatch.ts';
 import type { Workspace } from '../domain/workspace.ts';
@@ -26,23 +27,37 @@ function nativeTool<Schema extends z.ZodType>({
 	description,
 	native,
 	input,
+	summarize,
 	prepare,
 }: {
 	name: string;
 	description: string;
 	native: NativeTool;
 	input: Schema;
+	summarize?: (input: z.infer<Schema>) => string;
 	prepare: (
 		input: z.infer<Schema>,
 		signal: AbortSignal,
 		call: ToolCallContext,
 	) => Promise<PreparedCall>;
 }): PreparingTool {
+	const summarizeInput = summarize;
 	return asNative(
 		{
 			name,
 			description,
 			inputSchema: { type: 'object' },
+			...(summarizeInput
+				? {
+						summarize: (raw: unknown) => {
+							const parsed = input.safeParse(raw);
+							if (!parsed.success) {
+								throw new InvalidToolInputError(z.prettifyError(parsed.error));
+							}
+							return summarizeInput(parsed.data);
+						},
+					}
+				: {}),
 			prepare: (raw: unknown, signal: AbortSignal, call: ToolCallContext) => {
 				const parsed = input.safeParse(raw);
 				if (!parsed.success) return Promise.reject(new Error(z.prettifyError(parsed.error)));
@@ -69,6 +84,8 @@ export function createApplyPatchTool(writes: WorkspaceWrites): PreparingTool {
 		description: 'Creates, changes or deletes a file with a V4A patch.',
 		native: 'applyPatch',
 		input: patchOperation,
+		summarize: operation =>
+			`${operation.type.replace('_file', '').replace('_', ' ')} ${operation.path}`,
 		prepare: (operation, signal, call) => {
 			const { path } = operation;
 			switch (operation.type) {
@@ -221,6 +238,7 @@ export function createTextEditorTool({
 		description: 'Views, creates and changes files.',
 		native: 'textEditor',
 		input: editorCommand,
+		summarize: editSummary,
 		prepare: async (command, signal, call) => {
 			const { path } = command;
 			switch (command.command) {
@@ -305,7 +323,31 @@ export function createDeleteFileTool(writes: WorkspaceWrites): PreparingTool {
 		name: 'delete_file',
 		description: 'Deletes a file. Read it first.',
 		input: z.object({ path: z.string().describe('The file, relative to the root.') }),
+		summarize: ({ path }) => `delete ${path}`,
 		prepare: ({ path }, signal, call) =>
 			prepareTrackedEdit(writes, { kind: 'delete', path }, signal, call),
 	});
+}
+
+function editSummary(
+	command:
+		| { command: 'view'; path: string; view_range?: [number, number] }
+		| { command: 'str_replace'; path: string; old_str: string; new_str?: string }
+		| { command: 'create'; path: string; file_text: string }
+		| { command: 'insert'; path: string; insert_line: number; insert_text: string },
+): string {
+	switch (command.command) {
+		case 'view': {
+			const range = command.view_range
+				? `${String(command.view_range[0])}-${command.view_range[1] === -1 ? 'end' : String(command.view_range[1])}`
+				: undefined;
+			return `view ${command.path}${range ? `:${range}` : ''}`;
+		}
+		case 'str_replace':
+			return `replace ${command.path}`;
+		case 'create':
+			return `create ${command.path}`;
+		case 'insert':
+			return `insert ${command.path} after ${String(command.insert_line)}`;
+	}
 }

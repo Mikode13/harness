@@ -153,6 +153,15 @@ releases, so render the ones you know and ignore the rest. Swapping the agent fo
 reviewer workflow, changes nothing else in the snippet above.
 `createOrchestrator({ provider: 'anthropic' })` runs every role on one provider, for
 example when the other one is out of quota.
+
+The optional `agent` field on an event identifies the orchestrator role that produced
+it (`planner`, `executor`, or `reviewer`). The optional `summary` on a `tool` event
+is narration only: it describes the model's call and is not the tool result. A failed
+configured command may also carry its optional `exitCode`; its output and changes
+still arrive in the tool result. A role label is applied by the orchestrator,
+including retries and later rounds, so a nested agent cannot accidentally attribute
+its events to another role. Consumers should continue to handle events without these
+optional fields.
 `systemPrompts: { planner, executor, reviewer }` replaces a role's instructions;
 a role left out keeps the harness's own, and the reviewer must still answer with
 the JSON decision described on the option.
@@ -241,7 +250,10 @@ bills the key instead of the subscription.
 `createLLMAgent` takes a system prompt and the tools the model may call, and
 returns the same `Agent`. `defineTool` builds a tool from a Zod 4 schema; a field the
 model may leave out is `.nullable()`, not optional, because both APIs call tools in
-strict mode:
+strict mode. An optional `summarize` function receives the same input after Zod
+validation and supplies the tool's short progress narration. It is called once per
+model call; its output is never sent to the provider, and a throwing summarizer
+ends the run as an `UnrecoverableError` before the tool is prepared or executed:
 
 ```ts
 import {
@@ -257,6 +269,7 @@ const now = defineTool({
 	description: 'The current time, in ISO 8601.',
 	input: z.object({}),
 	risk: 'safe',
+	summarize: () => 'current time',
 	execute: async () => new Date().toISOString(),
 });
 
@@ -530,7 +543,14 @@ nor the agent decides what runs, or for how long:
 ```
 
 The CLI shows each command as the line it will run before asking, and "always" allows
-that command again, not every command.
+that command again, not every command. Tool calls finish as one dimmed line with an
+icon, role, tool name, summary and duration; a failed configured command includes
+`exit N` beside its duration, while a command event also includes its exit code.
+A denied call is marked `denied`. Messages remain normal text under a bold role
+heading. Reasoning is dim italic and complete by default; pass
+`--thinking-headings` to show only Markdown bold headings as `∴ …`. A tool start
+updates the spinner rather than printing a second line, and cancelling a turn clears
+its pending spinner state.
 
 `cli/cli.ts` currently enables `autoApprove` for its Agent SDK agents, not for `--llm`.
 This maps to each provider's permission-bypass mode and grants those processes

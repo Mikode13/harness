@@ -5,7 +5,14 @@ import {
 	plannerInstructions,
 	reviewerInstructions,
 } from '../../src/orchestration/domain/model/orchestratorAgent.ts';
-import type { Agent, AgentResponse, RunOptions } from '../../src/agent/domain/agent.ts';
+/* eslint-disable @typescript-eslint/no-unsafe-assignment -- Vitest asymmetric matchers are typed as any inside objectContaining. */
+
+import type {
+	Agent,
+	AgentResponse,
+	ProgressEvent,
+	RunOptions,
+} from '../../src/agent/domain/agent.ts';
 import { RunContext, runContextOf } from '../../src/agent/domain/runContext.ts';
 import type { Tokens } from '../../src/shared/domain/tokens.ts';
 import type { ILogger } from '../../src/shared/domain/logger.ts';
@@ -43,15 +50,13 @@ function createFakeAgent(...responses: AgentResponse[]) {
 }
 
 const logger = { warn: vi.fn() };
-
 describe('OrchestratorAgent', () => {
 	afterEach(() => {
 		vi.clearAllMocks();
 		vi.restoreAllMocks();
 	});
 
-	// Rebuilding the options would drop any field the orchestrator does not know about.
-	it('passes the run options on whole to every role, with one run context for all of them', async () => {
+	it('copies enumerable run options for every role and shares one run context', async () => {
 		const role = (response: string) =>
 			vi.fn<Agent['run']>(() => Promise.resolve(createResponse({ response })));
 		const planner = role('plan');
@@ -64,19 +69,86 @@ describe('OrchestratorAgent', () => {
 			reviewerDecisionValidator: new ReviewerDecisionValidator(),
 			logger,
 		});
-		const options: RunOptions = { signal: new AbortController().signal, onProgress: vi.fn() };
+		const signal = new AbortController().signal;
+		const onProgress = vi.fn();
+		const approve: NonNullable<RunOptions['approve']> = vi.fn(() => ({ approved: true }));
+		const futureField = { preserved: true };
+		const options = {
+			signal,
+			onProgress,
+			approve,
+			futureField,
+		} as RunOptions & { futureField: typeof futureField };
 
 		await orchestrator.run('ship feature', options);
 
-		const received = [planner, executor, reviewer].map(run => run.mock.calls[0]?.[1]);
+		const received = [planner, executor, reviewer].map(
+			run =>
+				run.mock.calls[0]?.[1] as (RunOptions & { futureField: typeof futureField }) | undefined,
+		);
 		for (const roleOptions of received) {
-			expect(roleOptions?.signal).toBe(options.signal);
-			expect(roleOptions?.onProgress).toBe(options.onProgress);
+			expect(roleOptions?.signal).toBe(signal);
+			expect(roleOptions?.approve).toBe(approve);
+			expect(roleOptions?.futureField).toBe(futureField);
+			expect(roleOptions?.onProgress).toEqual(expect.any(Function));
+			expect(roleOptions?.onProgress).not.toBe(onProgress);
 		}
 		// One run context for every role, so the executor's writes are one run of the history.
 		const [first, ...rest] = received.map(roleOptions => roleOptions && runContextOf(roleOptions));
 		expect(first).toBeInstanceOf(RunContext);
 		for (const context of rest) expect(context).toBe(first);
+	});
+
+	it('attributes every event to its role, including rounds and reviewer retries', async () => {
+		const events: ProgressEvent[] = [];
+		const role = (responses: AgentResponse[], event: ProgressEvent) => {
+			const run = vi.fn((_prompt: string, options: RunOptions) => {
+				options.onProgress?.({ ...event, agent: 'reviewer' });
+				const response = responses.shift();
+				if (!response) throw new Error('fake agent ran out of scripted responses');
+				return Promise.resolve(response);
+			});
+			return { agent: { run }, run };
+		};
+		const planner = role(
+			[createResponse({ response: 'first plan' }), createResponse({ response: 'revised plan' })],
+			{ type: 'agentMessage', message: 'plan' },
+		);
+		const executor = role(
+			[
+				createResponse({ response: 'first implementation' }),
+				createResponse({ response: 'revised implementation' }),
+			],
+			{ type: 'tool', id: 'execute', name: 'edit', status: 'completed' },
+		);
+		const reviewer = role(
+			[
+				createResponse({ response: '{"decision":"rejected","feedback":"add coverage"}' }),
+				createResponse({ response: '{"decision":"approved"}' }),
+			],
+			{ type: 'reasoning', message: 'review' },
+		);
+		const orchestrator = new OrchestratorAgent({
+			plannerAgent: planner.agent,
+			executorAgent: executor.agent,
+			reviewerAgent: reviewer.agent,
+			reviewerDecisionValidator: new ReviewerDecisionValidator(),
+			logger,
+		});
+
+		await orchestrator.run('ship feature', {
+			signal: new AbortController().signal,
+			onProgress: event => events.push(event),
+		});
+
+		expect(events).toEqual([
+			{ type: 'agentMessage', message: 'plan', agent: 'planner' },
+			{ type: 'tool', id: 'execute', name: 'edit', status: 'completed', agent: 'executor' },
+			{ type: 'reasoning', message: 'review', agent: 'reviewer' },
+			{ type: 'agentMessage', message: 'plan', agent: 'planner' },
+			{ type: 'tool', id: 'execute', name: 'edit', status: 'completed', agent: 'executor' },
+			{ type: 'reasoning', message: 'review', agent: 'reviewer' },
+		]);
 	});
 
 	it('completes the planner, executor, and reviewer flow with forwarded inputs and summed usage', async () => {
@@ -135,25 +207,29 @@ describe('OrchestratorAgent', () => {
 		expect(planner.run).toHaveBeenCalledWith(
 			expect.stringContaining('Original user request:\n---\nship feature\n---'),
 			// The run's context travels with them, under a symbol.
-			expect.objectContaining({ signal, onProgress: callback }),
+			expect.objectContaining({ signal, onProgress: expect.any(Function) }),
 		);
 		expect(executor.run).toHaveBeenCalledWith(
 			expect.stringContaining('Original user request:\n---\nship feature\n---'),
 			// The run's context travels with them, under a symbol.
-			expect.objectContaining({ signal, onProgress: callback }),
+			expect.objectContaining({ signal, onProgress: expect.any(Function) }),
 		);
 		expect(executor.run).toHaveBeenCalledWith(
 			expect.stringContaining('Current implementation plan:\n---\ndraft plan\n---'),
 			// The run's context travels with them, under a symbol.
-			expect.objectContaining({ signal, onProgress: callback }),
+			expect.objectContaining({ signal, onProgress: expect.any(Function) }),
 		);
 		expect(reviewer.run).toHaveBeenCalledWith(
 			expect.stringContaining('Original user request:\n---\nship feature\n---'),
 			// The run's context travels with them, under a symbol.
-			expect.objectContaining({ signal, onProgress: callback }),
+			expect.objectContaining({ signal, onProgress: expect.any(Function) }),
 		);
 		expect(plannerInstructions).toContain('engineering-grade plan');
 		expect(plannerInstructions).toContain('do not require an architecture redesign yet');
+		for (const instructions of [plannerInstructions, executorInstructions, reviewerInstructions]) {
+			expect(instructions).toContain('Do not narrate routine intentions');
+			expect(instructions).toContain('act immediately');
+		}
 		expect(executorInstructions).toContain('Preserve contracts and boundaries');
 		expect(executorInstructions).toContain('finish only when they pass');
 		expect(reviewerInstructions).toContain('Independently inspect the repository');
@@ -166,29 +242,29 @@ describe('OrchestratorAgent', () => {
 		expect(planner.run).not.toHaveBeenCalledWith(
 			expect.stringContaining('You are the planner agent'),
 			// The run's context travels with them, under a symbol.
-			expect.objectContaining({ signal, onProgress: callback }),
+			expect.objectContaining({ signal, onProgress: expect.any(Function) }),
 		);
 		expect(executor.run).not.toHaveBeenCalledWith(
 			expect.stringContaining('You are the executor agent'),
 			// The run's context travels with them, under a symbol.
-			expect.objectContaining({ signal, onProgress: callback }),
+			expect.objectContaining({ signal, onProgress: expect.any(Function) }),
 		);
 		expect(reviewer.run).not.toHaveBeenCalledWith(
 			expect.stringContaining('You are the reviewer agent'),
 			// The run's context travels with them, under a symbol.
-			expect.objectContaining({ signal, onProgress: callback }),
+			expect.objectContaining({ signal, onProgress: expect.any(Function) }),
 		);
 		expect(reviewer.run).toHaveBeenCalledWith(
 			expect.stringContaining("Planner's current plan:\n---\ndraft plan\n---"),
 			// The run's context travels with them, under a symbol.
-			expect.objectContaining({ signal, onProgress: callback }),
+			expect.objectContaining({ signal, onProgress: expect.any(Function) }),
 		);
 		expect(reviewer.run).toHaveBeenCalledWith(
 			expect.stringContaining(
 				'Executor response (context only; verify it independently):\n---\nimplemented changes\n---',
 			),
 			// The run's context travels with them, under a symbol.
-			expect.objectContaining({ signal, onProgress: callback }),
+			expect.objectContaining({ signal, onProgress: expect.any(Function) }),
 		);
 	});
 
@@ -227,43 +303,43 @@ describe('OrchestratorAgent', () => {
 			1,
 			expect.stringContaining('Original user request:\n---\nship feature\n---'),
 			// The run's context travels with them, under a symbol.
-			expect.objectContaining({ signal, onProgress: callback }),
+			expect.objectContaining({ signal, onProgress: expect.any(Function) }),
 		);
 		expect(planner.run).toHaveBeenNthCalledWith(
 			2,
 			expect.stringContaining('Original user request:\n---\nship feature\n---'),
 			// The run's context travels with them, under a symbol.
-			expect.objectContaining({ signal, onProgress: callback }),
+			expect.objectContaining({ signal, onProgress: expect.any(Function) }),
 		);
 		expect(planner.run).toHaveBeenNthCalledWith(
 			2,
 			expect.stringContaining('Feedback from the previous attempt:\n---\nadd coverage\n---'),
 			// The run's context travels with them, under a symbol.
-			expect.objectContaining({ signal, onProgress: callback }),
+			expect.objectContaining({ signal, onProgress: expect.any(Function) }),
 		);
 		expect(executor.run).toHaveBeenNthCalledWith(
 			2,
 			expect.stringContaining('Original user request:\n---\nship feature\n---'),
 			// The run's context travels with them, under a symbol.
-			expect.objectContaining({ signal, onProgress: callback }),
+			expect.objectContaining({ signal, onProgress: expect.any(Function) }),
 		);
 		expect(executor.run).toHaveBeenNthCalledWith(
 			2,
 			expect.stringContaining('Current implementation plan:\n---\nrevised plan\n---'),
 			// The run's context travels with them, under a symbol.
-			expect.objectContaining({ signal, onProgress: callback }),
+			expect.objectContaining({ signal, onProgress: expect.any(Function) }),
 		);
 		expect(reviewer.run).toHaveBeenNthCalledWith(
 			2,
 			expect.stringContaining('Original user request:\n---\nship feature\n---'),
 			// The run's context travels with them, under a symbol.
-			expect.objectContaining({ signal, onProgress: callback }),
+			expect.objectContaining({ signal, onProgress: expect.any(Function) }),
 		);
 		expect(reviewer.run).toHaveBeenNthCalledWith(
 			2,
 			expect.stringContaining("Planner's current plan:\n---\nrevised plan\n---"),
 			// The run's context travels with them, under a symbol.
-			expect.objectContaining({ signal, onProgress: callback }),
+			expect.objectContaining({ signal, onProgress: expect.any(Function) }),
 		);
 		expect(reviewer.run).toHaveBeenNthCalledWith(
 			2,
@@ -271,7 +347,7 @@ describe('OrchestratorAgent', () => {
 				'Executor response (context only; verify it independently):\n---\nrevised implementation\n---',
 			),
 			// The run's context travels with them, under a symbol.
-			expect.objectContaining({ signal, onProgress: callback }),
+			expect.objectContaining({ signal, onProgress: expect.any(Function) }),
 		);
 	});
 
@@ -305,7 +381,7 @@ describe('OrchestratorAgent', () => {
 			2,
 			expect.stringContaining('Your previous response could not be used'),
 			// The run's context travels with them, under a symbol.
-			expect.objectContaining({ signal, onProgress: callback }),
+			expect.objectContaining({ signal, onProgress: expect.any(Function) }),
 		);
 	});
 

@@ -4,7 +4,7 @@ import { InvalidAgentConfigError } from '#src/shared/domain/errors';
 import type { JSONSchema } from '#src/llm/domain/tool';
 import type { PreparedCall, PreparingTool } from '../domain/preparedCall.ts';
 import type { ToolCallContext } from '../domain/readRegistry.ts';
-import type { Tool } from '../domain/tool.ts';
+import { InvalidToolInputError, type Tool } from '../domain/tool.ts';
 
 // Both providers take tools in strict mode, which supports only part of JSON Schema. Claude
 // rejects these bounds; a tool that needs one checks it in its own code instead.
@@ -92,18 +92,31 @@ export function defineTool<Schema extends z.ZodObject>({
 	description,
 	input,
 	risk,
+	summarize,
 	execute,
 }: {
 	name: string;
 	description: string;
 	input: Schema;
 	risk: ToolRisk | ((input: z.infer<Schema>) => ToolRisk);
+	summarize?: (input: z.infer<Schema>) => string;
 	execute: (input: z.infer<Schema>, signal: AbortSignal) => Promise<string>;
 }): Tool {
 	return {
 		name,
 		description,
 		inputSchema: strictSchema(input, name),
+		...(summarize
+			? {
+					summarize: (raw: unknown) => {
+						const parsed = input.safeParse(raw);
+						if (!parsed.success) {
+							throw new InvalidToolInputError(z.prettifyError(parsed.error));
+						}
+						return summarize(parsed.data);
+					},
+				}
+			: {}),
 		risk: raw => {
 			if (typeof risk === 'string') return risk;
 			const parsed = input.safeParse(raw);
@@ -139,11 +152,13 @@ export function definePreparingTool<Schema extends z.ZodObject>({
 	name,
 	description,
 	input,
+	summarize,
 	prepare,
 }: {
 	name: string;
 	description: string;
 	input: Schema;
+	summarize?: (input: z.infer<Schema>) => string;
 	prepare: (
 		input: z.infer<Schema>,
 		signal: AbortSignal,
@@ -154,6 +169,17 @@ export function definePreparingTool<Schema extends z.ZodObject>({
 		name,
 		description,
 		inputSchema: strictSchema(input, name),
+		...(summarize
+			? {
+					summarize: (raw: unknown) => {
+						const parsed = input.safeParse(raw);
+						if (!parsed.success) {
+							throw new InvalidToolInputError(z.prettifyError(parsed.error));
+						}
+						return summarize(parsed.data);
+					},
+				}
+			: {}),
 		prepare: (raw, signal, call) => {
 			const parsed = input.safeParse(raw);
 			if (!parsed.success) return Promise.reject(new Error(z.prettifyError(parsed.error)));

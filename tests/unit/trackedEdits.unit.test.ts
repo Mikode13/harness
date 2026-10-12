@@ -280,7 +280,13 @@ describe('editing only from a version the model read', () => {
 		const ends = events.filter(event => event.type === 'tool' && event.status !== 'in_progress');
 		expect(ends).toEqual([
 			{ type: 'tool', id: 'call-1', name: 'edit', status: 'error' },
-			{ type: 'tool', id: 'call-2', name: 'readFile', status: 'completed' },
+			{
+				type: 'tool',
+				id: 'call-2',
+				name: 'readFile',
+				status: 'completed',
+				summary: 'a.txt:1-200',
+			},
 			{
 				type: 'tool',
 				id: 'call-3',

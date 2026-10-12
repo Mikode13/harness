@@ -42,6 +42,7 @@ export {
 	type Agent,
 	type AgentResponse,
 	type Callback,
+	type ProgressAgent,
 	type ProgressEvent,
 	type RunOptions,
 } from './agent/domain/agent.ts';
@@ -62,7 +63,7 @@ export {
 	type ToolRisk,
 } from './agent/domain/approval.ts';
 export type { JSONSchema, ToolDefinition } from './llm/domain/tool.ts';
-export type { Tool } from './tools/domain/tool.ts';
+export type { Tool, ToolSummarizer } from './tools/domain/tool.ts';
 export type { TextMatch, Workspace } from './tools/domain/workspace.ts';
 export { defineTool } from './tools/infrastructure/defineTool.ts';
 export { createWorkspace } from './tools/infrastructure/createWorkspace.ts';
