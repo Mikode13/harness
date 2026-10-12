@@ -1891,7 +1891,8 @@ tags: #mikode-harness #llm #progress
 
 **Decision:**
 
-- **A `step` `ProgressEvent`.** `LLMAgent` emits one after each call to the model that got an answer, once the call's tokens are counted, including an answer the model stopped early, which was billed too. It carries the step number, the call's `tokens` when the provider reported them, and a `StepContext`.
+- **A `step` `ProgressEvent`.** `LLMAgent` emits one after each call to the model whose answer the client returns, once the call's tokens are counted. That includes an answer the model stopped early, which was billed too. It carries the step number, the call's `tokens` when the provider reported them, and a `StepContext`.
+- **Two billed calls are not steps.** A call the client turns into an error, such as Claude's `model_context_window_exceeded`, has no answer to narrate: its failure carries what it spent. Neither has the cheap summary of what an undo left behind, which is not a step of the run's own model. So after either, the steps' tokens add up to less than the run's total, which stays the authority.
 - **`StepContext` counts characters by where they come from:**
   - the system prompt and the tool definitions;
   - the text of prompts and answers;
