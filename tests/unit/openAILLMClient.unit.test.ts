@@ -196,7 +196,7 @@ describe('OpenAILLMClient', () => {
 					{ role: 'user', content: 'third' },
 				],
 				store: false,
-				reasoning: { effort: 'high', summary: 'auto' },
+				reasoning: { effort: 'high', summary: 'concise' },
 				include: ['reasoning.encrypted_content'],
 			},
 			{ signal },
