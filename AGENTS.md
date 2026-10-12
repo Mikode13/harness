@@ -79,6 +79,21 @@ pnpm run dev         # the interactive CLI, against real providers
 `pre-push` runs `pnpm run check && pnpm test`. CI repeats both and adds `build` and
 `pack:check`.
 
+### Lint rules that fail most often
+
+ESLint runs typescript-eslint's `strictTypeChecked` and `stylisticTypeChecked` through
+`@mikode13/code-quality`, with warnings counted as errors. Write code that passes them the first
+time instead of fixing one `check` failure at a time:
+
+- No `any` reaches a typed value (`no-unsafe-*`): parse `unknown` input with Zod or narrow it.
+- Nothing checks, casts or names what the types already say (`no-unnecessary-condition`,
+  `no-unnecessary-type-assertion`, `no-unnecessary-type-arguments`). Untyped input is typed
+  `unknown`, not given its expected type and then checked.
+- A number in a template literal goes through `String()` (`restrict-template-expressions`).
+- An object type is an `interface`, not a `type` (`consistent-type-definitions`).
+- A name used only as a type is imported with `type`, as `import type { X }` or
+  `import { y, type X }` (`consistent-type-imports`).
+
 ### Hazards
 
 - `#src/*` is a Node subpath import declared in `package.json`, not a `tsconfig` path, so
