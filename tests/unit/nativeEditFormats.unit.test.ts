@@ -15,6 +15,7 @@ import { ClaudeLLMClient } from '../../src/llm/infrastructure/claudeLLMClient.ts
 import { OpenAILLMClient } from '../../src/llm/infrastructure/openAILLMClient.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
 import { InvalidAgentConfigError } from '../../src/shared/domain/errors.ts';
+import { InvalidToolInputError } from '../../src/tools/domain/tool.ts';
 import { createWorkspace } from '../../src/tools/infrastructure/createWorkspace.ts';
 import {
 	createApplyPatchTool,
@@ -226,6 +227,16 @@ describe('OpenAI apply_patch on the shared edit engine', () => {
 			tool.summarize?.({ type: 'update_file', path: 'src/greet.ts', diff: '@@\n-old\n+new' }),
 		).toBe('update src/greet.ts');
 		expect(tool.summarize?.({ type: 'delete_file', path: 'notes.txt' })).toBe('delete notes.txt');
+	});
+
+	// The same boundary as defineTool's: see validatedSummarizer.unit.test.ts.
+	it('refuses to summarize an operation it cannot parse, as every tool does', () => {
+		const tool = createApplyPatchTool(writes);
+
+		expect(() => tool.summarize?.({ type: 'update_file', path: 42 })).toThrow(
+			InvalidToolInputError,
+		);
+		expect(() => tool.summarize?.({ type: 'update_file', path: 42 })).toThrow(/✖ .*\n {2}→ at /);
 	});
 
 	it('cannot be offered to Claude', () => {
