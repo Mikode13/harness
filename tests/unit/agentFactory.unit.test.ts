@@ -749,11 +749,11 @@ describe('createLLMOrchestrator', () => {
 		const [planner, executor] = requestsOf(openAICreate);
 		expect(planner).toMatchObject({
 			model: 'gpt-5.6-sol',
-			reasoning: { effort: 'high', summary: 'auto' },
+			reasoning: { effort: 'high', summary: 'concise' },
 		});
 		expect(executor).toMatchObject({
 			model: 'gpt-5.6-luna',
-			reasoning: { effort: 'xhigh', summary: 'auto' },
+			reasoning: { effort: 'xhigh', summary: 'concise' },
 		});
 		expect(claudeCreate).toHaveBeenCalledWith(
 			expect.objectContaining({ model: 'claude-opus-5-5', output_config: { effort: 'high' } }),
