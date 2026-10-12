@@ -1191,6 +1191,8 @@ tags: #mikode-harness #tools #filesystem #recovery
 
 tags: #mikode-harness #tools #agent-loops #permissions
 
+partially superseded by: "Issue #89: progress is concise, attributed, and still useful live" (below) — the private symbol still carries one context through the run, but `OrchestratorAgent` now makes a shallow copy per role; the enumerable symbol survives that spread instead of object identity carrying it through every agent.
+
 **Decision:** `LLMAgent` runs every tool call through one lifecycle:
 
 1. **Prepare.** The tool checks the call and fixes what it will do. A harness-built tool, a `PreparingTool`, works out the real effect, such as the exact bytes a write will leave, and judges its risk from that. A consumer's `Tool` is brought in by `prepareCall`: its `risk` is judged, and its `execute` later runs on the input as sent. So consumers keep their contract and there is only one engine.
@@ -1850,12 +1852,18 @@ tags: #mikode-harness #progress #cli #orchestration
 - The default planner, executor, and reviewer instructions require concise, professional
   communication and stop routine narration. `systemPrompts` continues to replace those defaults
   word for word for consumers that need their own instructions.
+- Every OpenAI model-API request asks for a `concise` reasoning summary instead of leaving its
+  length on `auto`. This affects both `createLLMAgent` and `createLLMOrchestrator`; the summary is
+  optional narration, while the opaque reasoning item used for replay is unchanged.
 
 **Context:** the live validation of #89 needed progress that distinguished the acting role and
 the operation without flooding a terminal, while preserving the information needed to understand
 file changes and command failures. The summary belongs to the tool rather than the renderer so
 every consumer receives the same call description, and role labels belong to the orchestrator
-rather than nested agents so an inner value cannot be misleading.
+rather than nested agents so an inner value cannot be misleading. Live validation found that
+OpenAI's `auto` summaries still narrated routine intentions despite the concise role instructions.
+One minimal live request confirmed that `concise` is accepted by each catalogued OpenAI model:
+`gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-luna` and `gpt-5.6-terra`.
 
 **Alternatives considered:**
 
@@ -1868,6 +1876,9 @@ rather than nested agents so an inner value cannot be misleading.
   of writes, while the second scrolls a terminal and hides the useful final state.
 - **Treat a non-zero command exit as successful output, as #72 did.** Rejected: the model needs
   an error result to correct its next action, with the code retained as narration.
+- **Keep OpenAI reasoning summaries on `auto` and hide them only in the CLI.** Rejected: hiding
+  them changes presentation but still generates and bills narration that live validation found
+  unnecessarily long.
 
 **Consequences:** consumers can render a stable tool lifecycle without knowing tool inputs, and
 the CLI remains readable in both normal and heading-only thinking modes. A new option field

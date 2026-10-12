@@ -25,7 +25,10 @@ export interface AgentResponse {
 
 export type Callback = (item: ProgressEvent) => void;
 
-/** What a run needs besides its prompt. Decorators pass it on whole, so a new field reaches every agent. */
+/**
+ * What a run needs besides its prompt. RetryingAgent and InstructedAgent pass it on whole;
+ * OrchestratorAgent copies its own enumerable fields and replaces only `onProgress` per role.
+ */
 export interface RunOptions {
 	/** Cancels the run, which then rejects with the signal's `AbortError`. */
 	signal: AbortSignal;
