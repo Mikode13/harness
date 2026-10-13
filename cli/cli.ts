@@ -6,6 +6,7 @@ import {
 	createOrchestrator,
 	rememberApprovals,
 	type ProgressEvent,
+	type UserQuestion,
 } from '../src/index.ts';
 import { ConversationLoop } from './conversationLoop.ts';
 import { ProgressEventFormatter } from './progressEventFormatter.ts';
@@ -15,6 +16,7 @@ import { parseArgs } from 'node:util';
 import { Output } from './adapters/output.ts';
 import { PromptEmitter } from './adapters/promptEmitter.ts';
 import { approvalKey, createTerminalApprover } from './terminalApprover.ts';
+import { createTerminalAsker } from './terminalAsker.ts';
 import { loadUserConfig, userConfigPath } from './userConfig.ts';
 import { HistoryCommands } from './historyCommands.ts';
 import { formatSpinnerLine } from './spinner.ts';
@@ -96,6 +98,15 @@ let turnActive = false;
 // One memory for the whole session: "always" holds until the CLI exits. The spinner would
 // overwrite the question, so it stops while the user answers.
 const askInTerminal = createTerminalApprover(promptEmitter, output);
+const questionsInTerminal = createTerminalAsker(promptEmitter, output);
+const ask = async (questions: UserQuestion[], signal: AbortSignal) => {
+	stopSpinner();
+	try {
+		return await questionsInTerminal(questions, signal);
+	} finally {
+		startSpinner();
+	}
+};
 const approve = rememberApprovals(
 	async (request, signal) => {
 		stopSpinner();
@@ -157,6 +168,7 @@ const loop = new ConversationLoop(
 	output,
 	approve,
 	new HistoryCommands(history, promptEmitter, output),
+	ask,
 );
 
 const exitConfirmationWindowMs = 3000;

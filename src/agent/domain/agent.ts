@@ -1,5 +1,6 @@
 import type { Tokens } from '#src/shared/domain/tokens';
 import type { Approver } from './approval.ts';
+import type { Asker } from './question.ts';
 
 /**
  * How a run ended when it did not fail. Every token a run spends travels with its end: here
@@ -40,6 +41,12 @@ export interface RunOptions {
 	 * it: their own permission systems decide.
 	 */
 	approve?: Approver | undefined;
+	/**
+	 * Answers what a model-backed agent asks the user, through its `askUser` tool, when a
+	 * decision is the user's to make. Without it the agent has no such tool. The Agent SDK
+	 * engines ignore it.
+	 */
+	ask?: Asker | undefined;
 }
 
 /** The `onProgress` of a run that gave none. */

@@ -117,7 +117,7 @@ why it is the only place that knows every provider.
 
 `src/index.ts` is the public API: `createAgent`, `createOrchestrator`, `createLLMAgent`,
 `createLLMOrchestrator`, the `Agent`, `RunOptions`, `AgentResponse`, `Callback`, `ProgressEvent`,
-`ProgressAgent`, `StepContext` and `Tokens` types, the approval contract (`rememberApprovals` and the `Approver`,
+`ProgressAgent`, `StepContext` and `Tokens` types, the `Asker`, `UserQuestion` and `QuestionOption` types of `RunOptions.ask`, the approval contract (`rememberApprovals` and the `Approver`,
 `ApprovalRequest`, `ApprovalDecision`, `RememberableDecision`, `ToolRisk` and `CommandLine` types), the three
 failure types an agent rejects with, `isAbortError`, `isAgentProvider`, `agentProviders`, the
 provider-indexed `agentModels` and `agentReasoningEfforts` catalogs with their `isModelOf` and

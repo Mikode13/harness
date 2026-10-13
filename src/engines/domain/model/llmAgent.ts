@@ -35,6 +35,7 @@ import { Conversation } from '#src/llm/domain/conversation';
 import type { LLMClient, LLMResponse } from '#src/llm/domain/llm';
 import type { Message, MessagePart, ToolCallPart, ToolResultPart } from '#src/llm/domain/message';
 import { asNative, nativeOf, type ToolDefinition } from '#src/llm/domain/tool';
+import type { Asker } from '#src/agent/domain/question';
 import {
 	type AgentTool,
 	type PreparedCall,
@@ -47,6 +48,14 @@ import { isAbortError } from '#src/shared/domain/isAbortError';
 import type { ILogger } from '#src/shared/domain/logger';
 import { addTokens, type Tokens } from '#src/shared/domain/tokens';
 import { measureContext } from './stepContext.ts';
+import {
+	askUserDefinition,
+	askUserName,
+	describeAnswers,
+	readAnswers,
+	readQuestions,
+	summarizeQuestions,
+} from './askUser.ts';
 import {
 	type Followed,
 	followHistory,
@@ -208,6 +217,11 @@ export class LLMAgent implements Agent {
 			// The model calls tools by name, so a second one with the same name could never run.
 			throw new InvalidAgentConfigError('Two tools share a name; each name must be unique');
 		}
+		if (this.tools.has(askUserName)) {
+			throw new InvalidAgentConfigError(
+				`"${askUserName}" is the agent's own tool for a run given \`ask\`; name the tool otherwise`,
+			);
+		}
 		// The client only describes the tools to the model; running them stays with the agent.
 		this.toolDefinitions = tools.map(tool => {
 			const definition = {
@@ -294,13 +308,18 @@ export class LLMAgent implements Agent {
 	private async llmCall(
 		runMessages: Message[],
 		after: number | undefined,
-		{ signal, step, callback }: { signal: AbortSignal; step: number; callback: Callback },
+		{
+			signal,
+			step,
+			callback,
+			tools,
+		}: { signal: AbortSignal; step: number; callback: Callback; tools: ToolDefinition[] },
 	): Promise<{ response: LLMResponse; context: Message[] }> {
 		// Sent as a copy, so what the run records is what the agent built, whatever the client does.
 		const context = [...this.conversation.contextAfter(after), ...structuredClone(runMessages)];
 		let response: LLMResponse;
 		try {
-			response = await this.llmClient.send({ context, tools: this.toolDefinitions }, signal);
+			response = await this.llmClient.send({ context, tools }, signal);
 		} catch (error) {
 			const failure = classifyProviderFailure(error, 'The LLM call failed');
 			// A client turns some answers into errors, such as a stop at the context window. The
@@ -310,7 +329,7 @@ export class LLMAgent implements Agent {
 				(failure.tokens !== undefined || failure.usageUnreported)
 			) {
 				try {
-					this.narrateStep(step, failure.tokens, context, callback);
+					this.narrateStep(step, failure.tokens, { context, tools }, callback);
 				} catch (hostFailure) {
 					// The callback's failure ends the run, and must carry this call's tokens too.
 					throw withSpentTokens(hostFailure, failure.tokens, failure.usageUnreported);
@@ -325,7 +344,7 @@ export class LLMAgent implements Agent {
 	private narrateStep(
 		step: number,
 		tokens: Tokens | undefined,
-		sent: Message[],
+		sent: { context: Message[]; tools: ToolDefinition[] },
 		callback: Callback,
 	) {
 		emit(
@@ -336,8 +355,8 @@ export class LLMAgent implements Agent {
 				context: measureContext({
 					instructions: this.llmClient.systemPrompt,
 					providerDataSource: this.llmClient.providerDataSource,
-					tools: this.toolDefinitions,
-					context: sent,
+					tools: sent.tools,
+					context: sent.context,
 					summarize: call => this.callSummaries.get(call.id),
 				}),
 			},
@@ -397,7 +416,7 @@ export class LLMAgent implements Agent {
 	 */
 	private async runTool(
 		call: ToolCallPart,
-		{ signal, onProgress: callback = ignoreProgress, approve }: RunOptions,
+		{ signal, onProgress: callback = ignoreProgress, approve, ask }: RunOptions,
 		effects: RunEffects,
 		toolCall: ToolCallContext,
 	): Promise<{
@@ -409,6 +428,7 @@ export class LLMAgent implements Agent {
 	}> {
 		const result = { type: 'toolResult' as const, callId: call.id, name: call.name };
 		signal.throwIfAborted();
+		if (call.name === askUserName && ask) return this.askUser(call, ask, signal, callback);
 		const tool = this.tools.get(call.name);
 		if (!tool) {
 			return {
@@ -500,6 +520,48 @@ export class LLMAgent implements Agent {
 					: {}),
 			};
 		}
+	}
+
+	/**
+	 * Asks the user through the run's `ask`. Questions the model wrote wrong go back to it, to
+	 * correct; an asker that fails or answers wrongly is host code, and ends the run.
+	 */
+	private async askUser(
+		call: ToolCallPart,
+		ask: Asker,
+		signal: AbortSignal,
+		callback: Callback,
+	): Promise<{ result: ToolResultPart; denied: boolean; summary?: string }> {
+		const result = { type: 'toolResult' as const, callId: call.id, name: call.name };
+		const questions = readQuestions(call.input);
+		if (typeof questions === 'string') {
+			return { result: { ...result, output: questions, isError: true }, denied: false };
+		}
+		const summary = summarizeQuestions(questions);
+		this.callSummaries.set(call.id, summary);
+		emit({ type: 'tool', id: call.id, name: call.name, status: 'in_progress', summary }, callback);
+		signal.throwIfAborted();
+
+		let answers: unknown;
+		try {
+			answers = await ask(questions, signal);
+		} catch (error) {
+			signal.throwIfAborted();
+			throw classifyHostFailure(error, 'The asker failed');
+		}
+		// An answer that arrives after a cancellation is not given to the model.
+		signal.throwIfAborted();
+		const read = readAnswers(answers, questions);
+		if (!read) {
+			throw new UnrecoverableError('The asker failed', {
+				cause: `It must answer each of the ${String(questions.length)} questions with some text, in order.`,
+			});
+		}
+		return {
+			result: { ...result, output: describeAnswers(questions, read), isError: false },
+			denied: false,
+			summary,
+		};
 	}
 
 	/** One at a time and in order, so their effects and their narration never interleave. */
@@ -641,17 +703,22 @@ export class LLMAgent implements Agent {
 			// After following the history, which may have made every earlier read stale.
 			const reads = this.reads.begin();
 			const repeats = new RepeatedCalls();
+			// The agent's own `askUser` exists only for a run someone can answer.
+			const tools = options.ask
+				? [...this.toolDefinitions, askUserDefinition]
+				: this.toolDefinitions;
 			for (let step = 1; step <= this.maxSteps; step++) {
 				const { response, context: sent } = await this.llmCall(runMessages, after, {
 					signal,
 					step,
 					callback,
+					tools,
 				});
 				tokens = addTokens(tokens, response.usage);
 				unreported ||= !response.usage;
 				// After the tokens are counted, so a throwing callback still reports them, and for an
 				// unusable answer too: the call was sent, and billed.
-				this.narrateStep(step, response.usage, sent, callback);
+				this.narrateStep(step, response.usage, { context: sent, tools }, callback);
 				if (response.stopReason !== 'completed') {
 					// Its tokens are already counted with the run's, which the failure carries.
 					throw new UnrecoverableError('The LLM stopped before completing its answer', {

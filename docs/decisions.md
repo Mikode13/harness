@@ -1916,3 +1916,37 @@ tags: #mikode-harness #llm #progress
 - A `feat`: a new event type, which consumers that switch exhaustively over `ProgressEvent` must ignore, as the type tells them.
 - Measuring walks the whole context once per step, which is linear in its size and small next to the call itself.
 - `LLMClient` gained an optional `systemPrompt`, which both clients already held, and `providerDataSource`, the one source each sends back.
+
+## A model-backed agent can ask its user what is theirs to decide
+
+tags: #mikode-harness #llm #tools #api-design
+
+**Decision:**
+
+- **`RunOptions.ask`, an `Asker`.** It works like `approve`: a callback per run. It receives one to four `UserQuestion`s, each with two to four options and `multiSelect`, and answers each in order, with an option's label or with the user's own words.
+- **`askUser`, the agent's own tool,** offered only in a run given `ask`. `LLMAgent` owns it, as it owns approval, because the answer belongs to the run, not to the agent. A consumer's tool may not take its name.
+- **When to ask is in the tool's description,** so it holds for any agent that has the tool: the shape of a public API or of anything other code depends on, a new dependency, behaviour the request does not ask for, and choices with real trade-offs. Before building on the choice, all questions in one call, and not what the repository or a reasonable default answers.
+- **Every role of `createLLMOrchestrator` can ask,** because `OrchestratorAgent` passes each role the run's options.
+- **Questions the model wrote wrong go back to it,** with what to fix. An asker that throws, or that does not answer each question with some text, is host code and ends the run with an `UnrecoverableError`.
+- **The CLI asks in the terminal.** It numbers the options, and the user answers with a number, several separated by commas for a `multiSelect` question, or in their own words. With piped input it reads nothing and tells the model to decide and say what it assumed.
+
+**Context:** #100. In the `--llm` run of #22 and #98, the planner decided by itself what the user should have: about 20 public exports, the workflow's transitions, its retry policy, and a `decisions.md` entry as if it were the user's. The executor then spent 140 steps building a design nobody had approved. A question at planning time costs one step with a small context; a wrong decision costs the whole run.
+
+The user chose:
+
+- several questions with options, which gathers the doubts into one step and gives the user ordered choices;
+- no tool without `ask`. A run with nobody to answer is the one-shot mode CI uses, so an interactive run always has someone;
+- all three roles;
+- the criteria in the tool's description, not in the orchestrator's instructions, which wait for #22.
+
+**Alternatives considered:**
+
+- **One question per call, or free text.** Simpler to show, but more steps, or choices the user has to work out.
+- **A tool that answers "nobody" without `ask`.** It mirrors `approve`, but costs a step and a tool definition every time.
+- **The criteria in the planner's instructions.** Stronger for the planner, but they would change the orchestrator before #22.
+
+**Consequences:**
+
+- A `feat`: `RunOptions.ask` and the `Asker`, `UserQuestion` and `QuestionOption` types are new. A consumer tool named `askUser` is now refused, a deliberate restriction on a name nothing used.
+- A run with `ask` sends one more tool definition on every step.
+- Whether the model asks well, neither too much nor too little, is measured by the benchmark of #100, not by the offline tests.
