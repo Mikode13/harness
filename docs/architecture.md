@@ -71,9 +71,11 @@ Two boundaries carry most of the design:
 agent runs a `destructive` tool call, and its optional `ask`, which answers what a model-backed
 agent asks its user. A decorator and a whole multi-agent workflow are
 therefore substitutable for a bare engine anywhere, and a consumer's loop cannot tell which it
-is driving. Decorators such as `RetryingAgent` and `InstructedAgent` pass `options` on whole,
-never rebuilt, so a field added to it reaches every agent without each decorator learning about it.
-`OrchestratorAgent` is the deliberate exception: it makes one shallow copy per role with object
+is driving. A decorator such as `InstructedAgent` passes `options` on whole, never rebuilt, so
+a field added to it reaches every agent without each decorator learning about it. Two copy it
+instead, both with object spread, so a field must be an own enumerable one to survive them:
+`RetryingAgent`, for a run with `ask`, replaces only `ask` with one that remembers the answers
+across attempts, and `OrchestratorAgent` makes one shallow copy per role with object
 spread, carrying the own enumerable string- and symbol-keyed fields, including the internal
 `RunContext`, and replaces only `onProgress` with a wrapper that makes the role attribution
 authoritative. The same context therefore reaches every agent the run reaches, and no consumer can
