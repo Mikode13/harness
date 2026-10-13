@@ -1,10 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
-import type { UserQuestion } from '../../src/agent/domain/question.ts';
+import type { ProgressEvent, RunOptions } from '../../src/agent/domain/agent.ts';
+import { rememberAnswers, type UserQuestion } from '../../src/agent/domain/question.ts';
 import { readAnswers, readQuestions } from '../../src/engines/domain/model/askUser.ts';
+import { RetryingAgent } from '../../src/retry/domain/model/retryingAgent.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import type { Tool } from '../../src/tools/domain/tool.ts';
-import { InvalidAgentConfigError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
+import {
+	InvalidAgentConfigError,
+	RecoverableError,
+	UnrecoverableError,
+} from '../../src/shared/domain/errors.ts';
 import { assistantResponse, FakeLLMClient, textResponse } from '../support/fakeLlmClient.ts';
 
 const signal = new AbortController().signal;
@@ -156,6 +161,88 @@ describe('LLMAgent with askUser', () => {
 
 		expect(() => new LLMAgent({ llmClient: new FakeLLMClient(), tools: [tool] })).toThrow(
 			InvalidAgentConfigError,
+		);
+	});
+
+	it.each([
+		['while the user is answering', true],
+		['after the user answered', false],
+	])('stops with the AbortError when cancelled %s', async (_, beforeAnswer) => {
+		const controller = new AbortController();
+		const llmClient = new FakeLLMClient(
+			assistantResponse([askCall({ questions: [question] })]),
+			textResponse('never sent'),
+		);
+		const ask = (_questions: UserQuestion[], askSignal: AbortSignal) => {
+			controller.abort();
+			return beforeAnswer
+				? Promise.reject(askSignal.reason as Error)
+				: Promise.resolve(['Two functions']);
+		};
+
+		const events: ProgressEvent[] = [];
+		const run = new LLMAgent({ llmClient }).run('prompt', {
+			signal: controller.signal,
+			ask,
+			onProgress: event => events.push(event),
+		});
+
+		await expect(run).rejects.toMatchObject({ name: 'AbortError' });
+		// The question is never shown as answered, and the answer never reaches the model.
+		expect(events.filter(event => event.type === 'tool').map(event => event.status)).toEqual([
+			'in_progress',
+		]);
+		expect(llmClient.contexts).toHaveLength(1);
+	});
+});
+
+describe('rememberAnswers', () => {
+	it('asks only what was not answered before, and keeps every answer', async () => {
+		const other: UserQuestion = { ...question, question: 'Which name?' };
+		const ask = vi.fn((questions: UserQuestion[]) =>
+			questions.map(({ question: q }) => `answer to ${q}`),
+		);
+		const remembered = rememberAnswers(ask);
+
+		await remembered.ask([question], signal);
+		await expect(remembered.ask([question, other], signal)).resolves.toEqual([
+			'answer to Which shape should the API take?',
+			'answer to Which name?',
+		]);
+
+		expect(ask).toHaveBeenLastCalledWith([other], signal);
+		expect(remembered.answered).toEqual([
+			{ question: question.question, answer: 'answer to Which shape should the API take?' },
+			{ question: 'Which name?', answer: 'answer to Which name?' },
+		]);
+	});
+});
+
+describe('RetryingAgent with answered questions', () => {
+	it('tells a retry what the user answered, and never asks the same question twice', async () => {
+		const prompts: string[] = [];
+		let attempt = 0;
+		const inner = {
+			run: vi.fn(async (prompt: string, options: RunOptions) => {
+				prompts.push(prompt);
+				attempt += 1;
+				await options.ask?.([question], options.signal);
+				if (attempt === 1)
+					throw new RecoverableError('The LLM call failed', { cause: 'overloaded' });
+				return { response: 'done', tokens: undefined, duration: 0 };
+			}),
+		};
+		const ask = vi.fn(() => ['Two functions']);
+
+		await new RetryingAgent({ inner, logger: { warn: vi.fn() }, noteFailures: false }).run(
+			'prompt',
+			{ signal, ask },
+		);
+
+		expect(ask).toHaveBeenCalledOnce();
+		expect(prompts[0]).toBe('prompt');
+		expect(prompts[1]).toBe(
+			'prompt\n\nThe user already answered these questions in an earlier attempt; do not ask them again:\n1. Which shape should the API take?\n   Two functions',
 		);
 	});
 });

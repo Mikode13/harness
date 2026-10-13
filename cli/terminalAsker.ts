@@ -31,7 +31,22 @@ export function createTerminalAsker(promptEmitter: IPromptEmitter, output: IOutp
 					await promptEmitter.emit(`Answer with ${how}, or in your own words: `, signal)
 				).trim();
 				if (!line) continue;
-				answers.push(chosen(line, options, multiSelect) ?? line);
+				const labels = chosen(line, options, multiSelect);
+				if (labels !== undefined) {
+					answers.push(labels);
+					break;
+				}
+				// Only the terminal numbered the options, so numbers that pick none mean nothing to
+				// the model: ask again instead of passing them on as the user's own words.
+				if (/^[\d\s,]+$/u.test(line)) {
+					output.print(
+						multiSelect
+							? `Choose numbers from 1 to ${String(options.length)}.`
+							: `Choose one number from 1 to ${String(options.length)}.`,
+					);
+					continue;
+				}
+				answers.push(line);
 				break;
 			}
 		}

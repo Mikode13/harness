@@ -36,19 +36,27 @@ describe('createTerminalAsker', () => {
 
 	it('takes several numbers where the question allows it, and only there', async () => {
 		await expect(
-			createTerminalAsker(answering('1, 3', '1, 3'), output())(
-				[question(true), question(false)],
-				signal,
-			),
-		).resolves.toEqual(['Planner, Reviewer', '1, 3']);
+			createTerminalAsker(answering('1, 3'), output())([question(true)], signal),
+		).resolves.toEqual(['Planner, Reviewer']);
 	});
 
-	it("keeps the user's own words, a number with no option included, and skips empty lines", async () => {
-		const prompts = answering('', 'neither, ask me later', '7');
+	it("keeps the user's own words, and skips empty lines", async () => {
+		const prompts = answering('', 'neither, ask me later');
 
 		await expect(
-			createTerminalAsker(prompts, output())([question(false), question(false)], signal),
-		).resolves.toEqual(['neither, ask me later', '7']);
+			createTerminalAsker(prompts, output())([question(false)], signal),
+		).resolves.toEqual(['neither, ask me later']);
+		expect(prompts.emit).toHaveBeenCalledTimes(2);
+	});
+
+	it('asks again for numbers that pick no option, which would mean nothing to the model', async () => {
+		const printed = output();
+		const prompts = answering('7', '1, 3', '2');
+
+		await expect(createTerminalAsker(prompts, printed)([question(false)], signal)).resolves.toEqual(
+			['Executor'],
+		);
+		expect(printed.print).toHaveBeenCalledWith('Choose one number from 1 to 3.');
 		expect(prompts.emit).toHaveBeenCalledTimes(3);
 	});
 
