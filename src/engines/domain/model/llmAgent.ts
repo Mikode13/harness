@@ -294,7 +294,7 @@ export class LLMAgent implements Agent {
 	private async llmCall(
 		runMessages: Message[],
 		after: number | undefined,
-		signal: AbortSignal,
+		{ signal, step, callback }: { signal: AbortSignal; step: number; callback: Callback },
 	): Promise<{ response: LLMResponse; context: Message[] }> {
 		// Sent as a copy, so what the run records is what the agent built, whatever the client does.
 		const context = [...this.conversation.contextAfter(after), ...structuredClone(runMessages)];
@@ -302,18 +302,37 @@ export class LLMAgent implements Agent {
 		try {
 			response = await this.llmClient.send({ context, tools: this.toolDefinitions }, signal);
 		} catch (error) {
-			throw classifyProviderFailure(error, 'The LLM call failed');
+			const failure = classifyProviderFailure(error, 'The LLM call failed');
+			// A client turns some answers into errors, such as a stop at the context window. The
+			// call was billed, and the failure carries what it spent: it is still a step.
+			if (
+				(failure instanceof RecoverableError || failure instanceof UnrecoverableError) &&
+				(failure.tokens !== undefined || failure.usageUnreported)
+			) {
+				try {
+					this.narrateStep(step, failure.tokens, context, callback);
+				} catch (hostFailure) {
+					// The callback's failure ends the run, and must carry this call's tokens too.
+					throw withSpentTokens(hostFailure, failure.tokens, failure.usageUnreported);
+				}
+			}
+			throw failure;
 		}
 
 		return { response, context };
 	}
 
-	private narrateStep(step: number, response: LLMResponse, sent: Message[], callback: Callback) {
+	private narrateStep(
+		step: number,
+		tokens: Tokens | undefined,
+		sent: Message[],
+		callback: Callback,
+	) {
 		emit(
 			{
 				type: 'step',
 				step,
-				...(response.usage ? { tokens: response.usage } : {}),
+				...(tokens ? { tokens } : {}),
 				context: measureContext({
 					instructions: this.llmClient.systemPrompt,
 					providerDataSource: this.llmClient.providerDataSource,
@@ -623,12 +642,16 @@ export class LLMAgent implements Agent {
 			const reads = this.reads.begin();
 			const repeats = new RepeatedCalls();
 			for (let step = 1; step <= this.maxSteps; step++) {
-				const { response, context: sent } = await this.llmCall(runMessages, after, signal);
+				const { response, context: sent } = await this.llmCall(runMessages, after, {
+					signal,
+					step,
+					callback,
+				});
 				tokens = addTokens(tokens, response.usage);
 				unreported ||= !response.usage;
 				// After the tokens are counted, so a throwing callback still reports them, and for an
 				// unusable answer too: the call was sent, and billed.
-				this.narrateStep(step, response, sent, callback);
+				this.narrateStep(step, response.usage, sent, callback);
 				if (response.stopReason !== 'completed') {
 					// Its tokens are already counted with the run's, which the failure carries.
 					throw new UnrecoverableError('The LLM stopped before completing its answer', {
