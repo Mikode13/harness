@@ -68,6 +68,15 @@ function file(name: string, content: string | Buffer): string {
 }
 
 describe('the readFile of an editing agent', () => {
+	it('stops at 16 KB of a prose file, and says where to continue', async () => {
+		file('architecture.md', `${Array.from({ length: 50 }, () => 'x'.repeat(3000)).join('\n')}\n`);
+
+		const output = await readFile('architecture.md');
+
+		expect(output.split('\n').filter(line => /^\d+: /.test(line))).toHaveLength(5);
+		expect(output).toContain('Read from line 6 to continue.]');
+	});
+
 	it('summarizes the requested range without exposing the host path', () => {
 		expect(tool.summarize?.({ path: 'src/index.ts', fromLine: 10, lineCount: 4 })).toBe(
 			'src/index.ts:10-13',

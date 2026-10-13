@@ -457,10 +457,17 @@ async function readingTools(
 	return [...tools, await commandToolFor(workspace, own)];
 }
 
-// Sent after the workspace's roots, so it stays short: it only says how to find one's way
-// around the repository without reading all of it.
-const repositoryGuidance =
-	'Start with AGENTS.md and the architecture document it links to learn where things live, then read only the files your task needs. When you know you need several files, or several searches, ask for all of them in one answer rather than one at a time: each answer is a step, and steps are limited.';
+const batching =
+	'When you know you need several files, or several searches, ask for all of them in one answer rather than one at a time: each answer is a step, and steps are limited.';
+
+// How each role finds its way, sent after the workspace's roots, so it stays short. Only the
+// planner learns the repository; the executor and the reviewer work from its plan, so a plan
+// that leaves them guessing is the planner's to fix, not theirs to make up for.
+const repositoryGuidance: Record<CommandRole, string> = {
+	planner: `Start with AGENTS.md, which says where the architecture and the decisions are, and read only the parts your task needs. Name in the plan every file to change and what to change in it, so the executor needs nothing else. ${batching}`,
+	executor: `Work from the plan: read the files it names, and only what you need to change them. Do not study the repository's architecture or decisions; the plan already applied them. ${batching}`,
+	reviewer: `Work from the plan and the changes: read what they touch, and only what you need to judge them. ${batching}`,
+};
 
 /**
  * Builds the planner → executor → reviewer workflow with every role on the model APIs, each
@@ -505,9 +512,9 @@ export async function createLLMOrchestrator({
 	const shared = { history: opened.store, ...(summarizer ? { summarizer } : {}), logger };
 	// A caller's own prompt replaces our instructions and guidance, not the workspace: the model
 	// needs the roots to name a file, as `createLLMAgent` gives them.
-	const prompt = (own: string | undefined, instructions: string) =>
+	const prompt = (role: CommandRole, own: string | undefined, instructions: string) =>
 		own === undefined
-			? withGuidance(instructions, `${guidance}\n${repositoryGuidance}`)
+			? withGuidance(instructions, `${guidance}\n${repositoryGuidance[role]}`)
 			: withGuidance(own, guidance);
 	// Every command, checked once, before any role takes its share.
 	if (commands !== undefined) validateCommands(commands);
@@ -538,12 +545,13 @@ export async function createLLMOrchestrator({
 		plannerAgent: await reader(
 			roles.planner,
 			'planner',
-			prompt(systemPrompts.planner, plannerInstructions),
+			prompt('planner', systemPrompts.planner, plannerInstructions),
 		),
 		executorAgent: buildLLMAgent(executor.provider, {
 			model: executor.model,
 			reasoningEffort: executor.reasoningEffort,
 			systemPrompt: prompt(
+				'executor',
 				systemPrompts.executor,
 				executorRuns ? executorInstructions : executorInstructionsWithoutCommands,
 			),
@@ -556,6 +564,7 @@ export async function createLLMOrchestrator({
 			roles.reviewer,
 			'reviewer',
 			prompt(
+				'reviewer',
 				systemPrompts.reviewer,
 				executorRuns ? reviewerInstructions : reviewerInstructionsWithoutCommands,
 			),

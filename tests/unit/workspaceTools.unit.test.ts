@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import type { Tool } from '../../src/tools/domain/tool.ts';
-import { createWorkspaceTools } from '../../src/tools/infrastructure/workspaceTools.ts';
+import {
+	createWorkspaceTools,
+	maxResultBytes,
+} from '../../src/tools/infrastructure/workspaceTools.ts';
 import {
 	assistantResponse,
 	FakeLLMClient,
@@ -118,6 +121,31 @@ describe('the workspace tools', () => {
 			);
 		});
 
+		it('stops at 16 KB of matches, and says to narrow the search', async () => {
+			const { workspace, run } = setUp();
+			// Each match is a 4,000-character prose line, shown whole.
+			workspace.matches = {
+				matches: Array.from({ length: 10 }, (_, index) => ({
+					path: 'docs/decisions.md',
+					line: index + 1,
+					text: 'x'.repeat(4000),
+				})),
+				total: 10,
+				truncated: false,
+			};
+
+			const output = await run('searchText', {
+				pattern: 'x',
+				ignoreCase: null,
+				path: null,
+				glob: null,
+			});
+
+			expect(Buffer.byteLength(output)).toBeLessThan(maxResultBytes + 200);
+			expect(output.split('\n').filter(line => line.startsWith('docs/'))).toHaveLength(4);
+			expect(output).toContain('[Showing 4 of 10 matches, the 16 KB one search may return.');
+		});
+
 		it('passes the scope and the case option the model asked for', async () => {
 			const { workspace, run } = setUp();
 
@@ -201,6 +229,27 @@ describe('the workspace tools', () => {
 
 			expect(workspace.read).toEqual([{ path: 'src/a.ts', fromLine: 1, lineCount: 200 }]);
 			expect(output).toBe('1: first\n2: second');
+		});
+
+		it('stops at 16 KB of lines, and says where to continue', async () => {
+			const { workspace, run } = setUp();
+			// Rows of a Markdown table, shown whole up to 5,000 characters.
+			workspace.content = {
+				lines: Array.from({ length: 200 }, () => 'x'.repeat(3000)),
+				totalLines: 366,
+				truncated: true,
+			};
+
+			const output = await run('readFile', {
+				path: 'docs/architecture.md',
+				fromLine: null,
+				lineCount: null,
+			});
+
+			expect(Buffer.byteLength(output)).toBeLessThan(maxResultBytes + 300);
+			expect(output).toContain(
+				'[Lines 1 to 5 fill the 16 KB one read may return. The file has 366 lines. Read from line 6 to continue.]',
+			);
 		});
 
 		it('reads the range the model asked for, numbered from its first line', async () => {
