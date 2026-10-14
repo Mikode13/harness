@@ -1106,6 +1106,21 @@ describe('createLLMOrchestrator', () => {
 		expect(openAICreate).toHaveBeenCalledTimes(plannerSteps);
 	});
 
+	it('refuses a compaction threshold for a role that does not exist, or that is not a number', async () => {
+		await expect(
+			createLLMOrchestrator({
+				workspace,
+				compactAt: { reviwer: 10 } as never,
+				logger: createLogger(),
+			}),
+		).rejects.toThrow('compactAt names roles that do not exist: reviwer');
+		await expect(
+			createLLMOrchestrator({ workspace, compactAt: null as never, logger: createLogger() }),
+		).rejects.toThrow(
+			'compactAt must be a number or an object of tokens per role, such as { "executor": 96000 }',
+		);
+	});
+
 	it('refuses a step limit for a role that does not exist', async () => {
 		await expect(
 			createLLMOrchestrator({

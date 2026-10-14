@@ -54,6 +54,7 @@ export async function prepareTrackedEdit(
 		return {
 			risk: editRisk(prepared),
 			diff: editDiff(path, undefined, request.content.toString('utf8')),
+			file: { path: prepared.target.absolute, access: 'write' },
 			run: async runSignal => {
 				await editor.apply(prepared, runSignal);
 				// It wrote the content itself, so it has seen it.
@@ -80,6 +81,7 @@ export async function prepareTrackedEdit(
 		return {
 			risk: editRisk(prepared),
 			diff: editDiff(path, content.toString('utf8'), undefined),
+			file: { path: target.absolute, access: 'write' },
 			run: async runSignal => {
 				await editor.apply(prepared, runSignal);
 				reads.forget(target.absolute);
@@ -96,6 +98,7 @@ export async function prepareTrackedEdit(
 	return {
 		risk: editRisk(prepared),
 		diff: editDiff(path, content.toString('utf8'), next.toString('utf8')),
+		file: { path: target.absolute, access: 'write' },
 		run: async runSignal => {
 			await editor.apply(prepared, runSignal);
 			reads.record(target.absolute, hashOf(next));

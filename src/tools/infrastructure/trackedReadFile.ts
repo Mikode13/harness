@@ -97,6 +97,7 @@ export function createTrackedReadFile(policy: AccessPolicy): PreparingTool {
 			const target = await policy.check(path, 'read', signal);
 			return {
 				risk: 'safe',
+				file: { path: target.absolute, access: 'read' },
 				run: runSignal => readTracked({ target, path, from, count, reads, signal: runSignal }),
 			};
 		},

@@ -20,6 +20,7 @@ export {
 	type CreateLLMAgentOptions,
 	type CreateLLMOrchestratorOptions,
 	type RoleSteps,
+	type RoleTokens,
 } from './factory/infrastructure/agentLLMFactory.ts';
 export type { FileTool, WorkspaceOptions } from './tools/infrastructure/fileTools.ts';
 export type { WorkspaceRoot } from './tools/domain/accessPolicy.ts';

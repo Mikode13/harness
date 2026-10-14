@@ -96,6 +96,20 @@ export type ProgressEvent =
 	| { type: 'turnStarted'; agent?: ProgressAgent }
 	| { type: 'turnEnded'; agent?: ProgressAgent }
 	/**
+	 * A model-backed agent stopped sending what had gone stale in its conversation, which keeps
+	 * every original turn. Narration only.
+	 */
+	| {
+			type: 'compaction';
+			/** The step whose call is the first to send the shorter context. */
+			step: number;
+			/** How many tool results it replaced with a short note. */
+			clearedResults: number;
+			/** About how many tokens each later call saves; an estimate, not a count. */
+			estimatedTokensSaved: number;
+			agent?: ProgressAgent;
+	  }
+	/**
 	 * One billed call to the model by an agent on the model APIs, including one the model
 	 * stopped early or the client turned into an error: what the call sent and what it cost.
 	 * Narration only: the run's total is `AgentResponse.tokens`, or the failure's `tokens`.

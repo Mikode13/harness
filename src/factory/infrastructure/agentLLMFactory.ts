@@ -118,6 +118,11 @@ export interface CreateLLMAgentOptions {
 	 */
 	maxSteps?: number;
 	/**
+	 * The prompt size, in tokens, past which the agent stops sending what has gone stale, such
+	 * as a result a later identical call replaced. Defaults to 64,000.
+	 */
+	compactAt?: number;
+	/**
 	 * Runs every tool call without asking, `destructive` ones included, for CI where no one can
 	 * answer. Without it, a `destructive` call goes to the run's `approve`, or is denied.
 	 */
@@ -139,35 +144,59 @@ const defaultRoleSteps: Record<OrchestratorRole, number> = {
 	reviewer: 65,
 };
 
+/** A limit per role of the model-backed orchestrator, each one left out keeping its default. */
+export type RoleTokens = Partial<Record<OrchestratorRole, number>>;
+
+const defaultRoleCompaction: Record<OrchestratorRole, number> = {
+	planner: 64_000,
+	executor: 64_000,
+	reviewer: 64_000,
+};
+
 /**
- * Each role's step limit, from one number for all of them or a number per role.
+ * Each role's value of the option `name`, from one number for all of them or a number per role.
  *
  * @throws {InvalidAgentConfigError} for a value that is neither, and for a role that does not
  * exist, which is a typo that would otherwise leave that role on its default without a word.
  */
-function stepsPerRole(maxSteps: unknown): Record<OrchestratorRole, number> {
-	if (maxSteps === undefined) return defaultRoleSteps;
-	if (typeof maxSteps === 'number') {
-		return { planner: maxSteps, executor: maxSteps, reviewer: maxSteps };
-	}
+function perRole(
+	name: string,
+	value: unknown,
+	defaults: Record<OrchestratorRole, number>,
+	{ what, example }: { what: string; example: string },
+): Record<OrchestratorRole, number> {
+	if (value === undefined) return defaults;
+	if (typeof value === 'number') return { planner: value, executor: value, reviewer: value };
 	// Untyped input, such as the CLI's configuration file, can hold `null` or a list here.
-	if (typeof maxSteps !== 'object' || maxSteps === null || Array.isArray(maxSteps)) {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
 		throw new InvalidAgentConfigError(
-			'maxSteps must be a number or an object of steps per role, such as { "executor": 120 }',
+			`${name} must be a number or an object of ${what} per role, such as ${example}`,
 		);
 	}
-	const unknown = Object.keys(maxSteps).filter(role => !(role in defaultRoleSteps));
+	const unknown = Object.keys(value).filter(role => !(role in defaults));
 	if (unknown.length > 0) {
 		throw new InvalidAgentConfigError(
-			`maxSteps names roles that do not exist: ${unknown.join(', ')}; expected planner, executor or reviewer`,
+			`${name} names roles that do not exist: ${unknown.join(', ')}; expected planner, executor or reviewer`,
 		);
 	}
 	// A role given as `undefined`, which untyped input can do, keeps its default.
-	const given = Object.entries(maxSteps as Record<string, unknown>).filter(
-		([, steps]) => steps !== undefined,
+	const given = Object.entries(value as Record<string, unknown>).filter(
+		([, limit]) => limit !== undefined,
 	);
-	return { ...defaultRoleSteps, ...Object.fromEntries(given) };
+	return { ...defaults, ...Object.fromEntries(given) };
 }
+
+const stepsPerRole = (maxSteps: unknown) =>
+	perRole('maxSteps', maxSteps, defaultRoleSteps, {
+		what: 'steps',
+		example: '{ "executor": 120 }',
+	});
+
+const compactionPerRole = (compactAt: unknown) =>
+	perRole('compactAt', compactAt, defaultRoleCompaction, {
+		what: 'tokens',
+		example: '{ "executor": 96000 }',
+	});
 
 export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions {
 	/**
@@ -183,6 +212,11 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	 * before its limit.
 	 */
 	maxSteps?: number | RoleSteps;
+	/**
+	 * The prompt size, in tokens, past which each role stops sending what has gone stale: one
+	 * number for every role, or a number per role. Defaults to 64,000 for every role.
+	 */
+	compactAt?: number | RoleTokens;
 	/**
 	 * Commands the roles may run, such as the project's tests, through `runCommand`. Each goes to
 	 * the roles its `roles` names, the executor by default. See `createFileTools`. Each needs a
@@ -314,6 +348,7 @@ function buildLLMAgent(
 		history,
 		summarizer,
 		maxSteps,
+		compactAt,
 		autoApprove,
 		logger,
 	}: {
@@ -324,6 +359,7 @@ function buildLLMAgent(
 		history?: HistoryReader;
 		summarizer?: LLMClient;
 		maxSteps?: number;
+		compactAt?: number;
 		autoApprove?: boolean;
 		logger: ILogger;
 	},
@@ -339,6 +375,7 @@ function buildLLMAgent(
 			...(history ? { history } : {}),
 			...(summarizer ? { summarizer } : {}),
 			...(maxSteps === undefined ? {} : { maxSteps }),
+			...(compactAt === undefined ? {} : { compactAt }),
 		}),
 		logger,
 		noteFailures: false,
@@ -367,6 +404,7 @@ export function createLLMAgent(
 		workspace,
 		summarizeUndone = true,
 		maxSteps,
+		compactAt,
 		autoApprove,
 		logger = new Logger(),
 	}: CreateLLMAgentOptions,
@@ -382,6 +420,7 @@ export function createLLMAgent(
 		...(workspace ? { history: historyOf(workspace) } : {}),
 		...(workspace && summarizeUndone ? { summarizer: summarizerFor(provider, logger) } : {}),
 		maxSteps,
+		compactAt,
 		autoApprove,
 		logger,
 	});
@@ -500,12 +539,14 @@ export async function createLLMOrchestrator({
 	systemPrompts = {},
 	workspace = { roots: [{ path: process.cwd(), access: 'read' }] },
 	maxSteps,
+	compactAt,
 	commands,
 	summarizeUndone = true,
 	logger = new Logger(),
 }: CreateLLMOrchestratorOptions = {}): Promise<Agent> {
 	const roles = orchestratorRolesFor(provider);
 	const steps = stepsPerRole(maxSteps);
+	const compaction = compactionPerRole(compactAt);
 	const opened = await openWorkspace(workspace, logger);
 	const guidance = workspaceGuidance(workspace.roots);
 	const summarizer = summarizeUndone ? summarizerFor(roles.planner.provider, logger) : undefined;
@@ -529,6 +570,7 @@ export async function createLLMOrchestrator({
 			systemPrompt,
 			tools: await readingTools(opened, role, commands),
 			maxSteps: steps[role],
+			compactAt: compaction[role],
 			...shared,
 		});
 	const { executor } = roles;
@@ -557,6 +599,7 @@ export async function createLLMOrchestrator({
 			),
 			tools: executorToolset,
 			maxSteps: steps.executor,
+			compactAt: compaction.executor,
 			autoApprove,
 			...shared,
 		}),

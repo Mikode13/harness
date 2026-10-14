@@ -1979,3 +1979,43 @@ The user chose 16 KB, the same as a command's output. The user also set the role
 
 - A plan that leaves the executor guessing shows up as an executor that searches, and is the planner's to fix.
 - The orchestrator still sends the executor the original request beside the plan. Sending it only the plan is part of the workflows of #22.
+
+## A long run stops sending what has gone stale, over a conversation that keeps everything
+
+tags: #mikode-harness #llm #compaction
+
+**Decision:** the first half of #48.
+
+- **The trigger is cost, not the window.** When a call's prompt, as the provider counted it, passes `compactAt` tokens, the agent compacts before its next call. It defaults to 64,000 for every role, and is one number for `createLLMAgent` and one number or one per role for `createLLMOrchestrator`, like `maxSteps`, and in the CLI's configuration.
+- **This half clears without a model.** It stops sending:
+  - a tool result a later identical call replaced, the inputs compared with their keys sorted;
+  - a result about a file the run wrote since. Each harness tool's `PreparedCall` names the file it reads or writes, by its real path, and the agent remembers it for a call that ran;
+  - the reasoning of the turns before the latest prompt.
+- **Never touched:** the user's prompts, the last three tool calls with their results, the system prompt, and the reasoning of the turn in progress.
+- **A cleared result becomes a note** telling the model why it was cleared, and that it can call the tool again.
+- **Only when it pays.** A clearing that saves less than about 8,000 tokens is not applied, because changing the context rewrites the provider's cache from that point. The saving is estimated, at 4 characters per token for text and 15 for the encrypted reasoning providers send back.
+- **A layer, not a rewrite.** The `Conversation` keeps every original turn. The `Compaction` records what is not sent, keyed by tool call so it survives moves through the history, and is applied to the context each call sends. A `compaction` progress event narrates each clearing.
+
+**Context:** #100 and #48. In the benchmark run of #20 on 2026-10-13, the executor's prompt grew from 3k to 127k tokens over 44 calls, and every call resent all of it. The models' windows are 400k or more, so a trigger at 80% of the window would never have fired. Simulating a 64k trigger that brings the prompt down to 32k gives about 41% fewer tokens sent, an optimistic bound.
+
+A measurement on 2026-10-14 settled whether reasoning sent back costs anything: the same context with and without the reasoning of an earlier turn cost 953 against 238 input tokens on OpenAI, about 15 characters per token of encrypted reasoning, and 752 against 670 on Claude Opus 5.5, although Anthropic documents earlier thinking as stripped. Both providers bill it, so leaving it out saves tokens, and both accepted a context without it.
+
+The user chose:
+
+- a cost threshold of 64k, with the window and `MaxContextError` as the backstop of the second half;
+- clearing first and summarizing second, in two pull requests;
+- the harness's own compaction over the providers' (Anthropic's context editing and compaction, OpenAI's `/responses/compact`), which would make the conversation provider-specific, and opaque where OpenAI returns an encrypted item;
+- keeping the user's prompts always, for traceability and analysis and for the other agents, and the last three tool calls, as Anthropic's `clear_tool_uses` does by default;
+- a layer that keeps the original conversation, since the session manager that would own it (#29) does not exist yet.
+
+**Alternatives considered:**
+
+- **The window as the only trigger.** It protects against a run too long to fit, but saves nothing on the runs we have.
+- **Rewriting the conversation.** Simpler and smaller, but what was cleared would be lost to the run's record and to an undo behind it.
+- **Clearing by tool name,** such as every earlier `check`. Simpler, but it would clear a `test` run on other files that still holds the only record of their failures. Identical inputs say a call was really repeated.
+
+**Consequences:**
+
+- A run past the threshold sends less from then on, at the cost of one cache rewrite per clearing.
+- A model that needs a cleared result calls the tool again; the note says it can.
+- The second half adds the summary, with Jev deciding what to keep, summarize or drop, accepted at a confidence of 0.6 or more, a fixed rule as its fallback, and a target of 32k after compaction.

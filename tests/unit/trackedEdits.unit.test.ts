@@ -4,11 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
+import { RunContext } from '../../src/agent/domain/runContext.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import type { LLMClient, LLMResponse } from '../../src/llm/domain/llm.ts';
 import type { Message } from '../../src/llm/domain/message.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
 import { assistantResponse, textResponse, toolCall } from '../support/fakeLlmClient.ts';
+import { ReadRegistry } from '../../src/tools/domain/readRegistry.ts';
 import { trackedToolsOver } from '../support/trackedTools.ts';
 
 const signal = new AbortController().signal;
@@ -98,6 +100,19 @@ function onDisk(name: string): string {
 }
 
 describe('editing only from a version the model read', () => {
+	it('names the file an edit writes, by its real path', async () => {
+		writeFileSync(join(root, 'a.ts'), 'one\n');
+		const { edit } = await trackedToolsOver(root, store);
+
+		const prepared = await edit.prepare(
+			{ op: 'create', path: 'b.ts', text: 'two\n', replacement: null },
+			signal,
+			{ run: new RunContext(), reads: new ReadRegistry().begin() },
+		);
+
+		expect(prepared.file).toEqual({ path: join(root, 'b.ts'), access: 'write' });
+	});
+
 	beforeEach(() => {
 		writeFileSync(join(root, 'a.txt'), 'one\ntwo\nthree\n');
 	});

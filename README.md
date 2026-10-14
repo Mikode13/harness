@@ -395,6 +395,21 @@ createLLMOrchestrator({ workspace, maxSteps: { executor: 120 } });
 A run also stops sooner when five answers in a row ask for exactly the same tool calls,
 which means the model is stuck. `createLLMAgent` takes one number, 65 by default.
 
+Every step sends the whole conversation again, so a long run gets expensive well before it
+fills the model. Once a call's prompt passes `compactAt`, 64,000 tokens by default, the agent
+stops sending what has gone stale:
+
+- a tool result a later identical call replaced, such as a `check` run again;
+- a result about a file the run wrote since, such as a read before an edit;
+- the reasoning of turns before the latest prompt, which providers bill when it is sent back.
+
+The user's prompts, the last three tool calls and the reasoning of the turn in progress are
+never touched, and the agent keeps every original turn: only what it sends is shorter. A
+cleared result reaches the model as a note it can act on by calling the tool again, and
+progress reports a `compaction` event. Clearing happens only when it saves enough to be worth
+the provider rewriting its cache. `compactAt` is one number for `createLLMAgent`, and one
+number or one per role for `createLLMOrchestrator`, like `maxSteps`.
+
 Without `workspace` it works on the current directory, read only. One run of the
 orchestrator is one run of the history, every round included.
 
@@ -549,7 +564,7 @@ is told to decide and say what it assumed.
 With `--llm`, the agents can also [run commands](#running-the-projects-commands) you
 configure for the repository, in `~/.config/mikode-harness/config.json` (or under
 `$XDG_CONFIG_HOME`). The file maps each repository's real path to its `commands` and,
-optionally, its `maxSteps`. It lives outside every repository, so neither a cloned repository
+optionally, its `maxSteps` and `compactAt`. It lives outside every repository, so neither a cloned repository
 nor the agent decides what runs, or for how long:
 
 ```json

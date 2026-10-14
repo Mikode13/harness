@@ -254,6 +254,7 @@ export function createTextEditorTool({
 					);
 					return {
 						risk: 'safe',
+						...(isFolder ? {} : { file: { path: target.absolute, access: 'read' as const } }),
 						run: runSignal =>
 							isFolder
 								? listFolder(workspace, path, runSignal)

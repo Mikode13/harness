@@ -1,7 +1,7 @@
 import { readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
-import type { Commands, RoleSteps } from '../src/index.ts';
+import type { Commands, RoleSteps, RoleTokens } from '../src/index.ts';
 
 /** What the CLI reads for one repository from the user's configuration. */
 export interface RepositoryConfig {
@@ -9,6 +9,8 @@ export interface RepositoryConfig {
 	commands?: Commands;
 	/** The step limit of every role, or of each. */
 	maxSteps?: number | RoleSteps;
+	/** The prompt size past which every role, or each, stops sending what has gone stale. */
+	compactAt?: number | RoleTokens;
 }
 
 /**
@@ -33,7 +35,8 @@ export function userConfigPath(
  * {
  *   "/Users/me/code/app": {
  *     "commands": { "test": { "description": "Runs the tests", "executable": "pnpm", "args": ["test"] } },
- *     "maxSteps": { "executor": 120 }
+ *     "maxSteps": { "executor": 120 },
+ *     "compactAt": 64000
  *   }
  * }
  * ```
@@ -70,7 +73,7 @@ export async function loadUserConfig(
 	const entry = config[real];
 	if (entry === undefined) return {};
 	if (!isRecord(entry)) throw new Error(`${path} must give ${real} an object of settings`);
-	const known = ['commands', 'maxSteps'];
+	const known = ['commands', 'maxSteps', 'compactAt'];
 	const unknown = Object.keys(entry).filter(key => !known.includes(key));
 	if (unknown.length > 0) {
 		throw new Error(`${path} has unknown settings for ${real}: ${unknown.join(', ')}`);
