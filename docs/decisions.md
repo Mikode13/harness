@@ -1924,7 +1924,7 @@ tags: #mikode-harness #llm #tools #api-design
 **Decision:**
 
 - **`RunOptions.ask`, an `Asker`.** It works like `approve`: a callback per run. It receives one to four `UserQuestion`s, each with two to four options and `multiSelect`, and answers each in order, with an option's label or with the user's own words.
-- **`askUser`, the agent's own tool,** offered only in a run given `ask`. `LLMAgent` owns it, as it owns approval, because the answer belongs to the run, not to the agent. A consumer's tool may not take its name.
+- **`askUser`, the agent's own tool,** offered only in a run given `ask`. `LLMAgent` owns it, as it owns approval, because the answer belongs to the run, not to the agent. A consumer's own tool named `askUser` wins: the agent then offers its own in no run, so the two never meet, and a consumer that already had one keeps building its agent.
 - **When to ask is in the tool's description,** so it holds for any agent that has the tool: the shape of a public API or of anything other code depends on, a new dependency, behaviour the request does not ask for, and choices with real trade-offs. Before building on the choice, all questions in one call, and not what the repository or a reasonable default answers.
 - **Every role of `createLLMOrchestrator` can ask,** because `OrchestratorAgent` passes each role the run's options.
 - **A retry keeps the user's answers.** `RetryingAgent` wraps `ask` with `rememberAnswers` for the whole run: a question asked again with the same words gets the answer already given, and the retried prompt lists what the user answered, so the model does not ask again in other words. The user chose this over asking again, which costs them the same answers twice, and over not retrying after a question, which would give up on a failure a retry fixes.
@@ -1948,7 +1948,7 @@ The user chose:
 
 **Consequences:**
 
-- A `feat`: `RunOptions.ask` and the `Asker`, `UserQuestion` and `QuestionOption` types are new. A consumer tool named `askUser` is now refused, a deliberate restriction on a name nothing used.
+- A `feat`: `RunOptions.ask` and the `Asker`, `UserQuestion` and `QuestionOption` types are new. Nothing is refused: a consumer's tool named `askUser` keeps working, and such an agent does not offer its own.
 - A run with `ask` sends one more tool definition on every step.
 - Whether the model asks well, neither too much nor too little, is measured by the benchmark of #100, not by the offline tests.
 
