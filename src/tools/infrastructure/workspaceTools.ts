@@ -8,7 +8,9 @@ import { cutLine, maxLineLength } from '../domain/lineLength.ts';
 const maxFiles = 200;
 const maxMatches = 100;
 const maxLines = 200;
-// One minified line can be larger than everything else the model has read.
+// What one read or one search may bring into the context, whatever its lines: 200 lines of
+// prose can be 50 KB, and the context carries them on every step after.
+export const maxResultBytes = 16 * 1024;
 
 // Strict mode has no optional fields: an argument the model may leave out is nullable.
 const scope = {
@@ -44,20 +46,40 @@ export function renderLines({
 		return `No lines from ${String(from)}: the file has ${String(totalLines)} lines.`;
 	}
 
-	const numbered = lines.map((text, index) => `${String(from + index)}: ${cutLine(path, text)}`);
+	const numbered = withinBytes(
+		lines.map((text, index) => `${String(from + index)}: ${cutLine(path, text)}`),
+	);
+	const shown = lines.slice(0, numbered.length);
 	const max = maxLineLength(path);
-	const cut = lines.filter(text => text.length > max).length;
+	const cut = shown.filter(text => text.length > max).length;
+	const next = from + shown.length;
 	const notices = [
 		...(cut > 0
 			? [`[${String(cut)} lines were longer than ${String(max)} characters and were cut.]`]
 			: []),
-		...(truncated
+		...(shown.length < lines.length
 			? [
-					`[The file has ${String(totalLines)} lines. Read from line ${String(from + lines.length)} to continue.]`,
+					`[Lines ${String(from)} to ${String(next - 1)} fill the ${String(maxResultBytes / 1024)} KB one read may return. The file has ${String(totalLines)} lines. Read from line ${String(next)} to continue.]`,
 				]
-			: []),
+			: truncated
+				? [
+						`[The file has ${String(totalLines)} lines. Read from line ${String(next)} to continue.]`,
+					]
+				: []),
 	];
 	return [...numbered, ...notices].join('\n');
+}
+
+/** The first of `lines` that fit in `maxResultBytes` together, and always the first one. */
+function withinBytes(lines: string[]): string[] {
+	let bytes = 0;
+	const kept: string[] = [];
+	for (const line of lines) {
+		bytes += Buffer.byteLength(line, 'utf8') + 1;
+		if (bytes > maxResultBytes && kept.length > 0) break;
+		kept.push(line);
+	}
+	return kept;
 }
 
 /** What `readFile` takes, shared with the harness's own version of it. */
@@ -173,13 +195,18 @@ export function createWorkspaceTools(workspace: Workspace): Tool[] {
 					return 'No matches.';
 				}
 
-				const results = matches.map(
-					match => `${match.path}:${String(match.line)}: ${cutLine(match.path, match.text)}`,
+				const results = withinBytes(
+					matches.map(
+						match => `${match.path}:${String(match.line)}: ${cutLine(match.path, match.text)}`,
+					),
 				);
 
-				const notice = truncated
-					? `\n[Showing ${String(results.length)} of ${String(total)} matches. Narrow the path or glob to see the rest.]`
-					: '';
+				const notice =
+					results.length < matches.length
+						? `\n[Showing ${String(results.length)} of ${String(total)} matches, the ${String(maxResultBytes / 1024)} KB one search may return. Narrow the pattern, the path or the glob to see the rest.]`
+						: truncated
+							? `\n[Showing ${String(results.length)} of ${String(total)} matches. Narrow the path or glob to see the rest.]`
+							: '';
 				return results.join('\n') + notice;
 			},
 		}),

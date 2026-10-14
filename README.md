@@ -322,7 +322,7 @@ await agent.run('Add a cache to the client.', {
 });
 ```
 
-Without `ask` the agent has no such tool. Questions the model wrote wrong go back to
+Without `ask` the agent has no such tool, and neither does an agent given a tool of its own named `askUser`, which keeps it. Questions the model wrote wrong go back to
 it to correct. An asker that throws, or does not answer each question with some text,
 ends the run with an `UnrecoverableError`. The Agent SDK engines ignore `ask`, and
 `createLLMOrchestrator` passes it to every role.

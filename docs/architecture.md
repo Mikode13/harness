@@ -349,7 +349,8 @@ each other's.
   leads: one inside the roots, such as `CLAUDE.md → AGENTS.md`, works, and one out of them is
   refused. Either way, a secret that is not ignored is visible. A line reaches the model
   cut past 300 characters, or past 5,000 in a prose file (`.md`, `.markdown`, `.mdx`, `.txt`),
-  where a cut line could not be copied into an edit; the result says so. The scope a model asks for is applied to the output
+  where a cut line could not be copied into an edit; the result says so. One read or one search
+  returns at most 16 KB, whole lines only, and says where to continue or to narrow the search. The scope a model asks for is applied to the output
   of a search over the whole root as it arrives, before anything is stored, and never passed to ripgrep, which stops honouring
   `.gitignore` for a path it is given explicitly. ripgrep ships with the package
   (`@vscode/ripgrep`); git is the fallback, and with neither the workspace cannot be built.

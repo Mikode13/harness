@@ -5,11 +5,7 @@ import { readAnswers, readQuestions } from '../../src/engines/domain/model/askUs
 import { RetryingAgent } from '../../src/retry/domain/model/retryingAgent.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import type { Tool } from '../../src/tools/domain/tool.ts';
-import {
-	InvalidAgentConfigError,
-	RecoverableError,
-	UnrecoverableError,
-} from '../../src/shared/domain/errors.ts';
+import { RecoverableError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
 import { assistantResponse, FakeLLMClient, textResponse } from '../support/fakeLlmClient.ts';
 
 const signal = new AbortController().signal;
@@ -150,18 +146,26 @@ describe('LLMAgent with askUser', () => {
 		});
 	});
 
-	it("refuses a consumer's tool named askUser, which a run's own would hide", () => {
+	it("keeps a consumer's own tool named askUser, and offers the agent's only without it", async () => {
+		const execute = vi.fn(() => Promise.resolve('asked my own way'));
 		const tool: Tool = {
 			name: 'askUser',
 			description: 'Mine',
 			inputSchema: { type: 'object' },
 			risk: () => 'safe',
-			execute: () => Promise.resolve(''),
+			execute,
 		};
-
-		expect(() => new LLMAgent({ llmClient: new FakeLLMClient(), tools: [tool] })).toThrow(
-			InvalidAgentConfigError,
+		const llmClient = new FakeLLMClient(
+			assistantResponse([askCall({ questions: [question] })]),
+			textResponse('done'),
 		);
+		const ask = vi.fn(() => ['unused']);
+
+		await new LLMAgent({ llmClient, tools: [tool] }).run('prompt', { signal, ask });
+
+		expect(llmClient.tools[0]?.map(definition => definition.description)).toEqual(['Mine']);
+		expect(execute).toHaveBeenCalledOnce();
+		expect(ask).not.toHaveBeenCalled();
 	});
 
 	it.each([

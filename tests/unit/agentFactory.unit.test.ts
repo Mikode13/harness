@@ -834,7 +834,7 @@ describe('createLLMOrchestrator', () => {
 		expect(declared(requestsOf(openAICreate)[1])).toEqual(['listFiles', 'searchText', 'readFile']);
 	});
 
-	it('gives every role its instructions as the system prompt, then the workspace', async () => {
+	it('gives every role its instructions as the system prompt, then the workspace and its own guidance', async () => {
 		const openAICreate = openAIReplying('plan');
 		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
 
@@ -852,7 +852,14 @@ describe('createLLMOrchestrator', () => {
 		expect(reviewer.system).toMatch(/^You are the reviewer agent/);
 		for (const prompt of [planner?.instructions, executor?.instructions, reviewer.system]) {
 			expect(prompt).toContain(`The workspace:\n- ${repo}\n`);
-			expect(prompt).toContain('AGENTS.md');
+		}
+		// Only the planner learns the repository; the others work from its plan.
+		expect(planner?.instructions).toContain('Start with AGENTS.md');
+		expect(planner?.instructions).toContain('Name in the plan every file to change');
+		expect(executor?.instructions).toContain('Work from the plan: read the files it names');
+		expect(reviewer.system).toContain('Work from the plan and the changes');
+		for (const prompt of [executor?.instructions, reviewer.system]) {
+			expect(prompt).not.toContain('AGENTS.md');
 		}
 		expect(JSON.stringify(planner?.input)).not.toContain('You are the planner agent');
 	});

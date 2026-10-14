@@ -1924,7 +1924,7 @@ tags: #mikode-harness #llm #tools #api-design
 **Decision:**
 
 - **`RunOptions.ask`, an `Asker`.** It works like `approve`: a callback per run. It receives one to four `UserQuestion`s, each with two to four options and `multiSelect`, and answers each in order, with an option's label or with the user's own words.
-- **`askUser`, the agent's own tool,** offered only in a run given `ask`. `LLMAgent` owns it, as it owns approval, because the answer belongs to the run, not to the agent. A consumer's tool may not take its name.
+- **`askUser`, the agent's own tool,** offered only in a run given `ask`. `LLMAgent` owns it, as it owns approval, because the answer belongs to the run, not to the agent. A consumer's own tool named `askUser` wins: the agent then offers its own in no run, so the two never meet, and a consumer that already had one keeps building its agent.
 - **When to ask is in the tool's description,** so it holds for any agent that has the tool: the shape of a public API or of anything other code depends on, a new dependency, behaviour the request does not ask for, and choices with real trade-offs. Before building on the choice, all questions in one call, and not what the repository or a reasonable default answers.
 - **Every role of `createLLMOrchestrator` can ask,** because `OrchestratorAgent` passes each role the run's options.
 - **A retry keeps the user's answers.** `RetryingAgent` wraps `ask` with `rememberAnswers` for the whole run: a question asked again with the same words gets the answer already given, and the retried prompt lists what the user answered, so the model does not ask again in other words. The user chose this over asking again, which costs them the same answers twice, and over not retrying after a question, which would give up on a failure a retry fixes.
@@ -1948,6 +1948,34 @@ The user chose:
 
 **Consequences:**
 
-- A `feat`: `RunOptions.ask` and the `Asker`, `UserQuestion` and `QuestionOption` types are new. A consumer tool named `askUser` is now refused, a deliberate restriction on a name nothing used.
+- A `feat`: `RunOptions.ask` and the `Asker`, `UserQuestion` and `QuestionOption` types are new. Nothing is refused: a consumer's tool named `askUser` keeps working, and such an agent does not offer its own.
 - A run with `ask` sends one more tool definition on every step.
 - Whether the model asks well, neither too much nor too little, is measured by the benchmark of #100, not by the offline tests.
+
+## One read or search returns at most 16 KB, and only the planner learns the repository
+
+tags: #mikode-harness #tools #llm #orchestration
+
+**Decision:**
+
+- **A byte limit as well as a line limit.** `readFile`, in both its versions, and `searchText` return at most 16 KB per call, in whole lines. A read cut short says which lines it showed and where to continue; a search says how many matches it showed and asks to narrow the pattern, the path or the glob. The first line is always shown. Cut by `cutLine`, a line holds at most 5,000 UTF-16 units, so it never exceeds the limit on its own.
+- **Each role has its own guidance,** sent after the workspace's roots:
+  - **the planner** starts with `AGENTS.md`, which says where the architecture and the decisions are, reads only the parts its task needs, and names in the plan every file to change and what to change in it;
+  - **the executor** works from the plan: it reads the files the plan names and only what it needs to change them, and does not study the architecture or the decisions, which the plan already applied;
+  - **the reviewer** works from the plan and the changes, and reads what they touch.
+- A caller's own `systemPrompts` replaces the guidance, as before.
+
+**Context:** #100. In the benchmark run of #20 on 2026-10-13, one `readFile` of `docs/architecture.md:1-200` brought 53 KB and one `searchText` in `docs/decisions.md` 40 KB. The guidance told every role to start with `AGENTS.md` and the architecture document, so the planner and the executor both read the first 53 KB. Every result stays in the context and is resent on every later step: reads were 38% of the executor's context at its largest.
+
+The user chose 16 KB, the same as a command's output. The user also set the roles' boundary: the planner reads `AGENTS.md`, which must say where the architecture and the decisions are, or something is wrong; the executor and the reviewer receive a plan, and the executor does what the plan says where it says it, without having to understand the architecture.
+
+**Alternatives considered:**
+
+- **32 KB.** Fewer reads for the same file, but half the saving: the architecture document would still bring 32 KB at once.
+- **8 KB.** More saving per read, but prose files would take several reads, and every read is a step that resends the whole context.
+- **Keep one guidance for all roles, telling them to search the architecture instead of reading it.** It would cut the read, but keep the executor studying the repository, which is the planner's job.
+
+**Consequences:**
+
+- A plan that leaves the executor guessing shows up as an executor that searches, and is the planner's to fix.
+- The orchestrator still sends the executor the original request beside the plan. Sending it only the plan is part of the workflows of #22.

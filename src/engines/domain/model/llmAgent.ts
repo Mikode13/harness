@@ -217,11 +217,6 @@ export class LLMAgent implements Agent {
 			// The model calls tools by name, so a second one with the same name could never run.
 			throw new InvalidAgentConfigError('Two tools share a name; each name must be unique');
 		}
-		if (this.tools.has(askUserName)) {
-			throw new InvalidAgentConfigError(
-				`"${askUserName}" is the agent's own tool for a run given \`ask\`; name the tool otherwise`,
-			);
-		}
 		// The client only describes the tools to the model; running them stays with the agent.
 		this.toolDefinitions = tools.map(tool => {
 			const definition = {
@@ -428,7 +423,9 @@ export class LLMAgent implements Agent {
 	}> {
 		const result = { type: 'toolResult' as const, callId: call.id, name: call.name };
 		signal.throwIfAborted();
-		if (call.name === askUserName && ask) return this.askUser(call, ask, signal, callback);
+		if (call.name === askUserName && ask && !this.tools.has(askUserName)) {
+			return this.askUser(call, ask, signal, callback);
+		}
 		const tool = this.tools.get(call.name);
 		if (!tool) {
 			return {
@@ -703,10 +700,10 @@ export class LLMAgent implements Agent {
 			// After following the history, which may have made every earlier read stale.
 			const reads = this.reads.begin();
 			const repeats = new RepeatedCalls();
-			// The agent's own `askUser` exists only for a run someone can answer.
-			const tools = options.ask
-				? [...this.toolDefinitions, askUserDefinition]
-				: this.toolDefinitions;
+			// The agent's own `askUser` exists only for a run someone can answer, and never beside
+			// a consumer's tool of that name, which the consumer gave first and which stays theirs.
+			const offersAsk = options.ask !== undefined && !this.tools.has(askUserName);
+			const tools = offersAsk ? [...this.toolDefinitions, askUserDefinition] : this.toolDefinitions;
 			for (let step = 1; step <= this.maxSteps; step++) {
 				const { response, context: sent } = await this.llmCall(runMessages, after, {
 					signal,
