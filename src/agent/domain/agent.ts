@@ -1,5 +1,6 @@
 import type { Tokens } from '#src/shared/domain/tokens';
 import type { Approver } from './approval.ts';
+import type { Asker } from './question.ts';
 
 /**
  * How a run ended when it did not fail. Every token a run spends travels with its end: here
@@ -26,8 +27,10 @@ export interface AgentResponse {
 export type Callback = (item: ProgressEvent) => void;
 
 /**
- * What a run needs besides its prompt. RetryingAgent and InstructedAgent pass it on whole;
- * OrchestratorAgent copies its own enumerable fields and replaces only `onProgress` per role.
+ * What a run needs besides its prompt. InstructedAgent passes it on whole. OrchestratorAgent
+ * copies its own enumerable fields and replaces only `onProgress` per role; RetryingAgent does
+ * the same for a run with `ask`, replacing only `ask`. A field must therefore be an own
+ * enumerable one to reach every agent.
  */
 export interface RunOptions {
 	/** Cancels the run, which then rejects with the signal's `AbortError`. */
@@ -40,6 +43,12 @@ export interface RunOptions {
 	 * it: their own permission systems decide.
 	 */
 	approve?: Approver | undefined;
+	/**
+	 * Answers what a model-backed agent asks the user, through its `askUser` tool, when a
+	 * decision is the user's to make. Without it the agent has no such tool. The Agent SDK
+	 * engines ignore it.
+	 */
+	ask?: Asker | undefined;
 }
 
 /** The `onProgress` of a run that gave none. */

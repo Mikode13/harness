@@ -309,6 +309,24 @@ neither run nor remembered. Its `key` option decides what counts as the same cal
 such as the tool and its path. The memory lives as long as the approver you created,
 so create one per session, per user or per run.
 
+A run given `ask` also lets the agent ask its user, through its own `askUser` tool,
+what is theirs to decide: the shape of a public API, a new dependency, behaviour the
+request does not ask for, or a choice with real trade-offs. The model sends one to
+four questions, each with two to four options, and `ask` answers each one in order,
+with the label of an option or with the user's own words:
+
+```ts
+await agent.run('Add a cache to the client.', {
+	signal: controller.signal,
+	ask: async questions => Promise.all(questions.map(question => askYourUser(question))),
+});
+```
+
+Without `ask` the agent has no such tool. Questions the model wrote wrong go back to
+it to correct. An asker that throws, or does not answer each question with some text,
+ends the run with an `UnrecoverableError`. The Agent SDK engines ignore `ask`, and
+`createLLMOrchestrator` passes it to every role.
+
 ### Agents that change files
 
 `createFileTools` gives an agent the file tools of its provider, over the folders you
@@ -523,7 +541,10 @@ that tool until the CLI exits, or no with an optional reason for the model. With
 piped input nobody can answer, so such a call is denied: a line written for a later
 question never approves one. Piped lines answer the prompt and the history commands in
 order. With `--llm`, the executor asks before a destructive change, such as one that would
-make `.gitignore` hide less.
+make `.gitignore` hide less. With `--llm`, any role can also ask you a question: the CLI
+numbers its options, and you answer with a number, several separated by commas where it
+allows more than one, or in your own words. With piped input nobody answers, and the model
+is told to decide and say what it assumed.
 
 With `--llm`, the agents can also [run commands](#running-the-projects-commands) you
 configure for the repository, in `~/.config/mikode-harness/config.json` (or under

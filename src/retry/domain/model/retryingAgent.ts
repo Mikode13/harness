@@ -1,4 +1,5 @@
 import type { Agent, AgentResponse, RunOptions } from '#src/agent/domain/agent';
+import { describeAnswered, rememberAnswers } from '#src/agent/domain/question';
 import { RecoverableError, UnrecoverableError, withSpentTokens } from '#src/shared/domain/errors';
 import {
 	classifyHostFailure,
@@ -49,11 +50,20 @@ export class RetryingAgent implements Agent {
 		let spent: Tokens | undefined;
 		// An attempt was answered without usage, so `spent` is only a subtotal.
 		let unreported = false;
+		// What the user answered stays answered: a retry neither asks it again nor forgets it.
+		const remembered = options.ask ? rememberAnswers(options.ask) : undefined;
+		const attemptOptions = remembered ? { ...options, ask: remembered.ask } : options;
 
 		for (let attempt = 1; ; attempt++) {
 			try {
-				const promptToSend = lastPrompt ?? prompt;
-				const response = await this.inner.run(promptToSend, options);
+				const base = lastPrompt ?? prompt;
+				// After an attempt the user answered, the model is told so, or it would ask again
+				// in its own words, which the memory does not recognise.
+				const promptToSend =
+					attempt > 1 && remembered && remembered.answered.length > 0
+						? `${base}\n\n${describeAnswered(remembered.answered)}`
+						: base;
+				const response = await this.inner.run(promptToSend, attemptOptions);
 				return {
 					...response,
 					// Any call answered without usage makes the whole count unknown, not partial.

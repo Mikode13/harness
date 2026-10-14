@@ -1,4 +1,4 @@
-import type { Agent, Approver, Callback, Tokens } from '../src/index.ts';
+import type { Agent, Approver, Asker, Callback, Tokens } from '../src/index.ts';
 import { RecoverableError, UnrecoverableError, isAbortError } from '../src/index.ts';
 import type { IOutput } from './output.ts';
 import type { IPromptEmitter } from './promptEmitter.ts';
@@ -17,6 +17,7 @@ export class ConversationLoop {
 	private callback: Callback;
 	private readonly approve: Approver | undefined;
 	private readonly commands: Commands | undefined;
+	private readonly ask: Asker | undefined;
 
 	constructor(
 		agent: Agent,
@@ -25,6 +26,7 @@ export class ConversationLoop {
 		output: IOutput,
 		approve?: Approver,
 		commands?: Commands,
+		ask?: Asker,
 	) {
 		this.agent = agent;
 		this.callback = callback;
@@ -32,6 +34,7 @@ export class ConversationLoop {
 		this.output = output;
 		this.approve = approve;
 		this.commands = commands;
+		this.ask = ask;
 	}
 
 	async start(): Promise<void> {
@@ -65,6 +68,7 @@ export class ConversationLoop {
 					signal: this.abortController.signal,
 					onProgress: this.callback,
 					approve: this.approve,
+					ask: this.ask,
 				});
 
 				if (agentResponse.runId) this.output.print(`run: ${agentResponse.runId}`);

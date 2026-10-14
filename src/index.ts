@@ -63,6 +63,7 @@ export {
 	type RememberableDecision,
 	type ToolRisk,
 } from './agent/domain/approval.ts';
+export type { Asker, QuestionOption, UserQuestion } from './agent/domain/question.ts';
 export type { JSONSchema, ToolDefinition } from './llm/domain/tool.ts';
 export type { Tool, ToolSummarizer } from './tools/domain/tool.ts';
 export type { TextMatch, Workspace } from './tools/domain/workspace.ts';

@@ -72,11 +72,13 @@ describe('OrchestratorAgent', () => {
 		const signal = new AbortController().signal;
 		const onProgress = vi.fn();
 		const approve: NonNullable<RunOptions['approve']> = vi.fn(() => ({ approved: true }));
+		const ask: NonNullable<RunOptions['ask']> = vi.fn(() => []);
 		const futureField = { preserved: true };
 		const options = {
 			signal,
 			onProgress,
 			approve,
+			ask,
 			futureField,
 		} as RunOptions & { futureField: typeof futureField };
 
@@ -89,6 +91,8 @@ describe('OrchestratorAgent', () => {
 		for (const roleOptions of received) {
 			expect(roleOptions?.signal).toBe(signal);
 			expect(roleOptions?.approve).toBe(approve);
+			// Every role may ask the user, as each may need an approval.
+			expect(roleOptions?.ask).toBe(ask);
 			expect(roleOptions?.futureField).toBe(futureField);
 			expect(roleOptions?.onProgress).toEqual(expect.any(Function));
 			expect(roleOptions?.onProgress).not.toBe(onProgress);

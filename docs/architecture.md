@@ -67,12 +67,15 @@ Two boundaries carry most of the design:
 
 **Everything is an `Agent`.** `ClaudeAgent`, `CodexAgent`, `LLMAgent`, `RetryingAgent` and
 `OrchestratorAgent` all implement `run(prompt, options)`, where `options` holds the run's
-`signal`, its optional `onProgress`, and its optional `approve`, asked before a model-backed
-agent runs a `destructive` tool call. A decorator and a whole multi-agent workflow are
+`signal`, its optional `onProgress`, its optional `approve`, asked before a model-backed
+agent runs a `destructive` tool call, and its optional `ask`, which answers what a model-backed
+agent asks its user. A decorator and a whole multi-agent workflow are
 therefore substitutable for a bare engine anywhere, and a consumer's loop cannot tell which it
-is driving. Decorators such as `RetryingAgent` and `InstructedAgent` pass `options` on whole,
-never rebuilt, so a field added to it reaches every agent without each decorator learning about it.
-`OrchestratorAgent` is the deliberate exception: it makes one shallow copy per role with object
+is driving. A decorator such as `InstructedAgent` passes `options` on whole, never rebuilt, so
+a field added to it reaches every agent without each decorator learning about it. Two copy it
+instead, both with object spread, so a field must be an own enumerable one to survive them:
+`RetryingAgent`, for a run with `ask`, replaces only `ask` with one that remembers the answers
+across attempts, and `OrchestratorAgent` makes one shallow copy per role with object
 spread, carrying the own enumerable string- and symbol-keyed fields, including the internal
 `RunContext`, and replaces only `onProgress` with a wrapper that makes the role attribution
 authoritative. The same context therefore reaches every agent the run reaches, and no consumer can
@@ -117,7 +120,7 @@ why it is the only place that knows every provider.
 
 `src/index.ts` is the public API: `createAgent`, `createOrchestrator`, `createLLMAgent`,
 `createLLMOrchestrator`, the `Agent`, `RunOptions`, `AgentResponse`, `Callback`, `ProgressEvent`,
-`ProgressAgent`, `StepContext` and `Tokens` types, the approval contract (`rememberApprovals` and the `Approver`,
+`ProgressAgent`, `StepContext` and `Tokens` types, the `Asker`, `UserQuestion` and `QuestionOption` types of `RunOptions.ask`, the approval contract (`rememberApprovals` and the `Approver`,
 `ApprovalRequest`, `ApprovalDecision`, `RememberableDecision`, `ToolRisk` and `CommandLine` types), the three
 failure types an agent rejects with, `isAbortError`, `isAgentProvider`, `agentProviders`, the
 provider-indexed `agentModels` and `agentReasoningEfforts` catalogs with their `isModelOf` and
@@ -251,7 +254,12 @@ only by how it ended.
 Before a call runs, its tool judges its risk. Unless the agent was built with `autoApprove`, a
 `destructive` call goes to the run's `approve`, or is denied when the run has none. A denial
 is an error result, narrated with `status: 'denied'`, and the run carries on; a throwing
-approver ends the run, as any host callback does. A
+approver ends the run, as any host callback does. A run given `ask` also offers the agent's own
+`askUser` tool, which skips preparation and approval: its questions are checked, invalid ones
+go back to the model, and the rest go to `ask`, whose answers the model reads; an asker that
+throws or answers wrongly ends the run as host code. `RetryingAgent` wraps `ask` with
+`rememberAnswers` for the whole run, so a retry tells the model what the user already answered
+and never asks the same question twice. A
 `refused` or `truncated` stop ends the run with `UnrecoverableError`. Each client maps the
 parts to its provider's shapes and back: Claude's `tool_use` and `tool_result`, with every
 result in one user turn, and OpenAI's `function_call` and `function_call_output`, paired by
