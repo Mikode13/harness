@@ -22,7 +22,7 @@ import {
 	toolResult,
 	userMessage,
 } from '../support/fakeLlmClient.ts';
-import { defineTool } from '../../src/tools/infrastructure/defineTool.ts';
+import { definePreparingTool, defineTool } from '../../src/tools/infrastructure/defineTool.ts';
 
 const signal = new AbortController().signal;
 
@@ -1013,5 +1013,107 @@ describe('LLMAgent tool approval', () => {
 
 		expect(ask).toHaveBeenCalledTimes(2);
 		expect(tool.execute).not.toHaveBeenCalled();
+	});
+
+	describe('compaction', () => {
+		const usage = { inputTokens: 70_000 };
+		const calls = (city: string, id: string) => toolCall(id, 'weather', { city });
+		const big = 'x'.repeat(40_000);
+		const execute = (input: unknown) =>
+			Promise.resolve((input as { city: string }).city === 'Madrid' ? big : 'sunny');
+
+		it('stops sending a result a later identical call replaced, once past compactAt', async () => {
+			const llmClient = new FakeLLMClient(
+				assistantResponse([calls('Madrid', 'c1')], { usage }),
+				assistantResponse([calls('Madrid', 'c2')], { usage }),
+				assistantResponse([calls('Lisbon', 'c3')], { usage }),
+				assistantResponse([calls('Paris', 'c4')], { usage }),
+				textResponse('done', { usage }),
+			);
+			const events: ProgressEvent[] = [];
+
+			await new LLMAgent({ llmClient, tools: [fakeTool('weather', execute)] }).run('prompt', {
+				signal,
+				onProgress: event => events.push(event),
+			});
+
+			const outputOf = (step: number, callId: string) =>
+				llmClient.contexts[step - 1]
+					?.flatMap(message => message.content)
+					.find(part => part.type === 'toolResult' && part.callId === callId);
+			// Kept while it was one of the last three calls, cleared once it no longer was.
+			expect(outputOf(4, 'c1')).toMatchObject({ output: big });
+			expect(outputOf(5, 'c1')).toMatchObject({
+				output: expect.stringContaining('Cleared to keep the context short') as string,
+			});
+			expect(outputOf(5, 'c2')).toMatchObject({ output: big });
+			expect(events.filter(event => event.type === 'compaction')).toEqual([
+				{
+					type: 'compaction',
+					step: 5,
+					clearedResults: 1,
+					estimatedTokensSaved: expect.any(Number) as number,
+				},
+			]);
+		});
+
+		it('stops sending a read of a file the run wrote since', async () => {
+			const fileTool = (name: string, access: 'read' | 'write') =>
+				definePreparingTool({
+					name,
+					description: name,
+					input: z.object({ path: z.string() }),
+					prepare: ({ path }) =>
+						Promise.resolve({
+							risk: 'safe' as const,
+							file: { path: `/repo/${path}`, access },
+							run: () => Promise.resolve(access === 'read' ? big : 'written'),
+						}),
+				});
+			const step = (id: string, name: string, path: string) =>
+				assistantResponse([toolCall(id, name, { path })], { usage });
+			const llmClient = new FakeLLMClient(
+				step('r1', 'read', 'a.ts'),
+				step('w1', 'write', 'a.ts'),
+				step('r2', 'read', 'b.ts'),
+				step('r3', 'read', 'c.ts'),
+				textResponse('done', { usage }),
+			);
+
+			await new LLMAgent({
+				llmClient,
+				tools: [fileTool('read', 'read'), fileTool('write', 'write')],
+			}).run('prompt', { signal });
+
+			const sent = llmClient.contexts[4]?.flatMap(message => message.content);
+			expect(sent?.find(part => part.type === 'toolResult' && part.callId === 'r1')).toMatchObject({
+				output: expect.stringContaining('the file changed after it') as string,
+			});
+		});
+
+		it('sends everything below compactAt', async () => {
+			const llmClient = new FakeLLMClient(
+				assistantResponse([calls('Madrid', 'c1')], { usage }),
+				assistantResponse([calls('Madrid', 'c2')], { usage }),
+				assistantResponse([calls('Lisbon', 'c3')], { usage }),
+				assistantResponse([calls('Paris', 'c4')], { usage }),
+				textResponse('done', { usage }),
+			);
+			const events: ProgressEvent[] = [];
+
+			await new LLMAgent({
+				llmClient,
+				tools: [fakeTool('weather', execute)],
+				compactAt: 100_000,
+			}).run('prompt', { signal, onProgress: event => events.push(event) });
+
+			expect(events.some(event => event.type === 'compaction')).toBe(false);
+		});
+
+		it('refuses a compactAt that is not a positive number', () => {
+			expect(() => new LLMAgent({ llmClient: new FakeLLMClient(), compactAt: 0 })).toThrow(
+				'compactAt must be a positive number of tokens; got 0',
+			);
+		});
 	});
 });

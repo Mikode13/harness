@@ -35,3 +35,8 @@ export function addTokens(a: Tokens | undefined, b: Tokens | undefined): Tokens 
 		outputTokens: a.outputTokens + b.outputTokens,
 	};
 }
+
+/** Every token of the prompt a call sent, read from the cache, written to it, or neither. */
+export function promptTokens(tokens: Tokens): number {
+	return tokens.inputTokens + tokens.readCacheTokens + tokens.writtenCacheTokens;
+}

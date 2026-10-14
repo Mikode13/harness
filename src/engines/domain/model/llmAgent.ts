@@ -1,3 +1,4 @@
+import { canonical } from '#src/shared/domain/canonical';
 import {
 	type ApprovalDecision,
 	type ApprovalRequest,
@@ -41,13 +42,21 @@ import {
 	type PreparedCall,
 	prepareCall,
 	ToolExecutionError,
+	type FileAccess,
 } from '#src/tools/domain/preparedCall';
 import { ReadRegistry, type ToolCallContext } from '#src/tools/domain/readRegistry';
 import { InvalidToolInputError } from '#src/tools/domain/tool';
 import { isAbortError } from '#src/shared/domain/isAbortError';
 import type { ILogger } from '#src/shared/domain/logger';
-import { addTokens, type Tokens } from '#src/shared/domain/tokens';
+import { addTokens, promptTokens, type Tokens } from '#src/shared/domain/tokens';
 import { measureContext } from './stepContext.ts';
+import {
+	compacted,
+	emptyCompaction,
+	findClearing,
+	minCompactionSaving,
+	type Compaction,
+} from './compaction.ts';
 import {
 	askUserDefinition,
 	askUserName,
@@ -113,17 +122,6 @@ function emit(event: ProgressEvent, callback: Callback): void {
 	);
 }
 
-/** `value` with the keys of every object sorted, so equal inputs serialize alike. */
-function canonical(value: unknown): unknown {
-	if (Array.isArray(value)) return value.map(canonical);
-	if (typeof value !== 'object' || value === null) return value;
-	return Object.fromEntries(
-		Object.entries(value)
-			.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-			.map(([key, inner]) => [key, canonical(inner)]),
-	);
-}
-
 // A model that asks for exactly the same calls this many times in a row is stuck: it already
 // has what they return, and running them again changes nothing.
 const maxRepeatedSteps = 5;
@@ -159,6 +157,11 @@ export class LLMAgent implements Agent {
 	// resends the call never runs a consumer's summarizer again.
 	private readonly callSummaries = new Map<string, string>();
 	private readonly maxSteps: number;
+	private readonly compactAt: number;
+	// What this agent no longer sends, layered over the conversation, which keeps every turn.
+	private readonly compaction: Compaction = emptyCompaction();
+	// The file each call read or wrote when it ran, for telling an earlier result is stale.
+	private readonly callFiles = new Map<string, FileAccess>();
 	private readonly autoApprove: boolean;
 	private readonly logger: ILogger | undefined;
 	private readonly history: HistoryReader | undefined;
@@ -173,6 +176,7 @@ export class LLMAgent implements Agent {
 		messages,
 		tools = [],
 		maxSteps = 65,
+		compactAt = 64_000,
 		autoApprove = false,
 		logger,
 		history,
@@ -183,6 +187,12 @@ export class LLMAgent implements Agent {
 		tools?: AgentTool[];
 		/** How many calls to the model one run may make before it fails. Defaults to 65. */
 		maxSteps?: number;
+		/**
+		 * The prompt size, in tokens, past which the agent stops sending what has gone stale:
+		 * results a later identical call replaced, results about a file written since, and
+		 * reasoning from before the last prompt. Defaults to 64,000.
+		 */
+		compactAt?: number;
 		/** Runs every tool call without asking, `destructive` ones included. Meant for CI. */
 		autoApprove?: boolean;
 		/** Where a failure the agent absorbs is reported. The factories always pass one. */
@@ -208,6 +218,12 @@ export class LLMAgent implements Agent {
 		this.llmClient = llmClient;
 		this.conversation = new Conversation(messages);
 		this.maxSteps = maxSteps;
+		if (!(compactAt > 0)) {
+			throw new InvalidAgentConfigError(
+				`compactAt must be a positive number of tokens; got ${String(compactAt)}`,
+			);
+		}
+		this.compactAt = compactAt;
 		this.autoApprove = autoApprove;
 		this.logger = logger;
 		this.history = history;
@@ -311,7 +327,10 @@ export class LLMAgent implements Agent {
 		}: { signal: AbortSignal; step: number; callback: Callback; tools: ToolDefinition[] },
 	): Promise<{ response: LLMResponse; context: Message[] }> {
 		// Sent as a copy, so what the run records is what the agent built, whatever the client does.
-		const context = [...this.conversation.contextAfter(after), ...structuredClone(runMessages)];
+		const context = compacted(
+			[...this.conversation.contextAfter(after), ...structuredClone(runMessages)],
+			this.compaction,
+		);
 		let response: LLMResponse;
 		try {
 			response = await this.llmClient.send({ context, tools }, signal);
@@ -500,8 +519,11 @@ export class LLMAgent implements Agent {
 		// Set before `execute`, so a tool that fails halfway still counts: it may have had effects.
 		effects.toolRan = true;
 		try {
+			const output = await prepared.run(signal);
+			// Only once it ran: a read or a write that failed tells nothing about the file.
+			if (prepared.file) this.callFiles.set(call.id, prepared.file);
 			return {
-				result: { ...result, output: await prepared.run(signal), isError: false },
+				result: { ...result, output, isError: false },
 				denied: false,
 				...(summary === undefined ? {} : { summary }),
 				...(prepared.diff === undefined ? {} : { diff: prepared.diff }),
@@ -517,6 +539,26 @@ export class LLMAgent implements Agent {
 					: {}),
 			};
 		}
+	}
+
+	/**
+	 * Stops sending what has gone stale in `context`, when that saves enough to be worth the
+	 * cache the provider rewrites from the first part it changes. Narrated as it happens.
+	 */
+	private compact(context: Message[], step: number, callback: Callback): void {
+		const clearing = findClearing(context, this.compaction, id => this.callFiles.get(id));
+		if (clearing.estimatedTokens < minCompactionSaving) return;
+		for (const [id, reason] of clearing.cleared) this.compaction.cleared.set(id, reason);
+		this.compaction.reasoningFromPrompt = clearing.reasoningFromPrompt;
+		emit(
+			{
+				type: 'compaction',
+				step,
+				clearedResults: clearing.cleared.size,
+				estimatedTokensSaved: clearing.estimatedTokens,
+			},
+			callback,
+		);
 	}
 
 	/**
@@ -704,7 +746,12 @@ export class LLMAgent implements Agent {
 			// a consumer's tool of that name, which the consumer gave first and which stays theirs.
 			const offersAsk = options.ask !== undefined && !this.tools.has(askUserName);
 			const tools = offersAsk ? [...this.toolDefinitions, askUserDefinition] : this.toolDefinitions;
+			// What the last call sent, as the provider counted it; unknown when it reported none.
+			let lastPrompt: number | undefined;
 			for (let step = 1; step <= this.maxSteps; step++) {
+				if (lastPrompt !== undefined && lastPrompt > this.compactAt) {
+					this.compact([...this.conversation.contextAfter(after), ...runMessages], step, callback);
+				}
 				const { response, context: sent } = await this.llmCall(runMessages, after, {
 					signal,
 					step,
@@ -713,6 +760,7 @@ export class LLMAgent implements Agent {
 				});
 				tokens = addTokens(tokens, response.usage);
 				unreported ||= !response.usage;
+				lastPrompt = response.usage && promptTokens(response.usage);
 				// After the tokens are counted, so a throwing callback still reports them, and for an
 				// unusable answer too: the call was sent, and billed.
 				this.narrateStep(step, response.usage, { context: sent, tools }, callback);

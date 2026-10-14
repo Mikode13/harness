@@ -68,6 +68,17 @@ function file(name: string, content: string | Buffer): string {
 }
 
 describe('the readFile of an editing agent', () => {
+	it('names the file it reads, by its real path, so a later write can make it stale', async () => {
+		file('a.ts', 'one\n');
+
+		const prepared = await tool.prepare({ path: 'a.ts', fromLine: null, lineCount: null }, signal, {
+			run: new RunContext(),
+			reads,
+		});
+
+		expect(prepared.file).toEqual({ path: join(root, 'a.ts'), access: 'read' });
+	});
+
 	it('stops at 16 KB of a prose file, and says where to continue', async () => {
 		file('architecture.md', `${Array.from({ length: 50 }, () => 'x'.repeat(3000)).join('\n')}\n`);
 

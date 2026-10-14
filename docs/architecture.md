@@ -367,7 +367,11 @@ each other's.
   asking a human to approve a call (#43) needs one call at a time.
 - **The seam has no memory or routing model.** MCP, long-term memory, graph execution and
   file-based agent registries are deliberately absent; each waits for a real consumer.
-  `LLMAgent`'s `Conversation` lives only as long as the agent: persisting it waits for the
+  `LLMAgent`'s `Conversation` keeps every original turn; once a call's prompt passes
+  `compactAt`, the agent sends it through a `Compaction` layer (`compaction.ts` in
+  `src/engines/domain/model/`) that replaces stale tool results with a note and leaves out the
+  reasoning of turns before the latest prompt, keyed by tool call so it survives moves through
+  the history. The `Conversation` lives only as long as the agent: persisting it waits for the
   session manager (#29).
 - **Reasoning is replayed only to the provider that produced it.** Each client keeps its
   signed or encrypted reasoning as a `providerData` part labelled with its own `source`, and

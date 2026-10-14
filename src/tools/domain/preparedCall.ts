@@ -13,7 +13,18 @@ export interface PreparedCall {
 	readonly diff?: string;
 	/** For a call that runs a configured command, what it will run, fixed when prepared. */
 	readonly command?: CommandLine;
+	/**
+	 * The file the call reads or writes, by its real path, so a later change to that file can
+	 * tell an earlier result is stale.
+	 */
+	readonly file?: FileAccess;
 	run(signal: AbortSignal): Promise<string>;
+}
+
+/** One file a tool call reads or writes. */
+export interface FileAccess {
+	path: string;
+	access: 'read' | 'write';
 }
 
 /**
