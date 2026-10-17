@@ -24,7 +24,8 @@ retried when it should be fatal, or it kills a run a retry would have recovered.
 call into a provider SDK, including the async iteration of a stream, goes through
 `classifyProviderFailure` in `src/shared/domain/providerFailure.ts`.
 
-Cancellation is the one deliberate exception: an `AbortError` propagates unchanged,
+Cancellation is the one deliberate exception: an `AbortError`, or the `TimeoutError` of
+`AbortSignal.timeout`, propagates unchanged,
 because a deliberate stop is not a failure and consumers check for it first.
 Failures from host-provided callbacks, loggers, or local event mapping are classified as
 `UnrecoverableError`: the provider turn may already have produced side effects, so replay

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { Validator } from '../../domain/interface/validator.ts';
+import type { Validator } from '#src/shared/domain/validator';
 import type { ReviewerDecision } from '../../domain/model/reviewerDecision.ts';
 
 const reviewerDecisionSchema = z.discriminatedUnion('decision', [
