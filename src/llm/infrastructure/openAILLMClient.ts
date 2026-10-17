@@ -5,6 +5,7 @@ import type {
 	FunctionTool,
 	Response,
 	ResponseApplyPatchToolCall,
+	ResponseCompactionItemParam,
 	ResponseInputItem,
 	ResponseOutputItem,
 	ResponseReasoningItem,
@@ -28,7 +29,7 @@ import type { ILogger } from '#src/shared/domain/logger';
 import type { Tokens } from '#src/shared/domain/tokens';
 import { MaxContextError } from '../domain/errors.ts';
 import type { LLMClient, LLMResponse, StopReason } from '../domain/llm.ts';
-import type { Message, MessagePart } from '../domain/message.ts';
+import { type Message, type MessagePart, sentContext } from '../domain/message.ts';
 import { type NativeTool, nativeOf, type ToolDefinition } from '../domain/tool.ts';
 
 // The SDK types `model` as a plain string, so this list is maintained by hand.
@@ -128,6 +129,9 @@ function toOpenAIItems(
 		case 'providerData':
 			// Another provider's item would be rejected; losing it only costs that provider's reasoning.
 			return part.source === openAISource ? [part.data as ResponseReasoningItem] : [];
+		case 'compaction':
+			// Another provider's summary means nothing here; this client sends the turns it replaced.
+			return part.source === openAISource ? [part.data as ResponseCompactionItemParam] : [];
 		case 'reasoning':
 			return [];
 	}
@@ -198,6 +202,15 @@ function describeItem(
 				parts.push({ type: 'providerData', source: openAISource, data: encrypted });
 			}
 			return parts;
+		}
+		case 'compaction': {
+			// Encrypted: OpenAI's summary of the context before it, which it alone reads back.
+			const compaction: ResponseCompactionItemParam = {
+				type: 'compaction',
+				id: item.id,
+				encrypted_content: item.encrypted_content,
+			};
+			return [{ type: 'compaction', source: openAISource, data: compaction }];
 		}
 		case 'function_call':
 			return [
@@ -330,6 +343,7 @@ export class OpenAILLMClient implements LLMClient {
 	private readonly client: OpenAI;
 	private readonly model: OpenAIModel;
 	private readonly reasoningEffort: OpenAIReasoningEffort;
+	private readonly compactAt: number | undefined;
 	readonly systemPrompt: string;
 	readonly providerDataSource = openAISource;
 	private readonly logger: ILogger;
@@ -339,11 +353,14 @@ export class OpenAILLMClient implements LLMClient {
 	constructor({
 		model,
 		reasoningEffort = 'high',
+		compactAt,
 		systemPrompt,
 		logger,
 	}: {
 		model: string;
 		reasoningEffort?: string;
+		/** The input tokens at which OpenAI compacts the context on its side. Without it, never. */
+		compactAt?: number | undefined;
 		systemPrompt: string;
 		logger: ILogger;
 	}) {
@@ -355,6 +372,11 @@ export class OpenAILLMClient implements LLMClient {
 		if (!isOneOf(openAIReasoningEfforts, reasoningEffort)) {
 			throw new InvalidAgentConfigError(
 				`"${reasoningEffort}" is not an OpenAI reasoning effort; expected one of: ${openAIReasoningEfforts.join(', ')}`,
+			);
+		}
+		if (compactAt !== undefined && !(Number.isInteger(compactAt) && compactAt > 0)) {
+			throw new InvalidAgentConfigError(
+				`compactAt must be a positive whole number of tokens, not ${String(compactAt)}`,
 			);
 		}
 
@@ -371,6 +393,7 @@ export class OpenAILLMClient implements LLMClient {
 
 		this.model = model;
 		this.reasoningEffort = reasoningEffort;
+		this.compactAt = compactAt;
 		this.systemPrompt = systemPrompt;
 		this.logger = logger;
 	}
@@ -391,9 +414,16 @@ export class OpenAILLMClient implements LLMClient {
 				{
 					model: this.model,
 					instructions: this.systemPrompt,
-					input: context.flatMap(message => toOpenAIInput(message, applyPatch)),
+					// The latest compaction carries everything before it, which OpenAI would only ignore.
+					input: sentContext(context, openAISource).flatMap(message =>
+						toOpenAIInput(message, applyPatch),
+					),
 					// Left out when empty, so a request without tools stays as it always was.
 					...(tools.length > 0 && { tools: tools.map(toOpenAITool) }),
+					// OpenAI compacts inside the call that passes it, and answers with the compaction first.
+					...(this.compactAt !== undefined && {
+						context_management: [{ type: 'compaction', compact_threshold: this.compactAt }],
+					}),
 					store: false,
 					reasoning: { effort: this.reasoningEffort, summary: 'concise' },
 					// With `store: false` this is the only way to send the reasoning back.

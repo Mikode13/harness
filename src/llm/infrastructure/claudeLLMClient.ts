@@ -1,16 +1,18 @@
 import Anthropic, { AnthropicError, APIError } from '@anthropic-ai/sdk';
+// The beta surface, for compaction: without its beta header, a request is the stable one.
 import type {
-	ContentBlock,
-	ContentBlockParam,
-	Message as AnthropicMessage,
-	MessageParam,
-	OutputConfig,
-	RedactedThinkingBlockParam,
-	ThinkingBlockParam,
-	Tool as ClaudeTool,
-	ToolTextEditor20250728,
-	Usage,
-} from '@anthropic-ai/sdk/resources/messages';
+	BetaCompactionBlockParam as CompactionBlockParam,
+	BetaContentBlock as ContentBlock,
+	BetaContentBlockParam as ContentBlockParam,
+	BetaMessage as AnthropicMessage,
+	BetaMessageParam as MessageParam,
+	BetaOutputConfig as OutputConfig,
+	BetaRedactedThinkingBlockParam as RedactedThinkingBlockParam,
+	BetaThinkingBlockParam as ThinkingBlockParam,
+	BetaTool as ClaudeTool,
+	BetaToolTextEditor20250728 as ToolTextEditor20250728,
+	BetaUsage as Usage,
+} from '@anthropic-ai/sdk/resources/beta/messages/messages';
 import {
 	InvalidAgentConfigError,
 	UnrecoverableError,
@@ -28,7 +30,7 @@ import type { ILogger } from '#src/shared/domain/logger';
 import type { Tokens } from '#src/shared/domain/tokens';
 import { MaxContextError } from '../domain/errors.ts';
 import type { LLMClient, LLMResponse, StopReason } from '../domain/llm.ts';
-import type { Message, MessagePart } from '../domain/message.ts';
+import { type Message, type MessagePart, sentContext } from '../domain/message.ts';
 import { type NativeTool, nativeOf, type ToolDefinition } from '../domain/tool.ts';
 
 // The Messages API takes full model IDs. Callers name a model by the Agent SDK's alias, so both
@@ -68,6 +70,10 @@ const unrecoverableErrorTypes = ['billing_error', 'authentication_error', 'permi
 // This client's label on the thinking blocks it keeps for replay; see `ProviderDataPart`.
 const claudeSource = 'claude';
 
+// Anthropic's compaction at a token threshold, and the least threshold it accepts.
+const compactionBeta = 'compact-2026-01-12';
+const minCompactAt = 50_000;
+
 /**
  * Anthropic rejects a `tool_use` whose input is not an object, with a 400 on every later call.
  * Another provider's call can hold anything else, such as OpenAI arguments that did not parse;
@@ -101,6 +107,9 @@ function toClaudeBlocks(part: MessagePart): ContentBlockParam[] {
 			return part.source === claudeSource
 				? [part.data as ThinkingBlockParam | RedactedThinkingBlockParam]
 				: [];
+		case 'compaction':
+			// Another provider's summary means nothing here; this client sends the turns it replaced.
+			return part.source === claudeSource ? [part.data as CompactionBlockParam] : [];
 		case 'reasoning':
 			// Unsigned text cannot be replayed as thinking. The API accepts a turn without it.
 			return [];
@@ -166,6 +175,15 @@ function describeBlock(block: ContentBlock, logger: ILogger): MessagePart[] {
 		}
 		case 'tool_use':
 			return [{ type: 'toolCall', id: block.id, name: block.name, input: block.input }];
+		case 'compaction': {
+			// Claude's summary of the context before it, readable, with what it alone reads back.
+			const compaction: CompactionBlockParam = {
+				type: 'compaction',
+				content: block.content,
+				encrypted_content: block.encrypted_content,
+			};
+			return [{ type: 'compaction', source: claudeSource, data: compaction }];
+		}
 		default:
 			// Server tools are never offered, so any other block is output this client does not expect.
 			treatErrors(
@@ -202,7 +220,10 @@ function toStopReason(response: AnthropicMessage): StopReason {
 	}
 }
 
-/** Unlike OpenAI, Anthropic counts cache reads and writes apart from `input_tokens`. */
+/**
+ * Unlike OpenAI, Anthropic counts cache reads and writes apart from `input_tokens`. A call that
+ * compacted leaves the compaction out of its totals, so with iterations their sum is the bill.
+ */
 function toTokens(usage: Usage | undefined, logger: ILogger): Tokens | undefined {
 	if (!usage) {
 		// Zeros would report a call that may have been billed as free.
@@ -216,6 +237,17 @@ function toTokens(usage: Usage | undefined, logger: ILogger): Tokens | undefined
 		return undefined;
 	}
 
+	if (usage.iterations && usage.iterations.length > 0) {
+		return usage.iterations.reduce<Tokens>(
+			(sum, iteration) => ({
+				inputTokens: sum.inputTokens + iteration.input_tokens,
+				readCacheTokens: sum.readCacheTokens + iteration.cache_read_input_tokens,
+				writtenCacheTokens: sum.writtenCacheTokens + iteration.cache_creation_input_tokens,
+				outputTokens: sum.outputTokens + iteration.output_tokens,
+			}),
+			{ inputTokens: 0, readCacheTokens: 0, writtenCacheTokens: 0, outputTokens: 0 },
+		);
+	}
 	return {
 		inputTokens: usage.input_tokens,
 		readCacheTokens: usage.cache_read_input_tokens ?? 0,
@@ -295,6 +327,7 @@ export class ClaudeLLMClient implements LLMClient {
 	private readonly model: (typeof claudeLLMModelIds)[ClaudeLLMModel];
 	// Missing for Haiku, which runs without thinking.
 	private readonly reasoningEffort: ClaudeLLMReasoningEffort | undefined;
+	private readonly compactAt: number | undefined;
 	readonly systemPrompt: string;
 	readonly providerDataSource = claudeSource;
 	private readonly logger: ILogger;
@@ -304,11 +337,14 @@ export class ClaudeLLMClient implements LLMClient {
 	constructor({
 		model,
 		reasoningEffort,
+		compactAt,
 		systemPrompt,
 		logger,
 	}: {
 		model: string;
 		reasoningEffort?: string;
+		/** The input tokens at which Anthropic compacts the context on its side. Without it, never. */
+		compactAt?: number | undefined;
 		systemPrompt: string;
 		logger: ILogger;
 	}) {
@@ -328,6 +364,17 @@ export class ClaudeLLMClient implements LLMClient {
 				`"${effort}" is not a Claude API reasoning effort; expected one of: ${claudeLLMReasoningEfforts.join(', ')}`,
 			);
 		}
+		if (compactAt !== undefined) {
+			// The alias names Claude Haiku 4.5, which Anthropic does not compact.
+			if (model === 'haiku') {
+				throw new InvalidAgentConfigError('Claude Haiku cannot compact: leave compactAt out');
+			}
+			if (!(Number.isInteger(compactAt) && compactAt >= minCompactAt)) {
+				throw new InvalidAgentConfigError(
+					`compactAt must be a whole number of tokens of at least ${String(minCompactAt)} on Claude, not ${String(compactAt)}`,
+				);
+			}
+		}
 
 		try {
 			// The SDK's default retries stay on, as OpenAI's do. See "The provider SDKs keep their
@@ -343,6 +390,7 @@ export class ClaudeLLMClient implements LLMClient {
 
 		this.model = claudeLLMModelIds[model];
 		this.reasoningEffort = effort;
+		this.compactAt = compactAt;
 		this.systemPrompt = systemPrompt;
 		this.logger = logger;
 	}
@@ -358,12 +406,19 @@ export class ClaudeLLMClient implements LLMClient {
 		let response: AnthropicMessage;
 
 		try {
-			response = await this.client.messages.create(
+			response = await this.client.beta.messages.create(
 				{
 					model: this.model,
 					max_tokens: maxOutputTokens,
-					system: this.systemPrompt,
-					messages: context.flatMap(toClaudeInput),
+					// A compaction changes the conversation's first block, so the cache would otherwise
+					// keep nothing: this keeps the system prompt cached across it. The API rejects an
+					// empty text block, and an empty prompt has nothing to cache.
+					system:
+						this.compactAt === undefined || this.systemPrompt === ''
+							? this.systemPrompt
+							: [{ type: 'text', text: this.systemPrompt, cache_control: { type: 'ephemeral' } }],
+					// The latest compaction carries everything before it, which Anthropic would only ignore.
+					messages: sentContext(context, claudeSource).flatMap(toClaudeInput),
 					// Left out when empty, so a request without tools stays as it always was.
 					...(tools.length > 0 && { tools: tools.map(toClaudeTool) }),
 					// Haiku has no adaptive thinking, and an effort is refused with a 400.
@@ -374,6 +429,18 @@ export class ClaudeLLMClient implements LLMClient {
 					// Anthropic caches only on request. This marks the last block, so the next call
 					// reads everything before it from the cache instead of paying for it again.
 					cache_control: { type: 'ephemeral' },
+					// Anthropic compacts inside the call that passes it, and answers with the compaction first.
+					...(this.compactAt !== undefined && {
+						betas: [compactionBeta],
+						context_management: {
+							edits: [
+								{
+									type: 'compact_20260112',
+									trigger: { type: 'input_tokens', value: this.compactAt },
+								},
+							],
+						},
+					}),
 				},
 				{ signal },
 			);

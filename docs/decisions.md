@@ -1979,3 +1979,33 @@ The user chose 16 KB, the same as a command's output. The user also set the role
 
 - A plan that leaves the executor guessing shows up as an executor that searches, and is the planner's to fix.
 - The orchestrator still sends the executor the original request beside the plan. Sending it only the plan is part of the workflows of #22.
+
+## The provider compacts a conversation, only when asked, and the harness never edits it
+
+tags: #mikode-harness #llm #cost
+
+**Decision:**
+
+- **Compaction is the provider's own.** With `compactAt`, the OpenAI client sends `context_management` with a `compaction` threshold, and the Claude client the `compact_20260112` edit under the `compact-2026-01-12` beta. The provider compacts inside the call that passes the threshold and answers with its summary first. The harness never removes or rewrites a part of the context itself.
+- **Off by default.** `createLLMAgent` takes one `compactAt`; `createLLMOrchestrator` takes one for every role or one per role, as `maxSteps`; the CLI reads it from the user's configuration. A role without one is never compacted. Each client rejects what its provider cannot take: on Anthropic a threshold under 50,000, and Claude Haiku, whose alias names Haiku 4.5.
+- **The conversation keeps every turn.** The summary is a `compaction` part, labelled with its client's source like a `providerData` part. That client sends the conversation from its latest compaction on; another provider's client leaves the part out and sends every turn, so a hand-off between providers loses nothing but the summary.
+- **A step narrates what its call sent:** after a compaction, the summary counts as `messages`, and nothing before it counts.
+- **Anthropic's compaction is in the usage.** Its top-level counts leave the compaction out, so the client sums `usage.iterations`. The Claude client uses the beta surface for every call, sending the beta header only with `compactAt`, and then marks the system prompt for the cache, which would otherwise not survive the summary.
+
+**Context:** #100 and #48. Compaction of our own (#107) cleared stale tool results and old reasoning once a run's prompt passed `compactAt`. In the benchmark run of #20 at 64k it read 3.10M cached tokens against 1.70M without it, and wrote 561k against 147k: each clearing changed the prefix, so the provider cached it again from there, and the executor read again what had been cleared, in 54 calls against 28. Signed and encrypted reasoning can only be kept or dropped, never edited.
+
+The user's view: the provider knows how to keep its own cache and signed blocks, and the harness would only lose money competing with it. On 2026-10-17 the same run with OpenAI's compaction at 64k compacted the executor once, at 67k: that call reported 67k uncached input tokens, the context fell to 6k, and the executor read nothing again, in 28 calls. It cost about 14% more than not compacting, against about 100% more for ours. The run of #20 never needs compaction at a sensible threshold: the executor peaked at 75k.
+
+**Alternatives considered:**
+
+- **Our own clearing, #107.** Measured above: it rewrites the cache on every clearing.
+- **A summarizer of our own.** It would rewrite the whole context with a summary the model did not write, and drop every signed block.
+- **Anthropic's compaction on demand** (`compact-2026-09-04`). It lets the caller choose when and keep recent turns, but needs a compaction loop and a newer SDK. Threshold compaction matches OpenAI's, inside an ordinary call.
+- **A default threshold now.** Left to the user, after measuring on a task whose context outgrows a sensible threshold.
+
+**Consequences:**
+
+- On OpenAI the call that compacted reported its whole input uncached; Anthropic reports the compaction's own cache reads, not yet measured. Compaction pays only where the context would otherwise keep growing, well past what a task needs.
+- OpenAI's usage has no breakdown of the compaction: whether the summary's generation is in it is unknown.
+- On Claude Fable 5.1, Opus 5.5 and Sonnet 5.5, thinking from before a compaction is not carried forward: the summary is all the model has of it.
+- Marking what to keep before a compaction, by the user or by Jev, can come later: where the call that compacts already loses its cache, changing the context just before it costs no cache of its own.

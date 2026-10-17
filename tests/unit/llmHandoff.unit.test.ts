@@ -36,7 +36,7 @@ function claudeAnswering(text: string) {
 		},
 	});
 	vi.mocked(Anthropic).mockImplementation(function () {
-		return { messages: { create } } as unknown as Anthropic;
+		return { beta: { messages: { create } } } as unknown as Anthropic;
 	});
 	return create;
 }

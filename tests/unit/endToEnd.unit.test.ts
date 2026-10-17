@@ -181,7 +181,7 @@ function scriptClaude(...responses: AnthropicMessage[]) {
 	const create = vi.fn();
 	for (const next of responses) create.mockResolvedValueOnce(next);
 	vi.mocked(Anthropic).mockImplementation(function () {
-		return { messages: { create } } as unknown as Anthropic;
+		return { beta: { messages: { create } } } as unknown as Anthropic;
 	});
 	return create;
 }

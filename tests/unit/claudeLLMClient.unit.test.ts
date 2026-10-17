@@ -53,7 +53,7 @@ function createSdk(...results: (AnthropicMessage | Error)[]) {
 		else create.mockResolvedValueOnce(result);
 	}
 	vi.mocked(Anthropic).mockImplementation(function () {
-		return { messages: { create } } as unknown as Anthropic;
+		return { beta: { messages: { create } } } as unknown as Anthropic;
 	});
 	return { create };
 }
@@ -724,5 +724,152 @@ describe('ClaudeLLMClient', () => {
 		await expect(
 			createClient().send({ context: [userMessage('prompt')], tools: [] }, controller.signal),
 		).rejects.toMatchObject({ name: 'AbortError' });
+	});
+});
+
+describe('ClaudeLLMClient compaction', () => {
+	afterEach(() => {
+		vi.clearAllMocks();
+	});
+
+	const compactingClient = (compactAt: number, model = 'sonnet') =>
+		new ClaudeLLMClient({ model, compactAt, systemPrompt: 'Be brief.', logger: { warn: vi.fn() } });
+
+	it('asks Claude to compact at compactAt, keeping the system prompt cached across it', async () => {
+		const { create } = createSdk(response());
+
+		await compactingClient(150_000).send({ context: [userMessage('prompt')], tools: [] }, signal);
+
+		expect(create.mock.calls[0]?.[0]).toMatchObject({
+			betas: ['compact-2026-01-12'],
+			context_management: {
+				edits: [{ type: 'compact_20260112', trigger: { type: 'input_tokens', value: 150_000 } }],
+			},
+			system: [{ type: 'text', text: 'Be brief.', cache_control: { type: 'ephemeral' } }],
+		});
+	});
+
+	it('sends an empty system prompt as a string, since Claude rejects an empty text block', async () => {
+		const { create } = createSdk(response());
+
+		await new ClaudeLLMClient({
+			model: 'sonnet',
+			compactAt: 150_000,
+			systemPrompt: '',
+			logger: { warn: vi.fn() },
+		}).send({ context: [userMessage('prompt')], tools: [] }, signal);
+
+		expect(create.mock.calls[0]?.[0]).toMatchObject({ system: '', betas: ['compact-2026-01-12'] });
+	});
+
+	it('sends the stable request without compactAt', async () => {
+		const { create } = createSdk(response());
+
+		await createClient().send({ context: [userMessage('prompt')], tools: [] }, signal);
+
+		const request = create.mock.calls[0]?.[0] as Record<string, unknown>;
+		expect(request).not.toHaveProperty('betas');
+		expect(request).not.toHaveProperty('context_management');
+		expect(request.system).toBe('Be brief.');
+	});
+
+	it.each([49_999, 1.5e5 + 0.5, Number.NaN])(
+		'rejects compactAt %s, below what Claude accepts, before building the SDK',
+		compactAt => {
+			expect(() => compactingClient(compactAt)).toThrow(InvalidAgentConfigError);
+			expect(Anthropic).not.toHaveBeenCalled();
+		},
+	);
+
+	it('rejects compactAt on Haiku, which Claude does not compact', () => {
+		expect(() => compactingClient(150_000, 'haiku')).toThrow(InvalidAgentConfigError);
+		expect(Anthropic).not.toHaveBeenCalled();
+	});
+
+	it('keeps the compaction Claude returns, and sends from it on, leaving out what it replaced', async () => {
+		const compaction = {
+			type: 'compaction',
+			content: '<summary>what happened</summary>',
+			encrypted_content: 'opaque',
+		} as unknown as ContentBlock;
+		const { create } = createSdk(
+			response({ content: [compaction, text('continued')] }),
+			response(),
+		);
+		const client = compactingClient(150_000);
+		const context = [userMessage('long task')];
+
+		const answer = await client.send({ context, tools: [] }, signal);
+		expect(answer.message.content[0]).toEqual({
+			type: 'compaction',
+			source: 'claude',
+			data: {
+				type: 'compaction',
+				content: '<summary>what happened</summary>',
+				encrypted_content: 'opaque',
+			},
+		});
+		await client.send(
+			{ context: [...context, answer.message, userMessage('next')], tools: [] },
+			signal,
+		);
+
+		expect(create.mock.calls[1]?.[0]).toMatchObject({
+			messages: [
+				{
+					role: 'assistant',
+					content: [
+						{
+							type: 'compaction',
+							content: '<summary>what happened</summary>',
+							encrypted_content: 'opaque',
+						},
+						{ type: 'text', text: 'continued' },
+					],
+				},
+				{ role: 'user', content: [{ type: 'text', text: 'next' }] },
+			],
+		});
+	});
+
+	it('counts the compaction in the tokens, which Claude leaves out of its totals', async () => {
+		createSdk(
+			response({
+				usage: {
+					input_tokens: 23_000,
+					cache_read_input_tokens: 0,
+					cache_creation_input_tokens: 0,
+					output_tokens: 1_000,
+					iterations: [
+						{
+							type: 'compaction',
+							input_tokens: 180_000,
+							cache_read_input_tokens: 5_000,
+							cache_creation_input_tokens: 0,
+							output_tokens: 3_500,
+						},
+						{
+							type: 'message',
+							input_tokens: 23_000,
+							cache_read_input_tokens: 0,
+							cache_creation_input_tokens: 2_000,
+							output_tokens: 1_000,
+						},
+					],
+				} as unknown as AnthropicMessage['usage'],
+			}),
+		);
+
+		const answer = await compactingClient(150_000).send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
+
+		expect(answer.usage).toEqual({
+			inputTokens: 203_000,
+			readCacheTokens: 5_000,
+			writtenCacheTokens: 2_000,
+			outputTokens: 4_500,
+		});
 	});
 });
