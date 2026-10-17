@@ -37,13 +37,16 @@ describe('userConfigPath', () => {
 });
 
 describe('loadUserConfig', () => {
-	it("reads the repository's commands and step limits, by its real path", async () => {
-		const path = config({ [repository]: { commands: { test }, maxSteps: { executor: 120 } } });
+	it("reads the repository's commands, step limits and compaction, by its real path", async () => {
+		const path = config({
+			[repository]: { commands: { test }, maxSteps: { executor: 120 }, compactAt: 200_000 },
+		});
 		symlinkSync(repository, join(parent, 'link'));
 
 		await expect(loadUserConfig(join(parent, 'link'), path)).resolves.toEqual({
 			commands: { test },
 			maxSteps: { executor: 120 },
+			compactAt: 200_000,
 		});
 	});
 

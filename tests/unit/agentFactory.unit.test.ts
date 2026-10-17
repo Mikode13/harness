@@ -189,7 +189,7 @@ function claudeAPIReplying(text: string) {
 		} as unknown as AnthropicMessage),
 	);
 	vi.mocked(Anthropic).mockImplementation(function () {
-		return { messages: { create } } as unknown as Anthropic;
+		return { beta: { messages: { create } } } as unknown as Anthropic;
 	});
 
 	return create;
@@ -413,6 +413,23 @@ describe('createLLMAgent', () => {
 				model: 'gpt-5.6-luna',
 				instructions: 'Be brief.',
 				reasoning: { effort: 'high', summary: 'concise' },
+			}),
+			{ signal },
+		);
+	});
+
+	it('has the provider compact at compactAt', async () => {
+		const create = openAIReplying('hi');
+
+		await createLLMAgent('openai', {
+			systemPrompt: 'Be brief.',
+			compactAt: 120_000,
+			logger: createLogger(),
+		}).run('prompt', { signal });
+
+		expect(create).toHaveBeenCalledWith(
+			expect.objectContaining({
+				context_management: [{ type: 'compaction', compact_threshold: 120_000 }],
 			}),
 			{ signal },
 		);
@@ -1132,6 +1149,49 @@ describe('createLLMOrchestrator', () => {
 				'maxSteps must be a number or an object of steps per role, such as { "executor": 120 }',
 			),
 		);
+	});
+
+	it('has each role compact at its own compactAt, and no role without one', async () => {
+		const openAICreate = openAIReplying('plan');
+		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
+
+		await (
+			await createLLMOrchestrator({
+				workspace,
+				compactAt: { executor: 200_000, reviewer: 150_000 },
+				logger: createLogger(),
+			})
+		).run('ship it', { signal });
+
+		const [planner, executor] = requestsOf(openAICreate);
+		expect(planner).not.toHaveProperty('context_management');
+		expect(executor).toMatchObject({
+			context_management: [{ type: 'compaction', compact_threshold: 200_000 }],
+		});
+		expect(claudeCreate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				context_management: {
+					edits: [{ type: 'compact_20260112', trigger: { type: 'input_tokens', value: 150_000 } }],
+				},
+			}),
+			{ signal },
+		);
+	});
+
+	it('refuses a compaction for a role that does not exist', async () => {
+		await expect(
+			createLLMOrchestrator({
+				workspace,
+				compactAt: { exector: 200_000 } as never,
+				logger: createLogger(),
+			}),
+		).rejects.toThrow('compactAt names roles that do not exist: exector');
+	});
+
+	it("refuses a compactAt the reviewer's provider cannot take", async () => {
+		await expect(
+			createLLMOrchestrator({ workspace, compactAt: 10_000, logger: createLogger() }),
+		).rejects.toThrow(InvalidAgentConfigError);
 	});
 
 	it('rejects an unknown provider coming from untyped input', async () => {

@@ -72,8 +72,9 @@ const progressFormatter = new ProgressEventFormatter({
 	thinkingHeadings: flags['thinking-headings'],
 });
 
-// The commands the agents may run here, and their step limits, from the user's own file.
-const { commands, maxSteps } = flags.llm ? await loadUserConfig(process.cwd()) : {};
+// The commands the agents may run here, their step limits and when their providers compact,
+// from the user's own file.
+const { commands, maxSteps, compactAt } = flags.llm ? await loadUserConfig(process.cwd()) : {};
 if (commands) {
 	output.print(`Commands from ${userConfigPath()}: ${Object.keys(commands).join(', ')}`);
 }
@@ -84,6 +85,7 @@ const orchestratorAgent = flags.llm
 			workspace: { roots: [{ path: process.cwd(), access: 'write' }] },
 			...(commands ? { commands } : {}),
 			...(maxSteps === undefined ? {} : { maxSteps }),
+			...(compactAt === undefined ? {} : { compactAt }),
 		})
 	: createOrchestrator({ autoApprove });
 // The history of what the harness's own write tools changed in this folder.

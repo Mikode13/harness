@@ -1,5 +1,5 @@
 import type { StepContext } from '#src/agent/domain/agent';
-import type { Message, ToolCallPart } from '#src/llm/domain/message';
+import { type Message, sentContext, type ToolCallPart } from '#src/llm/domain/message';
 import type { ToolDefinition } from '#src/llm/domain/tool';
 
 // Enough to name what fills a context without listing every result of a long run.
@@ -37,10 +37,16 @@ export function measureContext({
 	const byTool = new Map<string, { characters: number; calls: number }>();
 	const results: StepContext['largestResults'] = [];
 
-	for (const part of context.flatMap(message => message.content)) {
+	for (const part of sentContext(context, providerDataSource).flatMap(message => message.content)) {
 		switch (part.type) {
 			case 'text':
 				measured.messages += part.text.length;
+				break;
+			// The provider's summary of the turns before it stands in for their messages.
+			case 'compaction':
+				if (part.source === providerDataSource) {
+					measured.messages += JSON.stringify(part.data).length;
+				}
 				break;
 			// Readable reasoning is never sent back: only the provider's own blocks are, which
 			// already hold it, signed or encrypted.

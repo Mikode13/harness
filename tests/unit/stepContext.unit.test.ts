@@ -88,3 +88,46 @@ describe('measureContext', () => {
 		]);
 	});
 });
+
+describe('measureContext after a compaction', () => {
+	const compacted: Message[] = [
+		{ role: 'user', content: [{ type: 'text', text: 'a long task' }] },
+		...read('1', 'a.md', 'x'.repeat(1_000)),
+		{
+			role: 'assistant',
+			content: [
+				{ type: 'providerData', source: 'openai', data: { id: 'before' } },
+				{ type: 'compaction', source: 'openai', data: { id: 'c' } },
+				{ type: 'text', text: 'go on' },
+			],
+		},
+		...read('2', 'b.md', 'y'.repeat(10)),
+	];
+
+	it('counts only what the client sends: its summary in place of the turns before it', () => {
+		const measured = measureContext({
+			instructions: undefined,
+			providerDataSource: 'openai',
+			tools: [],
+			context: compacted,
+			summarize: () => undefined,
+		});
+
+		expect(measured.messages).toBe(JSON.stringify({ id: 'c' }).length + 'go on'.length);
+		expect(measured.reasoning).toBe(0);
+		expect(measured.toolResults).toEqual([{ tool: 'readFile', characters: 10, calls: 1 }]);
+	});
+
+	it("counts every turn for a client that cannot read another provider's summary", () => {
+		const measured = measureContext({
+			instructions: undefined,
+			providerDataSource: 'claude',
+			tools: [],
+			context: compacted,
+			summarize: () => undefined,
+		});
+
+		expect(measured.messages).toBe('a long task'.length + 'go on'.length);
+		expect(measured.toolResults).toEqual([{ tool: 'readFile', characters: 1_010, calls: 2 }]);
+	});
+});
