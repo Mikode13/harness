@@ -411,9 +411,10 @@ export class ClaudeLLMClient implements LLMClient {
 					model: this.model,
 					max_tokens: maxOutputTokens,
 					// A compaction changes the conversation's first block, so the cache would otherwise
-					// keep nothing: this keeps the system prompt cached across it.
+					// keep nothing: this keeps the system prompt cached across it. The API rejects an
+					// empty text block, and an empty prompt has nothing to cache.
 					system:
-						this.compactAt === undefined
+						this.compactAt === undefined || this.systemPrompt === ''
 							? this.systemPrompt
 							: [{ type: 'text', text: this.systemPrompt, cache_control: { type: 'ephemeral' } }],
 					// The latest compaction carries everything before it, which Anthropic would only ignore.

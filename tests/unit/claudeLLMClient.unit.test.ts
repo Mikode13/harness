@@ -749,6 +749,19 @@ describe('ClaudeLLMClient compaction', () => {
 		});
 	});
 
+	it('sends an empty system prompt as a string, since Claude rejects an empty text block', async () => {
+		const { create } = createSdk(response());
+
+		await new ClaudeLLMClient({
+			model: 'sonnet',
+			compactAt: 150_000,
+			systemPrompt: '',
+			logger: { warn: vi.fn() },
+		}).send({ context: [userMessage('prompt')], tools: [] }, signal);
+
+		expect(create.mock.calls[0]?.[0]).toMatchObject({ system: '', betas: ['compact-2026-01-12'] });
+	});
+
 	it('sends the stable request without compactAt', async () => {
 		const { create } = createSdk(response());
 
