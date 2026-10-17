@@ -8,7 +8,7 @@ import type {
 import { addTokens, type Tokens } from '#src/shared/domain/tokens';
 import { RecoverableError, UnrecoverableError, withSpentTokens } from '#src/shared/domain/errors';
 import type { ReviewerDecision } from './reviewerDecision.ts';
-import type { Validator } from '../interface/validator.ts';
+import type { Validator } from '#src/shared/domain/validator';
 import type { ILogger } from '#src/shared/domain/logger';
 import {
 	classifyHostFailure,

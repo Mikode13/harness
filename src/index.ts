@@ -82,3 +82,16 @@ export {
 	type RunStatus,
 } from './recovery/domain/recoveryStore.ts';
 export { HistoryExpiredError, UnknownRunError } from './recovery/domain/runTree.ts';
+export { createWorkflow } from './factory/infrastructure/workflowFactory.ts';
+export {
+	defineWorkflowStages,
+	type CreateWorkflowOptions,
+	type Workflow,
+	type WorkflowResult,
+	type WorkflowStage,
+	type WorkflowStageDefinition,
+	type WorkflowStageName,
+	type WorkflowStageReport,
+	type WorkflowTransition,
+} from './workflow/domain/workflow.ts';
+export type { Validator } from './shared/domain/validator.ts';

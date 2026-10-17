@@ -33,7 +33,10 @@ export type Callback = (item: ProgressEvent) => void;
  * enumerable one to reach every agent.
  */
 export interface RunOptions {
-	/** Cancels the run, which then rejects with the signal's `AbortError`. */
+	/**
+	 * Cancels the run, which then rejects with the signal's reason: an `AbortError`, or a
+	 * `TimeoutError` from `AbortSignal.timeout`. `isAbortError` recognizes both.
+	 */
 	signal: AbortSignal;
 	/** Receives the run's live activity. Without it, the run is silent. */
 	onProgress?: Callback | undefined;
@@ -108,6 +111,21 @@ export type ProgressEvent =
 			tokens?: Tokens;
 			context: StepContext;
 			agent?: ProgressAgent;
+	  }
+	/**
+	 * A workflow's stage asks its agent for an answer; `attempt` is 2 or more when the previous
+	 * answer was invalid. Stages run one at a time, so the events that follow, until the next
+	 * workflow event, are this stage's agent's.
+	 */
+	| { type: 'workflowStage'; stage: string; attempt: number; agent?: ProgressAgent }
+	/** The transition a stage's valid answer selected, and the stage it leads to. */
+	| {
+			type: 'workflowTransition';
+			stage: string;
+			transition: 'go' | 'stop' | 'complete';
+			/** Absent after `stop` or `complete`. */
+			nextStage?: string;
+			agent?: ProgressAgent;
 	  };
 
 /**
@@ -151,7 +169,8 @@ export type ProgressAgent = 'planner' | 'executor' | 'reviewer';
  * unclassified, including failures the SDK itself doesn't model as a domain error
  * (network errors, malformed responses, etc.); `classifyProviderFailure` does this.
  *
- * Cancellation is the one exception: an `AbortError` must propagate unchanged, because
+ * Cancellation is the one exception: an `AbortError`, or the `TimeoutError` of
+ * `AbortSignal.timeout`, must propagate unchanged, because
  * consumers check for it before either error type.
  */
 export interface Agent {

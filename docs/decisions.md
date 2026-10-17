@@ -2009,3 +2009,42 @@ The user's view: the provider knows how to keep its own cache and signed blocks,
 - OpenAI's usage has no breakdown of the compaction: whether the summary's generation is in it is unknown.
 - On Claude Fable 5.1, Opus 5.5 and Sonnet 5.5, thinking from before a compaction is not carried forward: the summary is all the model has of it.
 - Marking what to keep before a compaction, by the user or by Jev, can come later: where the call that compacts already loses its cache, changing the context just before it costs no cache of its own.
+
+---
+
+## A workflow is a chain of stages, each with an agent and a context of its own
+
+tags: #mikode-harness #workflow #api-design
+
+**Decision:**
+
+- **A workflow works like a middleware chain.** Each stage has a function that creates its agent, a `prompt` built from the stage's input, a `Validator` for the agent's JSON answer, and a `transition` that receives the valid answer and the stage's own input. A stage's agent starts with an empty context and builds its own conversation; only the transition's `input` crosses into the next stage.
+- **A stage's agent lives as long as the run.** It is created the first time the stage runs; when the run comes back to the stage, the same agent goes on with its conversation, and the next run creates another. Two runs, even at once, never share a conversation. The workflow records what crossed each stage, its input, output, attempts, usage and transition, in `WorkflowResult.stages`.
+- **The types check the chain.** The consumer declares a map from each stage's name to what it receives, and `defineWorkflowStages` binds the stages to it. A `go` to a stage that does not exist, or with an input that stage does not take, does not compile, and neither does a workflow that leaves a stage out. The transitions are `go`, `stop` and `complete`: a typed destination makes `continue`, `skip` and `handoff` the same thing.
+- **The validator is the reviewer's own.** `Validator<T>` moves from `src/orchestration/` to `src/shared/` and is exported. A Zod schema fits it with `safeParse(value).data`. An answer that is not JSON or not valid is asked for again with the reason appended, up to `maxAttempts`, as the orchestrator already does for the reviewer.
+- **A stop is a result, a failure is a rejection.** `WorkflowResult.status` is `'completed'` or `'stopped'`; every failure rejects with a classified error carrying what the run spent.
+- **Progress is two new event types,** `workflowStage` and `workflowTransition`. The agents' own events pass through unchanged, with no stage field: stages run one at a time, so the order tells them apart.
+- **A timeout is the consumer's signal.** `AbortSignal.timeout` aborts with a `TimeoutError`, which `isAbortError` now recognizes beside `AbortError`, so a timeout is a cancellation for every agent, not only a workflow.
+
+**Context:** #22. The harness attempted #22 itself in the 2026-10-17 benchmark, twice, at 160 executor steps. One attempt, "compact", typed each stage and checked the stage graph in a factory. The other, "plain", added input and output validators at every boundary, a timeout option and its own progress callback type. This design starts from compact, with plain's stage reports and its tests for timeouts and concurrent runs.
+
+What the user wants from the harness: it does not ship every kind of agent. Its consumers, the CLI and job-search, build and compose their own, and the harness absorbs every problem of talking to an AI. That makes its API simple, with types a consumer understands and good documentation, not a minimal count of exports: five things that each do a lot are harder to use. Breaking changes are acceptable now, before the CLI is brought up to date.
+
+How the user sees a workflow's context: like the orchestrator's roles, each agent has a conversation of its own. When a stage ends, its result is what the next stage starts from, not the original prompt. A round back to a stage goes on with the agent it already created. The workflow knows everything that happened, which is what the Session Manager (#29) will store.
+
+**Alternatives considered:**
+
+- **One agent per stage, built once with the workflow,** as in both attempts. A second run's stages would see the first run's conversation, and two runs at once would write to the same one.
+- **A new agent every time a stage runs.** Every stage would start clean, but a stage the run comes back to would forget its previous attempt, which would then have to travel in the input.
+- **Names as plain strings,** as in both attempts. A `go` to a misspelled stage, or with an input the stage does not take, would compile and fail silently at runtime.
+- **Plain's validators on every stage's input.** With the map of stage inputs, the types check what a runtime validator would; it would only add code.
+- **A `stage` field on every existing event,** compact's way. It touches all eleven existing event types for a parallelism the workflow does not have, and it would not tell parallel explorers apart either: they would all run inside one stage.
+- **A `timeoutMs` option.** It duplicates what the signal already does, and only for workflows.
+
+**Consequences:**
+
+- The planner's explorers, the next work in this release, must give progress events an origin that tells parallel agents apart; today `agent` names only the orchestrator's three roles.
+- A stage's agent conversation, its tool calls and reasoning, stays in the agent and ends with the run. Storing it is the Session Manager's.
+- A stage whose agent cannot be built, for example with a model its provider does not support, fails when the run first reaches it, not when the workflow is built.
+- A host callback, such as an `ask`, that throws its own `TimeoutError` now passes through as a cancellation, as its own `AbortError` already did.
+- `OrchestratorAgent` still runs the fixed planner → executor → reviewer loop. It is retired once that loop is a workflow, not in this change.

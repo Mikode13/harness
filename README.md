@@ -52,6 +52,10 @@ chat loop itself never knows the difference.
   malformed reviewer response retries only the reviewer call, not the whole
   cycle. Because it implements `Agent` itself, the chat loop drives it exactly
   like it drives a bare engine.
+- **Workflows** (`createWorkflow`): stages you define, each with an agent and a context
+  of its own. A stage's JSON answer is validated before its transition picks the next
+  stage, stops the run on purpose, or completes it. Only the data a transition hands
+  over crosses to the next stage, and the types check it against what that stage takes.
 - **Live progress streaming**: every engine reports ongoing activity (tool
   calls, searches, file changes, reasoning) through a typed `ProgressEvent`
   callback, separate from the final response — so an agent's own words never
@@ -165,6 +169,114 @@ optional fields.
 `systemPrompts: { planner, executor, reviewer }` replaces a role's instructions;
 a role left out keeps the harness's own, and the reviewer must still answer with
 the JSON decision described on the option.
+
+### Composing agents into a workflow
+
+`createWorkflow` runs stages you define, each with an agent of its own, so each can use a
+different provider, model and instructions. It works like a middleware chain: a stage's agent
+starts with an empty context, builds its prompt from what the previous stage handed it, and
+answers in JSON. The stage's `validator` turns the answer into a typed value, and its
+`transition` picks what happens next. A stage's conversation stays with it; only the
+transition's `input` reaches the next stage.
+
+You declare once what each stage receives, and every transition is checked against it: a `go`
+to a stage that does not exist, or with the wrong input, does not compile, and neither does a
+workflow that leaves a stage out.
+
+```ts
+import { z } from 'zod';
+import { createLLMAgent, createWorkflow, defineWorkflowStages } from '@mikode13/harness';
+
+const Triage = z.object({ worthAnswering: z.boolean(), topic: z.string() });
+const Draft = z.object({ text: z.string() });
+const Review = z.object({ approved: z.boolean(), feedback: z.string() });
+
+/** What each stage receives. */
+interface Inputs {
+	triage: string;
+	draft: { topic: string; feedback: string };
+	review: { topic: string; text: string };
+}
+const stage = defineWorkflowStages<Inputs, string>();
+
+const workflow = createWorkflow({
+	initialStage: 'triage',
+	stages: {
+		triage: stage('triage', {
+			agent: () =>
+				createLLMAgent('openai', {
+					model: 'gpt-5.6-luna',
+					systemPrompt:
+						'Decide whether a question deserves an answer. JSON {worthAnswering, topic}.',
+				}),
+			prompt: question => question,
+			validator: { validate: value => Triage.safeParse(value).data },
+			transition: ({ worthAnswering, topic }) =>
+				worthAnswering
+					? { type: 'go', stage: 'draft', input: { topic, feedback: '' } }
+					: { type: 'stop', result: 'Not worth an answer.' },
+		}),
+		draft: stage('draft', {
+			agent: () =>
+				createLLMAgent('anthropic', {
+					systemPrompt: 'Write a short, accurate answer. JSON {text}.',
+				}),
+			prompt: ({ topic, feedback }) => (feedback ? `Revise it: ${feedback}` : `Topic: ${topic}`),
+			validator: { validate: value => Draft.safeParse(value).data },
+			// The stage's own input is the second argument, so the topic need not go through the model.
+			transition: ({ text }, { topic }) => ({
+				type: 'go',
+				stage: 'review',
+				input: { topic, text },
+			}),
+		}),
+		review: stage('review', {
+			agent: () =>
+				createLLMAgent('openai', { systemPrompt: 'Review an answer. JSON {approved, feedback}.' }),
+			prompt: ({ text }) => text,
+			validator: { validate: value => Review.safeParse(value).data },
+			transition: ({ approved, feedback }, { topic, text }) =>
+				approved
+					? { type: 'complete', result: text }
+					: { type: 'go', stage: 'draft', input: { topic, feedback } },
+		}),
+	},
+});
+
+const result = await workflow.run('Why is the sky blue?', {
+	signal: AbortSignal.timeout(10 * 60_000),
+});
+// 'completed' or 'stopped', and what each stage received, answered and chose.
+console.log(result.status, result.result, result.stages, result.tokens);
+```
+
+- **Agents:** `agent` creates the stage's agent the first time the stage runs in a run.
+  When the run comes back to a stage, as `draft` does after a rejected review, the same
+  agent goes on with its conversation, so it remembers its first draft. The next run
+  creates new agents, so two runs, even at once, never see each other's conversations.
+  `agent` may return a promise, so a stage can create an agent that is built async, such as
+  one from `createLLMOrchestrator`.
+- **Transitions:**
+  - `go` runs the stage it names, with `input`.
+  - `complete` ends the run finished.
+  - `stop` ends it early on purpose, and the result's `status` is then `'stopped'`.
+  - A failure rejects the run, so a stop is never mistaken for one.
+- **An unusable answer:** an answer that is not JSON, or that the validator rejects with
+  `undefined`, is asked for again with the reason. The stage's agent answers at most
+  `maxAttempts` times, 3 by default and settable per stage. Then the run fails with an
+  `UnrecoverableError` carrying every answer's usage.
+- **What the run knows:** `result.stages` records, for each stage run in order, its input,
+  its validated output, its attempts, usage and duration, and the transition it chose.
+- **Bounds:** `maxTransitions`, 100 by default, ends a loop of stages. Without the types, from
+  JavaScript, `createWorkflow` checks the stage names and the initial stage; a `go` to a stage
+  that does not exist fails the run when it is taken.
+- **Narration:** `onProgress` receives a `workflowStage` event before each answer and a
+  `workflowTransition` event after each choice. Stages run one at a time, so the agent
+  events between them belong to that stage.
+- **Cancelling and timing out:** the signal cancels the whole run. `AbortSignal.timeout`
+  times it out, and `isAbortError` recognizes both.
+- **Routing stays outside:** a workflow runs the flow you picked for a request. Choosing
+  that flow is [#17](https://github.com/Mikode13/harness/issues/17).
 
 ### Validating factory options
 
