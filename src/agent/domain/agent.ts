@@ -119,7 +119,10 @@ export interface StepContext {
 	instructions: number;
 	/** The tool definitions. */
 	tools: number;
-	/** The text of the user's prompts and the model's answers. */
+	/**
+	 * The text of the user's prompts and the model's answers, and the provider's summary of the
+	 * turns before it once it has compacted them: only what the call sent.
+	 */
 	messages: number;
 	/** Reasoning the model produced earlier and is sent back: its provider's own signed or encrypted blocks. */
 	reasoning: number;

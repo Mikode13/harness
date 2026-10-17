@@ -375,7 +375,7 @@ run in `AgentResponse.runId`. Progress reports each change as a unified `diff` o
 `completed` event.
 
 `createLLMOrchestrator()` takes the options of `createOrchestrator()` plus `workspace`,
-`maxSteps`, `commands` and `summarizeUndone`, and returns a promise. Every role runs on the
+`maxSteps`, `compactAt`, `commands` and `summarizeUndone`, and returns a promise. Every role runs on the
 model APIs:
 
 - the planner and the reviewer read, with a `showChanges` tool that gives the current task's
@@ -394,6 +394,18 @@ createLLMOrchestrator({ workspace, maxSteps: { executor: 120 } });
 
 A run also stops sooner when five answers in a row ask for exactly the same tool calls,
 which means the model is stuck. `createLLMAgent` takes one number, 65 by default.
+
+No conversation is compacted unless you ask. `compactAt` is the number of input tokens at
+which the provider compacts it on its side, replacing the turns before that call with its own
+summary, which only its model reads back; the conversation keeps every original turn. The
+call that compacts can lose its cache, as it did on OpenAI, so set it well above what a task
+needs. Like
+`maxSteps`, it is one number for every role or per role, and `createLLMAgent` takes one. On
+Anthropic it must be at least 50,000, and Claude Haiku cannot compact:
+
+```ts
+createLLMOrchestrator({ workspace, compactAt: { executor: 200_000 } });
+```
 
 Without `workspace` it works on the current directory, read only. One run of the
 orchestrator is one run of the history, every round included.
@@ -549,7 +561,7 @@ is told to decide and say what it assumed.
 With `--llm`, the agents can also [run commands](#running-the-projects-commands) you
 configure for the repository, in `~/.config/mikode-harness/config.json` (or under
 `$XDG_CONFIG_HOME`). The file maps each repository's real path to its `commands` and,
-optionally, its `maxSteps`. It lives outside every repository, so neither a cloned repository
+optionally, its `maxSteps` and `compactAt`. It lives outside every repository, so neither a cloned repository
 nor the agent decides what runs, or for how long:
 
 ```json

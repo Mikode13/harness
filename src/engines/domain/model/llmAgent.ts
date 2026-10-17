@@ -82,6 +82,9 @@ function describePart(part: MessagePart): ProgressEvent | undefined {
 		case 'providerData':
 			// Opaque by design: its readable side, if any, arrives as a reasoning part.
 			return undefined;
+		case 'compaction':
+			// The provider's, for its client to send back; the step's context shows its effect.
+			return undefined;
 	}
 }
 

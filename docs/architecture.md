@@ -130,7 +130,7 @@ the model-backed agent's tools it also exports the `Tool`, `ToolSummarizer`,
 `ToolDefinition`, `JSONSchema`, `Workspace` and `TextMatch` types, `defineTool`,
 `createWorkspace` and `createWorkspaceTools`. For agents that change files it exports
 `createFileTools` and the `FileTool`, `WorkspaceOptions`, `WorkspaceRoot`, `SecretRules`,
-`CreateLLMOrchestratorOptions` and `RoleSteps` types, and for the commands they run the
+`CreateLLMOrchestratorOptions`, `RoleSteps` and `RoleTokens` types, and for the commands they run the
 `Commands`, `CommandDefinition`, `CommandArgument`, `CommandParameter` and `CommandRole` types. For the history of what those runs wrote it exports `createHistory`, the `History`, `HistoryRun`, `Move`, `MoveOptions` and `RunStatus` types,
 `historyStart`, and the `WorkspaceBusyError`, `WorkspaceMovedError`, `NothingToMoveError`,
 `UnknownRunError` and `HistoryExpiredError` errors; `AgentResponse.runId` names the run a writing run recorded. `defineTool` takes a Zod 4 schema, so Zod's major
@@ -245,7 +245,10 @@ time, in order, and calls the model again with the calls and a `tool` message ho
 results. The run ends when an answer calls no tool. After `maxSteps` calls to the model, 65 by
 default (80 for the orchestrator's executor), it fails with `UnrecoverableError` instead, without running the last step's calls,
 because no call is left to send their results to. It fails the same way, before running them,
-when five answers in a row ask for exactly the same calls, by tool and input. A missing tool, or a tool that throws, becomes an
+when five answers in a row ask for exactly the same calls, by tool and input. A client built with
+`compactAt` has its provider compact the context inside the call that passes it; the summary is a
+`compaction` part of the answer, and that client sends the context from its latest compaction on,
+while the conversation keeps every turn and any other client sends them all. A missing tool, or a tool that throws, becomes an
 error result the model can correct itself from; only a cancellation escapes, whatever error
 the tool turned it into, and a cancelled run neither starts nor announces another tool. A
 call is announced as `in_progress` only once it is about to run, after its approval, so a

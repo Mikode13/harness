@@ -698,3 +698,98 @@ describe('OpenAILLMClient', () => {
 		).rejects.toMatchObject({ name: 'AbortError' });
 	});
 });
+
+describe('OpenAILLMClient compaction', () => {
+	afterEach(() => {
+		vi.clearAllMocks();
+	});
+
+	const compactingClient = (compactAt: number) =>
+		new OpenAILLMClient({
+			model: 'gpt-5.6-luna',
+			compactAt,
+			systemPrompt: 'Be brief.',
+			logger: { warn: vi.fn() },
+		});
+
+	it('asks OpenAI to compact at compactAt, and never without it', async () => {
+		const { create } = createSdk(response(), response());
+
+		await compactingClient(200_000).send({ context: [userMessage('prompt')], tools: [] }, signal);
+		await createClient().send({ context: [userMessage('prompt')], tools: [] }, signal);
+
+		expect(create.mock.calls[0]?.[0]).toMatchObject({
+			context_management: [{ type: 'compaction', compact_threshold: 200_000 }],
+		});
+		expect(create.mock.calls[1]?.[0]).not.toHaveProperty('context_management');
+	});
+
+	it.each([0, -1, 1.5, Number.NaN])('rejects compactAt %s before building the SDK', compactAt => {
+		expect(() => compactingClient(compactAt)).toThrow(InvalidAgentConfigError);
+		expect(OpenAI).not.toHaveBeenCalled();
+	});
+
+	it('keeps the compaction OpenAI returns, and sends from it on, leaving out what it replaced', async () => {
+		const compaction: ResponseOutputItem = {
+			type: 'compaction',
+			id: 'cmp-1',
+			encrypted_content: 'summary',
+		};
+		const { create } = createSdk(
+			response({ output: [compaction, message({ text: 'continued' })] }),
+			response(),
+		);
+		const client = compactingClient(64_000);
+		const context = [userMessage('long task')];
+
+		const answer = await client.send({ context, tools: [] }, signal);
+		expect(answer.message.content).toEqual([
+			{
+				type: 'compaction',
+				source: 'openai',
+				data: { type: 'compaction', id: 'cmp-1', encrypted_content: 'summary' },
+			},
+			{ type: 'text', text: 'continued' },
+		]);
+		await client.send(
+			{ context: [...context, answer.message, userMessage('next')], tools: [] },
+			signal,
+		);
+
+		expect(create.mock.calls[1]?.[0]).toMatchObject({
+			input: [
+				{ type: 'compaction', id: 'cmp-1', encrypted_content: 'summary' },
+				{ role: 'assistant', content: 'continued' },
+				{ role: 'user', content: 'next' },
+			],
+		});
+	});
+
+	it("sends the whole conversation past another provider's compaction, which it cannot read", async () => {
+		const { create } = createSdk(response());
+
+		await createClient().send(
+			{
+				context: [
+					userMessage('long task'),
+					{
+						role: 'assistant',
+						content: [
+							{ type: 'compaction', source: 'claude', data: { type: 'compaction' } },
+							{ type: 'text', text: 'continued' },
+						],
+					},
+				],
+				tools: [],
+			},
+			signal,
+		);
+
+		expect(create.mock.calls[0]?.[0]).toMatchObject({
+			input: [
+				{ role: 'user', content: 'long task' },
+				{ role: 'assistant', content: 'continued' },
+			],
+		});
+	});
+});

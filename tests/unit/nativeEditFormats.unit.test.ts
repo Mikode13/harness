@@ -241,7 +241,7 @@ describe('OpenAI apply_patch on the shared edit engine', () => {
 
 	it('cannot be offered to Claude', () => {
 		vi.mocked(Anthropic).mockImplementation(function () {
-			return { messages: { create: vi.fn() } } as unknown as Anthropic;
+			return { beta: { messages: { create: vi.fn() } } } as unknown as Anthropic;
 		});
 
 		expect(
@@ -279,7 +279,7 @@ describe("Claude's text editor on the shared edit engine", () => {
 		const create = vi.fn();
 		for (const next of responses) create.mockResolvedValueOnce(next);
 		vi.mocked(Anthropic).mockImplementation(function () {
-			return { messages: { create } } as unknown as Anthropic;
+			return { beta: { messages: { create } } } as unknown as Anthropic;
 		});
 		const agent = new LLMAgent({
 			llmClient: new ClaudeLLMClient({ model: 'sonnet', systemPrompt: '', logger }),

@@ -118,6 +118,13 @@ export interface CreateLLMAgentOptions {
 	 */
 	maxSteps?: number;
 	/**
+	 * The input tokens at which the provider compacts the conversation on its side: it replaces
+	 * every turn before that call with its own summary, which only its model reads back. The
+	 * conversation keeps every original turn. Without it, the conversation is never compacted.
+	 * At least 50,000 on Anthropic, where Claude Haiku cannot compact.
+	 */
+	compactAt?: number;
+	/**
 	 * Runs every tool call without asking, `destructive` ones included, for CI where no one can
 	 * answer. Without it, a `destructive` call goes to the run's `approve`, or is denied.
 	 */
@@ -129,6 +136,9 @@ export interface CreateLLMAgentOptions {
 /** A limit per role of `createLLMOrchestrator`; a role left out keeps its default. */
 export type RoleSteps = Partial<Record<OrchestratorRole, number>>;
 
+/** A number of tokens per role of `createLLMOrchestrator`; a role left out keeps its default. */
+export type RoleTokens = Partial<Record<OrchestratorRole, number>>;
+
 // The same three roles a command can be given to.
 type OrchestratorRole = CommandRole;
 
@@ -139,34 +149,45 @@ const defaultRoleSteps: Record<OrchestratorRole, number> = {
 	reviewer: 65,
 };
 
+// No role compacts unless asked to.
+const defaultRoleCompaction: Record<OrchestratorRole, number | undefined> = {
+	planner: undefined,
+	executor: undefined,
+	reviewer: undefined,
+};
+
 /**
- * Each role's step limit, from one number for all of them or a number per role.
+ * Each role's value of the option `name`, from one number for all of them or a number per role.
+ * Each number is checked by whatever takes it.
  *
  * @throws {InvalidAgentConfigError} for a value that is neither, and for a role that does not
  * exist, which is a typo that would otherwise leave that role on its default without a word.
  */
-function stepsPerRole(maxSteps: unknown): Record<OrchestratorRole, number> {
-	if (maxSteps === undefined) return defaultRoleSteps;
-	if (typeof maxSteps === 'number') {
-		return { planner: maxSteps, executor: maxSteps, reviewer: maxSteps };
-	}
+function perRole<T extends number | undefined>(
+	name: string,
+	value: unknown,
+	defaults: Record<OrchestratorRole, T>,
+	{ unit, example }: { unit: string; example: string },
+): Record<OrchestratorRole, T | number> {
+	if (value === undefined) return defaults;
+	if (typeof value === 'number') return { planner: value, executor: value, reviewer: value };
 	// Untyped input, such as the CLI's configuration file, can hold `null` or a list here.
-	if (typeof maxSteps !== 'object' || maxSteps === null || Array.isArray(maxSteps)) {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
 		throw new InvalidAgentConfigError(
-			'maxSteps must be a number or an object of steps per role, such as { "executor": 120 }',
+			`${name} must be a number or an object of ${unit} per role, such as ${example}`,
 		);
 	}
-	const unknown = Object.keys(maxSteps).filter(role => !(role in defaultRoleSteps));
+	const unknown = Object.keys(value).filter(role => !(role in defaults));
 	if (unknown.length > 0) {
 		throw new InvalidAgentConfigError(
-			`maxSteps names roles that do not exist: ${unknown.join(', ')}; expected planner, executor or reviewer`,
+			`${name} names roles that do not exist: ${unknown.join(', ')}; expected planner, executor or reviewer`,
 		);
 	}
 	// A role given as `undefined`, which untyped input can do, keeps its default.
-	const given = Object.entries(maxSteps as Record<string, unknown>).filter(
-		([, steps]) => steps !== undefined,
+	const given = Object.entries(value as Record<string, unknown>).filter(
+		([, each]) => each !== undefined,
 	);
-	return { ...defaultRoleSteps, ...Object.fromEntries(given) };
+	return { ...defaults, ...Object.fromEntries(given) };
 }
 
 export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions {
@@ -183,6 +204,12 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	 * before its limit.
 	 */
 	maxSteps?: number | RoleSteps;
+	/**
+	 * The input tokens at which each role's provider compacts its conversation, as
+	 * `CreateLLMAgentOptions.compactAt`: one number for every role, or a number per role. Without
+	 * it, no role compacts.
+	 */
+	compactAt?: number | RoleTokens;
 	/**
 	 * Commands the roles may run, such as the project's tests, through `runCommand`. Each goes to
 	 * the roles its `roles` names, the executor by default. See `createFileTools`. Each needs a
@@ -212,11 +239,13 @@ function llmClientFor(
 	{
 		model,
 		reasoningEffort,
+		compactAt,
 		systemPrompt,
 		logger,
 	}: {
 		model?: AgentModel;
 		reasoningEffort?: ReasoningEffort;
+		compactAt?: number | undefined;
 		systemPrompt: string;
 		logger: ILogger;
 	},
@@ -226,6 +255,7 @@ function llmClientFor(
 			return new ClaudeLLMClient({
 				model: model ?? defaultLLMAgentModels.anthropic,
 				reasoningEffort,
+				compactAt,
 				systemPrompt,
 				logger,
 			});
@@ -233,6 +263,7 @@ function llmClientFor(
 			return new OpenAILLMClient({
 				model: model ?? defaultLLMAgentModels.openai,
 				reasoningEffort,
+				compactAt,
 				systemPrompt,
 				logger,
 			});
@@ -314,6 +345,7 @@ function buildLLMAgent(
 		history,
 		summarizer,
 		maxSteps,
+		compactAt,
 		autoApprove,
 		logger,
 	}: {
@@ -324,11 +356,18 @@ function buildLLMAgent(
 		history?: HistoryReader;
 		summarizer?: LLMClient;
 		maxSteps?: number;
+		compactAt?: number | undefined;
 		autoApprove?: boolean;
 		logger: ILogger;
 	},
 ): Agent {
-	const llmClient = llmClientFor(provider, { model, reasoningEffort, systemPrompt, logger });
+	const llmClient = llmClientFor(provider, {
+		model,
+		reasoningEffort,
+		compactAt,
+		systemPrompt,
+		logger,
+	});
 	// LLMAgent records nothing from a failed call, so the original prompt is the whole story.
 	return new RetryingAgent({
 		inner: new LLMAgent({
@@ -367,6 +406,7 @@ export function createLLMAgent(
 		workspace,
 		summarizeUndone = true,
 		maxSteps,
+		compactAt,
 		autoApprove,
 		logger = new Logger(),
 	}: CreateLLMAgentOptions,
@@ -382,6 +422,7 @@ export function createLLMAgent(
 		...(workspace ? { history: historyOf(workspace) } : {}),
 		...(workspace && summarizeUndone ? { summarizer: summarizerFor(provider, logger) } : {}),
 		maxSteps,
+		compactAt,
 		autoApprove,
 		logger,
 	});
@@ -500,12 +541,20 @@ export async function createLLMOrchestrator({
 	systemPrompts = {},
 	workspace = { roots: [{ path: process.cwd(), access: 'read' }] },
 	maxSteps,
+	compactAt,
 	commands,
 	summarizeUndone = true,
 	logger = new Logger(),
 }: CreateLLMOrchestratorOptions = {}): Promise<Agent> {
 	const roles = orchestratorRolesFor(provider);
-	const steps = stepsPerRole(maxSteps);
+	const steps = perRole('maxSteps', maxSteps, defaultRoleSteps, {
+		unit: 'steps',
+		example: '{ "executor": 120 }',
+	});
+	const compaction = perRole('compactAt', compactAt, defaultRoleCompaction, {
+		unit: 'tokens',
+		example: '{ "executor": 200000 }',
+	});
 	const opened = await openWorkspace(workspace, logger);
 	const guidance = workspaceGuidance(workspace.roots);
 	const summarizer = summarizeUndone ? summarizerFor(roles.planner.provider, logger) : undefined;
@@ -529,6 +578,7 @@ export async function createLLMOrchestrator({
 			systemPrompt,
 			tools: await readingTools(opened, role, commands),
 			maxSteps: steps[role],
+			compactAt: compaction[role],
 			...shared,
 		});
 	const { executor } = roles;
@@ -557,6 +607,7 @@ export async function createLLMOrchestrator({
 			),
 			tools: executorToolset,
 			maxSteps: steps.executor,
+			compactAt: compaction.executor,
 			autoApprove,
 			...shared,
 		}),
