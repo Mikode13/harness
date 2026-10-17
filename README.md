@@ -254,6 +254,8 @@ console.log(result.status, result.result, result.stages, result.tokens);
   When the run comes back to a stage, as `draft` does after a rejected review, the same
   agent goes on with its conversation, so it remembers its first draft. The next run
   creates new agents, so two runs, even at once, never see each other's conversations.
+  `agent` may return a promise, so a stage can create an agent that is built async, such as
+  one from `createLLMOrchestrator`.
 - **Transitions:**
   - `go` runs the stage it names, with `input`.
   - `complete` ends the run finished.

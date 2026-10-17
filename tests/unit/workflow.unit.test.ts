@@ -210,14 +210,14 @@ describe('workflow', () => {
 		]);
 	});
 
-	it('gives each stage an agent of its own, which the run goes on with when it comes back', async () => {
+	it('gives each stage an agent of its own, even one created async, which the run goes on with when it comes back', async () => {
 		const drafts = rememberingAgents(answer({ value: 'draft 1' }), answer({ value: 'draft 2' }));
 		const reviews = rememberingAgents(answer({ value: 'redo' }), answer({ value: 'ok' }));
 		const workflow = workflowOf(
 			'draft',
 			passingStage('draft', drafts.agent, 'review'),
 			stage('review', {
-				agent: reviews.agent,
+				agent: () => Promise.resolve(reviews.agent()),
 				prompt: input => `review:${String(input)}`,
 				validator: valueValidator,
 				transition: (output, input) =>
@@ -418,6 +418,10 @@ describe('workflow', () => {
 		};
 		const cases: { change: Partial<WorkflowStage<Loose, string>>; message: string }[] = [
 			{ change: { agent: throwing }, message: 'Workflow stage "host" could not create its agent' },
+			{
+				change: { agent: () => Promise.reject(host) },
+				message: 'Workflow stage "host" could not create its agent',
+			},
 			{ change: { prompt: throwing }, message: 'Workflow stage "host" could not build its prompt' },
 			{
 				change: { validator: { validate: throwing } },

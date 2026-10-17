@@ -32,9 +32,9 @@ export interface WorkflowStageDefinition<
 	/**
 	 * Creates the stage's agent, with a context of its own, the first time the stage runs in a
 	 * run. When the run comes back to the stage, the same agent goes on with its conversation;
-	 * the next run creates another.
+	 * the next run creates another. It may be async, as `createLLMOrchestrator` is.
 	 */
-	agent(): Agent;
+	agent(): Agent | PromiseLike<Agent>;
 	prompt(input: Inputs[Name]): string | PromiseLike<string>;
 	/** Receives the agent's answer parsed as JSON. */
 	readonly validator: Validator<Output>;

@@ -20,7 +20,7 @@ import type { Workflow, WorkflowResult, WorkflowStageReport } from './workflow.t
 /** A stage with its types erased: the factory checked them, and the runner only passes values on. */
 export interface RunnableStage {
 	readonly name: string;
-	agent(): Agent;
+	agent(): Agent | PromiseLike<Agent>;
 	prompt(input: unknown): string | PromiseLike<string>;
 	readonly validator: Validator<unknown>;
 	transition(output: unknown, input: unknown): unknown;
@@ -161,7 +161,7 @@ export class WorkflowRunner<Input, Result> implements Workflow<Input, Result> {
 		for (let transitions = 0; ; transitions++) {
 			const started = Date.now();
 			const stageTotals: Totals = { tokens: undefined, unreported: false };
-			const agent = this.agentOf(stage, agents);
+			const agent = await this.agentOf(stage, agents);
 			const { output, attempts } = await this.answer(
 				stage,
 				agent,
@@ -207,12 +207,12 @@ export class WorkflowRunner<Input, Result> implements Workflow<Input, Result> {
 	}
 
 	/** The stage's agent in this run: created the first time the stage runs, then reused. */
-	private agentOf(stage: RunnableStage, agents: Map<string, Agent>): Agent {
+	private async agentOf(stage: RunnableStage, agents: Map<string, Agent>): Promise<Agent> {
 		const existing = agents.get(stage.name);
 		if (existing) return existing;
 		let agent: Agent;
 		try {
-			agent = stage.agent();
+			agent = await stage.agent();
 		} catch (error) {
 			throw classifyHostFailure(error, `Workflow stage "${stage.name}" could not create its agent`);
 		}
