@@ -265,8 +265,9 @@ console.log(result.status, result.result, result.stages, result.tokens);
   `UnrecoverableError` carrying every answer's usage.
 - **What the run knows:** `result.stages` records, for each stage run in order, its input,
   its validated output, its attempts, usage and duration, and the transition it chose.
-- **Bounds:** `maxTransitions`, 100 by default, ends a loop of stages. `createWorkflow` also
-  checks the stages when JavaScript calls it without the types.
+- **Bounds:** `maxTransitions`, 100 by default, ends a loop of stages. Without the types, from
+  JavaScript, `createWorkflow` checks the stage names and the initial stage; a `go` to a stage
+  that does not exist fails the run when it is taken.
 - **Narration:** `onProgress` receives a `workflowStage` event before each answer and a
   `workflowTransition` event after each choice. Stages run one at a time, so the agent
   events between them belong to that stage.

@@ -15,9 +15,11 @@ function positiveInteger(value: number | undefined, name: string, fallback: numb
 }
 
 /**
- * Builds a workflow from the consumer's stages. The types already check every `go` against the
- * stage it names; this checks the same for JavaScript callers, at construction rather than in the
- * middle of a paid run.
+ * Builds a workflow from the consumer's stages. The types check every `go` against the stage it
+ * names and the input it hands over. For JavaScript callers, construction checks only what it
+ * can see before a run: each stage's name, the initial stage, `maxAttempts` and `maxTransitions`.
+ * A `go` is a value a stage returns, so the run checks its target when it takes it, and nothing
+ * checks its input: the next stage's `prompt` receives it as it is.
  */
 export function createWorkflow<Inputs, Result, Initial extends WorkflowStageName<Inputs>>({
 	initialStage,

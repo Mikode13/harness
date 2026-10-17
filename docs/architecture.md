@@ -107,9 +107,9 @@ consumer callback sit outside `classifyProviderFailure` and outside the `for awa
 `classifiedProviderStream`; a host failure caught inside either would be reported as a
 retryable provider failure.
 
-Cancellation is the single deliberate exception. An `AbortError` propagates unchanged through
-every layer, because a deliberate stop is not a failure and every consumer checks for it
-before either error type.
+Cancellation is the single deliberate exception. An `AbortError`, or the `TimeoutError` of
+`AbortSignal.timeout`, propagates unchanged through every layer, because a deliberate stop is
+not a failure and every consumer checks for it before either error type.
 
 ## Dependencies and contracts
 
