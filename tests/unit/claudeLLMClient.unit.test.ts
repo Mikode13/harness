@@ -13,6 +13,7 @@ import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import { MaxContextError } from '../../src/llm/domain/errors.ts';
 import { ClaudeLLMClient } from '../../src/llm/infrastructure/claudeLLMClient.ts';
 import { toolCall, toolMessage, toolResult, userMessage } from '../support/fakeLlmClient.ts';
+import { fakeClaudeSdk } from '../support/fakeClaudeSdk.ts';
 
 // The error classes stay real: the client classifies failures by them.
 vi.mock('@anthropic-ai/sdk', async importOriginal => ({
@@ -53,7 +54,7 @@ function createSdk(...results: (AnthropicMessage | Error)[]) {
 		else create.mockResolvedValueOnce(result);
 	}
 	vi.mocked(Anthropic).mockImplementation(function () {
-		return { beta: { messages: { create } } } as unknown as Anthropic;
+		return fakeClaudeSdk(create);
 	});
 	return { create };
 }
@@ -212,7 +213,7 @@ describe('ClaudeLLMClient', () => {
 		expect(create).toHaveBeenCalledWith(
 			{
 				model: 'claude-sonnet-5',
-				max_tokens: 16_000,
+				max_tokens: 64_000,
 				system: 'Be brief.',
 				messages: [
 					{ role: 'user', content: [{ type: 'text', text: 'first' }] },
@@ -710,6 +711,43 @@ describe('ClaudeLLMClient', () => {
 		await expect(
 			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
 		).rejects.toBeInstanceOf(RecoverableError);
+	});
+
+	// The real SDK over a fake fetch, so a change to how its stream reports a failure fails here.
+	it.each([
+		['a connection lost halfway', new TypeError('terminated')],
+		['an overload the API reports mid-stream', undefined],
+	])('makes %s recoverable, its usage unreported', async (_, failure) => {
+		const { default: RealAnthropic } =
+			await vi.importActual<typeof import('@anthropic-ai/sdk')>('@anthropic-ai/sdk');
+		const start = { type: 'message_start', message: { ...response(), content: [] } };
+		const overload = { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } };
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				const encoder = new TextEncoder();
+				controller.enqueue(
+					encoder.encode(`event: message_start\ndata: ${JSON.stringify(start)}\n\n`),
+				);
+				if (failure) controller.error(failure);
+				else {
+					controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify(overload)}\n\n`));
+					controller.close();
+				}
+			},
+		});
+		const fetch = vi.fn(() =>
+			Promise.resolve(
+				new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+			),
+		);
+		vi.mocked(Anthropic).mockImplementation(function () {
+			return new RealAnthropic({ apiKey: 'test', fetch, maxRetries: 0 });
+		});
+
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toMatchObject({ constructor: RecoverableError, usageUnreported: true });
+		expect(fetch).toHaveBeenCalledOnce();
 	});
 
 	// The SDK's abort error is named 'Error', so it must not reach the caller as a failure.

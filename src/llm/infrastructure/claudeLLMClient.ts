@@ -1,4 +1,5 @@
 import Anthropic, { AnthropicError, APIError } from '@anthropic-ai/sdk';
+import type { BetaMessageStream } from '@anthropic-ai/sdk/lib/BetaMessageStream';
 // The beta surface, for compaction: without its beta header, a request is the stable one.
 import type {
 	BetaCompactionBlockParam as CompactionBlockParam,
@@ -56,9 +57,11 @@ export const claudeLLMReasoningEfforts = [
 ] as const satisfies readonly NonNullable<OutputConfig['effort']>[];
 export type ClaudeLLMReasoningEffort = (typeof claudeLLMReasoningEfforts)[number];
 
-// Adaptive thinking spends from this budget too. Above roughly 21,000 the SDK refuses a request
-// that is not streamed, because it could outlast its ten-minute timeout.
-const maxOutputTokens = 16_000;
+// Adaptive thinking spends from this budget too, so a hard step at a high effort can need most
+// of it. The request is streamed so it is not bound by the SDK's ten-minute timeout, which made
+// it refuse more than about 21,000 without a stream. 64,000 is the most Haiku 4.5 writes; the
+// other models write up to 128,000, which a single answer here has not needed.
+const maxOutputTokens = 64_000;
 
 // The request itself is wrong or not allowed, so sending it again cannot succeed.
 const unrecoverableStatuses = [400, 401, 403, 404, 413, 422];
@@ -279,9 +282,10 @@ function toLLMResponse(response: AnthropicMessage, logger: ILogger): LLMResponse
 
 /**
  * The SDK resolves credentials lazily, so a missing key surfaces on the first call, as a plain
- * `Error` the SDK gives no class of its own. An `AnthropicError` that is not an `APIError` never
- * carries an answer from the API: on this client's path it is the SDK refusing to make the
- * call, such as an unresolved profile or a request too large to send without streaming.
+ * `Error` the SDK gives no class of its own. Before the stream connects, an `AnthropicError` that
+ * is not an `APIError` never carries an answer from the API: it is the SDK refusing to make the
+ * call, such as an unresolved profile. Once it connects, the stream reports any failure as one,
+ * such as a connection lost halfway; see `classifyClaudeFailure`.
  */
 function isLocalSDKFailure(error: unknown): boolean {
 	return (
@@ -290,7 +294,13 @@ function isLocalSDKFailure(error: unknown): boolean {
 	);
 }
 
-function classifyClaudeFailure(error: unknown): Error {
+/** `connected` is whether the stream had its response: a failure after that broke the stream off. */
+function classifyClaudeFailure(error: unknown, connected: boolean): Error {
+	if (connected && !(error instanceof APIError)) {
+		// The API was answering, so a later attempt can succeed. An error event the API sends
+		// mid-stream, such as an overload, arrives as an `APIError` and is classified below.
+		return classifyProviderFailure(error, 'The Claude stream broke off');
+	}
 	if (isLocalSDKFailure(error)) {
 		// The API never answered, and calling again would fail the same way.
 		return new UnrecoverableError('The Claude client cannot send the request', {
@@ -404,9 +414,11 @@ export class ClaudeLLMClient implements LLMClient {
 		signal: AbortSignal,
 	): Promise<LLMResponse> {
 		let response: AnthropicMessage;
+		let stream: BetaMessageStream | undefined;
 
 		try {
-			response = await this.client.beta.messages.create(
+			// Streamed only to lift the timeout: the client still answers with the whole message.
+			const sent = this.client.beta.messages.stream(
 				{
 					model: this.model,
 					max_tokens: maxOutputTokens,
@@ -444,10 +456,16 @@ export class ClaudeLLMClient implements LLMClient {
 				},
 				{ signal },
 			);
+			stream = sent;
+			response = await sent.finalMessage();
 		} catch (error) {
 			// The SDK's abort error is named 'Error', so it would pass for a provider failure.
 			signal.throwIfAborted();
-			throw classifyClaudeFailure(error);
+			const connected = Boolean(stream?.response);
+			const failure = classifyClaudeFailure(error, connected);
+			// Once the stream connected, Claude may have written, and billed, part of an answer it
+			// never finished sending, so the run's count cannot be known.
+			throw connected ? withSpentTokens(failure, undefined, true) : failure;
 		}
 
 		return treatErrors(

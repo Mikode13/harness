@@ -407,6 +407,7 @@ each other's.
   sends back only its own. A conversation handed to the other provider keeps its text, tool
   calls and results, and loses the private reasoning.
 - **`LLMClient` does not stream.** A call returns the whole answer, so an `LLMAgent`
-  narrates it only once it is complete. The CLI shows a spinner and then the message, which
+  narrates it only once it is complete. The Claude client streams its request inside the call,
+  only so a long answer is not bound by the SDK's timeout. The CLI shows a spinner and then the message, which
   is all it needs; streaming would be a separate method when a consumer needs text as it is
   generated.

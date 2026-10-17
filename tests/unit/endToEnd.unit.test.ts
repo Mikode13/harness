@@ -29,6 +29,7 @@ import {
 	type ProgressEvent,
 	type WorkspaceOptions,
 } from '../../src/index.ts';
+import { fakeClaudeSdk } from '../support/fakeClaudeSdk.ts';
 
 vi.mock('openai', async importOriginal => ({
 	...(await importOriginal<Record<string, unknown>>()),
@@ -181,7 +182,7 @@ function scriptClaude(...responses: AnthropicMessage[]) {
 	const create = vi.fn();
 	for (const next of responses) create.mockResolvedValueOnce(next);
 	vi.mocked(Anthropic).mockImplementation(function () {
-		return { beta: { messages: { create } } } as unknown as Anthropic;
+		return fakeClaudeSdk(create);
 	});
 	return create;
 }
