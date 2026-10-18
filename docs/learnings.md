@@ -147,6 +147,22 @@ which is small, and #22, the workflows, which became #109. Costs are estimated f
 call's tokens at the providers' list prices. The results are in `bench-results/`, outside this
 repository.
 
+### The runs of #20 could read its solution
+
+- **What happened:** the planner read the pull request that had already solved the task. The
+  `issue` command returns an issue's comments, and since 2026-10-11 one comment on #20 says
+  "Completado por #91". The `pr` command, configured for the planner, then showed #91. This was
+  only seen on 2026-10-18, while preparing the next benchmark.
+- **Evidence:** in the runs of 2026-10-14 and 2026-10-17, the planner ran `gh pr view 91` and
+  read its review comments, which quote the code they are on, in its first minute. The
+  log of the run of 2026-10-13 was not kept. In the runs of #22, the issue had no comments, and
+  nothing read #109.
+- **What it means:** the runs of #20 compare with each other, since every one had the same
+  help, but not with a task the harness has no answer for. The entries below that rest on #20
+  measure cost, not how well the harness solves a task.
+- **What changed:** nothing in the harness. The next benchmark is to run on a clone that holds
+  only its base commit, without the `pr` and `prReviewComments` commands.
+
 ### Each role resent every file it had read
 
 - **What happened:** in the fourth run of #20, on 2026-10-13, one `readFile` of
