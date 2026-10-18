@@ -99,6 +99,9 @@ async function call(
 		const prepared = await tool.prepare(input, signal, {
 			run: context,
 			reads: new ReadRegistry().begin(),
+			callId: 'call',
+			onProgress: () => undefined,
+			spend: () => undefined,
 		});
 		const output = await prepared.run(runSignal);
 		await context.finish('completed');
@@ -281,6 +284,9 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			tool.prepare({ command: { name: 'list', paths: [path] } }, signal, {
 				run: new RunContext(),
 				reads: new ReadRegistry().begin(),
+				callId: 'call',
+				onProgress: () => undefined,
+				spend: () => undefined,
 			}),
 		).rejects.toThrow(message);
 	});
@@ -350,6 +356,9 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		const prepared = await tool.prepare({ command: { name: 'slow' } }, signal, {
 			run: context,
 			reads: new ReadRegistry().begin(),
+			callId: 'call',
+			onProgress: () => undefined,
+			spend: () => undefined,
 		});
 
 		const running = prepared.run(controller.signal);
@@ -411,6 +420,9 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		const prepared = await tool.prepare({ command: { name: 'stuck' } }, signal, {
 			run: context,
 			reads: new ReadRegistry().begin(),
+			callId: 'call',
+			onProgress: () => undefined,
+			spend: () => undefined,
 		});
 		const stopped = prepared.run(signal);
 

@@ -781,7 +781,7 @@ describe('createLLMOrchestrator', () => {
 		expect(query).not.toHaveBeenCalled();
 	});
 
-	it('gives the planner and reviewer the reading tools, and the executor its file tools', async () => {
+	it('gives the planner and reviewer the reading tools and explore, and the executor its file tools', async () => {
 		const openAICreate = openAIReplying('plan');
 		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
 
@@ -789,7 +789,7 @@ describe('createLLMOrchestrator', () => {
 			await createLLMOrchestrator({ workspace, logger: createLogger() })
 		).run('ship it', { signal });
 
-		const reading = ['listFiles', 'searchText', 'readFile', 'showChanges'];
+		const reading = ['listFiles', 'searchText', 'readFile', 'showChanges', 'explore'];
 		expect(declared(requestsOf(openAICreate)[0])).toEqual(reading);
 		expect(declared(requestsOf(openAICreate)[1])).toEqual([
 			'listFiles',

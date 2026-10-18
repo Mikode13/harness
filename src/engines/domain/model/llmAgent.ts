@@ -43,6 +43,9 @@ import {
 	ToolExecutionError,
 } from '#src/tools/domain/preparedCall';
 import { ReadRegistry, type ToolCallContext } from '#src/tools/domain/readRegistry';
+
+/** What every tool call of one batch shares; each call adds its own id. */
+type RunToolContext = Omit<ToolCallContext, 'callId'>;
 import { InvalidToolInputError } from '#src/tools/domain/tool';
 import { isAbortError } from '#src/shared/domain/isAbortError';
 import type { ILogger } from '#src/shared/domain/logger';
@@ -416,7 +419,7 @@ export class LLMAgent implements Agent {
 		call: ToolCallPart,
 		{ signal, onProgress: callback = ignoreProgress, approve, ask }: RunOptions,
 		effects: RunEffects,
-		toolCall: ToolCallContext,
+		toolCall: RunToolContext,
 	): Promise<{
 		result: ToolResultPart;
 		denied: boolean;
@@ -461,7 +464,7 @@ export class LLMAgent implements Agent {
 
 		let prepared: PreparedCall;
 		try {
-			prepared = await prepareCall(tool, call.input, signal, toolCall);
+			prepared = await prepareCall(tool, call.input, signal, { ...toolCall, callId: call.id });
 		} catch (error) {
 			signal.throwIfAborted();
 			// A call that cannot be prepared, or whose tool cannot judge it, does not run; the
@@ -569,7 +572,7 @@ export class LLMAgent implements Agent {
 		calls: ToolCallPart[],
 		options: RunOptions,
 		effects: RunEffects,
-		toolCall: ToolCallContext,
+		toolCall: RunToolContext,
 	): Promise<Message> {
 		const { signal, onProgress: callback = ignoreProgress } = options;
 		const results: MessagePart[] = [];
@@ -703,6 +706,23 @@ export class LLMAgent implements Agent {
 			// After following the history, which may have made every earlier read stale.
 			const reads = this.reads.begin();
 			const repeats = new RepeatedCalls();
+			// A tool that does its own work on the model, such as running subagents, counts it here.
+			const spend = (spent: Tokens | undefined, unreportedCall: boolean) => {
+				tokens = addTokens(tokens, spent);
+				unreported ||= unreportedCall;
+			};
+			// A tool narrates through this without ever failing: a failing callback would reach
+			// only the tool, which turns any failure into a result for the model. The run ends on
+			// it once the tools return.
+			let progressFailure: { error: unknown } | undefined;
+			const onProgress = (event: ProgressEvent) => {
+				if (progressFailure) return;
+				try {
+					emit(event, callback);
+				} catch (error) {
+					progressFailure = { error };
+				}
+			};
 			// The agent's own `askUser` exists only for a run someone can answer, and never beside
 			// a consumer's tool of that name, which the consumer gave first and which stays theirs.
 			const offersAsk = options.ask !== undefined && !this.tools.has(askUserName);
@@ -761,7 +781,14 @@ export class LLMAgent implements Agent {
 
 				// On the last step no call is left to send the results to, so the tools do not run.
 				if (step < this.maxSteps) {
-					runMessages.push(await this.runTools(calls, options, effects, { run: context, reads }));
+					const results = await this.runTools(calls, options, effects, {
+						run: context,
+						reads,
+						onProgress,
+						spend,
+					});
+					if (progressFailure) throw progressFailure.error;
+					runMessages.push(results);
 				}
 			}
 

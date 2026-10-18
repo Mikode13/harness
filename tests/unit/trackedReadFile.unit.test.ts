@@ -54,6 +54,9 @@ async function readFile(
 		const prepared = await tool.prepare({ path, fromLine, lineCount }, signal, {
 			run: new RunContext(),
 			reads,
+			callId: 'call',
+			onProgress: () => undefined,
+			spend: () => undefined,
 		});
 		return await prepared.run(signal);
 	} catch (error) {

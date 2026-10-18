@@ -47,6 +47,7 @@ import {
 	stateDirectoryOf,
 	type WorkspaceOptions,
 } from '#src/tools/infrastructure/fileTools';
+import { createExploreTool } from '#src/tools/infrastructure/exploreTool';
 import { createShowChangesTool } from '#src/tools/infrastructure/showChangesTool';
 import { createTrackedReadFile } from '#src/tools/infrastructure/trackedReadFile';
 import { createWorkspaceTools } from '#src/tools/infrastructure/workspaceTools';
@@ -477,21 +478,27 @@ async function executorTools(
 	return [...tools, await commandToolFor(workspace, commands)];
 }
 
+/** What an explorer finds and reads with: no edits, no changes, no commands. */
+function explorerTools({ read, policy }: OpenedWorkspace): AgentTool[] {
+	const finding = createWorkspaceTools(read).filter(tool => tool.name !== 'readFile');
+	return [...finding, createTrackedReadFile(policy)];
+}
+
 /**
- * What the planner and the reviewer read with: no edits, the current task's changes, and the
- * commands given to their role.
+ * What the planner and the reviewer read with: no edits, the current task's changes, `explore`
+ * with `explorer`, and the commands given to their role.
  */
 async function readingTools(
 	workspace: OpenedWorkspace,
 	role: CommandRole,
 	commands: Commands | undefined,
+	explorer: () => Agent,
 ): Promise<AgentTool[]> {
-	const { read, policy, store } = workspace;
-	const finding = createWorkspaceTools(read).filter(tool => tool.name !== 'readFile');
+	const { policy, store } = workspace;
 	const tools = [
-		...finding,
-		createTrackedReadFile(policy),
+		...explorerTools(workspace),
 		createShowChangesTool({ store, policy }),
+		createExploreTool(explorer),
 	];
 	const own = commands && commandsFor(commands, role);
 	if (!own || Object.keys(own).length === 0) return tools;
@@ -501,13 +508,30 @@ async function readingTools(
 const batching =
 	'When you know you need several files, or several searches, ask for all of them in one answer rather than one at a time: each answer is a step, and steps are limited.';
 
+const exploring =
+	'To learn an area of the repository, send explorers: ask `explore` the independent questions you have in one call, and read yourself only what you must see exactly.';
+
+// Each provider's cheaper model, which only finds and reads. Haiku, which names Claude Haiku 4.5,
+// takes no reasoning effort.
+const explorerRoles = {
+	anthropic: { model: 'haiku' },
+	openai: { model: 'gpt-5.6-luna', reasoningEffort: 'medium' },
+} as const satisfies Record<
+	AgentProvider,
+	{ model: AgentModel; reasoningEffort?: ReasoningEffort }
+>;
+
+const explorerSteps = 30;
+
+const explorerInstructions = `You explore a repository for another agent, which is planning or reviewing a change and asked you one question. Find what it asks with listFiles, searchText and readFile, reading only what the question needs. Answer with what you found: the files and line numbers, what that code does, and short excerpts where the exact text matters. Say what you looked for and could not find. Do not propose changes or a plan, and do not copy whole files. ${batching}`;
+
 // How each role finds its way, sent after the workspace's roots, so it stays short. Only the
 // planner learns the repository; the executor and the reviewer work from its plan, so a plan
 // that leaves them guessing is the planner's to fix, not theirs to make up for.
 const repositoryGuidance: Record<CommandRole, string> = {
-	planner: `Start with AGENTS.md, which says where the architecture and the decisions are, and read only the parts your task needs. Name in the plan every file to change and what to change in it, so the executor needs nothing else. ${batching}`,
+	planner: `Start with AGENTS.md, which says where the architecture and the decisions are, and read only the parts your task needs. Name in the plan every file to change and what to change in it, so the executor needs nothing else. ${exploring} ${batching}`,
 	executor: `Work from the plan: read the files it names, and only what you need to change them. Do not study the repository's architecture or decisions; the plan already applied them. ${batching}`,
-	reviewer: `Work from the plan and the changes: read what they touch, and only what you need to judge them. ${batching}`,
+	reviewer: `Work from the plan and the changes: read what they touch, and only what you need to judge them. ${exploring} ${batching}`,
 };
 
 /**
@@ -515,8 +539,10 @@ const repositoryGuidance: Record<CommandRole, string> = {
  * holding its role's instructions, or `systemPrompts`, as its system prompt, followed by the
  * workspace's roots.
  *
- * - The planner and the reviewer read: `listFiles`, `searchText`, `readFile`, and
- *   `showChanges`, the current task's changes as far as each may read them.
+ * - The planner and the reviewer read: `listFiles`, `searchText`, `readFile`, `showChanges`,
+ *   the current task's changes as far as each may read them, and `explore`, which sends up to 4
+ *   read-only explorers at once on the role's provider's cheaper model, each a new agent that
+ *   starts from its question.
  * - The executor gets its provider's file tools (see `createFileTools`), and changes files only
  *   in a `write` root; `autoApprove` reaches only it.
  * - Each role has its own step limit: `maxSteps`, 80 for the executor and 65 for the others by
@@ -567,6 +593,16 @@ export async function createLLMOrchestrator({
 			: withGuidance(own, guidance);
 	// Every command, checked once, before any role takes its share.
 	if (commands !== undefined) validateCommands(commands);
+	// A new explorer for each question, on the role's provider: it starts from the question alone.
+	const explorerToolset = explorerTools(opened);
+	const explorer = (provider: AgentProvider) => () =>
+		buildLLMAgent(provider, {
+			...explorerRoles[provider],
+			systemPrompt: withGuidance(explorerInstructions, guidance),
+			tools: explorerToolset,
+			maxSteps: explorerSteps,
+			logger,
+		});
 	const reader = async (
 		{ provider, model, reasoningEffort }: Role,
 		role: CommandRole,
@@ -576,7 +612,7 @@ export async function createLLMOrchestrator({
 			model,
 			reasoningEffort,
 			systemPrompt,
-			tools: await readingTools(opened, role, commands),
+			tools: await readingTools(opened, role, commands, explorer(provider)),
 			maxSteps: steps[role],
 			compactAt: compaction[role],
 			...shared,

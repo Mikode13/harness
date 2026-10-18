@@ -137,7 +137,8 @@ const loop = new ConversationLoop(
 			return;
 		}
 
-		if (item.type === 'step') {
+		// An explorer's calls arrive inside the `subagent` event that says which role sent it.
+		if (item.type === 'step' || (item.type === 'subagent' && item.event.type === 'step')) {
 			if (!stepsFile || !recordingSteps) return;
 			try {
 				appendFileSync(stepsFile, `${JSON.stringify({ at: new Date().toISOString(), ...item })}\n`);

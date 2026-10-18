@@ -112,7 +112,7 @@ function openAIResponse(...output: ResponseOutputItem[]): Response {
 		output,
 		usage: {
 			input_tokens: 10,
-			input_tokens_details: { cached_tokens: 0 },
+			input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
 			output_tokens: 5,
 			output_tokens_details: { reasoning_tokens: 0 },
 			total_tokens: 15,
@@ -279,6 +279,86 @@ describe('the write tools, end to end through the public exports', () => {
 		expect(read('src/math.ts')).toBe(fixed);
 		await expect(history.goTo(historyStart)).resolves.toMatchObject({ complete: true });
 		expect(read('src/math.ts')).toBe(broken);
+	});
+
+	it('lets the planner send an explorer, which reads on a cheaper model and reports back', async () => {
+		const openAI = scriptOpenAI(
+			// The planner explores, then plans from the report.
+			openAIResponse(call('p1', 'explore', { questions: ['What does add in src/math.ts do?'] })),
+			// The explorer reads, then reports.
+			openAIResponse(
+				call('x1', 'readFile', { path: 'src/math.ts', fromLine: null, lineCount: null }),
+			),
+			openAIResponse(text('add in src/math.ts subtracts: a - b.')),
+			openAIResponse(text('Make add add.')),
+			openAIResponse(text('Nothing to change yet.')),
+		);
+		scriptClaude(claudeResponse(say('{"decision":"approved"}')));
+		const events: ProgressEvent[] = [];
+
+		const agent = await createLLMOrchestrator({ workspace, logger: { warn: vi.fn() } });
+		const response = await agent.run('Fix add.', {
+			signal,
+			onProgress: event => events.push(event),
+		});
+
+		const explorerRequest = openAI.mock.calls[1]?.[0] as {
+			model: string;
+			reasoning: { effort: string };
+			tools: { name?: string }[];
+			input: unknown[];
+		};
+		expect(explorerRequest.model).toBe('gpt-5.6-luna');
+		expect(explorerRequest.reasoning.effort).toBe('medium');
+		expect(explorerRequest.tools.map(tool => tool.name)).toEqual([
+			'listFiles',
+			'searchText',
+			'readFile',
+		]);
+		// It starts from the question alone.
+		expect(JSON.stringify(explorerRequest.input)).toContain('What does add in src/math.ts do?');
+		expect(JSON.stringify(explorerRequest.input)).not.toContain('Fix add.');
+		// The planner reads the report, not the file.
+		expect(sent(openAI, 3)).toContain('Explorer 1: What does add in src/math.ts do?');
+		expect(sent(openAI, 3)).toContain('add in src/math.ts subtracts: a - b.');
+		// The explorer's narration comes apart, stamped with the planner that sent it.
+		const explorerRead = events.find(
+			event =>
+				event.type === 'subagent' &&
+				event.event.type === 'tool' &&
+				event.event.name === 'readFile' &&
+				event.event.status === 'completed',
+		);
+		expect(explorerRead).toMatchObject({
+			callId: 'p1',
+			subagent: 1,
+			task: 'What does add in src/math.ts do?',
+			agent: 'planner',
+		});
+		// Six calls, ten tokens in and five out each: the explorer's two count too.
+		expect(response.tokens).toMatchObject({ inputTokens: 60, outputTokens: 30 });
+	});
+
+	it('sends Claude Haiku, without thinking, as the explorer of a role on Claude', async () => {
+		const claude = scriptClaude(
+			claudeResponse(use('p1', 'explore', { questions: ['Where is add?'] })),
+			claudeResponse(say('add is in src/math.ts.')),
+			claudeResponse(say('Make add add.')),
+			claudeResponse(say('Nothing to change yet.')),
+			claudeResponse(say('{"decision":"approved"}')),
+		);
+
+		const agent = await createLLMOrchestrator({
+			provider: 'anthropic',
+			workspace,
+			logger: { warn: vi.fn() },
+		});
+		await agent.run('Fix add.', { signal });
+
+		const explorerRequest = claude.mock.calls[1]?.[0] as Record<string, unknown>;
+		expect(explorerRequest.model).toBe('claude-haiku-4-5');
+		expect(explorerRequest).not.toHaveProperty('thinking');
+		expect(sent(claude, 2)).toContain('add is in src/math.ts.');
 	});
 
 	it('does the same with every role on Claude, the executor with its text editor', async () => {
