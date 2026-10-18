@@ -1,4 +1,6 @@
+import type { ProgressEvent } from '#src/agent/domain/agent';
 import type { RunContext } from '#src/agent/domain/runContext';
+import type { Tokens } from '#src/shared/domain/tokens';
 
 /**
  * What one conversation has seen of each file: the hash of the content a read showed it, or an
@@ -69,10 +71,23 @@ export class RunReads {
 }
 
 /**
- * What a harness-built tool gets for one call: the run it belongs to, shared by every role, and
- * the reads of the conversation that made the call.
+ * What a harness-built tool gets for one call: the run it belongs to, shared by every role, the
+ * reads of the conversation that made the call, and the run's narration and usage, for a call
+ * that does its own work on the model, such as running subagents.
  */
 export interface ToolCallContext {
 	readonly run: RunContext;
 	readonly reads: RunReads;
+	/** The id of the call, which its `tool` events carry. */
+	readonly callId: string;
+	/**
+	 * Narrates an event in the run's progress. It never throws: a failing callback ends the run
+	 * once the call returns.
+	 */
+	readonly onProgress: (event: ProgressEvent) => void;
+	/**
+	 * Adds what the call spent on the model to the run's usage. `unreported` when a call it made
+	 * came back without usage, which leaves the run's total unknown.
+	 */
+	readonly spend: (tokens: Tokens | undefined, unreported: boolean) => void;
 }

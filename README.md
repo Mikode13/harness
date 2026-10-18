@@ -491,7 +491,11 @@ run in `AgentResponse.runId`. Progress reports each change as a unified `diff` o
 model APIs:
 
 - the planner and the reviewer read, with a `showChanges` tool that gives the current task's
-  changes as far as each may read them;
+  changes as far as each may read them, and an `explore` tool that sends up to 4 read-only
+  explorers at once, one per question, on the role's provider's cheaper model: Claude Haiku
+  4.5, or `gpt-5.6-luna` at `medium`. Each starts from its question alone and reports what it
+  found, so the role reads the reports instead of filling its own context with files. Their
+  usage counts in the run's, and their narration arrives as `subagent` events;
 - the executor gets its provider's file tools. `autoApprove` reaches only the executor;
 - each role gets the commands whose `roles` name it; a command names only the executor unless
   it says otherwise.

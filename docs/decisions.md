@@ -2072,3 +2072,34 @@ tags: #mikode-harness #provider-integration #llm
 - **`max_tokens` as an option.** Still deferred until a consumer needs to vary it.
 
 **Consequences:** an answer that runs away costs up to four times what it did at 16,000 before it stops as `truncated`. The test fakes of the Anthropic SDK answer through `stream()`, and the tests of a broken stream use the real SDK over a fake `fetch`, so a change to how the SDK reports a stream failure fails there. The OpenAI client is unchanged: it sets no output limit, and its SDK refuses no request for lacking a stream.
+
+## The planner and the reviewer send cheaper explorers, all at once, through a tool
+
+tags: #mikode-harness #agent-loops #cost
+
+**Decision:**
+
+- **`explore` is a tool of the planner and the reviewer.** One call takes up to 4 questions and runs one explorer per question, all at once, inside the tool, then returns their reports in order, each under its question. The agent loop still runs a turn's tool calls one at a time.
+- **An explorer is a new agent for each question.** It runs on its role's provider's cheaper model, Claude Haiku 4.5 or `gpt-5.6-luna` at `medium`. It has only `listFiles`, `searchText` and `readFile`, at most 30 steps, and starts from its question alone. Its instructions tell it to report what it found, with files and lines, and not to plan.
+- **It works inside the role's run.** It shares the run's context, so its reads belong to that run. Its usage counts in the run's, whether it answered or failed. A failure becomes its report, so the other explorers' reports are kept. A cancellation ends the call. A report is cut at 16,000 characters, like a read.
+- **A tool call that works on the model gets the run's usage and narration.** `ToolCallContext` carries the call's id, a `spend` that adds tokens to the run, and an `onProgress` that never throws. A callback that fails while a tool narrates ends the run once the tool returns, because `LLMAgent` turns any failure inside a tool into a result for the model.
+- **Each explorer's events arrive wrapped.** The wrapper is a new `subagent` event, carrying the call's id, the explorer's number and its question, so the events of explorers running in parallel stay apart. `OrchestratorAgent` stamps the wrapper with the role, as it stamps every event. The CLI shows only the explorers' tool calls, as `planner › explorer 2`.
+- **The roles are told to explore first.** The guidance of the planner and the reviewer asks them to send the independent questions they have in one call, and to read themselves only what they must see exactly. They keep their own reading tools.
+
+**Context:** the flow the user designed on 2026-10-12 has a planner that can call a cheaper, read-only explorer, and a reviewer that can too. The benchmarks of 2026-10-17 put the planner and the reviewer at 70% to 80% of a run's cost: the most expensive model reads the repository itself, and fills its own context with it. On 2026-10-18 the user asked for the explorers, with an origin on their events that tells parallel explorers apart. `OrchestratorAgent` is unchanged: the tool is given by the factory.
+
+**Alternatives considered:**
+
+- **Running a turn's tool calls in parallel in the agent loop.** Every tool would gain parallelism, but approvals, the order of narration and what a cancellation leaves half done would all change. Parallel explorers inside one tool need none of that.
+- **An `explorer` value of `ProgressAgent`.** It does not tell two explorers apart, and widening the union breaks a consumer's exhaustive `switch`.
+- **An origin field on every event.** Every event type would change, for an origin that only subagents have.
+- **Explorers on the role's own model.** They would save the role's context, but not its price per token.
+- **Keeping an explorer's conversation across calls.** Each question stands on its own, and a long conversation is what the explorers exist to avoid.
+- **Choosing the explorers' model in the options.** Deferred until a consumer needs it: the cheaper model of each provider is the point of the tool.
+
+**Consequences:**
+
+- Whether the explorers make a run cheaper is not measured yet. It takes a paid benchmark, which the user decides.
+- An explorer can be wrong, and the role acts on its report. The tool tells the role to read a file itself when it needs the exact text.
+- A callback that fails while the explorers run ends the run only once all of them finish, so they spend until then.
+- `subagent` is a new `ProgressEvent` type, which is a minor release. A consumer that ignores unknown types sees none of the explorers' narration.

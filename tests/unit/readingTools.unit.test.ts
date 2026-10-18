@@ -154,6 +154,9 @@ describe('showChanges for the planner and the reviewer', () => {
 		const prepared = await tool.prepare({}, signal, {
 			run: context,
 			reads: new ReadRegistry().begin(),
+			callId: 'call',
+			onProgress: () => undefined,
+			spend: () => undefined,
 		});
 		return prepared.run(signal);
 	}

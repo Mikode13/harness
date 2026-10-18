@@ -258,6 +258,42 @@ describe('ProgressEventFormatter', () => {
 		expect(formatter.spinnerDescription()).toBeUndefined();
 	});
 
+	it('shows only the tool calls of explorers, apart, under the role that sent them', () => {
+		let now = 0;
+		const formatter = new ProgressEventFormatter({ now: () => now });
+		const read = (status: 'in_progress' | 'completed'): ProgressEvent => ({
+			type: 'tool',
+			id: 'call-1',
+			name: 'readFile',
+			status,
+			summary: 'src/math.ts',
+		});
+		const explorer = (subagent: number, event: ProgressEvent): ProgressEvent => ({
+			type: 'subagent',
+			callId: 'p1',
+			subagent,
+			task: 'Where is add?',
+			event,
+			agent: 'planner',
+		});
+
+		// Two explorers' calls share an id, each from its own conversation.
+		expect(formatter.format(explorer(1, read('in_progress')))).toBeUndefined();
+		expect(formatter.format(explorer(2, read('in_progress')))).toBeUndefined();
+		expect(formatter.spinnerDescription()).toBe('planner › explorer 1 readFile src/math.ts');
+		now = 5;
+		expect(plain(formatter.format(explorer(2, read('completed'))))).toBe(
+			'\nplanner\n  ✓ planner › explorer 2 | readFile | src/math.ts | 5 ms',
+		);
+		expect(plain(formatter.format(explorer(1, read('completed'))))).toBe(
+			'  ✓ planner › explorer 1 | readFile | src/math.ts | 5 ms',
+		);
+		expect(
+			formatter.format(explorer(1, { type: 'agentMessage', message: 'add is in math.ts' })),
+		).toBeUndefined();
+		expect(formatter.spinnerDescription()).toBeUndefined();
+	});
+
 	it('ignores event types and optional fields it does not know', () => {
 		const formatter = new ProgressEventFormatter();
 
