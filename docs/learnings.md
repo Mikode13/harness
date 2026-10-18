@@ -155,8 +155,9 @@ repository.
   only seen on 2026-10-18, while preparing the next benchmark.
 - **Evidence:** in the runs of 2026-10-14 and 2026-10-17, the planner ran `gh pr view 91` and
   read its review comments, which quote the code they are on, in its first minute. The
-  log of the run of 2026-10-13 was not kept. In the runs of #22, the issue had no comments, and
-  nothing read #109.
+  log of the run of 2026-10-13 was not kept. The clone also held the whole history, #91's
+  commits included, but no file tool can read `.git`. In the runs of #22, the issue had no
+  comments, and nothing read #109.
 - **What it means:** the runs of #20 compare with each other, since every one had the same
   help, but not with a task the harness has no answer for. The entries below that rest on #20
   measure cost, not how well the harness solves a task.
