@@ -86,6 +86,8 @@ export class ProgressEventFormatter {
 							.join('\n'),
 					),
 				);
+			case 'subagent':
+				return this.formatSubagent(item);
 			case 'turnStarted':
 			case 'turnEnded':
 				return undefined;
@@ -107,12 +109,27 @@ export class ProgressEventFormatter {
 		this.lastAgent = undefined;
 	}
 
-	private formatTool(item: Extract<ProgressEvent, { type: 'tool' }>): string | undefined {
-		const key = `${item.agent ?? ''}:${item.id}`;
+	/**
+	 * Only a subagent's tool calls, under the role that sent it and its number: several run at
+	 * once, and their reasoning and messages would bury the role's own.
+	 */
+	private formatSubagent(item: Extract<ProgressEvent, { type: 'subagent' }>): string | undefined {
+		if (item.event.type !== 'tool') return undefined;
+		const label = `${item.agent ?? 'agent'} › explorer ${String(item.subagent)}`;
+		return this.formatTool({ ...item.event, agent: item.agent }, `${item.callId}:${label}`, label);
+	}
+
+	private formatTool(
+		item: Extract<ProgressEvent, { type: 'tool' }>,
+		// A subagent's calls have ids of their own conversation, so they are kept apart by it.
+		scope = '',
+		label: string | undefined = item.agent,
+	): string | undefined {
+		const key = `${item.agent ?? ''}:${scope}:${item.id}`;
 		if (item.status === 'in_progress') {
 			this.pending.set(key, {
 				startedAt: this.now(),
-				description: this.toolDescription(item),
+				description: this.toolDescription(item, label),
 			});
 			return undefined;
 		}
@@ -123,7 +140,7 @@ export class ProgressEventFormatter {
 			? formatDuration(Math.max(0, this.now() - pending.startedAt))
 			: undefined;
 		const icon = statusIcon[item.status];
-		const role = item.agent ?? 'agent';
+		const role = label ?? 'agent';
 		const summary = truncate(compact(item.summary ?? ''), summaryWidth);
 		const ending =
 			item.status === 'denied'
@@ -153,8 +170,11 @@ export class ProgressEventFormatter {
 		return `  ${item.agent ?? 'agent'}  command  ${item.command || '?'}  exit ${String(item.exitCode ?? '?')}`;
 	}
 
-	private toolDescription(item: Extract<ProgressEvent, { type: 'tool' }>): string {
-		return [item.agent, item.name, compact(item.summary ?? '')]
+	private toolDescription(
+		item: Extract<ProgressEvent, { type: 'tool' }>,
+		label: string | undefined,
+	): string {
+		return [label, item.name, compact(item.summary ?? '')]
 			.filter((value): value is string => Boolean(value))
 			.join(' ');
 	}

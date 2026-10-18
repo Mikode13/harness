@@ -126,6 +126,20 @@ export type ProgressEvent =
 			/** Absent after `stop` or `complete`. */
 			nextStage?: string;
 			agent?: ProgressAgent;
+	  }
+	/**
+	 * An event of a subagent that a tool call started, such as one of the explorers an `explore`
+	 * call runs at once. `callId` is the `id` of that call's `tool` events, and `subagent`
+	 * numbers its subagents from 1, so the events of agents running in parallel stay apart.
+	 */
+	| {
+			type: 'subagent';
+			callId: string;
+			subagent: number;
+			/** What the subagent was asked. */
+			task: string;
+			event: ProgressEvent;
+			agent?: ProgressAgent;
 	  };
 
 /**

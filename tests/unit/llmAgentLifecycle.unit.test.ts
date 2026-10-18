@@ -124,6 +124,91 @@ describe('LLMAgent with a tool that prepares its calls', () => {
 	});
 });
 
+describe('LLMAgent and a tool that works on the model', () => {
+	const spent = { inputTokens: 10, outputTokens: 4, readCacheTokens: 2, writtenCacheTokens: 1 };
+
+	it('gives the call its id, and counts what the call spent in the run', async () => {
+		const ids: string[] = [];
+		const tool = preparingTool((_, __, call) => {
+			ids.push(call.callId);
+			return Promise.resolve({
+				risk: 'safe',
+				run: () => {
+					call.spend(spent, false);
+					return Promise.resolve('ran');
+				},
+			});
+		});
+
+		const response = await new LLMAgent({ llmClient: oneCall(), tools: [tool] }).run('prompt', {
+			signal,
+		});
+
+		expect(ids).toEqual(['call-1']);
+		// Two calls to the model, one token in and out each, and what the tool spent.
+		expect(response.tokens).toEqual({
+			inputTokens: 12,
+			outputTokens: 6,
+			readCacheTokens: 2,
+			writtenCacheTokens: 1,
+		});
+	});
+
+	it('leaves the run total unknown when the call spent without a report', async () => {
+		const tool = preparingTool((_, __, call) =>
+			Promise.resolve({
+				risk: 'safe',
+				run: () => {
+					call.spend(undefined, true);
+					return Promise.resolve('ran');
+				},
+			}),
+		);
+
+		const response = await new LLMAgent({ llmClient: oneCall(), tools: [tool] }).run('prompt', {
+			signal,
+		});
+
+		expect(response.tokens).toBeUndefined();
+	});
+
+	it('narrates what the call reports, and ends the run once the call returns if that fails', async () => {
+		const llmClient = oneCall();
+		const narrated: string[] = [];
+		const tool = preparingTool((_, __, call) =>
+			Promise.resolve({
+				risk: 'safe',
+				run: () => {
+					call.onProgress({ type: 'agentMessage', message: 'first' });
+					// The failure stays out of the tool, which carries on.
+					call.onProgress({ type: 'agentMessage', message: 'second' });
+					call.spend(spent, false);
+					return Promise.resolve('ran');
+				},
+			}),
+		);
+
+		await expect(
+			new LLMAgent({ llmClient, tools: [tool] }).run('prompt', {
+				signal,
+				onProgress: event => {
+					if (event.type !== 'agentMessage') return;
+					narrated.push(event.message);
+					throw new Error('the terminal is gone');
+				},
+			}),
+		).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			message: 'LLM agent progress callback failed',
+			// The first call to the model, and what the tool spent before the run ended.
+			tokens: { inputTokens: 11, outputTokens: 5 },
+		});
+		expect(narrated).toEqual(['first']);
+		// The result never reached the model.
+		expect(llmClient.contexts).toHaveLength(1);
+	});
+});
+
 describe('LLMAgent and the run context', () => {
 	/** A tool that registers a finisher on the context it is given, and records the context. */
 	function finishingTool(ends: RunEnd[], contexts: RunContext[] = []) {
