@@ -207,6 +207,44 @@ describe('LLMAgent and a tool that works on the model', () => {
 		// The result never reached the model.
 		expect(llmClient.contexts).toHaveLength(1);
 	});
+
+	it('starts no other call of the step once a call failed to narrate', async () => {
+		const llmClient = new FakeLLMClient(
+			assistantResponse([
+				toolCall('call-1', 'edit', { path: 'a' }),
+				toolCall('call-2', 'edit', { path: 'b' }),
+			]),
+			textResponse('done'),
+		);
+		const second = preparedCall();
+		const prepare = vi.fn<PreparingTool['prepare']>((input, _, call) =>
+			Promise.resolve(
+				(input as { path: string }).path === 'a'
+					? {
+							risk: 'safe',
+							run: () => {
+								call.onProgress({ type: 'agentMessage', message: 'first' });
+								return Promise.resolve('ran');
+							},
+						}
+					: second,
+			),
+		);
+
+		await expect(
+			new LLMAgent({ llmClient, tools: [preparingTool(prepare)] }).run('prompt', {
+				signal,
+				onProgress: event => {
+					if (event.type === 'agentMessage') throw new Error('the terminal is gone');
+				},
+			}),
+		).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			message: 'LLM agent progress callback failed',
+		});
+		expect(prepare).toHaveBeenCalledOnce();
+		expect(second.run).not.toHaveBeenCalled();
+	});
 });
 
 describe('LLMAgent and the run context', () => {
