@@ -4,6 +4,7 @@ import type { Formatter } from '../../src/tools/domain/commands.ts';
 import { EditRefusedError } from '../../src/tools/domain/fileEdits.ts';
 import type { PreparingTool } from '../../src/tools/domain/preparedCall.ts';
 import { definePreparingTool } from '../../src/tools/infrastructure/defineTool.ts';
+import type { runCommandProcess } from '../../src/tools/infrastructure/commandProcess.ts';
 import { FileFormatter } from '../../src/tools/infrastructure/fileFormatter.ts';
 import { GitIgnoreRules } from '../../src/tools/infrastructure/gitIgnoreRules.ts';
 import { RootsAccessPolicy } from '../../src/tools/infrastructure/rootsAccessPolicy.ts';
@@ -19,7 +20,7 @@ import { WorkspaceWrites } from '../../src/tools/infrastructure/workspaceWrites.
 export async function trackedToolsOver(
 	root: string,
 	store: RecoveryStore,
-	{ formatter }: { formatter?: Formatter } = {},
+	{ formatter, runProcess }: { formatter?: Formatter; runProcess?: typeof runCommandProcess } = {},
 ): Promise<{ readFile: PreparingTool; edit: PreparingTool }> {
 	const policy = await RootsAccessPolicy.create({
 		roots: [{ path: root, access: 'write' }],
@@ -29,7 +30,14 @@ export async function trackedToolsOver(
 		policy,
 		store,
 		...(formatter
-			? { formatter: await FileFormatter.create({ formatter, policy, base: root }) }
+			? {
+					formatter: await FileFormatter.create({
+						formatter,
+						policy,
+						base: root,
+						...(runProcess ? { runProcess } : {}),
+					}),
+				}
 			: {}),
 	});
 	return {

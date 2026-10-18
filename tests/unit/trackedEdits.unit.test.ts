@@ -15,9 +15,11 @@ import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import type { LLMClient, LLMResponse } from '../../src/llm/domain/llm.ts';
 import type { Message } from '../../src/llm/domain/message.ts';
+import type { RecoveryStore, RunJournal } from '../../src/recovery/domain/recoveryStore.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
 import { InvalidAgentConfigError } from '../../src/shared/domain/errors.ts';
 import type { Formatter } from '../../src/tools/domain/commands.ts';
+import type { runCommandProcess } from '../../src/tools/infrastructure/commandProcess.ts';
 import { assistantResponse, textResponse, toolCall } from '../support/fakeLlmClient.ts';
 import { trackedToolsOver } from '../support/trackedTools.ts';
 
@@ -100,9 +102,23 @@ const remove = (path: string) =>
 
 async function agentOver(
 	model: CallingModel,
-	{ formatter, ...options }: { history?: FileRecoveryStore; formatter?: Formatter } = {},
+	{
+		formatter,
+		runProcess,
+		over = store,
+		...options
+	}: {
+		history?: FileRecoveryStore;
+		formatter?: Formatter;
+		runProcess?: typeof runCommandProcess;
+		/** The store its writes are recorded in. */
+		over?: RecoveryStore;
+	} = {},
 ) {
-	const { readFile, edit } = await trackedToolsOver(root, store, formatter ? { formatter } : {});
+	const { readFile, edit } = await trackedToolsOver(root, over, {
+		...(formatter ? { formatter } : {}),
+		...(runProcess ? { runProcess } : {}),
+	});
 	return new LLMAgent({ llmClient: model, tools: [readFile, edit], ...options });
 }
 
@@ -433,6 +449,65 @@ describe('formatting what an edit wrote', () => {
 		expect(onDisk('a.ts')).toBe('const a = 10 ;\nconst b = 2;\n');
 	});
 
+	describe('when what the formatter did cannot be known', () => {
+		const exited = {
+			outcome: 'exited' as const,
+			exitCode: 0,
+			signal: null,
+			output: '',
+			printedBytes: 0,
+			durationMs: 1,
+		};
+		const twoEdits = () =>
+			new CallingModel().then(
+				read('a.ts'),
+				modify('a.ts', 'a = 1;', 'a = 10;'),
+				create('b.ts', 'export const b = 2;\n'),
+			);
+
+		it('fails the edit and stops writing when the formatter cannot be stopped', async () => {
+			const model = twoEdits();
+			const runProcess = () => Promise.resolve({ ...exited, stopped: false });
+
+			await (await agentOver(model, { formatter: tidy, runProcess })).run('change it', { signal });
+
+			expect(model.outputs[1]?.isError).toBe(true);
+			expect(model.outputs[1]?.output).toContain('The formatter could not be stopped');
+			expect(model.last).toEqual({
+				output: 'Writing stopped: the formatter could not be stopped',
+				isError: true,
+			});
+			expect(existsSync(join(root, 'b.ts'))).toBe(false);
+		});
+
+		it('fails the edit and stops writing when its changes cannot be recorded', async () => {
+			const model = twoEdits();
+			const runProcess = () => Promise.resolve({ ...exited, stopped: true });
+			// The journal cannot close the formatter's observation.
+			const over = withJournal(store, journal =>
+				Object.assign(Object.create(journal) as RunJournal, {
+					observed: () => Promise.reject(new Error('the disk is full')),
+				}),
+			);
+
+			await (
+				await agentOver(model, { formatter: tidy, runProcess, over })
+			).run('change it', {
+				signal,
+			});
+
+			expect(model.outputs[1]?.isError).toBe(true);
+			expect(model.outputs[1]?.output).toContain(
+				'The formatter ran, but the harness could not record what it changed',
+			);
+			expect(model.last).toEqual({
+				output: 'Writing stopped: the harness could not record what the formatter changed',
+				isError: true,
+			});
+			expect(existsSync(join(root, 'b.ts'))).toBe(false);
+		});
+	});
+
 	it('says so when the formatter cannot be started', async () => {
 		const model = new CallingModel().then(read('a.ts'), modify('a.ts', 'a = 1;', 'a = 10;'));
 		const missing = { executable: join(parent, 'no-such-formatter') };
@@ -487,3 +562,13 @@ describe('formatting what an edit wrote', () => {
 		);
 	});
 });
+
+/** `store`, with every run's journal replaced by what `change` makes of it. */
+function withJournal(
+	store: RecoveryStore,
+	change: (journal: RunJournal) => RunJournal,
+): RecoveryStore {
+	return Object.assign(Object.create(store) as RecoveryStore, {
+		startRun: async () => change(await store.startRun()),
+	});
+}
