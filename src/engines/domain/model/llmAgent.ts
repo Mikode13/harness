@@ -573,6 +573,8 @@ export class LLMAgent implements Agent {
 		options: RunOptions,
 		effects: RunEffects,
 		toolCall: RunToolContext,
+		// Throws the failure of a progress callback a call narrated through.
+		throwIfProgressFailed: () => void,
 	): Promise<Message> {
 		const { signal, onProgress: callback = ignoreProgress } = options;
 		const results: MessagePart[] = [];
@@ -588,6 +590,8 @@ export class LLMAgent implements Agent {
 				effects,
 				toolCall,
 			);
+			// A call that failed to narrate ends the run before the next one can start.
+			throwIfProgressFailed();
 			if (denied) {
 				emit(
 					{
@@ -713,7 +717,7 @@ export class LLMAgent implements Agent {
 			};
 			// A tool narrates through this without ever failing: a failing callback would reach
 			// only the tool, which turns any failure into a result for the model. The run ends on
-			// it once the tools return.
+			// it once that tool returns.
 			let progressFailure: { error: unknown } | undefined;
 			const onProgress = (event: ProgressEvent) => {
 				if (progressFailure) return;
@@ -722,6 +726,9 @@ export class LLMAgent implements Agent {
 				} catch (error) {
 					progressFailure = { error };
 				}
+			};
+			const throwIfProgressFailed = () => {
+				if (progressFailure) throw progressFailure.error;
 			};
 			// The agent's own `askUser` exists only for a run someone can answer, and never beside
 			// a consumer's tool of that name, which the consumer gave first and which stays theirs.
@@ -781,13 +788,13 @@ export class LLMAgent implements Agent {
 
 				// On the last step no call is left to send the results to, so the tools do not run.
 				if (step < this.maxSteps) {
-					const results = await this.runTools(calls, options, effects, {
-						run: context,
-						reads,
-						onProgress,
-						spend,
-					});
-					if (progressFailure) throw progressFailure.error;
+					const results = await this.runTools(
+						calls,
+						options,
+						effects,
+						{ run: context, reads, onProgress, spend },
+						throwIfProgressFailed,
+					);
 					runMessages.push(results);
 				}
 			}
