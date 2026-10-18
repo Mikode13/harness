@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -8,6 +16,8 @@ import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import type { LLMClient, LLMResponse } from '../../src/llm/domain/llm.ts';
 import type { Message } from '../../src/llm/domain/message.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
+import { InvalidAgentConfigError } from '../../src/shared/domain/errors.ts';
+import type { Formatter } from '../../src/tools/domain/commands.ts';
 import { assistantResponse, textResponse, toolCall } from '../support/fakeLlmClient.ts';
 import { trackedToolsOver } from '../support/trackedTools.ts';
 
@@ -88,8 +98,11 @@ const create = (path: string, text: string) =>
 const remove = (path: string) =>
 	['edit', { op: 'delete', path, text: null, replacement: null }] as Call;
 
-async function agentOver(model: CallingModel, options: { history?: FileRecoveryStore } = {}) {
-	const { readFile, edit } = await trackedToolsOver(root, store);
+async function agentOver(
+	model: CallingModel,
+	{ formatter, ...options }: { history?: FileRecoveryStore; formatter?: Formatter } = {},
+) {
+	const { readFile, edit } = await trackedToolsOver(root, store, formatter ? { formatter } : {});
 	return new LLMAgent({ llmClient: model, tools: [readFile, edit], ...options });
 }
 
@@ -319,6 +332,158 @@ describe('editing only from a version the model read', () => {
 		expect(lines).toHaveLength(62);
 		expect(lines.at(-1)).toBe(
 			'[40 more lines of the change are not shown. Read the file to see them.]',
+		);
+	});
+});
+
+describe('formatting what an edit wrote', () => {
+	/** A formatter that runs `script` in `sh`, the file's path its `$1`. */
+	const formatter = (script: string): Formatter => ({
+		executable: 'sh',
+		args: ['-c', script, 'sh'],
+	});
+	// Removes the space before every semicolon, as a formatter would.
+	const tidy = formatter('sed -i.bak "s/ ;/;/g" "$1" && rm "$1.bak"');
+
+	beforeEach(() => {
+		writeFileSync(join(root, 'a.ts'), 'const a = 1;\nconst b = 2;\n');
+	});
+
+	it('shows the change as the formatter left it, and edits on from that version', async () => {
+		const model = new CallingModel().then(
+			read('a.ts'),
+			modify('a.ts', 'a = 1;', 'a = 10 ;'),
+			// No read in between: the conversation knows the formatted file.
+			modify('a.ts', 'b = 2;', 'b = 20;'),
+		);
+
+		await (await agentOver(model, { formatter: tidy })).run('change it', { signal });
+
+		expect(model.outputs[1]).toEqual({
+			output: [
+				'Changed a.ts. It now reads, around the change:',
+				'1: const a = 10;',
+				'2: const b = 2;',
+			].join('\n'),
+			isError: false,
+		});
+		expect(model.last?.isError).toBe(false);
+		expect(onDisk('a.ts')).toBe('const a = 10;\nconst b = 20;\n');
+	});
+
+	it('formats a file it creates', async () => {
+		const model = new CallingModel().then(create('b.ts', 'export const b = 2 ;\n'));
+
+		await (await agentOver(model, { formatter: tidy })).run('create it', { signal });
+
+		expect(model.last?.isError).toBe(false);
+		expect(onDisk('b.ts')).toBe('export const b = 2;\n');
+	});
+
+	it('records what the formatter changed, so undoing the run undoes both', async () => {
+		const model = new CallingModel().then(read('a.ts'), modify('a.ts', 'a = 1;', 'a = 10 ;'));
+
+		await (
+			await agentOver(model, { formatter: tidy, history: store })
+		).run('change it', {
+			signal,
+		});
+		await store.undo();
+
+		expect(onDisk('a.ts')).toBe('const a = 1;\nconst b = 2;\n');
+	});
+
+	it('keeps the file as written, and says why, when the formatter fails', async () => {
+		const model = new CallingModel().then(
+			read('a.ts'),
+			modify('a.ts', 'a = 1;', 'a = 10 ;'),
+			modify('a.ts', 'b = 2;', 'b = 20;'),
+		);
+		const failing = formatter('echo "a.ts: unexpected token" && exit 2');
+
+		await (await agentOver(model, { formatter: failing })).run('change it', { signal });
+
+		expect(model.outputs[1]).toEqual({
+			output: [
+				'Changed a.ts. It now reads, around the change:',
+				'1: const a = 10 ;',
+				'2: const b = 2;',
+				'The formatter exited with code 2, so the file may not be formatted.',
+				'Its output:',
+				'a.ts: unexpected token',
+				'',
+			].join('\n'),
+			isError: false,
+		});
+		// It still knows the file as it is.
+		expect(model.last?.isError).toBe(false);
+		expect(onDisk('a.ts')).toBe('const a = 10 ;\nconst b = 20;\n');
+	});
+
+	it('stops a formatter that runs past its limit, and keeps the file as written', async () => {
+		const model = new CallingModel().then(read('a.ts'), modify('a.ts', 'a = 1;', 'a = 10 ;'));
+		const slow = { ...formatter('sleep 5'), timeoutMs: 200 };
+
+		await (await agentOver(model, { formatter: slow })).run('change it', { signal });
+
+		expect(model.last?.isError).toBe(false);
+		expect(model.last?.output).toContain(
+			'The formatter ran past its limit of 0.2 s and was stopped, so the file may not be formatted.',
+		);
+		expect(onDisk('a.ts')).toBe('const a = 10 ;\nconst b = 2;\n');
+	});
+
+	it('says so when the formatter cannot be started', async () => {
+		const model = new CallingModel().then(read('a.ts'), modify('a.ts', 'a = 1;', 'a = 10;'));
+		const missing = { executable: join(parent, 'no-such-formatter') };
+
+		await (await agentOver(model, { formatter: missing })).run('change it', { signal });
+
+		expect(model.last?.isError).toBe(false);
+		expect(model.last?.output).toContain(
+			'The formatter could not be started, so the file is as you wrote it:',
+		);
+		expect(onDisk('a.ts')).toBe('const a = 10;\nconst b = 2;\n');
+	});
+
+	it('gives the path relative to where it runs, never as a flag', async () => {
+		const model = new CallingModel().then(create('-x.ts', 'x\n'));
+		const recording = formatter('printf %s "$1" > ../argument');
+
+		await (await agentOver(model, { formatter: recording })).run('create it', { signal });
+
+		expect(readFileSync(join(parent, 'argument'), 'utf8')).toBe('./-x.ts');
+	});
+
+	it('does not run on a file it deletes', async () => {
+		const model = new CallingModel().then(read('a.ts'), remove('a.ts'));
+		const recording = formatter('printf %s "$1" > ../argument');
+
+		await (await agentOver(model, { formatter: recording })).run('delete it', { signal });
+
+		expect(model.last?.isError).toBe(false);
+		expect(existsSync(join(parent, 'argument'))).toBe(false);
+	});
+
+	it('refuses an invalid formatter, or one outside every write root, before any run', async () => {
+		await expect(
+			agentOver(new CallingModel(), {
+				formatter: { executable: 'sh', args: [1] } as unknown as Formatter,
+			}),
+		).rejects.toThrow(
+			new InvalidAgentConfigError(
+				'The formatter needs args to be a list of text without NUL characters',
+			),
+		);
+		await expect(
+			agentOver(new CallingModel(), {
+				formatter: { executable: 'sh', shell: true } as unknown as Formatter,
+			}),
+		).rejects.toThrow(new InvalidAgentConfigError('The formatter has unknown settings: shell'));
+		await expect(
+			agentOver(new CallingModel(), { formatter: { executable: 'sh', cwd: parent } }),
+		).rejects.toThrow(
+			new InvalidAgentConfigError('The formatter needs a cwd inside a write root of the workspace'),
 		);
 	});
 });

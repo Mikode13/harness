@@ -37,9 +37,15 @@ describe('userConfigPath', () => {
 });
 
 describe('loadUserConfig', () => {
-	it("reads the repository's commands, step limits and compaction, by its real path", async () => {
+	it("reads the repository's commands, step limits, compaction and formatter, by its real path", async () => {
+		const formatter = { executable: 'pnpm', args: ['exec', 'prettier', '--write'] };
 		const path = config({
-			[repository]: { commands: { test }, maxSteps: { executor: 120 }, compactAt: 200_000 },
+			[repository]: {
+				commands: { test },
+				maxSteps: { executor: 120 },
+				compactAt: 200_000,
+				formatter,
+			},
 		});
 		symlinkSync(repository, join(parent, 'link'));
 
@@ -47,6 +53,7 @@ describe('loadUserConfig', () => {
 			commands: { test },
 			maxSteps: { executor: 120 },
 			compactAt: 200_000,
+			formatter,
 		});
 	});
 

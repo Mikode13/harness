@@ -1,8 +1,10 @@
 import { z } from 'zod';
 import type { RecoveryStore } from '../../src/recovery/domain/recoveryStore.ts';
+import type { Formatter } from '../../src/tools/domain/commands.ts';
 import { EditRefusedError } from '../../src/tools/domain/fileEdits.ts';
 import type { PreparingTool } from '../../src/tools/domain/preparedCall.ts';
 import { definePreparingTool } from '../../src/tools/infrastructure/defineTool.ts';
+import { FileFormatter } from '../../src/tools/infrastructure/fileFormatter.ts';
 import { GitIgnoreRules } from '../../src/tools/infrastructure/gitIgnoreRules.ts';
 import { RootsAccessPolicy } from '../../src/tools/infrastructure/rootsAccessPolicy.ts';
 import { createTrackedReadFile } from '../../src/tools/infrastructure/trackedReadFile.ts';
@@ -11,17 +13,25 @@ import { WorkspaceWrites } from '../../src/tools/infrastructure/workspaceWrites.
 
 /**
  * The tracked `readFile` and a minimal edit format over the real engine, for tests: `edit`
- * creates, deletes, or replaces one exact text once. The provider formats arrive later.
+ * creates, deletes, or replaces one exact text once. With `formatter`, every edit formats the
+ * file it wrote.
  */
 export async function trackedToolsOver(
 	root: string,
 	store: RecoveryStore,
+	{ formatter }: { formatter?: Formatter } = {},
 ): Promise<{ readFile: PreparingTool; edit: PreparingTool }> {
 	const policy = await RootsAccessPolicy.create({
 		roots: [{ path: root, access: 'write' }],
 		ignoreRules: new GitIgnoreRules(),
 	});
-	const writes = new WorkspaceWrites({ policy, store });
+	const writes = new WorkspaceWrites({
+		policy,
+		store,
+		...(formatter
+			? { formatter: await FileFormatter.create({ formatter, policy, base: root }) }
+			: {}),
+	});
 	return {
 		readFile: createTrackedReadFile(policy),
 		edit: definePreparingTool({

@@ -30,6 +30,7 @@ export type {
 	CommandParameter,
 	CommandRole,
 	Commands,
+	Formatter,
 } from './tools/domain/commands.ts';
 export type { SecretRules } from './tools/infrastructure/rootsAccessPolicy.ts';
 export {

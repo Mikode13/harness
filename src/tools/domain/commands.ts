@@ -64,6 +64,29 @@ export interface CommandDefinition {
 /** The commands an agent may run, by the name the model calls each one. */
 export type Commands = Record<string, CommandDefinition>;
 
+/**
+ * A program the edit tools run on each file they create or change, such as the project's
+ * formatter, so the model reads and keeps editing the file as the formatter leaves it. It runs
+ * as a command does: without a shell, in a small environment, with its changes in the history.
+ */
+export interface Formatter {
+	/** The program: a name looked up in its `PATH`, or a path. A relative path is from `cwd`. */
+	executable: string;
+	/**
+	 * Its arguments, before the file's path, which is always the last one and relative to `cwd`:
+	 * `["exec", "prettier", "--write", "--ignore-unknown"]` with `pnpm`.
+	 */
+	args?: string[];
+	/** Where it runs, as `CommandDefinition.cwd`. Defaults to the first root. */
+	cwd?: string;
+	/** Variables set for it, as `CommandDefinition.env`. */
+	env?: Record<string, string>;
+	/** How long it may run on one file before it is stopped. Defaults to 1 minute. */
+	timeoutMs?: number;
+}
+
+export const defaultFormatterTimeoutMs = 60 * 1000;
+
 export const defaultCommandTimeoutMs = 10 * 60 * 1000;
 export const defaultCommandOutputBytes = 16 * 1024;
 // A test filter or a snapshot name, not a script.
@@ -103,19 +126,8 @@ export function validateCommands(commands: Commands): void {
 		if (typeof description !== 'string' || description.trim() === '') {
 			fail('needs a description');
 		}
-		if (typeof executable !== 'string' || !isArgument(executable)) fail('needs an executable');
-		if (cwd !== undefined && (typeof cwd !== 'string' || !isArgument(cwd))) {
-			fail('has an invalid cwd');
-		}
-		checkLimit(timeoutMs, maxTimeoutMs, 'timeoutMs', fail);
+		checkProcess({ executable, cwd, timeoutMs, env }, fail);
 		checkLimit(outputBytes, maxOutputBytes, 'outputBytes', fail);
-		if (env !== undefined && !isRecord(env)) fail('needs env to map names to values');
-		for (const [variable, value] of Object.entries((env ?? {}) as Record<string, unknown>)) {
-			if (!variablePattern.test(variable)) fail(`sets an invalid variable name "${variable}"`);
-			if (typeof value !== 'string' || value.includes('\0')) {
-				fail(`sets "${variable}" to a non-string`);
-			}
-		}
 
 		if (
 			roles !== undefined &&
@@ -137,6 +149,59 @@ export function validateCommands(commands: Commands): void {
 			}
 			if (!isRecord(argument)) fail('has an argument that is neither text nor a parameter');
 			checkParameter(argument as CommandParameter, seen, fail);
+		}
+	}
+}
+
+/**
+ * Checks the formatter before an agent is built, as `validateCommands` checks a command.
+ *
+ * @throws {InvalidAgentConfigError} for the first thing that is wrong.
+ */
+export function validateFormatter(formatter: Formatter): void {
+	const fail = (problem: string): never => {
+		throw new InvalidAgentConfigError(`The formatter ${problem}`);
+	};
+	// Unknown throughout: the configuration may come from a JSON file, whatever its type says.
+	if (!isRecord(formatter)) fail('must be an object');
+	const { executable, args, cwd, timeoutMs, env, ...rest } = formatter as unknown as Record<
+		string,
+		unknown
+	>;
+	const unknown = Object.keys(rest);
+	if (unknown.length > 0) fail(`has unknown settings: ${unknown.join(', ')}`);
+	checkProcess({ executable, cwd, timeoutMs, env }, fail);
+	if (
+		args !== undefined &&
+		(!Array.isArray(args) ||
+			!args.every(
+				argument => typeof argument === 'string' && isArgument(argument, { allowEmpty: true }),
+			))
+	) {
+		fail('needs args to be a list of text without NUL characters');
+	}
+}
+
+/** What a command and the formatter both declare about the program they run. */
+function checkProcess(
+	{
+		executable,
+		cwd,
+		timeoutMs,
+		env,
+	}: { executable: unknown; cwd: unknown; timeoutMs: unknown; env: unknown },
+	fail: (problem: string) => never,
+): void {
+	if (typeof executable !== 'string' || !isArgument(executable)) fail('needs an executable');
+	if (cwd !== undefined && (typeof cwd !== 'string' || !isArgument(cwd))) {
+		fail('has an invalid cwd');
+	}
+	checkLimit(timeoutMs, maxTimeoutMs, 'timeoutMs', fail);
+	if (env !== undefined && !isRecord(env)) fail('needs env to map names to values');
+	for (const [variable, value] of Object.entries((env ?? {}) as Record<string, unknown>)) {
+		if (!variablePattern.test(variable)) fail(`sets an invalid variable name "${variable}"`);
+		if (typeof value !== 'string' || value.includes('\0')) {
+			fail(`sets "${variable}" to a non-string`);
 		}
 	}
 }

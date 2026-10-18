@@ -487,7 +487,7 @@ run in `AgentResponse.runId`. Progress reports each change as a unified `diff` o
 `completed` event.
 
 `createLLMOrchestrator()` takes the options of `createOrchestrator()` plus `workspace`,
-`maxSteps`, `compactAt`, `commands` and `summarizeUndone`, and returns a promise. Every role runs on the
+`maxSteps`, `compactAt`, `commands`, `formatter` and `summarizeUndone`, and returns a promise. Every role runs on the
 model APIs:
 
 - the planner and the reviewer read, with a `showChanges` tool that gives the current task's
@@ -567,6 +567,28 @@ A command is trusted execution, not a sandbox. A test runs the repository's code
 code the model just wrote, with everything your account can reach. The secret rules of the
 file tools do not apply to it, so a command can print a secret into the model's context.
 Configure only commands you would run yourself on that repository.
+
+### Formatting what the agent writes
+
+With `formatter`, `createFileTools` and `createLLMOrchestrator` run your formatter on every
+file an edit creates or changes, right after writing it. The model reads the file as the
+formatter left it, so no later edit fails because the formatter moved its lines:
+
+```ts
+const tools = await createFileTools('openai', workspace, {
+	formatter: { executable: 'pnpm', args: ['exec', 'prettier', '--write', '--ignore-unknown'] },
+});
+```
+
+- **Arguments:** the file's path is always the last one, relative to the formatter's `cwd`.
+- **History:** what the formatter changes in that file is recorded, so `undo` takes it back with
+  the edit. Changes it makes to other files are not.
+- **Failures:** a formatter that fails, runs past its limit (1 minute, `timeoutMs`) or cannot
+  start leaves the file as the model wrote it, and the model reads why.
+- **Environment:** as a command's: no shell, and only the inherited few variables plus `env`.
+- **Approval:** none, as for the edits themselves. A formatter that loads configuration from
+  the repository, as prettier does, runs code the model can write there.
+- **Not on Windows yet.**
 
 ### Going back through what an agent wrote
 
@@ -677,7 +699,7 @@ is told to decide and say what it assumed.
 With `--llm`, the agents can also [run commands](#running-the-projects-commands) you
 configure for the repository, in `~/.config/mikode-harness/config.json` (or under
 `$XDG_CONFIG_HOME`). The file maps each repository's real path to its `commands` and,
-optionally, its `maxSteps` and `compactAt`. It lives outside every repository, so neither a cloned repository
+optionally, its `maxSteps`, `compactAt` and [`formatter`](#formatting-what-the-agent-writes). It lives outside every repository, so neither a cloned repository
 nor the agent decides what runs, or for how long:
 
 ```json
