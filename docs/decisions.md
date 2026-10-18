@@ -764,6 +764,8 @@ tags: #mikode-harness #provider-integration #error-handling #agent-loops
 
 partially superseded by: "Providers are named after the company, and both paths share their names" (below) — the provider is now `'anthropic'`, and the client takes the Agent SDK's aliases.
 
+partially superseded by: "A Claude answer is streamed, so it can be 64,000 tokens long" (below) — `max_tokens` is 64,000.
+
 **Decision:** `ClaudeLLMClient` is the second `LLMClient`, on the Anthropic Messages API, and `createLLMAgent` takes a provider, `'claude'` or `'openai'`, like `createAgent`. It follows the rules the OpenAI client set:
 
 - **Text only is replayed.** Summarized thinking becomes a `reasoning` part and never goes back; redacted thinking is dropped silently. The system prompt goes in the API's `system` field.
@@ -2048,3 +2050,25 @@ How the user sees a workflow's context: like the orchestrator's roles, each agen
 - A stage whose agent cannot be built, for example with a model its provider does not support, fails when the run first reaches it, not when the workflow is built.
 - A host callback, such as an `ask`, that throws its own `TimeoutError` now passes through as a cancellation, as its own `AbortError` already did.
 - `OrchestratorAgent` still runs the fixed planner → executor → reviewer loop. It is retired once that loop is a workflow, not in this change.
+
+## A Claude answer is streamed, so it can be 64,000 tokens long
+
+tags: #mikode-harness #provider-integration #llm
+
+**Decision:**
+
+- **`max_tokens` is 64,000 on every Claude model.** Adaptive thinking spends from the same budget as the answer, so a hard step at a high effort can need most of it. 64,000 is the most Claude Haiku 4.5 writes, so one value fits every alias; the other models write up to 128,000. A higher limit costs nothing until it is used: Anthropic bills the tokens written, and its output rate limit counts only those, not `max_tokens`.
+- **The request is streamed.** The SDK refuses more than about 21,000 output tokens on a request that is not streamed, because it could outlast the ten-minute timeout. The client calls `beta.messages.stream()` and awaits `finalMessage()`, so `LLMClient` still returns the whole answer and nothing above the client changes.
+- **A stream that breaks off is recoverable.** Once the stream has its response, the SDK reports any failure, such as a connection lost halfway, as an `AnthropicError` that is not an `APIError`. Before that, such an error is the SDK refusing to send and stays unrecoverable. An error event the API sends mid-stream, such as an overload, is an `APIError` and is classified as before.
+- **A broken stream's usage is unreported.** Claude may already have written, and billed, part of the answer, and the client never receives its count, so the run's total becomes unknown instead of counting the call as free.
+
+**Context:** on 2026-10-17 the benchmark of #22 with a Claude Haiku 5.5 executor at `xhigh` stopped both of its runs with `truncated`, after $0.78 and $1.01: one call reached the 16,000 tokens the client allowed. The limit was set at 16,000 only because the request was not streamed; see "The Claude client follows the OpenAI client's rules, and the model contract held".
+
+**Alternatives considered:**
+
+- **Each model's own maximum, 128,000 except Haiku 4.5.** No answer in the benchmarks has needed more than 64,000. An answer that runs away writes until the limit, which at 128,000 costs Opus 5.5 $2.56 for that one call.
+- **The most a request without a stream allows, about 21,000.** It depends on the SDK's estimate of its timeout, and the step that was cut off can need more.
+- **Narrating the text as it streams.** `LLMClient` would need a method that returns events. Nothing consumes text before the answer ends, so it stays out, as in "`LLMClient` does not stream" in the architecture.
+- **`max_tokens` as an option.** Still deferred until a consumer needs to vary it.
+
+**Consequences:** an answer that runs away costs up to four times what it did at 16,000 before it stops as `truncated`. The test fakes of the Anthropic SDK answer through `stream()`, and the tests of a broken stream use the real SDK over a fake `fetch`, so a change to how the SDK reports a stream failure fails there. The OpenAI client is unchanged: it sets no output limit, and its SDK refuses no request for lacking a stream.

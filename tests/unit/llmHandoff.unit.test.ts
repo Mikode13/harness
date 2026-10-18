@@ -5,6 +5,7 @@ import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import { ClaudeLLMClient } from '../../src/llm/infrastructure/claudeLLMClient.ts';
 import { OpenAILLMClient } from '../../src/llm/infrastructure/openAILLMClient.ts';
 import { toolCall, toolMessage, toolResult, userMessage } from '../support/fakeLlmClient.ts';
+import { fakeClaudeSdk } from '../support/fakeClaudeSdk.ts';
 
 // The error classes stay real: the clients classify failures by them.
 vi.mock('@anthropic-ai/sdk', async importOriginal => ({
@@ -36,7 +37,7 @@ function claudeAnswering(text: string) {
 		},
 	});
 	vi.mocked(Anthropic).mockImplementation(function () {
-		return { beta: { messages: { create } } } as unknown as Anthropic;
+		return fakeClaudeSdk(create);
 	});
 	return create;
 }

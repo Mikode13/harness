@@ -59,6 +59,7 @@ import {
 import { defineTool } from '../../src/tools/infrastructure/defineTool.ts';
 import type { WorkspaceOptions } from '../../src/tools/infrastructure/fileTools.ts';
 import { createHistory } from '../../src/recovery/infrastructure/createHistory.ts';
+import { fakeClaudeSdk } from '../support/fakeClaudeSdk.ts';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 vi.mock('@openai/codex-sdk', () => ({ Codex: vi.fn() }));
@@ -189,7 +190,7 @@ function claudeAPIReplying(text: string) {
 		} as unknown as AnthropicMessage),
 	);
 	vi.mocked(Anthropic).mockImplementation(function () {
-		return { beta: { messages: { create } } } as unknown as Anthropic;
+		return fakeClaudeSdk(create);
 	});
 
 	return create;

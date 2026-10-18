@@ -26,6 +26,7 @@ import { GitIgnoreRules } from '../../src/tools/infrastructure/gitIgnoreRules.ts
 import { RootsAccessPolicy } from '../../src/tools/infrastructure/rootsAccessPolicy.ts';
 import { createTrackedReadFile } from '../../src/tools/infrastructure/trackedReadFile.ts';
 import { WorkspaceWrites } from '../../src/tools/infrastructure/workspaceWrites.ts';
+import { fakeClaudeSdk } from '../support/fakeClaudeSdk.ts';
 
 // The error classes stay real; only the clients the SDKs build are fakes.
 vi.mock('openai', async importOriginal => ({
@@ -241,7 +242,7 @@ describe('OpenAI apply_patch on the shared edit engine', () => {
 
 	it('cannot be offered to Claude', () => {
 		vi.mocked(Anthropic).mockImplementation(function () {
-			return { beta: { messages: { create: vi.fn() } } } as unknown as Anthropic;
+			return fakeClaudeSdk(vi.fn());
 		});
 
 		expect(
@@ -279,7 +280,7 @@ describe("Claude's text editor on the shared edit engine", () => {
 		const create = vi.fn();
 		for (const next of responses) create.mockResolvedValueOnce(next);
 		vi.mocked(Anthropic).mockImplementation(function () {
-			return { beta: { messages: { create } } } as unknown as Anthropic;
+			return fakeClaudeSdk(create);
 		});
 		const agent = new LLMAgent({
 			llmClient: new ClaudeLLMClient({ model: 'sonnet', systemPrompt: '', logger }),

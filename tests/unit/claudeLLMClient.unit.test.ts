@@ -13,6 +13,7 @@ import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import { MaxContextError } from '../../src/llm/domain/errors.ts';
 import { ClaudeLLMClient } from '../../src/llm/infrastructure/claudeLLMClient.ts';
 import { toolCall, toolMessage, toolResult, userMessage } from '../support/fakeLlmClient.ts';
+import { fakeClaudeSdk } from '../support/fakeClaudeSdk.ts';
 
 // The error classes stay real: the client classifies failures by them.
 vi.mock('@anthropic-ai/sdk', async importOriginal => ({
@@ -53,7 +54,7 @@ function createSdk(...results: (AnthropicMessage | Error)[]) {
 		else create.mockResolvedValueOnce(result);
 	}
 	vi.mocked(Anthropic).mockImplementation(function () {
-		return { beta: { messages: { create } } } as unknown as Anthropic;
+		return fakeClaudeSdk(create);
 	});
 	return { create };
 }
@@ -212,7 +213,7 @@ describe('ClaudeLLMClient', () => {
 		expect(create).toHaveBeenCalledWith(
 			{
 				model: 'claude-sonnet-5',
-				max_tokens: 16_000,
+				max_tokens: 64_000,
 				system: 'Be brief.',
 				messages: [
 					{ role: 'user', content: [{ type: 'text', text: 'first' }] },
@@ -710,6 +711,148 @@ describe('ClaudeLLMClient', () => {
 		await expect(
 			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
 		).rejects.toBeInstanceOf(RecoverableError);
+	});
+
+	/**
+	 * The real SDK over a fake fetch that streams `events`, then fails with `failure` or ends, so
+	 * a change to how the SDK builds a message from its stream, or reports its failure, fails here.
+	 */
+	async function streamingSdk(events: object[], failure?: Error) {
+		const { default: RealAnthropic } =
+			await vi.importActual<typeof import('@anthropic-ai/sdk')>('@anthropic-ai/sdk');
+		const encoder = new TextEncoder();
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				for (const event of events) {
+					const { type } = event as { type: string };
+					controller.enqueue(encoder.encode(`event: ${type}\ndata: ${JSON.stringify(event)}\n\n`));
+				}
+				if (failure) controller.error(failure);
+				else controller.close();
+			},
+		});
+		const fetch = vi.fn(() =>
+			Promise.resolve(
+				new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+			),
+		);
+		vi.mocked(Anthropic).mockImplementation(function () {
+			return new RealAnthropic({ apiKey: 'test', fetch, maxRetries: 0 });
+		});
+		return fetch;
+	}
+
+	const messageStart = { type: 'message_start', message: { ...response(), content: [] } };
+
+	it('builds the same answer from a stream as from a whole message', async () => {
+		const blocks = [
+			{ type: 'compaction', content: '', encrypted_content: null },
+			{ type: 'thinking', thinking: '', signature: '' },
+			{ type: 'text', text: '', citations: null },
+		];
+		const deltas = [
+			{
+				type: 'compaction_delta',
+				content: '<summary>before</summary>',
+				encrypted_content: 'opaque',
+			},
+			{ type: 'thinking_delta', thinking: 'weighing it' },
+			{ type: 'text_delta', text: 'answer' },
+		];
+		await streamingSdk([
+			messageStart,
+			...blocks.flatMap((block, index) => [
+				{ type: 'content_block_start', index, content_block: block },
+				{ type: 'content_block_delta', index, delta: deltas[index] },
+				...(block.type === 'thinking'
+					? [
+							{
+								type: 'content_block_delta',
+								index,
+								delta: { type: 'signature_delta', signature: 'signed' },
+							},
+						]
+					: []),
+				{ type: 'content_block_stop', index },
+			]),
+			{
+				type: 'message_delta',
+				delta: { stop_reason: 'end_turn', stop_sequence: null, container: null },
+				context_management: null,
+				usage: {
+					output_tokens: 20,
+					iterations: [
+						{
+							type: 'compaction',
+							input_tokens: 180_000,
+							cache_read_input_tokens: 5_000,
+							cache_creation_input_tokens: 0,
+							output_tokens: 3_500,
+						},
+						{
+							type: 'message',
+							input_tokens: 10,
+							cache_read_input_tokens: 60,
+							cache_creation_input_tokens: 30,
+							output_tokens: 20,
+						},
+					],
+				},
+			},
+			{ type: 'message_stop' },
+		]);
+
+		const answer = await createClient().send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
+
+		expect(answer).toEqual({
+			message: {
+				role: 'assistant',
+				content: [
+					{
+						type: 'compaction',
+						source: 'claude',
+						data: {
+							type: 'compaction',
+							content: '<summary>before</summary>',
+							encrypted_content: 'opaque',
+						},
+					},
+					{ type: 'reasoning', text: 'weighing it' },
+					{
+						type: 'providerData',
+						source: 'claude',
+						data: { type: 'thinking', thinking: 'weighing it', signature: 'signed' },
+					},
+					{ type: 'text', text: 'answer' },
+				],
+			},
+			usage: {
+				inputTokens: 180_010,
+				readCacheTokens: 5_060,
+				writtenCacheTokens: 30,
+				outputTokens: 3_520,
+			},
+			stopReason: 'completed',
+		});
+	});
+
+	it.each([
+		['a connection lost halfway', [messageStart], new TypeError('terminated')],
+		[
+			'an overload the API reports mid-stream',
+			[messageStart, { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }],
+			undefined,
+		],
+	])('makes %s recoverable, its usage unreported', async (_, events, failure) => {
+		const fetch = await streamingSdk(events, failure);
+
+		await expect(
+			createClient().send({ context: [userMessage('prompt')], tools: [] }, signal),
+		).rejects.toMatchObject({ constructor: RecoverableError, usageUnreported: true });
+		expect(fetch).toHaveBeenCalledOnce();
 	});
 
 	// The SDK's abort error is named 'Error', so it must not reach the caller as a failure.
