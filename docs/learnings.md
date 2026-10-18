@@ -136,3 +136,80 @@ Same task, after #90: 80 steps for the executor, the executor told to stop once 
 - **What happened:** the run made 118 tool calls, 56 of them `readFile`, against 105 with 48 in the second run.
 - **Evidence:** the CLI's tool events.
 - **What it means:** the instruction to ask for several files in one answer either was not followed or did not cut the number of reads. The run finished because the executor stopped, not because it read less. Knowing the number of steps, not only the calls, needs #89.
+
+## The cost benchmarks of #100 (2026-10-13 to 2026-10-17)
+
+A script ran `createLLMOrchestrator` with no person present, on a clean clone of this repository
+at the same commit, with the user's configured commands and `autoApprove`. Unless an entry says
+otherwise, the roles were the defaults: the planner on `gpt-5.6-sol` at `high`, the executor on
+`gpt-5.6-luna` at `xhigh`, and the reviewer on Claude Opus 5.5 at `high`. The tasks were #20,
+which is small, and #22, the workflows, which became #109. Costs are estimated from each
+call's tokens at the providers' list prices. The results are in `bench-results/`, outside this
+repository.
+
+### Each role resent every file it had read
+
+- **What happened:** in the fourth run of #20, on 2026-10-13, one `readFile` of
+  `docs/architecture.md` brought 53 KB, and both the planner and the executor read it. A tool's
+  result stays in the context and is sent again on every later step.
+- **Evidence:** that run read 3.45M tokens from the cache, in two rounds and 23 minutes. With
+  reads limited to 16 KB and only the planner told to learn the repository, the same task read
+  1.70M in 6.4 minutes. That run needed one round, so the second round explains part of the drop.
+- **What changed:** see "One read or search returns at most 16 KB, and only the planner learns
+  the repository" in decisions.md.
+
+### The planner and the reviewer cost the most
+
+- **What happened:** the expensive models read the repository, and their steps cost more than
+  the executor's even when the executor takes many more.
+- **Evidence:** on #20, before compaction, the planner was 63% of the cost, the reviewer 27%,
+  and the executor 10% over 28 steps. On #22 with 160 executor steps, the planner and the
+  reviewer together were 79% of the run without compaction and 81% of the run with it.
+- **What changed:** see "The planner and the reviewer send cheaper explorers, all at once,
+  through a tool" in decisions.md.
+
+### Clearing the context ourselves cost more than it saved
+
+- **What happened:** the compaction of #107 cleared old tool results and reasoning once the
+  prompt passed 64,000 tokens. Every clearing changed the prefix, so the provider cached the
+  context again from that point, and the executor read again what had been cleared.
+- **Evidence:** on #20, 3.10M tokens read from the cache against 1.70M without it, 561k written
+  against 147k, and 543 s against 383 s. The executor made 54 calls against 28. The run cost
+  about $0.73 against $0.67.
+- **What changed:** #107 was closed. See "The provider compacts a conversation, only when
+  asked, and the harness never edits it" in decisions.md.
+
+### The provider's compaction costs one uncached call
+
+- **What happened:** with OpenAI's compaction at 64,000 tokens, the executor compacted once, at
+  67,000. That call sent its whole input uncached, and the context fell to 6,000 tokens. The
+  executor did not read again what the summary replaced.
+- **Evidence:** on #20, 1.05M tokens read from the cache, 134k written, and 67k uncached, in
+  325 s, for about $0.48. The executor made 28 calls, as without compaction, and cost about 14%
+  more than without it, measured in input-token equivalents. On #22 at 200,000 tokens, the
+  executor compacted once, at 202,000 tokens, and that call cost about 4 cents.
+- **What it means:** the whole-run figures do not compare on their own. The planner's cost
+  changed between days with the same setup, and on #22 the run with compaction cost $2.95
+  against $1.89 because it took a third round of planning, execution and review. One run cannot
+  say whether the compaction caused that round.
+
+### 80 steps were not enough for the executor on #22
+
+- **What happened:** with the default 80 steps, the executor ran out of steps in its first round,
+  in both runs, and the reviewer never ran.
+- **Evidence:** "The model was still calling tools after 80 steps", after $0.78 and $0.84, of
+  which the planner was 71% and 76%. With 160 steps, the first round took 98 executor steps without
+  compaction and 109 with it. Both runs then passed `check` and the tests, 1094 and 1098 of them.
+- **What changed:** nothing yet. A task the size of #22 needs about 100 steps for its first
+  round, and the limit stays a consumer's choice; see "Each role has its own step limit, which
+  the consumer and the CLI can raise" in decisions.md.
+
+### A Claude executor at `xhigh` outgrew 16,000 output tokens
+
+- **What happened:** with the planner on Claude Opus 5.5, the executor on Claude Haiku 5.5 at
+  `xhigh`, and the reviewer on `gpt-5.6-sol`, both runs of #22 stopped with `truncated`.
+- **Evidence:** the executor's last call reported 16,000 output tokens, the most the client
+  allowed: its tenth call in one run and its thirteenth in the other. The runs stopped after
+  $0.78 and $1.01.
+- **What changed:** see "A Claude answer is streamed, so it can be 64,000 tokens long" in
+  decisions.md.
