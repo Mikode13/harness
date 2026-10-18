@@ -161,10 +161,13 @@ Four contracts have rules of their own:
   in the run came without usage: its call was billed, so a partial sum would look complete.
   A failure tells the two cases apart. The engine sets `usageUnreported` when the provider
   answered without usage before the run failed, which makes every total that includes it
-  unknown. A failure that never got an answer, such as a dropped connection, adds nothing. A
-  cancellation carries no tokens: the signal's reason must propagate unchanged, an
-  `AbortError` or the `TimeoutError` of `AbortSignal.timeout`, both of which `isAbortError` recognizes. `duration` is each
-  layer's own wall clock, so a retried run or a whole workflow reports what the consumer waited.
+  unknown. A failure that never got an answer, such as a connection lost before the provider
+  responded, adds nothing. A Claude stream that breaks off once the provider began to answer
+  sets `usageUnreported`, because part of the answer may be billed and its count never
+  arrives. A cancellation carries no tokens: the signal's reason must propagate unchanged, an
+  `AbortError` or the `TimeoutError` of `AbortSignal.timeout`, both of which `isAbortError`
+  recognizes. `duration` is each layer's own wall clock, so a retried run or a whole workflow
+  reports what the consumer waited.
 
 - **`ProgressEvent` grows in minor releases.** Consumers are told to render the types they
   know and ignore the rest, so a new type must never carry information a consumer needs to be
