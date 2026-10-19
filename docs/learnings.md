@@ -158,8 +158,10 @@ repository.
   log of the run of 2026-10-13 was not kept. The clone also held the whole history, #91's
   commits included, but no file tool can read `.git`. In the runs of #22, the issue had no
   comments, and nothing read #109.
-- **What it means:** the runs of #20 compare with each other, since every one had the same
-  help, but not with a task the harness has no answer for. The entries below that rest on #20
+- **What it means:** the runs of 2026-10-14 and 2026-10-17 compare with each other, since each
+  had the same help, but not with a task the harness has no answer for. Whether the run of
+  2026-10-13 read #91 is unknown, so a comparison with it, such as the 3.45M against 1.70M cache
+  reads in the next entry, may include that difference. The entries below that rest on #20
   measure cost, not how well the harness solves a task.
 - **What changed:** nothing in the harness. The next benchmark is to run on a clone that holds
   only its base commit, without the `pr` and `prReviewComments` commands.
