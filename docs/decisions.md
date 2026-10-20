@@ -1760,6 +1760,8 @@ tags: #mikode-harness #llm #orchestration
 
 tags: #mikode-harness #public-api #provider-integration
 
+partially superseded by: "Claude's aliases name the 5.5 models on both paths, and Haiku executes on Anthropic" (below) — Claude Haiku now takes an effort on the model API, so it is no longer an example of a pair refused when the agent is built.
+
 **Decision:** `src/index.ts` exports the models and efforts each provider takes, on each path, and narrowers built on them:
 
 | Path                         | Lists                                  | Narrowers                                                                  |
