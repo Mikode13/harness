@@ -568,9 +568,10 @@ const repositoryGuidance: Record<CommandRole, string> = {
  *   default.
  * - Each role gets `runCommand` with the `commands` whose `roles` name it, the executor by
  *   default. A command asks the approver in any role, and its files are captured around it.
- * - The executor is told to finish only once the tests and checks pass, and the reviewer that
- *   they passed, when the executor has a command; without one, both are told the tests were
- *   not run, and the reviewer judges from the code whether they would pass.
+ * - When the executor has a command, it is told to finish only once the tests and checks pass,
+ *   or to say which fail, and the reviewer takes from its response whether they pass. Without
+ *   one, both are told the tests were not run, and the reviewer judges from the code whether
+ *   they would pass.
  *
  * One run of the orchestrator is one run of the workspace's history, every round and retry
  * included, and its `AgentResponse` names it. Every role follows what the user undoes.
