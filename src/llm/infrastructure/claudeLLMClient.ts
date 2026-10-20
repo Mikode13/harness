@@ -179,6 +179,20 @@ function describeBlock(block: ContentBlock, logger: ILogger): MessagePart[] {
 		case 'tool_use':
 			return [{ type: 'toolCall', id: block.id, name: block.name, input: block.input }];
 		case 'compaction': {
+			// A compaction that failed, with no summary. Claude reads one sent back as if it were not
+			// there, so it is left out: the context goes on whole, and Claude compacts again later.
+			if (!block.content) {
+				treatErrors(
+					() => {
+						logger.warn(
+							'Claude could not compact the conversation; it is sent whole until Claude compacts it',
+						);
+					},
+					classifyHostFailure,
+					'Claude client logger failed while mapping a response',
+				);
+				return [];
+			}
 			// Claude's summary of the context before it, readable, with what it alone reads back.
 			const compaction: CompactionBlockParam = {
 				type: 'compaction',
@@ -259,7 +273,15 @@ function toTokens(usage: Usage | undefined, logger: ILogger): Tokens | undefined
 	};
 }
 
-function toLLMResponse(response: AnthropicMessage, logger: ILogger): LLMResponse {
+/**
+ * @param summaries each compaction's summary as it was streamed, by the index of its block. The
+ * SDK joins a delta that carries none as the text "null", so the final message cannot tell.
+ */
+function toLLMResponse(
+	response: AnthropicMessage,
+	logger: ILogger,
+	summaries: ReadonlyMap<number, string>,
+): LLMResponse {
 	let usage: Tokens | undefined;
 
 	try {
@@ -268,7 +290,15 @@ function toLLMResponse(response: AnthropicMessage, logger: ILogger): LLMResponse
 		return {
 			message: {
 				role: 'assistant',
-				content: response.content.flatMap(block => describeBlock(block, logger)),
+				content: response.content.flatMap((block, index) => {
+					const summary = summaries.get(index);
+					return describeBlock(
+						block.type === 'compaction' && summary !== undefined
+							? { ...block, content: summary }
+							: block,
+						logger,
+					);
+				}),
 			},
 			usage,
 			stopReason: toStopReason(response),
@@ -415,6 +445,8 @@ export class ClaudeLLMClient implements LLMClient {
 	): Promise<LLMResponse> {
 		let response: AnthropicMessage;
 		let stream: BetaMessageStream | undefined;
+		// What each compaction streamed of its summary, by block index, its missing parts left out.
+		const summaries = new Map<number, string>();
 
 		try {
 			// Streamed only to lift the timeout: the client still answers with the whole message.
@@ -457,6 +489,19 @@ export class ClaudeLLMClient implements LLMClient {
 				{ signal },
 			);
 			stream = sent;
+			sent.on('streamEvent', event => {
+				if (event.type === 'content_block_start' && event.content_block.type === 'compaction') {
+					summaries.set(event.index, event.content_block.content ?? '');
+				} else if (
+					event.type === 'content_block_delta' &&
+					event.delta.type === 'compaction_delta'
+				) {
+					summaries.set(
+						event.index,
+						(summaries.get(event.index) ?? '') + (event.delta.content ?? ''),
+					);
+				}
+			});
 			response = await sent.finalMessage();
 		} catch (error) {
 			// The SDK's abort error is named 'Error', so it would pass for a provider failure.
@@ -469,7 +514,7 @@ export class ClaudeLLMClient implements LLMClient {
 		}
 
 		return treatErrors(
-			() => toLLMResponse(response, this.logger),
+			() => toLLMResponse(response, this.logger, summaries),
 			classifyLocalFailure,
 			'Claude response mapping failed',
 		);

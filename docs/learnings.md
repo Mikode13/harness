@@ -232,3 +232,23 @@ repository.
   $0.78 and $1.01.
 - **What changed:** see "A Claude answer is streamed, so it can be 64,000 tokens long" in
   decisions.md.
+
+## A failed Claude compaction sent back (2026-10-20)
+
+An external audit of 2026-10-18 found that `ClaudeLLMClient` took any compaction block as the
+point to send the context from, including one whose `content` is `null`, which the SDK documents
+as a compaction that failed (#119). Three calls to Claude Opus 5.5 checked what the API does with
+such a block. Each sent a code word, an assistant turn, and then asked for the code word.
+
+### Claude reads a failed compaction as if it were not there
+
+- **What happened:** with a valid compaction block in the assistant turn, Claude no longer knew
+  the code word: it read the context from the compaction on. With a block whose `content` and
+  `encrypted_content` were `null`, it answered with the code word, as without any block.
+- **Evidence:** 116 input tokens without a block, 145 with the valid one, and 116 with the failed
+  one. The API accepted all three. A failure on the server could not be caused, so what a real
+  failed block carries in `encrypted_content` is unknown.
+- **What it means:** the client did the opposite of the API. After a failed compaction it would
+  have left out of every later request all the context before it, with no summary in its place.
+- **What changed:** see "A compaction that failed is left out of the conversation" in
+  decisions.md.

@@ -12,12 +12,15 @@ export function fakeClaudeSdk(create: (params: unknown, options: unknown) => unk
 			connected = true;
 			return message;
 		});
-		return {
+		const sent = {
 			get response() {
 				return connected ? new Response() : undefined;
 			},
+			// No stream events: the final message is the whole answer.
+			on: () => sent,
 			finalMessage: () => final,
 		};
+		return sent;
 	};
 	return { beta: { messages: { stream } } } as unknown as Anthropic;
 }
