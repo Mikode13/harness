@@ -6,6 +6,7 @@ import {
 	createOrchestrator,
 	rememberApprovals,
 	type ProgressEvent,
+	type Transcript,
 	type UserQuestion,
 } from '../src/index.ts';
 import { ConversationLoop } from './conversationLoop.ts';
@@ -20,6 +21,7 @@ import { createTerminalAsker } from './terminalAsker.ts';
 import { loadUserConfig, userConfigPath } from './userConfig.ts';
 import { HistoryCommands } from './historyCommands.ts';
 import { formatSpinnerLine } from './spinner.ts';
+import { DebugRecorder } from './debugRecorder.ts';
 
 const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 let spinnerFrame = 0;
@@ -62,12 +64,22 @@ const { values: flags } = parseArgs({
 		'thinking-headings': { type: 'boolean', default: false },
 		// A file that gets one JSON line per call to the model: what it sent and what it cost.
 		steps: { type: 'string' },
+		// A folder that gets, for this session, every progress event and, with `--llm`, what the
+		// model saw in every run of every agent.
+		debug: { type: 'string' },
 	},
 });
 const stepsFile = flags.steps;
 // Opened now, so a path that cannot be written fails before any call to the model is billed.
 if (stepsFile) appendFileSync(stepsFile, '');
 let recordingSteps = stepsFile !== undefined;
+const debug =
+	flags.debug === undefined
+		? undefined
+		: new DebugRecorder(flags.debug, error => {
+				output.printError(error);
+			});
+if (debug) output.print(`Recording for debugging in ${debug.folder}`);
 const progressFormatter = new ProgressEventFormatter({
 	thinkingHeadings: flags['thinking-headings'],
 });
@@ -89,6 +101,13 @@ const orchestratorAgent = flags.llm
 			...(maxSteps === undefined ? {} : { maxSteps }),
 			...(compactAt === undefined ? {} : { compactAt }),
 			...(formatter ? { formatter } : {}),
+			...(debug
+				? {
+						onTranscript: (transcript: Transcript) => {
+							debug.transcript(transcript);
+						},
+					}
+				: {}),
 		})
 	: createOrchestrator({ autoApprove });
 // The history of what the harness's own write tools changed in this folder.
@@ -127,6 +146,7 @@ const approve = rememberApprovals(
 const loop = new ConversationLoop(
 	orchestratorAgent,
 	(item: ProgressEvent) => {
+		debug?.event(item);
 		if (item.type === 'turnStarted') {
 			turnActive = true;
 			progressFormatter.reset();

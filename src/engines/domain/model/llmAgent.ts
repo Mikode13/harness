@@ -36,6 +36,7 @@ import type { LLMClient, LLMResponse } from '#src/llm/domain/llm';
 import type { Message, MessagePart, ToolCallPart, ToolResultPart } from '#src/llm/domain/message';
 import { asNative, nativeOf, type ToolDefinition } from '#src/llm/domain/tool';
 import type { Asker } from '#src/agent/domain/question';
+import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcript';
 import {
 	type AgentTool,
 	type PreparedCall,
@@ -98,6 +99,12 @@ function describePart(part: MessagePart): ProgressEvent | undefined {
  */
 interface RunEffects {
 	toolRan: boolean;
+}
+
+/** What a run has shown the model, for its transcript. */
+interface Seen {
+	messages: () => Message[];
+	tools: ToolDefinition[];
 }
 
 function narrate(part: MessagePart, callback: Callback, summary?: string, exitCode?: number): void {
@@ -195,6 +202,7 @@ export class LLMAgent implements Agent {
 	private readonly logger: ILogger | undefined;
 	private readonly history: HistoryReader | undefined;
 	private readonly summarizer: LLMClient | undefined;
+	private readonly onTranscript: TranscriptCallback | undefined;
 	// The latest move through the history this conversation has followed.
 	private seenRevision = 0;
 	// What this conversation has seen of each file, so an edit starts from a version it read.
@@ -209,6 +217,7 @@ export class LLMAgent implements Agent {
 		logger,
 		history,
 		summarizer,
+		onTranscript,
 	}: {
 		llmClient: LLMClient;
 		messages?: Message[];
@@ -230,6 +239,8 @@ export class LLMAgent implements Agent {
 		 * one, the model is told what those turns asked, word for word.
 		 */
 		summarizer?: LLMClient;
+		/** Receives what the model saw in each run, once the run ended. */
+		onTranscript?: TranscriptCallback;
 	}) {
 		if (!Number.isInteger(maxSteps) || maxSteps < 1) {
 			throw new InvalidAgentConfigError(
@@ -244,6 +255,7 @@ export class LLMAgent implements Agent {
 		this.logger = logger;
 		this.history = history;
 		this.summarizer = summarizer;
+		this.onTranscript = onTranscript;
 		this.tools = new Map(tools.map(tool => [tool.name, tool]));
 		if (this.tools.size !== tools.length) {
 			// The model calls tools by name, so a second one with the same name could never run.
@@ -712,6 +724,56 @@ export class LLMAgent implements Agent {
 		options: RunOptions,
 		context: RunContext,
 	): Promise<AgentResponse> {
+		const seen: Seen = { messages: () => [], tools: this.toolDefinitions };
+		let response: AgentResponse;
+		try {
+			response = await this.takeSteps(prompt, options, context, seen);
+		} catch (error) {
+			await this.transcribe(seen, isAbortError(error) ? 'cancelled' : 'failed', error);
+			throw error;
+		}
+		await this.transcribe(seen, 'completed');
+		return response;
+	}
+
+	/** Hands the run's transcript to the consumer, whose failure is logged, not the run's. */
+	private async transcribe(
+		seen: Seen,
+		outcome: Transcript['outcome'],
+		error?: unknown,
+	): Promise<void> {
+		if (!this.onTranscript) return;
+		const content = {
+			instructions: this.llmClient.systemPrompt,
+			tools: seen.tools.map(({ name, description, inputSchema }) => ({
+				name,
+				description,
+				inputSchema,
+			})),
+			messages: structuredClone(seen.messages()),
+			...(outcome === 'completed' ? {} : { error: describeFailure(error) }),
+		};
+		try {
+			await this.onTranscript({ outcome, content });
+		} catch (failure) {
+			treatErrors(
+				() => {
+					this.logger?.warn(
+						`The run's transcript could not be handed over: ${describeFailure(failure)}`,
+					);
+				},
+				classifyHostFailure,
+				'LLM agent logger failed',
+			);
+		}
+	}
+
+	private async takeSteps(
+		prompt: string,
+		options: RunOptions,
+		context: RunContext,
+		seen: Seen,
+	): Promise<AgentResponse> {
 		const { signal, onProgress: callback = ignoreProgress } = options;
 		const start = Date.now();
 		const runMessages: Message[] = [{ role: 'user', content: [{ type: 'text', text: prompt }] }];
@@ -723,6 +785,8 @@ export class LLMAgent implements Agent {
 		// The turn this one follows: the last recorded, unless the workspace moved since.
 		let after = this.conversation.currentTurn;
 		let followed: Followed | undefined;
+		// What the model has seen so far, whichever turn the run ends up following.
+		seen.messages = () => [...this.conversation.contextAfter(after), ...runMessages];
 
 		try {
 			if (this.history) {
@@ -774,6 +838,7 @@ export class LLMAgent implements Agent {
 			// a consumer's tool of that name, which the consumer gave first and which stays theirs.
 			const offersAsk = options.ask !== undefined && !this.tools.has(askUserName);
 			const tools = offersAsk ? [...this.toolDefinitions, askUserDefinition] : this.toolDefinitions;
+			seen.tools = tools;
 			for (let step = 1; step <= this.maxSteps; step++) {
 				const { response, context: sent } = await this.llmCall(runMessages, after, {
 					signal,

@@ -27,6 +27,7 @@ import {
 	createLLMOrchestrator,
 	historyStart,
 	type ProgressEvent,
+	type Transcript,
 	type WorkspaceOptions,
 } from '../../src/index.ts';
 import { fakeClaudeSdk } from '../support/fakeClaudeSdk.ts';
@@ -337,6 +338,37 @@ describe('the write tools, end to end through the public exports', () => {
 		});
 		// Six calls, ten tokens in and five out each: the explorer's two count too.
 		expect(response.tokens).toMatchObject({ inputTokens: 60, outputTokens: 30 });
+	});
+
+	it('hands over every run of every role and explorer, each named by its agent', async () => {
+		scriptOpenAI(
+			openAIResponse(call('p1', 'explore', { questions: ['Where is add?'] })),
+			openAIResponse(text('add is in src/math.ts.')),
+			openAIResponse(text('Make add add.')),
+			openAIResponse(text('Nothing to change yet.')),
+		);
+		scriptClaude(claudeResponse(say('{"decision":"approved"}')));
+		const transcripts: Transcript[] = [];
+
+		const agent = await createLLMOrchestrator({
+			workspace,
+			logger: { warn: vi.fn() },
+			onTranscript: transcript => {
+				transcripts.push(transcript);
+			},
+		});
+		await agent.run('Fix add.', { signal });
+
+		// Each once its run ended: the explorer's inside the planner's.
+		expect(transcripts.map(({ agent, outcome }) => [agent, outcome])).toEqual([
+			['explorer', 'completed'],
+			['planner', 'completed'],
+			['executor', 'completed'],
+			['reviewer', 'completed'],
+		]);
+		expect(JSON.stringify(transcripts[0]?.content)).toContain('Where is add?');
+		expect(JSON.stringify(transcripts[0]?.content)).not.toContain('Fix add.');
+		expect(JSON.stringify(transcripts[1]?.content)).toContain('add is in src/math.ts.');
 	});
 
 	it('sends Claude Haiku, without thinking, as the explorer of a role on Claude', async () => {

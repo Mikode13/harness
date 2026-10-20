@@ -102,6 +102,11 @@ transport-shaped, and `RetryingAgent` converts a persistent one into an `Unrecov
 on exhaustion. A host failure cannot be replayed safely, because the provider turn it
 interrupted may already have written files or run commands.
 
+One host callback is absorbed instead: `onTranscript`, which receives what the model saw once a
+run of `LLMAgent` ended. It runs after the run's outcome is decided, and a failure in it is logged
+through `ILogger.warn`, since a debugging aid must not change the run it observes. A
+`Transcript`'s `outcome` and `agent` are contract; its `content` is plain JSON with no stable shape.
+
 The provider and host boundaries stay narrow on purpose. Item mapping, logging and the
 consumer callback sit outside `classifyProviderFailure` and outside the `for await` of
 `classifiedProviderStream`; a host failure caught inside either would be reported as a
@@ -123,7 +128,8 @@ why it is the only place that knows every provider.
 
 `src/index.ts` is the public API: `createAgent`, `createOrchestrator`, `createLLMAgent`,
 `createLLMOrchestrator`, the `Agent`, `RunOptions`, `AgentResponse`, `Callback`, `ProgressEvent`,
-`ProgressAgent`, `StepContext` and `Tokens` types, the `Asker`, `UserQuestion` and `QuestionOption` types of `RunOptions.ask`, the approval contract (`rememberApprovals` and the `Approver`,
+`ProgressAgent`, `StepContext` and `Tokens` types, the `Transcript` and `TranscriptCallback` types
+of `onTranscript`, the `Asker`, `UserQuestion` and `QuestionOption` types of `RunOptions.ask`, the approval contract (`rememberApprovals` and the `Approver`,
 `ApprovalRequest`, `ApprovalDecision`, `RememberableDecision`, `ToolRisk` and `CommandLine` types), the three
 failure types an agent rejects with, `isAbortError`, `isAgentProvider`, `agentProviders`, the
 provider-indexed `agentModels` and `agentReasoningEfforts` catalogs with their `isModelOf` and
