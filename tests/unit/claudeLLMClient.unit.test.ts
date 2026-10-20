@@ -744,6 +744,49 @@ describe('ClaudeLLMClient', () => {
 
 	const messageStart = { type: 'message_start', message: { ...response(), content: [] } };
 
+	// The SDK joins a compaction's deltas as text, so a delta without a summary reads "null".
+	it.each([
+		['no delta', []],
+		[
+			'a delta without a summary',
+			[{ type: 'compaction_delta', content: null, encrypted_content: null }],
+		],
+	])('leaves out a streamed compaction that failed, with %s', async (_, deltas) => {
+		await streamingSdk([
+			messageStart,
+			{
+				type: 'content_block_start',
+				index: 0,
+				content_block: { type: 'compaction', content: null, encrypted_content: null },
+			},
+			...deltas.map(delta => ({ type: 'content_block_delta', index: 0, delta })),
+			{ type: 'content_block_stop', index: 0 },
+			{
+				type: 'content_block_start',
+				index: 1,
+				content_block: { type: 'text', text: '', citations: null },
+			},
+			{ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'answer' } },
+			{ type: 'content_block_stop', index: 1 },
+			{
+				type: 'message_delta',
+				delta: { stop_reason: 'end_turn', stop_sequence: null, container: null },
+				context_management: null,
+				usage: { output_tokens: 1 },
+			},
+			{ type: 'message_stop' },
+		]);
+		const logger = { warn: vi.fn() };
+
+		const answer = await createClient(logger).send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
+
+		expect(answer.message.content).toEqual([{ type: 'text', text: 'answer' }]);
+		expect(logger.warn).toHaveBeenCalledOnce();
+	});
+
 	it('builds the same answer from a stream as from a whole message', async () => {
 		const blocks = [
 			{ type: 'compaction', content: '', encrypted_content: null },
@@ -971,6 +1014,84 @@ describe('ClaudeLLMClient compaction', () => {
 					],
 				},
 				{ role: 'user', content: [{ type: 'text', text: 'next' }] },
+			],
+		});
+	});
+
+	// Claude answers a failed compaction sent back as if it were not there: checked live on
+	// 2026-10-20, where it neither cut the context nor counted a token for it.
+	it('leaves out a compaction that failed, warns, and sends the whole context next', async () => {
+		const failed = {
+			type: 'compaction',
+			content: null,
+			encrypted_content: null,
+		} as unknown as ContentBlock;
+		const { create } = createSdk(response({ content: [failed, text('continued')] }), response());
+		const logger = { warn: vi.fn() };
+		const client = new ClaudeLLMClient({
+			model: 'sonnet',
+			compactAt: 150_000,
+			systemPrompt: 'Be brief.',
+			logger,
+		});
+		const context = [userMessage('long task')];
+
+		const answer = await client.send({ context, tools: [] }, signal);
+		expect(answer.message.content).toEqual([{ type: 'text', text: 'continued' }]);
+		expect(logger.warn).toHaveBeenCalledWith(
+			'Claude could not compact the conversation; it is sent whole until Claude compacts it',
+		);
+		await client.send(
+			{ context: [...context, answer.message, userMessage('next')], tools: [] },
+			signal,
+		);
+
+		expect(create.mock.calls[1]?.[0]).toMatchObject({
+			messages: [
+				{ role: 'user', content: [{ type: 'text', text: 'long task' }] },
+				{ role: 'assistant', content: [{ type: 'text', text: 'continued' }] },
+				{ role: 'user', content: [{ type: 'text', text: 'next' }] },
+			],
+		});
+	});
+
+	it('keeps an earlier compaction as the boundary when a later one fails', async () => {
+		const valid = {
+			type: 'compaction',
+			content: '<summary>what happened</summary>',
+			encrypted_content: 'opaque',
+		} as unknown as ContentBlock;
+		const failed = {
+			type: 'compaction',
+			content: null,
+			encrypted_content: null,
+		} as unknown as ContentBlock;
+		const { create } = createSdk(
+			response({ content: [valid, text('first')] }),
+			response({ content: [failed, text('second')] }),
+			response(),
+		);
+		const client = compactingClient(150_000);
+		let context = [userMessage('long task')];
+
+		for (const next of ['more', 'last']) {
+			const answer = await client.send({ context, tools: [] }, signal);
+			context = [...context, answer.message, userMessage(next)];
+		}
+		await client.send({ context, tools: [] }, signal);
+
+		expect(create.mock.calls[2]?.[0]).toMatchObject({
+			messages: [
+				{
+					role: 'assistant',
+					content: [
+						{ type: 'compaction', content: '<summary>what happened</summary>' },
+						{ type: 'text', text: 'first' },
+					],
+				},
+				{ role: 'user', content: [{ type: 'text', text: 'more' }] },
+				{ role: 'assistant', content: [{ type: 'text', text: 'second' }] },
+				{ role: 'user', content: [{ type: 'text', text: 'last' }] },
 			],
 		});
 	});

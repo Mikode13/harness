@@ -288,7 +288,8 @@ configured command, by its input, has ended five times in a row with the same ou
 output, whatever other calls came between; it stops on the fifth, after narrating its result and
 before any later call of that answer. A client built with
 `compactAt` has its provider compact the context inside the call that passes it; the summary is a
-`compaction` part of the answer, and that client sends the context from its latest compaction on,
+`compaction` part of the answer, unless the compaction failed and Claude returned no summary, which
+the client leaves out with a warning. That client sends the context from its latest compaction on,
 while the conversation keeps every turn and any other client sends them all. A missing tool, or a tool that throws, becomes an
 error result the model can correct itself from; only a cancellation escapes, whatever error
 the tool turned it into, and a cancelled run neither starts nor announces another tool. A

@@ -2163,3 +2163,21 @@ tags: #mikode-harness #llm #tools #cost
 - A model that runs a passing check after every small change, with nothing else the check sees changing, is stopped on the fifth. Format on write makes a separate `format` command after each edit unnecessary.
 - A loop between two endings of the same command is not caught; `maxSteps` still bounds it.
 - A run stopped this way spends at most the steps up to the fifth run of the command.
+
+## A compaction that failed is left out of the conversation
+
+tags: #mikode-harness #llm #compaction
+
+**Decision:** a Claude compaction block with no summary, its `content` `null` or empty, becomes no part of the answer. The summary is read from the stream's events, not from the SDK's final message: the SDK joins a streamed delta whose `content` is `null` as the text "null", which would pass for a summary. `ClaudeLLMClient` warns through its `ILogger`, and the context goes on whole until Claude compacts it at a later call. Only a compaction with a summary is the point `sentContext` sends from. This refines "The provider compacts a conversation, only when asked, and the harness never edits it".
+
+**Context:** #119, from an external audit of 2026-10-18. The SDK documents a `null` content as a compaction that failed. On 2026-10-20 a live check found that Claude reads such a block sent back as if it were not there, with the same answer and the same input tokens as without it; see "A failed Claude compaction sent back" in learnings.md. The user chose to drop it.
+
+**Alternatives considered:**
+
+- **Sending it back, without taking it as the boundary.** Anthropic's documentation says to send compaction blocks back, and the API accepts a failed one. It changes nothing in what Claude reads or bills, and the conversation would have to hold it as something other than a `compaction` part. Not chosen.
+
+**Consequences:**
+
+- A failed compaction leaves no trace in the conversation, only the warning.
+- The next call passes the threshold again, so Claude tries again then.
+- What a real failed block carries in `encrypted_content` was not seen: a failure could not be caused on purpose. A block with a summary is kept whatever `encrypted_content` holds.
