@@ -547,8 +547,6 @@ tags: #mikode-harness #api-surface #boundaries
 
 tags: #mikode-harness #orchestration #scope
 
-partially superseded by: "Claude's aliases name the 5.5 models on both paths, and Anthropic's roles are Opus, Haiku and Sonnet" (below) — on Anthropic, Haiku 5.5 executes and Sonnet 5.5 reviews, so the reviewer is no longer the stronger model there.
-
 **Decision:** `createOrchestrator` decides which provider, model, and reasoning effort play each role. By default Codex plans (`gpt-5.6-sol`, `high`) and executes (`gpt-5.6-luna`, `xhigh`), and Claude reviews (`opus`, `high`). `provider: 'claude'` or `provider: 'codex'` runs every role on one provider, keeping a stronger model for planning and reviewing and pairing a cheaper model with a higher effort for executing.
 
 **Context:** issue #15 had left this composition to the consumer. More than one consumer needs the same one — the CLI, and the router planned in #17 — and the practical reason to change it is running out of quota on one provider. Which model suits which role is knowledge about providers, which the harness already owns.
@@ -1530,7 +1528,7 @@ Both formats become the same internal operations through `prepareTrackedEdit`, s
 
 tags: #mikode-harness #tools #orchestration #llm
 
-partially superseded by: "Claude's aliases name the 5.5 models on both paths, and Anthropic's roles are Opus, Haiku and Sonnet" (below) — the Anthropic summary of what was undone runs Claude Haiku 5.5 at `low`, not Haiku 4.5 without thinking.
+partially superseded by: "Claude's aliases name the 5.5 models on both paths, and Haiku executes on Anthropic" (below) — the Anthropic summary of what was undone runs Claude Haiku 5.5 at `high`, as `gpt-5.6-luna` does, not Haiku 4.5 without thinking.
 
 **Decision:** an agent's file tools come from `createFileTools(provider, workspace)`, and the consumer gives them to `createLLMAgent` beside its own tools:
 
@@ -1994,7 +1992,7 @@ The user chose 16 KB, the same as a command's output. The user also set the role
 
 tags: #mikode-harness #llm #cost
 
-partially superseded by: "Claude's aliases name the 5.5 models on both paths, and Anthropic's roles are Opus, Haiku and Sonnet" (below) — `haiku` names Claude Haiku 5.5, which compacts, so its client no longer refuses `compactAt`.
+partially superseded by: "Claude's aliases name the 5.5 models on both paths, and Haiku executes on Anthropic" (below) — `haiku` names Claude Haiku 5.5, which compacts, so its client no longer refuses `compactAt`.
 
 **Decision:**
 
@@ -2065,7 +2063,7 @@ How the user sees a workflow's context: like the orchestrator's roles, each agen
 
 tags: #mikode-harness #provider-integration #llm
 
-partially superseded by: "Claude's aliases name the 5.5 models on both paths, and Anthropic's roles are Opus, Haiku and Sonnet" (below) — `haiku` names Claude Haiku 5.5, so the limit is no longer the most the smallest model writes. It stays at 64,000 because no answer has needed more.
+partially superseded by: "Claude's aliases name the 5.5 models on both paths, and Haiku executes on Anthropic" (below) — `haiku` names Claude Haiku 5.5, so the limit is no longer the most the smallest model writes. It stays at 64,000 because no answer has needed more.
 
 **Decision:**
 
@@ -2089,7 +2087,7 @@ partially superseded by: "Claude's aliases name the 5.5 models on both paths, an
 
 tags: #mikode-harness #agent-loops #cost
 
-partially superseded by: "Claude's aliases name the 5.5 models on both paths, and Anthropic's roles are Opus, Haiku and Sonnet" (below) — an explorer on Claude runs Claude Haiku 5.5 at `medium`, not Haiku 4.5.
+partially superseded by: "Claude's aliases name the 5.5 models on both paths, and Haiku executes on Anthropic" (below) — an explorer on Claude runs Claude Haiku 5.5 at `medium`, not Haiku 4.5.
 
 **Decision:**
 
@@ -2235,7 +2233,7 @@ tags: #mikode-harness #llm #debugging
 - A transcript holds every file the model read and every command output it saw, and the CLI writes it wherever `--debug` points.
 - The transcript of a run that is killed with its process is lost.
 
-## Claude's aliases name the 5.5 models on both paths, and Anthropic's roles are Opus, Haiku and Sonnet
+## Claude's aliases name the 5.5 models on both paths, and Haiku executes on Anthropic
 
 tags: #mikode-harness #models #orchestration
 
@@ -2243,14 +2241,16 @@ tags: #mikode-harness #models #orchestration
 
 - `sonnet` names Claude Sonnet 5.5 (`claude-sonnet-5-5`) and `haiku` names Claude Haiku 5.5 (`claude-haiku-5-5`); `opus` stays Claude Opus 5.5 and `fable` Claude Fable 5.1. One table, `claudeModelIds`, pins them for the Messages API and for the Agent SDK, which is now sent the ID instead of the alias, so both paths run the same model for the same name.
 - Haiku 5.5 thinks adaptively, takes a reasoning effort and compacts, so the client no longer refuses either for `haiku`.
-- With `provider: 'anthropic'`, the planner is Opus at `high`, the executor Haiku at `xhigh`, and the reviewer Sonnet at `high`. Before, Sonnet executed and Opus reviewed. This partially supersedes "The harness owns the orchestrator's composition, with a manual provider flag": on Anthropic, the reviewer is no longer the strongest model.
-- An explorer on Claude runs Haiku 5.5 at `medium`, as `gpt-5.6-luna` does on OpenAI. The summary of what was undone runs Haiku 5.5 at `low`, the nearest to the "without thinking" the user chose for Haiku 4.5 in #81, which accepted no thinking.
+- With `provider: 'anthropic'`, the planner and the reviewer are Opus at `high` and the executor is Haiku at `xhigh`, as `gpt-5.6-sol` and `gpt-5.6-luna` are on OpenAI. Before, Sonnet executed.
+- Wherever OpenAI runs `gpt-5.6-luna`, Claude runs Haiku 5.5 at the same effort: an explorer at `medium`, and the summary of what was undone at `high`, which replaces the Haiku 4.5 without thinking that the user chose in #81, when Haiku accepted no thinking.
 
-**Context:** on 2026-10-20 the user asked that the Anthropic models be the 5.5 ones from now on, with the roles Opus, Haiku and Sonnet. In the #22 runs of the same day, Haiku 5.5 at `xhigh` failed 4 of 50 edits, against GPT's 8 of 61 patches, and it ran through a copy of the harness, because no alias named it; see "Two roles on #22 after #100" in learnings.md. The Agent SDK resolves an alias its own way, so `haiku` could still have meant Haiku 4.5 there, which refuses an effort.
+**Context:** on 2026-10-20 the user asked that the Anthropic models be the 5.5 ones from now on, and that the Anthropic roles mirror OpenAI's models: Opus where `gpt-5.6-sol` runs, Haiku where `gpt-5.6-luna` does. In the #22 runs of the same day, Haiku 5.5 at `xhigh` failed 4 of 50 edits, against GPT's 8 of 61 patches, and it ran through a copy of the harness, because no alias named it; see "Two roles on #22 after #100" in learnings.md. The Agent SDK resolves an alias its own way, so `haiku` could still have meant Haiku 4.5 there, which refuses an effort.
 
 **Alternatives considered:**
 
 - **A new alias for Haiku 5.5, keeping `haiku` on 4.5.** No consumer's model would change under it, but there would be two names for a cheaper model, and the older one is dearer: Haiku 4.5 costs ten times as much per token. Not chosen.
+- **Sonnet 5.5 as the Anthropic reviewer.** It would make the review cheaper than Opus, but OpenAI reviews with its stronger model. The user chose Opus, to mirror OpenAI.
+- **The summary at `low`.** The nearest to Haiku 4.5 without thinking, and cheaper, but unlike `gpt-5.6-luna` at `high`. Not chosen.
 - **Leaving the Agent SDK on aliases.** It follows Claude Code's choice of model without a release, but the two paths could then run different models for one name. Not chosen.
 
 **Consequences:**

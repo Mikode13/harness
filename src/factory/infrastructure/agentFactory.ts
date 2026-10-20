@@ -128,9 +128,8 @@ export interface Role {
 	reasoningEffort: ReasoningEffort;
 }
 
-// A stronger model plans and a cheaper one executes the plan, at a higher effort; on Anthropic a
-// third model, between the two, reviews it. Every model and effort here is one both the Agent
-// SDKs and the model APIs accept, so either path can run a role.
+// A stronger model plans and reviews; a cheaper one executes the plan. Every model and effort
+// here is one both the Agent SDKs and the model APIs accept, so either path can run a role.
 const orchestratorRoles = {
 	default: {
 		planner: { provider: 'openai', model: 'gpt-5.6-sol', reasoningEffort: 'high' },
@@ -140,7 +139,7 @@ const orchestratorRoles = {
 	anthropic: {
 		planner: { provider: 'anthropic', model: 'opus', reasoningEffort: 'high' },
 		executor: { provider: 'anthropic', model: 'haiku', reasoningEffort: 'xhigh' },
-		reviewer: { provider: 'anthropic', model: 'sonnet', reasoningEffort: 'high' },
+		reviewer: { provider: 'anthropic', model: 'opus', reasoningEffort: 'high' },
 	},
 	openai: {
 		planner: { provider: 'openai', model: 'gpt-5.6-sol', reasoningEffort: 'high' },

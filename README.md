@@ -156,8 +156,8 @@ releases, so render the ones you know and ignore the rest. Swapping the agent fo
 `createAgent('openai')`, or for `createOrchestrator()` and its planner → executor →
 reviewer workflow, changes nothing else in the snippet above.
 `createOrchestrator({ provider: 'anthropic' })` runs every role on one provider, for
-example when the other one is out of quota. On Anthropic the planner is Claude Opus 5.5, the executor
-Claude Haiku 5.5 at `xhigh`, and the reviewer Claude Sonnet 5.5.
+example when the other one is out of quota. On Anthropic, Claude Opus 5.5 plans and reviews
+and Claude Haiku 5.5 executes at `xhigh`, as `gpt-5.6-sol` and `gpt-5.6-luna` do on OpenAI.
 
 The optional `agent` field on an event identifies the orchestrator role that produced
 it (`planner`, `executor`, or `reviewer`). The optional `summary` on a `tool` event

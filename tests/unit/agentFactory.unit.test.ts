@@ -640,7 +640,7 @@ describe('createOrchestrator', () => {
 			}),
 		).resolves.toMatchObject({ response: 'All job has finished' });
 
-		expect(claudeModels()).toEqual(['claude-opus-5-5', 'claude-haiku-5-5', 'claude-sonnet-5-5']);
+		expect(claudeModels()).toEqual(['claude-opus-5-5', 'claude-haiku-5-5', 'claude-opus-5-5']);
 		expect(claudeEfforts()).toEqual(['high', 'xhigh', 'high']);
 		// The Agent SDKs take no system prompt, so each role's instructions lead its prompt.
 		expect(vi.mocked(query).mock.calls.map(([params]) => params.prompt)).toEqual([
@@ -960,7 +960,7 @@ describe('createLLMOrchestrator', () => {
 		expect(requests.map(request => request.model)).toEqual([
 			'claude-opus-5-5',
 			'claude-haiku-5-5',
-			'claude-sonnet-5-5',
+			'claude-opus-5-5',
 		]);
 		expect(requests[1]).toMatchObject({ output_config: { effort: 'xhigh' } });
 		expect(declared(requests[1])).toEqual([
@@ -1416,7 +1416,7 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 			expect(requests.at(-1)).toContain('Note from the harness');
 		}
 	});
-	it('summarizes what was undone on Claude with Haiku 5.5 at low effort', async () => {
+	it('summarizes what was undone on Claude with Haiku 5.5 at high effort, as on OpenAI', async () => {
 		const create = claudeAPIReplying('done');
 		create.mockImplementationOnce(() =>
 			Promise.resolve({
@@ -1447,6 +1447,6 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 		const summary = (create.mock.calls as unknown[][])
 			.map(call => call[0] as Record<string, unknown>)
 			.find(request => JSON.stringify(request).includes('The user undid the work'));
-		expect(summary).toMatchObject({ model: 'claude-haiku-5-5', output_config: { effort: 'low' } });
+		expect(summary).toMatchObject({ model: 'claude-haiku-5-5', output_config: { effort: 'high' } });
 	});
 });

@@ -112,8 +112,8 @@ export interface CreateLLMAgentOptions {
 	workspace?: WorkspaceOptions;
 	/**
 	 * With `workspace`, a summary of what was undone, from the provider's cheap model, in place
-	 * of the undone prompts. That is Claude Haiku 5.5 at low effort, or `gpt-5.6-luna` at high
-	 * effort, and the call is billed with the run's tokens. Defaults to `true`.
+	 * of the undone prompts. That is Claude Haiku 5.5 or `gpt-5.6-luna`, at high effort, and the
+	 * call is billed with the run's tokens. Defaults to `true`.
 	 */
 	summarizeUndone?: boolean;
 	/**
@@ -295,7 +295,7 @@ function llmClientFor(
 /** The provider's cheap model, for the summary of what was undone. */
 function summarizerFor(provider: AgentProvider, logger: ILogger): LLMClient {
 	return provider === 'anthropic'
-		? new ClaudeLLMClient({ model: 'haiku', reasoningEffort: 'low', systemPrompt: '', logger })
+		? new ClaudeLLMClient({ model: 'haiku', reasoningEffort: 'high', systemPrompt: '', logger })
 		: new OpenAILLMClient({
 				model: 'gpt-5.6-luna',
 				reasoningEffort: 'high',
