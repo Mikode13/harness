@@ -1416,4 +1416,37 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 			expect(requests.at(-1)).toContain('Note from the harness');
 		}
 	});
+	it('summarizes what was undone on Claude with Haiku 5.5 at low effort', async () => {
+		const create = claudeAPIReplying('done');
+		create.mockImplementationOnce(() =>
+			Promise.resolve({
+				stop_reason: 'tool_use',
+				content: [
+					{
+						type: 'tool_use',
+						id: 'toolu-1',
+						name: 'str_replace_based_edit_tool',
+						input: { command: 'create', path: 'note.md', file_text: 'hi\n' },
+						caller: { type: 'direct' },
+					},
+				],
+				usage: { input_tokens: 1, output_tokens: 1 },
+			} as unknown as AnthropicMessage),
+		);
+		const agent = createLLMAgent('anthropic', {
+			systemPrompt: 'You write notes.',
+			tools: await createFileTools('anthropic', workspace, { logger: createLogger() }),
+			workspace,
+			logger: createLogger(),
+		});
+		await agent.run('write a note', { signal });
+		await (await createHistory({ root: repo, stateDirectory: join(parent, 'state') })).undo();
+
+		await agent.run('try again', { signal });
+
+		const summary = (create.mock.calls as unknown[][])
+			.map(call => call[0] as Record<string, unknown>)
+			.find(request => JSON.stringify(request).includes('The user undid the work'));
+		expect(summary).toMatchObject({ model: 'claude-haiku-5-5', output_config: { effort: 'low' } });
+	});
 });
