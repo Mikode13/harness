@@ -237,7 +237,12 @@ describe('OrchestratorAgent', () => {
 		expect(executorInstructions).toContain('Preserve contracts and boundaries');
 		expect(executorInstructions).toContain('finish only when they pass');
 		expect(reviewerInstructions).toContain('Independently inspect the repository');
-		expect(reviewerInstructions).toContain('do not run them again');
+		expect(reviewerInstructions).toContain('do not run them yourself');
+		// It is never told they passed: the executor may finish saying that they fail.
+		expect(reviewerInstructions).not.toContain('already run');
+		expect(reviewerInstructions).toContain(
+			'do not approve a change whose response says that any of them fail',
+		);
 		expect(reviewerInstructions).toContain('check that the plan is right for it');
 		expect(reviewerInstructions).toContain(
 			'{"decision":"rejected","feedback":"list concrete, prioritized findings',

@@ -891,7 +891,7 @@ describe('createLLMOrchestrator', () => {
 			'with a command',
 			{ test: { description: 'Runs the tests', executable: 'true' } },
 			/finish only when they pass/,
-			/do not run them again/,
+			/do not run them yourself/,
 		],
 	] as const)(
 		'tells the executor and the reviewer whether the tests are run, %s',
@@ -915,7 +915,7 @@ describe('createLLMOrchestrator', () => {
 			// Each version leaves out the other's promise.
 			expect(executor).not.toMatch(commands === undefined ? /finish only when/ : /cannot run/);
 			expect(reviewer).not.toMatch(
-				commands === undefined ? /do not run them again/ : /Nobody has run/,
+				commands === undefined ? /do not run them yourself/ : /Nobody has run/,
 			);
 		},
 	);
