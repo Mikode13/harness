@@ -2181,3 +2181,21 @@ tags: #mikode-harness #llm #compaction
 - A failed compaction leaves no trace in the conversation, only the warning.
 - The next call passes the threshold again, so Claude tries again then.
 - What a real failed block carries in `encrypted_content` was not seen: a failure could not be caused on purpose. A block with a summary is kept whatever `encrypted_content` holds.
+
+## The reviewer takes from the executor whether the tests pass, and is never told they did
+
+tags: #mikode-harness #orchestration
+
+**Decision:** the reviewer's instructions no longer say that the executor ran the tests and checks and finished only when they passed. They say what the executor was told: to finish when they pass, or to say which fail and why. Whether they pass is the one thing the reviewer takes from the executor's response. It still does not run them, and it does not approve a change whose response says that any of them fail. This refines the reviewer's half of "The live run of #52 decided commands per role, 50 steps, a stop for loops, and each role's end".
+
+**Context:** #121, from an external audit of 2026-10-18 (A5). The executor's instructions let it finish with failing tests if it says so, while the reviewer's told it they had passed. A reviewer scripted to approve was accepted by the orchestrator. On 2026-10-20 the user chose to change the instructions only, because `OrchestratorAgent` will be replaced by workflows within a few pull requests.
+
+**Alternatives considered:**
+
+- **Evidence from the harness.** The orchestrator would give the reviewer each command's last run by the executor: its name, its exit code, and whether a file changed after it. Facts instead of the executor's account, at the cost of code in an orchestrator about to go.
+- **Evidence and a barrier.** As above, and a task whose last command failed, or whose code changed after its last green run, is not accepted even when the reviewer approves. The user's choice if the orchestrator stays.
+
+**Consequences:**
+
+- Nothing in the harness checks that the tests pass: the reviewer relies on the executor's account of them, and an executor that leaves out a failure is approved.
+- `reviewerInstructionsWithoutCommands` does not change: it already says that nobody ran them.

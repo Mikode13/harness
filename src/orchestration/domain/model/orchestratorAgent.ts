@@ -44,8 +44,10 @@ export const executorInstructionsWithoutCommands = `${executorTask} You have no 
 
 const reviewerTask = `Review the code. Independently inspect the repository, the current diff, and relevant surrounding code; do not rely on the executor's narrative. Judge it against the original request, and any issue it names, first: check that the plan is right for it, and that the change fulfills it. Check correctness and logic errors, important failure paths, unused or artificial abstractions, races or shared state, API contract breaks, boundary violations, regressions, scope, and test quality. If it is correct, respond with JSON only: {"decision":"approved"}. If it is not correct, respond with JSON only: {"decision":"rejected","feedback":"list concrete, prioritized findings and the required direction for each"}. The feedback must contain actionable engineering findings, not a general summary. ${conciseCommunication}`;
 
-// Each goes with the executor instructions of the same name.
-export const reviewerInstructions = `You are the reviewer agent. The executor has already run the tests and checks, and finished only when they passed: do not run them again. ${reviewerTask}`;
+// Each goes with the executor instructions of the same name. The executor may finish with
+// failing tests, saying so, and nothing in the harness checks which: the reviewer takes it
+// from the executor's response.
+export const reviewerInstructions = `You are the reviewer agent. The executor was told to run the project's tests and checks before finishing, and to finish only when they pass, or to say which ones fail and why. Whether they pass is the one thing to take from its response: do not run them yourself, and do not approve a change whose response says that any of them fail. ${reviewerTask}`;
 
 export const reviewerInstructionsWithoutCommands = `You are the reviewer agent. Nobody has run the tests or checks: the executor had no command for them. Judge from the code whether the tests it added or changed would pass, and do not approve a change whose tests could not. ${reviewerTask}`;
 
