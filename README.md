@@ -161,8 +161,10 @@ example when the other one is out of quota.
 The optional `agent` field on an event identifies the orchestrator role that produced
 it (`planner`, `executor`, or `reviewer`). The optional `summary` on a `tool` event
 is narration only: it describes the model's call and is not the tool result. A failed
-configured command may also carry its optional `exitCode`; its output and changes
-still arrive in the tool result. A role label is applied by the orchestrator,
+configured command may also carry its optional `exitCode`, and a failed call on the
+model APIs its optional `error`: what the model was told went wrong, such as a patch
+that did not apply. Both are narration; the command's output and changes still
+arrive in the tool result. A role label is applied by the orchestrator,
 including retries and later rounds, so a nested agent cannot accidentally attribute
 its events to another role. Consumers should continue to handle events without these
 optional fields.

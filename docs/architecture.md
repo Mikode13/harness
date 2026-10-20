@@ -172,13 +172,14 @@ Four contracts have rules of their own:
 - **`ProgressEvent` grows in minor releases.** Consumers are told to render the types they
   know and ignore the rest, so a new type must never carry information a consumer needs to be
   correct. The result of a run travels in `AgentResponse`; progress is narration. Existing event
-  shapes remain valid because `agent` is optional on every event and `summary` and `exitCode` are
-  optional on `tool` events. `OrchestratorAgent` supplies
+  shapes remain valid because `agent` is optional on every event and `summary`, `exitCode` and
+  `error` are optional on `tool` events. `OrchestratorAgent` supplies
   `agent: 'planner' | 'executor' | 'reviewer'` for every event received from a role, including
   retries and later rounds, and overwrites an inner value rather than trusting it. A
   `tool.summary` is owned by the tool and is only a short description of the model-supplied call;
-  `tool.exitCode` narrates the exit code of a configured command that failed. Neither replaces the
-  tool result, diff or `AgentResponse`. A workflow emits `workflowStage` before each answer it
+  `tool.exitCode` narrates the exit code of a configured command that failed, and `tool.error`
+  what the model was told about a call that failed. None of them replaces the tool result, diff
+  or `AgentResponse`. A workflow emits `workflowStage` before each answer it
   asks for and `workflowTransition` after each transition, and passes its agents' events on
   unchanged. Stages run one at a time, so the events between two workflow events are one stage's;
   a workflow that ran stages at once would need an origin on every event. The stages, their

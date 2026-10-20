@@ -264,6 +264,7 @@ describe('LLMAgent with tools', () => {
 			name: 'weather',
 			status: 'error',
 			summary: 'failed weather',
+			error: 'city not found',
 		});
 
 		const deniedSummary = vi.fn(() => 'write Madrid');
@@ -336,6 +337,7 @@ describe('LLMAgent with tools', () => {
 			id: 'call-1',
 			name: 'weather',
 			status: 'error',
+			error: expect.stringContaining('expected string, received number') as string,
 		});
 	});
 
@@ -408,6 +410,7 @@ describe('LLMAgent with tools', () => {
 			id: 'call-1',
 			name: 'weather',
 			status: 'error',
+			error: 'city not found',
 		});
 		expect(response.response).toBe('answer');
 	});
@@ -1081,9 +1084,13 @@ describe('LLMAgent tool approval', () => {
 	});
 
 	it.each([
-		['denied, with no approver', destructive, 'denied'],
-		['to a tool it does not have', () => fakeTool('other'), 'error'],
-	] as const)('never announces a call %s as running', async (_, tool, status) => {
+		['denied, with no approver', destructive, { status: 'denied' }],
+		[
+			'to a tool it does not have',
+			() => fakeTool('other'),
+			{ status: 'error', error: 'There is no tool named "delete". Available tools: other.' },
+		],
+	] as const)('never announces a call %s as running', async (_, tool, end) => {
 		const events: ProgressEvent[] = [];
 
 		await new LLMAgent({ llmClient: answerAfterOneCall(), tools: [tool()] }).run('prompt', {
@@ -1092,7 +1099,7 @@ describe('LLMAgent tool approval', () => {
 		});
 
 		expect(events.filter(event => event.type === 'tool')).toEqual([
-			{ type: 'tool', id: 'call-1', name: 'delete', status },
+			{ type: 'tool', id: 'call-1', name: 'delete', ...end },
 		]);
 	});
 

@@ -81,6 +81,7 @@ function describePart(part: MessagePart): ProgressEvent | undefined {
 				id: part.callId,
 				name: part.name,
 				status: part.isError ? 'error' : 'completed',
+				...(part.isError ? { error: part.output } : {}),
 			};
 		case 'providerData':
 			// Opaque by design: its readable side, if any, arrives as a reasoning part.
