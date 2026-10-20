@@ -186,7 +186,10 @@ function assertPositiveInteger(name: string, value: number): void {
 	}
 }
 
-/** The three read-only tools an agent explores a repository with. */
+/**
+ * The read-only tools an agent explores a repository with: `listFiles`, `searchText`,
+ * `readFile` and `readFiles`.
+ */
 export function createWorkspaceTools(workspace: Workspace): Tool[] {
 	return [
 		defineTool({
