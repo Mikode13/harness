@@ -131,6 +131,35 @@ describe('editing only from a version the model read', () => {
 		writeFileSync(join(root, 'a.txt'), 'one\ntwo\nthree\n');
 	});
 
+	it('lets an edit follow readFiles, which reports a file the policy refuses in its place', async () => {
+		writeFileSync(join(root, '.env'), 'TOKEN=secret\n');
+		const model = new CallingModel().then(
+			[
+				'readFiles',
+				{
+					files: [
+						{ path: '.env', fromLine: null, lineCount: null },
+						{ path: 'a.txt', fromLine: 2, lineCount: 1 },
+					],
+				},
+			],
+			modify('a.txt', 'two', 'TWO'),
+		);
+		const { readFiles, edit } = await trackedToolsOver(root, store);
+
+		await new LLMAgent({ llmClient: model, tools: [readFiles, edit] }).run('change it', {
+			signal,
+		});
+
+		const [reading, editing] = model.outputs;
+		expect(reading?.isError).toBe(false);
+		expect(reading?.output).toMatch(/^== \.env\nCould not read it: /);
+		expect(reading?.output).not.toContain('TOKEN');
+		expect(reading?.output).toContain('== a.txt:2-2\n2: two');
+		expect(editing?.isError).toBe(false);
+		expect(onDisk('a.txt')).toBe('one\nTWO\nthree\n');
+	});
+
 	it('refuses to change a file the conversation never read', async () => {
 		const model = new CallingModel().then(modify('a.txt', 'two', 'TWO'));
 

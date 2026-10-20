@@ -28,6 +28,8 @@ export class FakeWorkspace implements Workspace {
 		truncated: false,
 	};
 	failure: Error | undefined;
+	/** Paths whose read fails as a missing file does. */
+	missing: string[] = [];
 
 	listFiles(query: Query<'listFiles'>, signal: AbortSignal) {
 		this.listed.push(query);
@@ -41,6 +43,9 @@ export class FakeWorkspace implements Workspace {
 
 	readFile(query: Query<'readFile'>, signal: AbortSignal) {
 		this.read.push(query);
+		if (this.missing.includes(query.path)) {
+			return Promise.reject(new Error(`No such file: ${query.path}`));
+		}
 		return this.answer(this.content, signal);
 	}
 

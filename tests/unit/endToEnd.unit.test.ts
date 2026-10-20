@@ -315,6 +315,7 @@ describe('the write tools, end to end through the public exports', () => {
 			'listFiles',
 			'searchText',
 			'readFile',
+			'readFiles',
 		]);
 		// It starts from the question alone.
 		expect(JSON.stringify(explorerRequest.input)).toContain('What does add in src/math.ts do?');

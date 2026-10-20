@@ -52,7 +52,10 @@ import {
 } from '#src/tools/infrastructure/fileTools';
 import { createExploreTool } from '#src/tools/infrastructure/exploreTool';
 import { createShowChangesTool } from '#src/tools/infrastructure/showChangesTool';
-import { createTrackedReadFile } from '#src/tools/infrastructure/trackedReadFile';
+import {
+	createTrackedReadFile,
+	createTrackedReadFiles,
+} from '#src/tools/infrastructure/trackedReadFile';
 import { createWorkspaceTools } from '#src/tools/infrastructure/workspaceTools';
 import { isAgentProvider, orchestratorRolesFor, type Role } from './agentFactory.ts';
 import {
@@ -456,7 +459,7 @@ export function createLLMAgent(
  * The file tools for an agent from `createLLMAgent` on `provider`, over `workspace`, in the
  * provider's own format:
  *
- * - OpenAI: `listFiles`, `searchText`, `readFile` and its native `apply_patch`;
+ * - OpenAI: `listFiles`, `searchText`, `readFile`, `readFiles` and its native `apply_patch`;
  * - Anthropic: `listFiles`, `searchText`, its native text editor, whose `view` reads, and
  *   `delete_file`.
  *
@@ -515,8 +518,10 @@ async function executorTools(
 
 /** What an explorer finds and reads with: no edits, no changes, no commands. */
 function explorerTools({ read, policy }: OpenedWorkspace): AgentTool[] {
-	const finding = createWorkspaceTools(read).filter(tool => tool.name !== 'readFile');
-	return [...finding, createTrackedReadFile(policy)];
+	const finding = createWorkspaceTools(read).filter(
+		tool => tool.name !== 'readFile' && tool.name !== 'readFiles',
+	);
+	return [...finding, createTrackedReadFile(policy), createTrackedReadFiles(policy)];
 }
 
 /**
@@ -543,8 +548,14 @@ async function readingTools(
 const batching =
 	'When you know you need several files, or several searches, ask for all of them in one answer rather than one at a time: each answer is a step, and steps are limited.';
 
+// For the roles that have `readFiles`, which the executor on Claude does not.
+const batchingReads =
+	'When you know you need several files, or several ranges, read them in one readFiles call, and ask for several searches in one answer, rather than one at a time: each answer is a step, and steps are limited.';
+
+// The explorers find and the role reads, as a reader asks a librarian where a book is and then
+// reads it: their reports are where to look, not a summary to work from.
 const exploring =
-	'To learn an area of the repository, send explorers: ask `explore` the independent questions you have in one call, and read yourself only what you must see exactly.';
+	'To find where something is in the repository, ask explorers instead of searching yourself: send `explore` the independent questions you have in one call, and each answers with the files and line ranges that hold what you asked. Then read those ranges yourself, all of them in one readFiles call.';
 
 // Each provider's cheaper model, which only finds and reads.
 const explorerRoles = {
@@ -554,15 +565,15 @@ const explorerRoles = {
 
 const explorerSteps = 30;
 
-const explorerInstructions = `You explore a repository for another agent, which is planning or reviewing a change and asked you one question. Find what it asks with listFiles, searchText and readFile, reading only what the question needs. Answer with what you found: the files and line numbers, what that code does, and short excerpts where the exact text matters. Say what you looked for and could not find. Do not propose changes or a plan, and do not copy whole files. ${batching}`;
+const explorerInstructions = `You find things in a repository for another agent, which is planning or reviewing a change and asked you one question, as a reader asks a librarian where a book is. Find where the answer is with listFiles, searchText, readFile and readFiles, reading only what you need to be sure. Answer with where it is: each file and the line ranges that matter, and in a sentence what each range holds and why it answers the question. The other agent reads those ranges itself, so do not copy code beyond a line that marks a place. Say what you looked for and could not find. Do not propose changes or a plan. ${batchingReads}`;
 
 // How each role finds its way, sent after the workspace's roots, so it stays short. Only the
 // planner learns the repository; the executor and the reviewer work from its plan, so a plan
 // that leaves them guessing is the planner's to fix, not theirs to make up for.
 const repositoryGuidance: Record<CommandRole, string> = {
-	planner: `Start with AGENTS.md, which says where the architecture and the decisions are, and read only the parts your task needs. Name in the plan every file to change and what to change in it, so the executor needs nothing else. ${exploring} ${batching}`,
+	planner: `Start with AGENTS.md, which says where the architecture and the decisions are, and read only the parts your task needs. Name in the plan every file to change and what to change in it, so the executor needs nothing else. ${exploring} ${batchingReads}`,
 	executor: `Work from the plan: read the files it names, and only what you need to change them. Do not study the repository's architecture or decisions; the plan already applied them. ${batching}`,
-	reviewer: `Work from the plan and the changes: read what they touch, and only what you need to judge them. ${exploring} ${batching}`,
+	reviewer: `Work from the plan and the changes: read what they touch, and only what you need to judge them. ${exploring} ${batchingReads}`,
 };
 
 /**
@@ -570,7 +581,7 @@ const repositoryGuidance: Record<CommandRole, string> = {
  * holding its role's instructions, or `systemPrompts`, as its system prompt, followed by the
  * workspace's roots.
  *
- * - The planner and the reviewer read: `listFiles`, `searchText`, `readFile`, `showChanges`,
+ * - The planner and the reviewer read: `listFiles`, `searchText`, `readFile`, `readFiles`, `showChanges`,
  *   the current task's changes as far as each may read them, and `explore`, which sends up to 4
  *   read-only explorers at once on the role's provider's cheaper model, each a new agent that
  *   starts from its question.

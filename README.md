@@ -449,7 +449,9 @@ ends the run with an `UnrecoverableError`. The Agent SDK engines ignore `ask`, a
 `createFileTools` gives an agent the file tools of its provider, over the folders you
 declare, each `read` or `write`:
 
-- **OpenAI** gets `listFiles`, `searchText`, `readFile` and its native `apply_patch`.
+- **OpenAI** gets `listFiles`, `searchText`, `readFile`, `readFiles` and its native
+  `apply_patch`. `readFiles` reads up to 10 files or ranges in one call, and reports a file
+  it cannot read in its place.
 - **Anthropic** gets `listFiles`, `searchText`, its native text editor (whose `view`
   reads) and `delete_file`.
 
@@ -505,8 +507,9 @@ model APIs:
 - the planner and the reviewer read, with a `showChanges` tool that gives the current task's
   changes as far as each may read them, and an `explore` tool that sends up to 4 read-only
   explorers at once, one per question, on the role's provider's cheaper model at `medium`:
-  Claude Haiku 5.5, or `gpt-5.6-luna`. Each starts from its question alone and reports what it
-  found, so the role reads the reports instead of filling its own context with files. Their
+  Claude Haiku 5.5, or `gpt-5.6-luna`. Each starts from its question alone and reports where
+  the answer is, the files and line ranges, as a librarian says where a book is; the role
+  then reads those ranges itself, with `readFiles`, instead of searching the repository. Their
   usage counts in the run's, and their narration arrives as `subagent` events;
 - the executor gets its provider's file tools. `autoApprove` reaches only the executor;
 - each role gets the commands whose `roles` name it; a command names only the executor unless
