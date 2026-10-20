@@ -115,10 +115,12 @@ export async function createCommandTool({
 				cwd: command.cwd,
 			});
 
+			let ending: string | undefined;
 			return {
 				// A command can change anything its user can: it is always asked about.
 				risk: 'destructive',
 				command: line,
+				ending: () => ending,
 				run: runSignal =>
 					runCommand({
 						name,
@@ -126,6 +128,9 @@ export async function createCommandTool({
 						definition: command.definition,
 						context: run,
 						signal: runSignal,
+						ended: text => {
+							ending = text;
+						},
 					}),
 			};
 		},
@@ -137,12 +142,15 @@ export async function createCommandTool({
 		definition,
 		context,
 		signal,
+		ended,
 	}: {
 		name: string;
 		line: CommandLine;
 		definition: CommandDefinition;
 		context: RunContext;
 		signal: AbortSignal;
+		/** Told how the command ended, once it ran to an end and everything it changed is recorded. */
+		ended: (ending: string) => void;
 	}): Promise<string> {
 		signal.throwIfAborted();
 		const session = writes.sessionFor(context);
@@ -197,6 +205,16 @@ export async function createCommandTool({
 		}
 		// After its changes are recorded: a cancelled command is never reported as finished.
 		if (result.outcome === 'cancelled') signal.throwIfAborted();
+		// Everything but the duration, which differs between two runs of the same check.
+		ended(
+			JSON.stringify([
+				result.outcome,
+				result.exitCode,
+				result.signal,
+				result.printedBytes,
+				result.output,
+			]),
+		);
 		if (result.outcome !== 'exited') throw new ToolExecutionError(report);
 		if (result.exitCode !== 0) {
 			throw new ToolExecutionError(report, {

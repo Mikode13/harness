@@ -2133,3 +2133,33 @@ tags: #mikode-harness #tools #cost
 - The `diff` on the edit's progress event is the model's edit, prepared before the write. The formatting is in the history and in what the model reads, not in that diff.
 - Not on Windows yet, as configured commands.
 - Whether it lowers the failed patches is not measured yet: it takes a paid benchmark.
+
+## A run stops when a command ends the same way five times in a row
+
+tags: #mikode-harness #llm #tools #cost
+
+**Decision:**
+
+- **A run fails with `UnrecoverableError` on the fifth time in a row** that a configured command, called with the same input, ends exactly as it did before: the same outcome, exit code, signal and output. Its duration does not count.
+- **In a row for that command.** Calls between it to other tools, or to other commands, do not break the count. Another ending of the same command starts it again, and so does a call to it that never ran a command, such as a denied one.
+- **Any ending counts,** a passing one as well as a failing one.
+- **Exactly the same output,** compared as the command printed it, the end the model reads and the number of bytes it printed in all.
+- **It stops on the fifth,** once its result is narrated, and no later call of that answer runs. The count belongs to the `run()`, so each role's run and each round of the orchestrator start at zero.
+- The command tool tells the agent how a call ended through `PreparedCall`, which is internal. A consumer's `Tool` is not counted.
+
+**Context:** step 4 of #100. The `--llm` run of #22 and #98 spent 140 steps with 25 failed checks: the model ran a check, patched, and ran it again while the same error came back. The stop of "The live run of #52 decided commands per role, 50 steps, a stop for loops, and each role's end" catches only the same calls in consecutive answers, so a patch between two checks escapes it. That decision named this extension: comparing results too. On 2026-10-18 the user chose a stop on the same command and output five times, with no token or cost budget, since a run's price cannot be computed, and no time limit. On 2026-10-20 they chose any ending, in a row for each command, an exact comparison, and a stop on the fifth.
+
+**Alternatives considered:**
+
+- **Only failing endings.** A passing check run again after unrelated edits would never stop a run, but a model that keeps rerunning a green check would not be caught either. Not chosen.
+- **Five times in the whole run.** It would catch a model alternating between two errors, A, B, A, B, but a long run can come back to an error it saw before and still be progressing. Not chosen.
+- **Ignoring the numbers in the output.** Durations and clock times in a test runner's output would no longer break the match, but two errors that differ only in a line number would count as one. Not chosen.
+- **Telling the model on the fourth and stopping on the fifth.** It could change its approach or end with a useful summary, at the cost of one more step and one more rule. Not chosen.
+- **A token or cost budget, or a time limit.** Rejected by the user: the harness cannot price a run, and a time limit says nothing about progress.
+
+**Consequences:**
+
+- **A command whose output changes on every run never trips it.** Vitest prints its start time and duration, so `pnpm test` failing the same way is not caught while those lines are in the end the model reads; `prettier`, `eslint` and `tsc` print the same text for the same errors. If the paid benchmark shows the test loop escaping, compare with the numbers ignored.
+- A model that runs a passing check after every small change, with nothing else the check sees changing, is stopped on the fifth. Format on write makes a separate `format` command after each edit unnecessary.
+- A loop between two endings of the same command is not caught; `maxSteps` still bounds it.
+- A run stopped this way spends at most the steps up to the fifth run of the command.

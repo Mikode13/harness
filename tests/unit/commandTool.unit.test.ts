@@ -162,6 +162,67 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		expect(read('src/b.ts')).toBe('export const b = 2;\n');
 	});
 
+	// What the agent compares to stop a model whose changes never reach what a check reports.
+	it('ends two runs that printed the same alike, however long each took', async () => {
+		const opened = await open();
+		// Slow and with a change the first time only: the report differs, the ending does not.
+		const tool = (await commandToolFor(opened, {
+			test: shell('[ -f done ] || { touch done; sleep 0.3; }; echo "1 failed"; exit 1'),
+			other: shell('echo "2 failed"; exit 1'),
+			passing: shell('echo "1 failed"'),
+		})) as PreparingTool;
+		const context = new RunContext();
+		const run = async (name: string) => {
+			const prepared = await tool.prepare({ command: { name } }, signal, {
+				run: context,
+				reads: new ReadRegistry().begin(),
+				callId: 'call',
+				onProgress: () => undefined,
+				spend: () => undefined,
+			});
+			expect(prepared.ending?.()).toBeUndefined();
+			const report = await prepared.run(signal).catch((error: unknown) => (error as Error).message);
+			return { report, ending: prepared.ending?.() };
+		};
+
+		const first = await run('test');
+		const second = await run('test');
+		const other = await run('other');
+		const passing = await run('passing');
+		await context.finish('completed');
+
+		expect(first.report).not.toBe(second.report);
+		expect(first.ending).toBeDefined();
+		expect(second.ending).toBe(first.ending);
+		expect(other.ending).not.toBe(first.ending);
+		expect(passing.ending).not.toBe(first.ending);
+	});
+
+	it('stops a run whose command fails with the same output five times in a row', async () => {
+		const opened = await open();
+		const tool = await commandToolFor(opened, {
+			test: shell('echo "1 failed"; exit 1'),
+			lint: shell('echo "1 problem"; exit 1'),
+		});
+		const run = (name: string, id: string) =>
+			assistantResponse([toolCall(id, 'runCommand', { command: { name } })]);
+		const llmClient = new FakeLLMClient(
+			...['1', '2', '3', '4', '5'].flatMap(id => [
+				run('test', `test-${id}`),
+				run('lint', `lint-${id}`),
+			]),
+			textResponse('never'),
+		);
+
+		await expect(
+			new LLMAgent({ llmClient, tools: [tool], autoApprove: true }).run('prompt', { signal }),
+		).rejects.toMatchObject({
+			message: 'The LLM kept getting the same result from a command',
+			cause: `"sh -c echo "1 failed"; exit 1" ended the same way, with the same output, 5 times in a row.`,
+		});
+		expect(llmClient.contexts).toHaveLength(9);
+	});
+
 	it('returns a non-zero exit as an error result with its exit code in progress', async () => {
 		const opened = await open();
 		const tool = await commandToolFor(opened, {

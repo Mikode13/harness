@@ -283,7 +283,10 @@ time, in order, and calls the model again with the calls and a `tool` message ho
 results. The run ends when an answer calls no tool. After `maxSteps` calls to the model, 65 by
 default (80 for the orchestrator's executor), it fails with `UnrecoverableError` instead, without running the last step's calls,
 because no call is left to send their results to. It fails the same way, before running them,
-when five answers in a row ask for exactly the same calls, by tool and input. A client built with
+when five answers in a row ask for exactly the same calls, by tool and input. It also fails once a
+configured command, by its input, has ended five times in a row with the same outcome and the same
+output, whatever other calls came between; it stops on the fifth, after narrating its result and
+before any later call of that answer. A client built with
 `compactAt` has its provider compact the context inside the call that passes it; the summary is a
 `compaction` part of the answer, and that client sends the context from its latest compaction on,
 while the conversation keeps every turn and any other client sends them all. A missing tool, or a tool that throws, becomes an
