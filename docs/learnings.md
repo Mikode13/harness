@@ -252,3 +252,72 @@ such a block. Each sent a code word, an assistant turn, and then asked for the c
   have left out of every later request all the context before it, with no summary in its place.
 - **What changed:** see "A compaction that failed is left out of the conversation" in
   decisions.md.
+
+## Two roles on #22 after #100 (2026-10-20)
+
+The same script ran #22 twice, one run per set of roles, on a clone holding only the tree of its
+base, `fb87ba4`, in one commit. It used the harness at `6ab67fb`:
+
+- explorers;
+- the formatter on every write;
+- the stop for a command that ends the same way five times;
+- the provider's compaction at 200,000 tokens;
+- 180 steps for the executor.
+
+The issue's text was in the prompt, and the commands were `test`, `format`, `lint`, `typecheck`
+and `check`, so no command could read another issue or a pull request. The first run had the
+default roles. The second had the planner on Claude Opus 5.5 at `high`, the executor on Claude
+Haiku 5.5 at `xhigh`, and the reviewer on `gpt-5.6-sol` at `high`. Haiku 5.5 is not a model the
+harness offers, so that run used a copy of the harness with an alias for it. Both were approved,
+and both left `check` and the tests green. The results are in
+`bench-results/2026-10-20-issue22-explorers-formatter`.
+
+### Haiku 5.5 failed fewer edits, and the formatter did not lower GPT's failed patches
+
+- **What happened:** the OpenAI executor's `apply_patch` failed as often as before the
+  formatter. Claude Haiku's `str_replace_based_edit_tool` failed less often. The formatter ran
+  and did its work, yet the OpenAI executor still ran the `format` command 13 times, and Haiku
+  4 times.
+- **Evidence:**
+  - 8 of 61 patches failed (13%), against 8 of 62 and 25 of 98 in the runs of 2026-10-17.
+  - Haiku failed 4 of 50 edits (8%): 3 of 39 replacements and 1 of 10 creations. Its tool also
+    reads files, and its 59 views are not counted.
+  - The run's history records 12 changes made by the formatter among the OpenAI executor's
+    writes, and 8 among Haiku's. The `format` command changed no file in either run.
+  - The progress events carry no tool output, so why the patches failed is not known.
+- **What it means:**
+  - Formatting on write removes one cause, a file changed by a formatter after it was read, and
+    it was not the main one here. The rest come from the model's edit not matching the file,
+    which belongs to the edit format and the model, not the harness.
+  - The `format` command's own description tells the model to run it before lint, and the
+    model did, although there was nothing left to format.
+  - With one run per setup, neither rate is a measurement.
+- **What changed:** nothing yet. To learn why edits fail, a run has to keep the output of the
+  calls that fail.
+
+### The compaction cost cents; the rounds and the planner set the price
+
+- **What happened:** the default roles cost $1.99, about what the run of 2026-10-17 without
+  compaction cost. The second run cost $3.84 and took three rounds against two.
+- **Evidence:**
+  - **Compaction calls:**
+    - The OpenAI executor compacted once, on its last call, which cost $0.04 uncached.
+    - Haiku compacted once, at 209,000 tokens, for $0.02. Before it, each of its calls cost
+      about $0.018, since Haiku 5.5 charges five times as much past 100,000 tokens; after it,
+      about $0.001.
+  - **The second run's planner:** Opus cost $2.06 against $1.01 for `gpt-5.6-sol`. It took 20
+    calls against 12, wrote twice as much to the cache ($1.07 against $0.45), and wrote twice
+    as much output ($0.73 against $0.35).
+  - **The second run's executor:** Haiku cost $0.81 against $0.42 for `gpt-5.6-luna`. It wrote
+    277,000 output tokens against 119,000.
+  - **The third round** cost $0.39.
+  - **In both runs,** the planner and the reviewer made up 79% of the cost with their explorers.
+- **What it means:**
+  - A failed patch costs little, because an executor call on `gpt-5.6-luna` costs a fraction of
+    a cent. What sets the price is a round more of the planner and the reviewer, and how much
+    the planner works.
+  - In the runs of 2026-10-17, the run with compaction cost $2.95 for its third round and its
+    planner and reviewer, not for the compaction, which cost $0.04.
+  - Which run wrote the better code is not known from these figures: both reviewers approved,
+    but they were different models.
+- **What changed:** nothing.
