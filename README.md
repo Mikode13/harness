@@ -739,7 +739,8 @@ which names the role that sent the explorer and its number. Pass `--debug <folde
 in a folder for the session under it, every progress event in `events.jsonl` and, with
 `--llm`, the transcript of every run of every agent, one numbered file each, such as
 `003-executor-failed.json`. A failed tool call's event says what the model was told, in
-`error`.
+`error`. They hold what the model read and what the commands printed, so only your user can
+read them.
 
 `cli/cli.ts` currently enables `autoApprove` for its Agent SDK agents, not for `--llm`.
 This maps to each provider's permission-bypass mode and grants those processes

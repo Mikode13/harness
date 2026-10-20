@@ -1,4 +1,12 @@
-import { chmodSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import {
+	chmodSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	statSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -46,6 +54,23 @@ describe('DebugRecorder', () => {
 		expect(
 			JSON.parse(readFileSync(join(recorder.folder, '002-planner-failed.json'), 'utf8')),
 		).toEqual({ agent: 'planner', outcome: 'failed', content: { error: 'limit' } });
+	});
+
+	it('keeps everything readable by this user only, whatever the umask', () => {
+		const umask = process.umask(0o022);
+		try {
+			const recorder = new DebugRecorder(join(parent, 'debug'), vi.fn(), startedAt);
+			recorder.event({ type: 'turnStarted' });
+			recorder.transcript({ agent: 'executor', outcome: 'completed', content: {} });
+
+			expect(statSync(recorder.folder).mode & 0o777).toBe(0o700);
+			expect(statSync(join(parent, 'debug')).mode & 0o777).toBe(0o700);
+			for (const file of ['events.jsonl', '001-executor-completed.json']) {
+				expect(statSync(join(recorder.folder, file)).mode & 0o777).toBe(0o600);
+			}
+		} finally {
+			process.umask(umask);
+		}
 	});
 
 	it.skipIf(asRoot)('fails at once on a folder it cannot create', () => {
