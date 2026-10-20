@@ -138,7 +138,7 @@ const orchestratorRoles = {
 	},
 	anthropic: {
 		planner: { provider: 'anthropic', model: 'opus', reasoningEffort: 'high' },
-		executor: { provider: 'anthropic', model: 'sonnet', reasoningEffort: 'xhigh' },
+		executor: { provider: 'anthropic', model: 'haiku', reasoningEffort: 'xhigh' },
 		reviewer: { provider: 'anthropic', model: 'opus', reasoningEffort: 'high' },
 	},
 	openai: {

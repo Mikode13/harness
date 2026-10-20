@@ -371,7 +371,7 @@ describe('the write tools, end to end through the public exports', () => {
 		expect(JSON.stringify(transcripts[1]?.content)).toContain('add is in src/math.ts.');
 	});
 
-	it('sends Claude Haiku, without thinking, as the explorer of a role on Claude', async () => {
+	it('sends Claude Haiku 5.5, at medium effort, as the explorer of a role on Claude', async () => {
 		const claude = scriptClaude(
 			claudeResponse(use('p1', 'explore', { questions: ['Where is add?'] })),
 			claudeResponse(say('add is in src/math.ts.')),
@@ -388,8 +388,8 @@ describe('the write tools, end to end through the public exports', () => {
 		await agent.run('Fix add.', { signal });
 
 		const explorerRequest = claude.mock.calls[1]?.[0] as Record<string, unknown>;
-		expect(explorerRequest.model).toBe('claude-haiku-4-5');
-		expect(explorerRequest).not.toHaveProperty('thinking');
+		expect(explorerRequest.model).toBe('claude-haiku-5-5');
+		expect(explorerRequest.output_config).toEqual({ effort: 'medium' });
 		expect(sent(claude, 2)).toContain('add is in src/math.ts.');
 	});
 

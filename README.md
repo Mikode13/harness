@@ -156,7 +156,8 @@ releases, so render the ones you know and ignore the rest. Swapping the agent fo
 `createAgent('openai')`, or for `createOrchestrator()` and its planner → executor →
 reviewer workflow, changes nothing else in the snippet above.
 `createOrchestrator({ provider: 'anthropic' })` runs every role on one provider, for
-example when the other one is out of quota.
+example when the other one is out of quota. On Anthropic, Claude Opus 5.5 plans and reviews
+and Claude Haiku 5.5 executes at `xhigh`, as `gpt-5.6-sol` and `gpt-5.6-luna` do on OpenAI.
 
 The optional `agent` field on an event identifies the orchestrator role that produced
 it (`planner`, `executor`, or `reviewer`). The optional `summary` on a `tool` event
@@ -333,8 +334,10 @@ if (useModelApi) {
 ```
 
 These guards describe the provider-wide catalogs. A client can still impose a model-specific
-constraint, such as Claude Haiku accepting no reasoning effort, and the factory's client or
-engine validation remains the final boundary for values that bypass the guards.
+constraint, and the factory's client or engine validation remains the final boundary for values
+that bypass the guards. On Anthropic, `opus`, `sonnet` and `haiku` name Claude Opus 5.5, Sonnet
+5.5 and Haiku 5.5, and `fable` Claude Fable 5.1, through the Agent SDK and the Messages API
+alike: the harness sends the model's ID, not the alias.
 
 Every agent a factory returns already retries recoverable failures. A model or
 reasoning effort the chosen provider does not support throws
@@ -501,8 +504,8 @@ model APIs:
 
 - the planner and the reviewer read, with a `showChanges` tool that gives the current task's
   changes as far as each may read them, and an `explore` tool that sends up to 4 read-only
-  explorers at once, one per question, on the role's provider's cheaper model: Claude Haiku
-  4.5, or `gpt-5.6-luna` at `medium`. Each starts from its question alone and reports what it
+  explorers at once, one per question, on the role's provider's cheaper model at `medium`:
+  Claude Haiku 5.5, or `gpt-5.6-luna`. Each starts from its question alone and reports what it
   found, so the role reads the reports instead of filling its own context with files. Their
   usage counts in the run's, and their narration arrives as `subagent` events;
 - the executor gets its provider's file tools. `autoApprove` reaches only the executor;
@@ -528,7 +531,7 @@ summary, which only its model reads back; the conversation keeps every original 
 call that compacts can lose its cache, as it did on OpenAI, so set it well above what a task
 needs. Like
 `maxSteps`, it is one number for every role or per role, and `createLLMAgent` takes one. On
-Anthropic it must be at least 50,000, and Claude Haiku cannot compact:
+Anthropic it must be at least 50,000:
 
 ```ts
 createLLMOrchestrator({ workspace, compactAt: { executor: 200_000 } });

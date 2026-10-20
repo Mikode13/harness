@@ -112,8 +112,8 @@ export interface CreateLLMAgentOptions {
 	workspace?: WorkspaceOptions;
 	/**
 	 * With `workspace`, a summary of what was undone, from the provider's cheap model, in place
-	 * of the undone prompts. That is Claude Haiku without thinking, or `gpt-5.6-luna` at high
-	 * effort, and the call is billed with the run's tokens. Defaults to `true`.
+	 * of the undone prompts. That is Claude Haiku 5.5 or `gpt-5.6-luna`, at high effort, and the
+	 * call is billed with the run's tokens. Defaults to `true`.
 	 */
 	summarizeUndone?: boolean;
 	/**
@@ -125,7 +125,7 @@ export interface CreateLLMAgentOptions {
 	 * The input tokens at which the provider compacts the conversation on its side: it replaces
 	 * every turn before that call with its own summary, which only its model reads back. The
 	 * conversation keeps every original turn. Without it, the conversation is never compacted.
-	 * At least 50,000 on Anthropic, where Claude Haiku cannot compact.
+	 * At least 50,000 on Anthropic.
 	 */
 	compactAt?: number;
 	/**
@@ -295,7 +295,7 @@ function llmClientFor(
 /** The provider's cheap model, for the summary of what was undone. */
 function summarizerFor(provider: AgentProvider, logger: ILogger): LLMClient {
 	return provider === 'anthropic'
-		? new ClaudeLLMClient({ model: 'haiku', systemPrompt: '', logger })
+		? new ClaudeLLMClient({ model: 'haiku', reasoningEffort: 'high', systemPrompt: '', logger })
 		: new OpenAILLMClient({
 				model: 'gpt-5.6-luna',
 				reasoningEffort: 'high',
@@ -546,15 +546,11 @@ const batching =
 const exploring =
 	'To learn an area of the repository, send explorers: ask `explore` the independent questions you have in one call, and read yourself only what you must see exactly.';
 
-// Each provider's cheaper model, which only finds and reads. Haiku, which names Claude Haiku 4.5,
-// takes no reasoning effort.
+// Each provider's cheaper model, which only finds and reads.
 const explorerRoles = {
-	anthropic: { model: 'haiku' },
+	anthropic: { model: 'haiku', reasoningEffort: 'medium' },
 	openai: { model: 'gpt-5.6-luna', reasoningEffort: 'medium' },
-} as const satisfies Record<
-	AgentProvider,
-	{ model: AgentModel; reasoningEffort?: ReasoningEffort }
->;
+} as const satisfies Record<AgentProvider, { model: AgentModel; reasoningEffort: ReasoningEffort }>;
 
 const explorerSteps = 30;
 
