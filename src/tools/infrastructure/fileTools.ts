@@ -21,7 +21,7 @@ import { FileFormatter } from './fileFormatter.ts';
 import { GitIgnoreRules } from './gitIgnoreRules.ts';
 import { PolicyWorkspace } from './policyWorkspace.ts';
 import { RootsAccessPolicy, type SecretRules } from './rootsAccessPolicy.ts';
-import { createTrackedReadFile } from './trackedReadFile.ts';
+import { createTrackedReadFile, createTrackedReadFiles } from './trackedReadFile.ts';
 import { createWorkspaceTools } from './workspaceTools.ts';
 import { WorkspaceWrites } from './workspaceWrites.ts';
 
@@ -208,11 +208,12 @@ export function commandToolFor(workspace: OpenedWorkspace, commands: Commands): 
  * The file tools of a provider's executor, over one workspace. Every one reads through the access
  * policy, and an edit starts only from a version the conversation read.
  *
- * - OpenAI: `listFiles`, `searchText`, `readFile`, and its native `apply_patch`.
+ * - OpenAI: `listFiles`, `searchText`, `readFile`, `readFiles`, and its native `apply_patch`.
  * - Anthropic: `listFiles`, `searchText`, its native text editor, whose `view` reads, and
  *   `delete_file`.
  *
- * Without a `write` root they only read: `readFile` in place of the editor and the patch.
+ * Without a `write` root they only read: `readFile` and `readFiles` in place of the editor and
+ * the patch.
  */
 export function fileToolsFor(
 	provider: 'anthropic' | 'openai',
@@ -223,9 +224,9 @@ export function fileToolsFor(
 		tool => tool.name === 'listFiles' || tool.name === 'searchText',
 	);
 	const finding: AgentTool[] = [listFiles, searchText].filter(tool => tool !== undefined);
-	const readFile = createTrackedReadFile(policy);
-	if (!writable) return [...finding, readFile];
-	if (provider === 'openai') return [...finding, readFile, createApplyPatchTool(writes)];
+	const reading = [createTrackedReadFile(policy), createTrackedReadFiles(policy)];
+	if (!writable) return [...finding, ...reading];
+	if (provider === 'openai') return [...finding, ...reading, createApplyPatchTool(writes)];
 	return [
 		...finding,
 		createTextEditorTool({ writes, policy, workspace: read }),

@@ -8,7 +8,10 @@ import type { runCommandProcess } from '../../src/tools/infrastructure/commandPr
 import { FileFormatter } from '../../src/tools/infrastructure/fileFormatter.ts';
 import { GitIgnoreRules } from '../../src/tools/infrastructure/gitIgnoreRules.ts';
 import { RootsAccessPolicy } from '../../src/tools/infrastructure/rootsAccessPolicy.ts';
-import { createTrackedReadFile } from '../../src/tools/infrastructure/trackedReadFile.ts';
+import {
+	createTrackedReadFile,
+	createTrackedReadFiles,
+} from '../../src/tools/infrastructure/trackedReadFile.ts';
 import { prepareTrackedEdit } from '../../src/tools/infrastructure/trackedEdits.ts';
 import { WorkspaceWrites } from '../../src/tools/infrastructure/workspaceWrites.ts';
 
@@ -21,7 +24,7 @@ export async function trackedToolsOver(
 	root: string,
 	store: RecoveryStore,
 	{ formatter, runProcess }: { formatter?: Formatter; runProcess?: typeof runCommandProcess } = {},
-): Promise<{ readFile: PreparingTool; edit: PreparingTool }> {
+): Promise<{ readFile: PreparingTool; readFiles: PreparingTool; edit: PreparingTool }> {
 	const policy = await RootsAccessPolicy.create({
 		roots: [{ path: root, access: 'write' }],
 		ignoreRules: new GitIgnoreRules(),
@@ -42,6 +45,7 @@ export async function trackedToolsOver(
 	});
 	return {
 		readFile: createTrackedReadFile(policy),
+		readFiles: createTrackedReadFiles(policy),
 		edit: definePreparingTool({
 			name: 'edit',
 			description: 'Creates, changes or deletes a file',

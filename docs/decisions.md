@@ -2093,6 +2093,8 @@ tags: #mikode-harness #agent-loops #cost
 
 partially superseded by: "Claude's aliases name the 5.5 models on both paths, and Haiku executes on Anthropic" (below) — an explorer on Claude runs Claude Haiku 5.5 at `medium`, not Haiku 4.5.
 
+partially superseded by: "An explorer says where the answer is, and the role reads it, several files at once" (below) — an explorer reports where the answer is, the files and line ranges, not what the code does, and it also has `readFiles`.
+
 **Decision:**
 
 - **`explore` is a tool of the planner and the reviewer.** One call takes up to 4 questions and runs one explorer per question, all at once, inside the tool, then returns their reports in order, each under its question. The agent loop still runs a turn's tool calls one at a time.
@@ -2263,3 +2265,28 @@ tags: #mikode-harness #models #orchestration
 - Haiku 5.5 charges five times as much per token past 100,000 tokens of context, so an Anthropic executor without `compactAt` gets dearer as its context grows. In the #22 run its calls cost about $0.018 each before it compacted at 209,000 tokens, and about $0.001 after.
 - Through the Agent SDK, that Claude Code accepts `claude-haiku-5-5` at `xhigh` was not checked: the tests never call a provider.
 - A newer Claude model again means editing `claudeModelIds` by hand.
+
+## An explorer says where the answer is, and the role reads it, several files at once
+
+tags: #mikode-harness #tools #agent-loops #cost
+
+**Decision:**
+
+- **`readFiles` reads several files at once.** It takes up to 10 reads, each a file and a range as `readFile` takes, and returns each under a heading such as `== src/a.ts:1-200`. A file it cannot read, because it is missing, refused by the access policy, not text, or out of range, is reported in its place, and the call fails only when it read none. `readFile` stays as it is, beside it.
+- **Every role that has `readFile` has it too:** the planner, the reviewer, their explorers, the OpenAI executor and the read-only tools. `createWorkspaceTools` gives it to a consumer, and the tracked version records each file it read, so an edit can follow it. The Claude executor reads with its text editor and has no `readFiles`.
+- **An explorer works as a librarian.** Its instructions tell it to answer with where the answer is, each file and the line ranges that matter, with a sentence on what each holds, and not to copy code. The planner and the reviewer are told to ask explorers where something is instead of searching themselves, and then to read the ranges they named in one `readFiles` call.
+
+**Context:** in the #22 runs of 2026-10-20, the planner cost $1.01 on `gpt-5.6-sol` and $2.06 on Opus 5.5, about half of each run. It sent explorers once or twice, and made 38 and 32 `readFile` calls itself. `gpt-5.6-sol` already asked for up to 10 reads in one answer, while Opus mostly asked for one or two, under the same instruction to batch, so each of Opus's 20 steps sent the whole context again; see "Two roles on #22 after #100" in learnings.md. On 2026-10-20 the user chose a second tool over a list in `readFile`, a failed file reported in its place over a failed call, and the librarian's division of work: the explorer finds where the book is, and the planner reads it.
+
+**Alternatives considered:**
+
+- **`readFile` taking a list.** One tool, but a read of one file would go in a list too, and the schema of a public tool would change. Not chosen.
+- **The whole call failing when one file cannot be read.** Simpler, but the model would have to read everything again, one step more. Not chosen.
+- **Exploring first, then reading freely.** Gentler, but it could add explorers without removing reads. Not chosen.
+- **Explorers that summarize the code, as before.** The role would work from reports, but a summary can lose the detail a plan needs, and the planner read the files anyway. Not chosen.
+
+**Consequences:**
+
+- One `readFiles` call can return up to 10 reads of 16 KB each, which the context carries on every step after.
+- A consumer that gives an agent `createWorkspaceTools` and a tool of its own named `readFiles` now has two tools with one name, which `createLLMAgent` refuses.
+- Whether Opus uses `readFiles`, and whether the planner reads less, is measured by the next #22 runs, not by the tests.

@@ -29,10 +29,15 @@ function setUp() {
 }
 
 describe('the workspace tools', () => {
-	it('are three, each described to the model with a strict schema', () => {
+	it('are four, each described to the model with a strict schema', () => {
 		const { tools } = setUp();
 
-		expect(tools.map(tool => tool.name)).toEqual(['listFiles', 'searchText', 'readFile']);
+		expect(tools.map(tool => tool.name)).toEqual([
+			'listFiles',
+			'searchText',
+			'readFile',
+			'readFiles',
+		]);
 		for (const tool of tools) {
 			expect(tool.description).not.toBe('');
 			expect(tool.inputSchema).toMatchObject({ type: 'object', additionalProperties: false });
@@ -315,6 +320,83 @@ describe('the workspace tools', () => {
 		});
 	});
 
+	describe('readFiles', () => {
+		const range = (
+			path: string,
+			fromLine: number | null = null,
+			lineCount: number | null = null,
+		) => ({
+			path,
+			fromLine,
+			lineCount,
+		});
+
+		it('reads each file and range in order, each under its own heading', async () => {
+			const { workspace, run } = setUp();
+			workspace.content = { lines: ['first', 'second'], totalLines: 2, truncated: false };
+
+			const output = await run('readFiles', {
+				files: [range('src/a.ts'), range('src/b.ts', 40, 2)],
+			});
+
+			expect(workspace.read).toEqual([
+				{ path: 'src/a.ts', fromLine: 1, lineCount: 200 },
+				{ path: 'src/b.ts', fromLine: 40, lineCount: 2 },
+			]);
+			expect(output).toBe(
+				'== src/a.ts:1-200\n1: first\n2: second\n\n== src/b.ts:40-41\n40: first\n41: second',
+			);
+		});
+
+		it('reports a file it cannot read in its place, and reads the rest', async () => {
+			const { workspace, run } = setUp();
+			workspace.content = { lines: ['first'], totalLines: 1, truncated: false };
+			workspace.missing = ['src/gone.ts'];
+
+			const output = await run('readFiles', {
+				files: [range('src/gone.ts'), range('src/a.ts'), range('src/a.ts', 0, null)],
+			});
+
+			expect(output).toBe(
+				[
+					'== src/gone.ts\nCould not read it: No such file: src/gone.ts',
+					'== src/a.ts:1-200\n1: first',
+					'== src/a.ts\nCould not read it: fromLine must be a whole number of at least 1; got 0',
+				].join('\n\n'),
+			);
+		});
+
+		it('fails when it could read none of them', async () => {
+			const { workspace, run } = setUp();
+			workspace.missing = ['src/gone.ts'];
+
+			await expect(run('readFiles', { files: [range('src/gone.ts')] })).rejects.toThrow(
+				'== src/gone.ts\nCould not read it: No such file: src/gone.ts',
+			);
+		});
+
+		it('reads at least one and at most 10 at once, without reading any otherwise', async () => {
+			const { workspace, run } = setUp();
+
+			await expect(run('readFiles', { files: [] })).rejects.toThrow('at least one file');
+			await expect(
+				run('readFiles', {
+					files: Array.from({ length: 11 }, (_, index) => range(`f${String(index)}`)),
+				}),
+			).rejects.toThrow('at most 10 reads at once; got 11');
+			expect(workspace.read).toEqual([]);
+		});
+
+		it('summarizes every read it asks for', () => {
+			const { tools } = setUp();
+			const readFiles = tools.find(tool => tool.name === 'readFiles');
+
+			expect(readFiles?.summarize?.({ files: [range('src/a.ts'), range('src/b.ts', 40, 2)] })).toBe(
+				'src/a.ts:1-200, src/b.ts:40-41',
+			);
+		});
+	});
+
 	it('hand the run signal to the workspace', async () => {
 		const { workspace, run } = setUp();
 		const controller = new AbortController();
@@ -366,6 +448,7 @@ describe('the workspace tools', () => {
 			'listFiles',
 			'searchText',
 			'readFile',
+			'readFiles',
 		]);
 		expect(llmClient.contexts[1]?.at(-1)).toEqual(
 			toolMessage(toolResult('call-1', 'searchText', 'src/agent.ts:1: export const needle = 1;')),

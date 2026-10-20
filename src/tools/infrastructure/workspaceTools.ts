@@ -8,6 +8,8 @@ import { cutLine, maxLineLength } from '../domain/lineLength.ts';
 const maxFiles = 200;
 const maxMatches = 100;
 const maxLines = 200;
+// How many files, or ranges, one `readFiles` call may read.
+const maxReads = 10;
 // What one read or one search may bring into the context, whatever its lines: 200 lines of
 // prose can be 50 KB, and the context carries them on every step after.
 export const maxResultBytes = 16 * 1024;
@@ -94,6 +96,51 @@ export const readFileInput = z.object({
 			`How many lines to read, at most ${String(maxLines)}. Defaults to ${String(maxLines)}.`,
 		),
 });
+
+/** What `readFiles` takes, shared with the harness's own version of it. */
+export const readFilesDescription = `Reads several files, or several ranges of files, in one call: each as readFile reads it, at most ${String(maxReads)}. A file that cannot be read is reported in its place.`;
+export const readFilesInput = z.object({
+	files: z.array(readFileInput).describe('What to read, in order: each a file and its range.'),
+});
+
+type ReadRequest = z.infer<typeof readFileInput>;
+
+export function readFilesSummary({ files }: { files: ReadRequest[] }): string {
+	return files.map(readFileSummary).join(', ');
+}
+
+/**
+ * Reads each request with `read`, in order, each under its own heading, and reports a file it
+ * could not read in its place. Fails only when it read none of them, or was cancelled.
+ */
+export async function readEach(
+	files: ReadRequest[],
+	read: (file: ReadRequest) => Promise<string>,
+	signal: AbortSignal,
+): Promise<string> {
+	if (files.length === 0) throw new Error('files must name at least one file to read');
+	if (files.length > maxReads) {
+		throw new Error(
+			`files may name at most ${String(maxReads)} reads at once; got ${String(files.length)}`,
+		);
+	}
+	let failed = 0;
+	const results: string[] = [];
+	for (const file of files) {
+		try {
+			results.push(`== ${readFileSummary(file)}\n${await read(file)}`);
+		} catch (error) {
+			signal.throwIfAborted();
+			failed++;
+			results.push(
+				`== ${file.path}\nCould not read it: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+	const output = results.join('\n\n');
+	if (failed === files.length) throw new Error(output);
+	return output;
+}
 
 /** The range a `readFile` call asks for, checked: strict mode allows the schema no minimum. */
 export function readRange({
@@ -226,6 +273,27 @@ export function createWorkspaceTools(workspace: Workspace): Tool[] {
 				);
 				return renderLines({ path, lines, from, totalLines, truncated });
 			},
+		}),
+
+		defineTool({
+			name: 'readFiles',
+			description: readFilesDescription,
+			risk: 'safe',
+			input: readFilesInput,
+			summarize: readFilesSummary,
+			execute: ({ files }, signal) =>
+				readEach(
+					files,
+					async ({ path, fromLine, lineCount }) => {
+						const { from, count } = readRange({ fromLine, lineCount });
+						const { lines, totalLines, truncated } = await workspace.readFile(
+							{ path, fromLine: from, lineCount: count },
+							signal,
+						);
+						return renderLines({ path, lines, from, totalLines, truncated });
+					},
+					signal,
+				),
 		}),
 	];
 }

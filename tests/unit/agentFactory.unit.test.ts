@@ -795,12 +795,13 @@ describe('createLLMOrchestrator', () => {
 			await createLLMOrchestrator({ workspace, logger: createLogger() })
 		).run('ship it', { signal });
 
-		const reading = ['listFiles', 'searchText', 'readFile', 'showChanges', 'explore'];
+		const reading = ['listFiles', 'searchText', 'readFile', 'readFiles', 'showChanges', 'explore'];
 		expect(declared(requestsOf(openAICreate)[0])).toEqual(reading);
 		expect(declared(requestsOf(openAICreate)[1])).toEqual([
 			'listFiles',
 			'searchText',
 			'readFile',
+			'readFiles',
 			'apply_patch',
 		]);
 		expect(declared(requestsOf(claudeCreate)[0])).toEqual(reading);
@@ -855,7 +856,12 @@ describe('createLLMOrchestrator', () => {
 			})
 		).run('ship it', { signal });
 
-		expect(declared(requestsOf(openAICreate)[1])).toEqual(['listFiles', 'searchText', 'readFile']);
+		expect(declared(requestsOf(openAICreate)[1])).toEqual([
+			'listFiles',
+			'searchText',
+			'readFile',
+			'readFiles',
+		]);
 	});
 
 	it('gives every role its instructions as the system prompt, then the workspace and its own guidance', async () => {
@@ -1246,6 +1252,7 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 			'listFiles',
 			'searchText',
 			'readFile',
+			'readFiles',
 			'apply_patch',
 		]);
 		await expect(names('anthropic', workspace)).resolves.toEqual([
@@ -1259,6 +1266,7 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 				'listFiles',
 				'searchText',
 				'readFile',
+				'readFiles',
 			]);
 		}
 		await expect(
@@ -1274,6 +1282,7 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 			'listFiles',
 			'searchText',
 			'readFile',
+			'readFiles',
 			'apply_patch',
 			'runCommand',
 		]);

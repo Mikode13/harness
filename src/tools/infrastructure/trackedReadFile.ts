@@ -6,9 +6,13 @@ import type { PreparingTool } from '../domain/preparedCall.ts';
 import type { RunReads } from '../domain/readRegistry.ts';
 import { definePreparingTool } from './defineTool.ts';
 import {
+	readEach,
 	readFileDescription,
 	readFileInput,
+	readFilesDescription,
+	readFilesInput,
 	readFileSummary,
+	readFilesSummary,
 	readRange,
 	renderLines,
 } from './workspaceTools.ts';
@@ -100,5 +104,32 @@ export function createTrackedReadFile(policy: AccessPolicy): PreparingTool {
 				run: runSignal => readTracked({ target, path, from, count, reads, signal: runSignal }),
 			};
 		},
+	});
+}
+
+/**
+ * `readFiles` for an agent that edits: several reads in one call, each as `createTrackedReadFile`
+ * makes it, and each recorded. A file the policy refuses is reported in its place.
+ */
+export function createTrackedReadFiles(policy: AccessPolicy): PreparingTool {
+	return definePreparingTool({
+		name: 'readFiles',
+		description: readFilesDescription,
+		input: readFilesInput,
+		summarize: readFilesSummary,
+		prepare: ({ files }, _signal, { reads }) =>
+			Promise.resolve({
+				risk: 'safe',
+				run: runSignal =>
+					readEach(
+						files,
+						async ({ path, fromLine, lineCount }) => {
+							const { from, count } = readRange({ fromLine, lineCount });
+							const target = await policy.check(path, 'read', runSignal);
+							return readTracked({ target, path, from, count, reads, signal: runSignal });
+						},
+						runSignal,
+					),
+			}),
 	});
 }
