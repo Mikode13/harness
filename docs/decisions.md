@@ -1672,6 +1672,8 @@ tags: #mikode-harness #tools #security
 
 tags: #mikode-harness #tools #llm
 
+partially superseded by: "The reviewer takes from the executor whether the tests pass, and is never told they did" (below) — the reviewer is no longer told that the tests passed; it takes that from the executor's response, and still does not run them.
+
 **Decision:**
 
 - **A command declares the roles that get it** (`roles`: `planner`, `executor`, `reviewer`), the executor by default.
@@ -1807,6 +1809,8 @@ tags: #mikode-harness #tools
 ## Each role is told whether the tests were run
 
 tags: #mikode-harness #orchestration #llm
+
+partially superseded by: "The reviewer takes from the executor whether the tests pass, and is never told they did" (below) — with a command, the reviewer is no longer told that the tests passed; the version without one is unchanged.
 
 **Decision:**
 
@@ -2186,7 +2190,7 @@ tags: #mikode-harness #llm #compaction
 
 tags: #mikode-harness #orchestration
 
-**Decision:** the reviewer's instructions no longer say that the executor ran the tests and checks and finished only when they passed. They say what the executor was told: to finish when they pass, or to say which fail and why. Whether they pass is the one thing the reviewer takes from the executor's response. It still does not run them, and it does not approve a change whose response says that any of them fail. This refines the reviewer's half of "The live run of #52 decided commands per role, 50 steps, a stop for loops, and each role's end".
+**Decision:** the reviewer's instructions no longer say that the executor ran the tests and checks and finished only when they passed. They say what the executor was told: to finish when they pass, or to say which fail and why. Whether they pass is the one thing the reviewer takes from the executor's response. It still does not run them, and it does not approve a change whose response says that any of them fail. This partially supersedes the reviewer's half of "The live run of #52 decided commands per role, 50 steps, a stop for loops, and each role's end", and the version with a command of "Each role is told whether the tests were run".
 
 **Context:** #121, from an external audit of 2026-10-18 (A5). The executor's instructions let it finish with failing tests if it says so, while the reviewer's told it they had passed. A reviewer scripted to approve was accepted by the orchestrator. On 2026-10-20 the user chose to change the instructions only, because `OrchestratorAgent` will be replaced by workflows within a few pull requests.
 
