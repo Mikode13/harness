@@ -33,7 +33,9 @@ import {
 	type CommandRole,
 	type Commands,
 	commandsFor,
+	type Formatter,
 	validateCommands,
+	validateFormatter,
 } from '#src/tools/domain/commands';
 import type { AgentTool } from '#src/tools/domain/preparedCall';
 import type { Tool } from '#src/tools/domain/tool';
@@ -217,6 +219,11 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	 * `write` root to run in.
 	 */
 	commands?: Commands;
+	/**
+	 * A program the executor's edits run on each file they create or change, such as the
+	 * project's formatter. See `createFileTools`. It needs a `write` root to run in.
+	 */
+	formatter?: Formatter;
 	/**
 	 * A summary of what the user undid, from the planner's provider's cheap model, for every
 	 * role. See `CreateLLMAgentOptions.summarizeUndone`. Defaults to `true`.
@@ -450,19 +457,31 @@ export function createLLMAgent(
  * in the history too. It is trusted execution, not a sandbox: a command can reach whatever
  * this user can. Not supported on Windows yet.
  *
+ * With `formatter`, every file an edit creates or changes is formatted right after, its path
+ * the formatter's last argument, and the edit returns the file as the formatter left it. Like a
+ * command it runs without a shell, in a small environment, and what it changes in that file is
+ * in the history. When it fails, the file stays as the edit wrote it, and the model is told
+ * why. Not supported on Windows yet.
+ *
  * @throws {InvalidAgentConfigError} for an unknown provider, a workspace with no root, or an
- * invalid command, including one whose `cwd` is not in a `write` root, or any on Windows.
+ * invalid command or formatter, including one whose `cwd` is not in a `write` root, or any on
+ * Windows.
  * @throws {UnrecoverableError} when no program can read the first root.
  */
 export async function createFileTools(
 	provider: AgentProvider,
 	workspace: WorkspaceOptions,
-	{ logger = new Logger(), commands }: { logger?: ILogger; commands?: Commands } = {},
+	{
+		logger = new Logger(),
+		commands,
+		formatter,
+	}: { logger?: ILogger; commands?: Commands; formatter?: Formatter } = {},
 ): Promise<FileTool[]> {
 	// Reachable from untyped input.
 	if (!isAgentProvider(provider)) throw unknownProvider(provider);
 	if (commands !== undefined) validateCommands(commands);
-	const opened = await openWorkspace(workspace, logger);
+	if (formatter !== undefined) validateFormatter(formatter);
+	const opened = await openWorkspace(workspace, logger, formatter ? { formatter } : {});
 	return (await executorTools(provider, opened, commands)) as unknown as FileTool[];
 }
 
@@ -569,6 +588,7 @@ export async function createLLMOrchestrator({
 	maxSteps,
 	compactAt,
 	commands,
+	formatter,
 	summarizeUndone = true,
 	logger = new Logger(),
 }: CreateLLMOrchestratorOptions = {}): Promise<Agent> {
@@ -581,7 +601,8 @@ export async function createLLMOrchestrator({
 		unit: 'tokens',
 		example: '{ "executor": 200000 }',
 	});
-	const opened = await openWorkspace(workspace, logger);
+	if (formatter !== undefined) validateFormatter(formatter);
+	const opened = await openWorkspace(workspace, logger, formatter ? { formatter } : {});
 	const guidance = workspaceGuidance(workspace.roots);
 	const summarizer = summarizeUndone ? summarizerFor(roles.planner.provider, logger) : undefined;
 	const shared = { history: opened.store, ...(summarizer ? { summarizer } : {}), logger };

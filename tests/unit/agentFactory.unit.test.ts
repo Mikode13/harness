@@ -58,6 +58,9 @@ import {
 } from '../../src/llm/infrastructure/openAILLMClient.ts';
 import { defineTool } from '../../src/tools/infrastructure/defineTool.ts';
 import type { WorkspaceOptions } from '../../src/tools/infrastructure/fileTools.ts';
+import { RunContext } from '../../src/agent/domain/runContext.ts';
+import type { PreparingTool } from '../../src/tools/domain/preparedCall.ts';
+import { ReadRegistry } from '../../src/tools/domain/readRegistry.ts';
 import { createHistory } from '../../src/recovery/infrastructure/createHistory.ts';
 import { fakeClaudeSdk } from '../support/fakeClaudeSdk.ts';
 
@@ -1200,6 +1203,18 @@ describe('createLLMOrchestrator', () => {
 			createLLMOrchestrator({ provider: 'astra' as AgentProvider, workspace }),
 		).rejects.toThrow(InvalidAgentConfigError);
 	});
+
+	it('rejects an invalid formatter, or one with no write root to run in', async () => {
+		await expect(
+			createLLMOrchestrator({ workspace, formatter: { executable: '' } }),
+		).rejects.toThrow('The formatter needs an executable');
+		await expect(
+			createLLMOrchestrator({
+				workspace: { ...workspace, roots: [{ path: process.cwd(), access: 'read' }] },
+				formatter: { executable: 'prettier' },
+			}),
+		).rejects.toThrow('The formatter needs a cwd inside a write root of the workspace');
+	});
 });
 
 describe('createFileTools, and createLLMAgent over a workspace', () => {
@@ -1266,6 +1281,36 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 				{ commands, logger: createLogger() },
 			),
 		).rejects.toThrow('Command "test" needs a cwd inside a write root of the workspace');
+	});
+
+	it('formats what an edit writes with formatter, which needs a write root to run in', async () => {
+		const formatter = { executable: 'sh', args: ['-c', 'printf "formatted\\n" > "$1"', 'sh'] };
+		const tools = await createFileTools('openai', workspace, { formatter, logger: createLogger() });
+		const patch = tools.find(tool => tool.name === 'apply_patch') as unknown as PreparingTool;
+		const run = new RunContext();
+
+		const prepared = await patch.prepare(
+			{ type: 'create_file', path: 'a.txt', diff: '+written' },
+			signal,
+			{
+				run,
+				reads: new ReadRegistry().begin(),
+				callId: 'call',
+				onProgress: () => undefined,
+				spend: () => undefined,
+			},
+		);
+		await prepared.run(signal);
+		await run.finish('completed');
+
+		expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('formatted\n');
+		await expect(
+			createFileTools(
+				'openai',
+				{ ...workspace, roots: [{ path: repo, access: 'read' }] },
+				{ formatter, logger: createLogger() },
+			),
+		).rejects.toThrow('The formatter needs a cwd inside a write root of the workspace');
 	});
 
 	it('refuses a workspace with no root when the agent is built', () => {

@@ -2,6 +2,7 @@ import type { RunContext } from '#src/agent/domain/runContext';
 import type { RecoveryStore } from '#src/recovery/domain/recoveryStore';
 import type { AccessPolicy } from '../domain/accessPolicy.ts';
 import { FileEditor } from './fileEditor.ts';
+import type { FileFormatter } from './fileFormatter.ts';
 import { WriteSession } from './writeSession.ts';
 
 /**
@@ -10,13 +11,24 @@ import { WriteSession } from './writeSession.ts';
  * only as long as its run's context, so nothing here outlives a run.
  */
 export class WorkspaceWrites {
+	/** What the edit tools run on each file they create or change, when the consumer gave one. */
+	readonly formatter: FileFormatter | undefined;
 	private readonly policy: AccessPolicy;
 	private readonly store: RecoveryStore;
 	private readonly sessions = new WeakMap<RunContext, WriteSession>();
 
-	constructor({ policy, store }: { policy: AccessPolicy; store: RecoveryStore }) {
+	constructor({
+		policy,
+		store,
+		formatter,
+	}: {
+		policy: AccessPolicy;
+		store: RecoveryStore;
+		formatter?: FileFormatter;
+	}) {
 		this.policy = policy;
 		this.store = store;
+		this.formatter = formatter;
 	}
 
 	/** An editor over this run's session, created on the run's first write tool call. */

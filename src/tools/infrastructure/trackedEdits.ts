@@ -8,7 +8,7 @@ import {
 import { EditRefusedError } from '../domain/fileEdits.ts';
 import type { PreparedCall } from '../domain/preparedCall.ts';
 import type { ToolCallContext } from '../domain/readRegistry.ts';
-import { editRisk } from './fileEditor.ts';
+import { editRisk, type FileEditor } from './fileEditor.ts';
 import type { WorkspaceWrites } from './workspaceWrites.ts';
 
 /**
@@ -27,22 +27,48 @@ function hashOf(content: Buffer): string {
 }
 
 /**
+ * What the file holds once the formatter, if there is one, ran on what the edit wrote, and what
+ * the model needs to know when it may not be formatted. The conversation knows the file as it is
+ * now, so it can edit it again without reading it.
+ */
+async function afterFormatting(
+	writes: WorkspaceWrites,
+	editor: FileEditor,
+	{ path, absolute, written }: { path: string; absolute: string; written: Buffer },
+	{ run, reads }: ToolCallContext,
+	signal: AbortSignal,
+): Promise<{ content: Buffer | undefined; note: string }> {
+	const { formatter } = writes;
+	if (!formatter) {
+		// It wrote the content itself, so it has seen it.
+		reads.record(absolute, hashOf(written));
+		return { content: written, note: '' };
+	}
+	const failure = await formatter.format(absolute, writes.sessionFor(run), signal);
+	const { content } = await editor.current(path, signal);
+	if (content === undefined) reads.forget(absolute);
+	else reads.record(absolute, hashOf(content));
+	return { content, note: failure === undefined ? '' : `\n${failure}` };
+}
+
+/**
  * Prepares an edit from the version of the file this conversation read, and only from it:
  *
  * - a file it never read is `READ_REQUIRED`;
  * - a file changed since it read it is `STALE_FILE`;
  * - a new file needs a path that does not exist.
  *
- * Once applied, the conversation knows the file as the edit left it, so it can edit it again
- * without reading it. What it returns to the model is short: the lines around a change, or a
- * confirmation.
+ * Once applied, and formatted when the workspace has a formatter, the conversation knows the
+ * file as it is then, so it can edit it again without reading it. What it returns to the model
+ * is short: the lines around a change, or a confirmation.
  */
 export async function prepareTrackedEdit(
 	writes: WorkspaceWrites,
 	request: EditRequest,
 	signal: AbortSignal,
-	{ run, reads }: ToolCallContext,
+	call: ToolCallContext,
 ): Promise<PreparedCall> {
+	const { run, reads } = call;
 	const editor = writes.editorFor(run);
 	const { path } = request;
 
@@ -56,9 +82,14 @@ export async function prepareTrackedEdit(
 			diff: editDiff(path, undefined, request.content.toString('utf8')),
 			run: async runSignal => {
 				await editor.apply(prepared, runSignal);
-				// It wrote the content itself, so it has seen it.
-				reads.record(prepared.target.absolute, hashOf(request.content));
-				return describeCreation(path, request.content);
+				const { content, note } = await afterFormatting(
+					writes,
+					editor,
+					{ path, absolute: prepared.target.absolute, written: request.content },
+					call,
+					runSignal,
+				);
+				return `${content === undefined ? goneAfterFormatting(path) : describeCreation(path, content)}${note}`;
 			},
 		};
 	}
@@ -98,8 +129,18 @@ export async function prepareTrackedEdit(
 		diff: editDiff(path, content.toString('utf8'), next.toString('utf8')),
 		run: async runSignal => {
 			await editor.apply(prepared, runSignal);
-			reads.record(target.absolute, hashOf(next));
-			return describeModification(path, content.toString('utf8'), next.toString('utf8'));
+			const { content: now, note } = await afterFormatting(
+				writes,
+				editor,
+				{ path, absolute: target.absolute, written: next },
+				call,
+				runSignal,
+			);
+			return `${now === undefined ? goneAfterFormatting(path) : describeModification(path, content.toString('utf8'), now.toString('utf8'))}${note}`;
 		},
 	};
+}
+
+function goneAfterFormatting(path: string): string {
+	return `Changed ${path}, but it no longer exists once the formatter ran.`;
 }

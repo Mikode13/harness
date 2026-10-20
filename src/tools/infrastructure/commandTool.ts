@@ -80,7 +80,10 @@ export async function createCommandTool({
 	validateCommands(commands);
 	const resolved = new Map<string, ResolvedCommand>();
 	for (const [name, definition] of Object.entries(commands)) {
-		resolved.set(name, { definition, cwd: await resolveCwd(name, definition, policy, base) });
+		resolved.set(name, {
+			definition,
+			cwd: await resolveCwd(`Command "${name}"`, definition.cwd, policy, base),
+		});
 	}
 
 	return definePreparingTool({
@@ -276,21 +279,24 @@ function visibleCommand(
 	return [definition.executable, ...args].join(' ');
 }
 
-/** Its working directory, as a real path inside a `write` root. */
-async function resolveCwd(
-	name: string,
-	definition: CommandDefinition,
+/**
+ * Where a configured program runs, as a real path inside a `write` root. `program` names it in
+ * the error, as `Command "test"`.
+ */
+export async function resolveCwd(
+	program: string,
+	cwd: string | undefined,
 	policy: AccessPolicy,
 	base: string,
 ): Promise<string> {
-	const named = resolve(base, definition.cwd ?? '.');
+	const named = resolve(base, cwd ?? '.');
 	let real: string;
 	try {
 		real = await realpath(named);
 		await policy.check(real, 'write', AbortSignal.timeout(cwdCheckMs));
 	} catch (error) {
 		throw new InvalidAgentConfigError(
-			`Command "${name}" needs a cwd inside a write root of the workspace`,
+			`${program} needs a cwd inside a write root of the workspace`,
 			{ cause: error },
 		);
 	}
@@ -318,7 +324,7 @@ async function resolvePaths(
 
 /** A small environment of its own: the inherited few, then what the consumer set. */
 export function environmentFor(
-	definition: CommandDefinition,
+	definition: Pick<CommandDefinition, 'env'>,
 	env: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
 	const inherited: NodeJS.ProcessEnv = {};

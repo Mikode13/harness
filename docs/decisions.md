@@ -2103,3 +2103,33 @@ tags: #mikode-harness #agent-loops #cost
 - An explorer can be wrong, and the role acts on its report. The tool tells the role to read a file itself when it needs the exact text.
 - A callback that fails while the explorers run ends the run only once all of them finish, so they spend until then.
 - `subagent` is a new `ProgressEvent` type, which is a minor release. A consumer that ignores unknown types sees none of the explorers' narration.
+
+## The edits run the consumer's formatter on each file they write
+
+tags: #mikode-harness #tools #cost
+
+**Decision:**
+
+- **A `formatter` option.** `createLLMOrchestrator` and `createFileTools` take a `Formatter`: an `executable`, its `args`, and optionally `cwd`, `env` and `timeoutMs`. The file's path is always its last argument, relative to `cwd`, so `pnpm exec prettier --write --ignore-unknown` works as it is. The CLI reads it from the repository's `formatter` setting.
+- **It runs after the write, on the written file.** Every create or change of the edit tools writes the model's content, then runs the formatter on that file. A delete does not. The edit returns the file as the formatter left it, and the conversation knows that version, so the next edit needs no read.
+- **It is recorded like a command.** Only that file is captured around it, and what it changed there is a change `observedBy` the formatter in the history, so `undo` takes back both. It runs without a shell, in the small environment of a command, and has 1 minute per file by default.
+- **A failure leaves the file as written.** A formatter that exits with an error, runs past its limit or cannot start does not fail the edit: the model is told, with the last 4 KB of the formatter's output, and reads the file as it is. Only a formatter whose changes cannot be recorded, or that cannot be stopped, fails the edit and stops writing for the run, as such a command does.
+
+**Context:** step 2 of #100. In the `--llm` run of #22 and #98, 28 of 89 `apply_patch` calls failed, and the reasoning named a `format` that had rewritten a file after it was read as one of the causes. In the benchmarks of 2026-10-14 to 2026-10-17 the OpenAI executor still failed 13% to 32% of its patches. The reasoning after 11 of those 64 failures mentioned formatting, a weak signal because only its headings were kept. Each failure is a step that resends the context. On 2026-10-18 the user chose an option of the factories with an executable and its arguments, running after the write, and a file left as written when the formatter fails.
+
+**Alternatives considered:**
+
+- **Marking a configured command as the formatter.** It needs no new option, but only the CLI's configuration has commands by name, and an API consumer would get nothing.
+- **A callback that formats the content in memory.** It is the most flexible, but it is consumer code inside every edit, and its failure would end the run as a host failure.
+- **Formatting before the write, through standard input.** One write instead of two, but only formatters that read standard input would work.
+- **Failing the edit when the formatter fails.** The model would retry an edit that was applied. A formatter that fails on a file mid-change, for a syntax error, would block every step towards fixing it.
+- **Capturing every covered file around the formatter, as around a command.** It would record whatever else a formatter touches, at the cost of reading the whole repository on every edit.
+
+**Consequences:**
+
+- It runs without asking the approver, as the edits do, where a command asks on every call. A formatter that loads its configuration from the repository, as prettier does, runs code the model can write there, such as a `prettier.config.js`. It is trusted as "Configured commands are trusted, not sandboxed" says, and is configured only by the consumer.
+- An edit that the formatter changes counts as two changes towards the run's limit of 500.
+- A formatter that changes files other than the one it was given leaves those changes out of the history.
+- The `diff` on the edit's progress event is the model's edit, prepared before the write. The formatting is in the history and in what the model reads, not in that diff.
+- Not on Windows yet, as configured commands.
+- Whether it lowers the failed patches is not measured yet: it takes a paid benchmark.

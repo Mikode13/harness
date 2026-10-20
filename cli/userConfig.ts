@@ -1,7 +1,7 @@
 import { readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
-import type { Commands, RoleSteps, RoleTokens } from '../src/index.ts';
+import type { Commands, Formatter, RoleSteps, RoleTokens } from '../src/index.ts';
 
 /** What the CLI reads for one repository from the user's configuration. */
 export interface RepositoryConfig {
@@ -11,6 +11,8 @@ export interface RepositoryConfig {
 	maxSteps?: number | RoleSteps;
 	/** The input tokens at which the provider compacts every role's conversation, or each one's. */
 	compactAt?: number | RoleTokens;
+	/** What the executor's edits run on each file they write. */
+	formatter?: Formatter;
 }
 
 /**
@@ -35,7 +37,8 @@ export function userConfigPath(
  * {
  *   "/Users/me/code/app": {
  *     "commands": { "test": { "description": "Runs the tests", "executable": "pnpm", "args": ["test"] } },
- *     "maxSteps": { "executor": 120 }
+ *     "maxSteps": { "executor": 120 },
+ *     "formatter": { "executable": "pnpm", "args": ["exec", "prettier", "--write", "--ignore-unknown"] }
  *   }
  * }
  * ```
@@ -72,7 +75,7 @@ export async function loadUserConfig(
 	const entry = config[real];
 	if (entry === undefined) return {};
 	if (!isRecord(entry)) throw new Error(`${path} must give ${real} an object of settings`);
-	const known = ['commands', 'maxSteps', 'compactAt'];
+	const known = ['commands', 'maxSteps', 'compactAt', 'formatter'];
 	const unknown = Object.keys(entry).filter(key => !known.includes(key));
 	if (unknown.length > 0) {
 		throw new Error(`${path} has unknown settings for ${real}: ${unknown.join(', ')}`);

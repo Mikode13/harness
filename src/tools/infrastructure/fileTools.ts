@@ -10,13 +10,14 @@ import { InvalidAgentConfigError, UnrecoverableError } from '#src/shared/domain/
 import type { ILogger } from '#src/shared/domain/logger';
 import { describeFailure } from '#src/shared/domain/providerFailure';
 import type { AccessPolicy, WorkspaceRoot } from '../domain/accessPolicy.ts';
-import type { Commands } from '../domain/commands.ts';
+import type { Commands, Formatter } from '../domain/commands.ts';
 import type { AgentTool } from '../domain/preparedCall.ts';
 import type { Workspace } from '../domain/workspace.ts';
 import type { CoveredFiles } from './commandCheckpoint.ts';
 import { createCommandTool } from './commandTool.ts';
 import { chooseWorkspace } from './createWorkspace.ts';
 import { createApplyPatchTool, createDeleteFileTool, createTextEditorTool } from './editFormats.ts';
+import { FileFormatter } from './fileFormatter.ts';
 import { GitIgnoreRules } from './gitIgnoreRules.ts';
 import { PolicyWorkspace } from './policyWorkspace.ts';
 import { RootsAccessPolicy, type SecretRules } from './rootsAccessPolicy.ts';
@@ -103,9 +104,16 @@ export async function openStore(
 	}
 }
 
+/**
+ * Opens what the file tools of one workspace share. With `formatter`, its edits format each file
+ * they write.
+ *
+ * @throws {InvalidAgentConfigError} for a workspace with no root, or an invalid formatter.
+ */
 export async function openWorkspace(
 	workspace: WorkspaceOptions,
 	logger: ILogger,
+	{ formatter }: { formatter?: Formatter } = {},
 ): Promise<OpenedWorkspace> {
 	const { roots, secrets } = workspace;
 	const stateDirectory = await stateDirectoryOf(workspace);
@@ -127,12 +135,18 @@ export async function openWorkspace(
 		hidden: path => policy.hidesFromReading(join(root, path)),
 	});
 	const read = new PolicyWorkspace({ inner, policy });
+	const fileFormatter =
+		formatter && (await FileFormatter.create({ formatter, policy, base: root }));
 	return {
 		roots,
 		policy,
 		store,
 		read,
-		writes: new WorkspaceWrites({ policy, store }),
+		writes: new WorkspaceWrites({
+			policy,
+			store,
+			...(fileFormatter ? { formatter: fileFormatter } : {}),
+		}),
 		writable: roots.some(({ access }) => access === 'write'),
 		base: root,
 		covered: coveredFiles(roots, policy, logger),
