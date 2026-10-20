@@ -2203,3 +2203,24 @@ tags: #mikode-harness #orchestration
 
 - Nothing in the harness checks that the tests pass: the reviewer relies on the executor's account of them, and an executor that leaves out a failure is approved.
 - `reviewerInstructionsWithoutCommands` does not change: it already says that nobody ran them.
+
+## A run hands over what its model saw only when asked, and a failure to take it is logged
+
+tags: #mikode-harness #llm #debugging
+
+**Decision:** `createLLMAgent` and `createLLMOrchestrator` take an `onTranscript` callback. Once a run of `LLMAgent` ends, completed, failed or cancelled, it receives a `Transcript`: the run's `outcome`, the role in an orchestrator or `explorer`, and a `content` of plain JSON with the instructions, the tool definitions, the run's context with the model's answers and the tools' results, and the error. `content` has no stable shape: it can change in any release. A callback that fails is logged through `ILogger.warn`, and the run keeps its outcome. The CLI's `--debug <folder>` writes each transcript to a file, beside every progress event. A `tool` event that ends in `error` also carries, in `error`, what the model was told.
+
+**Context:** the #22 runs of 2026-10-20 failed 8 of 61 patches, and nothing they kept said why: progress events carry no tool output. The user wants to debug the harness when it misbehaves in another project, so the CLI has to keep the evidence when asked. On 2026-10-20 the user chose an explicit callback over a file the harness always writes, everything the model saw over the messages alone, one transcript at the end of each run, and an opaque content, to change if it is ever needed.
+
+**Alternatives considered:**
+
+- **A file per run, always written next to the history's journal.** No option to pass, but every run writes the files the model read to disk. Not chosen.
+- **A typed, stable transcript.** It would also serve the Session Manager (#29), but it would freeze the shape of the conversation before #29 is designed. Not chosen.
+- **A failing callback ends the run, as a failing `onProgress` does.** That is the rule for host callbacks, but a debugging aid that fails would turn a completed run into a failed one, or hide why a run failed. Not chosen.
+- **A transcript after every step.** It would survive a process that dies halfway, at the cost of writing the whole context again on every call. Not chosen.
+
+**Consequences:**
+
+- Each retried attempt has its own transcript, and an explorer's arrives before the run of the role that sent it.
+- A transcript holds every file the model read and every command output it saw, and the CLI writes it wherever `--debug` points.
+- The transcript of a run that is killed with its process is lost.

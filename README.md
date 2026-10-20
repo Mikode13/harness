@@ -161,8 +161,10 @@ example when the other one is out of quota.
 The optional `agent` field on an event identifies the orchestrator role that produced
 it (`planner`, `executor`, or `reviewer`). The optional `summary` on a `tool` event
 is narration only: it describes the model's call and is not the tool result. A failed
-configured command may also carry its optional `exitCode`; its output and changes
-still arrive in the tool result. A role label is applied by the orchestrator,
+configured command may also carry its optional `exitCode`, and a failed call on the
+model APIs its optional `error`: what the model was told went wrong, such as a patch
+that did not apply. Both are narration; the command's output and changes still
+arrive in the tool result. A role label is applied by the orchestrator,
 including retries and later rounds, so a nested agent cannot accidentally attribute
 its events to another role. Consumers should continue to handle events without these
 optional fields.
@@ -486,8 +488,15 @@ from the provider's cheap model, Claude Haiku or `gpt-5.6-luna`, billed with the
 run in `AgentResponse.runId`. Progress reports each change as a unified `diff` on the tool's
 `completed` event.
 
+For debugging, `onTranscript` receives what the model saw in each run once the run ended,
+completed, failed or cancelled. A `Transcript` has the run's `outcome`, the role it was of in
+`createLLMOrchestrator`, or `explorer`, and a `content` of plain JSON: the instructions, the tool
+definitions, the run's messages with what the tools returned, and the error a run that did not
+complete ended with. `content` has no stable shape; read it, but do not build on it. A callback
+that fails is logged, and the run stays as it ended.
+
 `createLLMOrchestrator()` takes the options of `createOrchestrator()` plus `workspace`,
-`maxSteps`, `compactAt`, `commands`, `formatter` and `summarizeUndone`, and returns a promise. Every role runs on the
+`maxSteps`, `compactAt`, `commands`, `formatter`, `summarizeUndone` and `onTranscript`, and returns a promise. Every role runs on the
 model APIs:
 
 - the planner and the reviewer read, with a `showChanges` tool that gives the current task's
@@ -726,7 +735,12 @@ updates the spinner rather than printing a second line, and cancelling a turn cl
 its pending spinner state. Pass `--steps <file>` to append one JSON line per call to the
 model to that file: the call's tokens and what its context held, by origin, for measuring
 what a run spends. An explorer's call is written as the `subagent` event that carries it,
-which names the role that sent the explorer and its number.
+which names the role that sent the explorer and its number. Pass `--debug <folder>` to keep,
+in a folder for the session under it, every progress event in `events.jsonl` and, with
+`--llm`, the transcript of every run of every agent, one numbered file each, such as
+`003-executor-failed.json`. A failed tool call's event says what the model was told, in
+`error`. They hold what the model read and what the commands printed, so only your user can
+read them.
 
 `cli/cli.ts` currently enables `autoApprove` for its Agent SDK agents, not for `--llm`.
 This maps to each provider's permission-bypass mode and grants those processes

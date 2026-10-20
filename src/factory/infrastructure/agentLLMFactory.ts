@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 import type { Agent } from '#src/agent/domain/agent';
+import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcript';
 import type { HistoryReader } from '#src/engines/domain/model/historyFollower';
 import { LLMAgent } from '#src/engines/domain/model/llmAgent';
 import type { LLMClient } from '#src/llm/domain/llm';
@@ -134,6 +135,11 @@ export interface CreateLLMAgentOptions {
 	autoApprove?: boolean;
 	/** Defaults to warnings on stderr. */
 	logger?: ILogger;
+	/**
+	 * Receives what the model saw in each run once the run ended, completed, failed or
+	 * cancelled, for debugging. See `Transcript`. Without it, nothing is kept.
+	 */
+	onTranscript?: TranscriptCallback;
 }
 
 /** A limit per role of `createLLMOrchestrator`; a role left out keeps its default. */
@@ -229,6 +235,11 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	 * role. See `CreateLLMAgentOptions.summarizeUndone`. Defaults to `true`.
 	 */
 	summarizeUndone?: boolean;
+	/**
+	 * Receives what the model saw in each run of each role and each explorer, once the run
+	 * ended, for debugging. Each transcript names its role. See `Transcript`.
+	 */
+	onTranscript?: TranscriptCallback;
 }
 
 const defaultLLMAgentModels = {
@@ -356,6 +367,7 @@ function buildLLMAgent(
 		compactAt,
 		autoApprove,
 		logger,
+		onTranscript,
 	}: {
 		model?: AgentModel;
 		reasoningEffort?: ReasoningEffort;
@@ -367,6 +379,7 @@ function buildLLMAgent(
 		compactAt?: number | undefined;
 		autoApprove?: boolean;
 		logger: ILogger;
+		onTranscript?: TranscriptCallback | undefined;
 	},
 ): Agent {
 	const llmClient = llmClientFor(provider, {
@@ -386,6 +399,7 @@ function buildLLMAgent(
 			...(history ? { history } : {}),
 			...(summarizer ? { summarizer } : {}),
 			...(maxSteps === undefined ? {} : { maxSteps }),
+			...(onTranscript ? { onTranscript } : {}),
 		}),
 		logger,
 		noteFailures: false,
@@ -417,6 +431,7 @@ export function createLLMAgent(
 		compactAt,
 		autoApprove,
 		logger = new Logger(),
+		onTranscript,
 	}: CreateLLMAgentOptions,
 ): Agent {
 	return buildLLMAgent(provider, {
@@ -433,6 +448,7 @@ export function createLLMAgent(
 		compactAt,
 		autoApprove,
 		logger,
+		onTranscript,
 	});
 }
 
@@ -592,6 +608,7 @@ export async function createLLMOrchestrator({
 	formatter,
 	summarizeUndone = true,
 	logger = new Logger(),
+	onTranscript,
 }: CreateLLMOrchestratorOptions = {}): Promise<Agent> {
 	const roles = orchestratorRolesFor(provider);
 	const steps = perRole('maxSteps', maxSteps, defaultRoleSteps, {
@@ -613,6 +630,9 @@ export async function createLLMOrchestrator({
 		own === undefined
 			? withGuidance(instructions, `${guidance}\n${repositoryGuidance[role]}`)
 			: withGuidance(own, guidance);
+	// Each transcript names the agent it is of.
+	const transcriptsOf = (agent: Transcript['agent']) =>
+		onTranscript && ((transcript: Transcript) => onTranscript({ ...transcript, agent }));
 	// Every command, checked once, before any role takes its share.
 	if (commands !== undefined) validateCommands(commands);
 	// A new explorer for each question, on the role's provider: it starts from the question alone.
@@ -624,6 +644,7 @@ export async function createLLMOrchestrator({
 			tools: explorerToolset,
 			maxSteps: explorerSteps,
 			logger,
+			onTranscript: transcriptsOf('explorer'),
 		});
 	const reader = async (
 		{ provider, model, reasoningEffort }: Role,
@@ -637,6 +658,7 @@ export async function createLLMOrchestrator({
 			tools: await readingTools(opened, role, commands, explorer(provider)),
 			maxSteps: steps[role],
 			compactAt: compaction[role],
+			onTranscript: transcriptsOf(role),
 			...shared,
 		});
 	const { executor } = roles;
@@ -667,6 +689,7 @@ export async function createLLMOrchestrator({
 			maxSteps: steps.executor,
 			compactAt: compaction.executor,
 			autoApprove,
+			onTranscript: transcriptsOf('executor'),
 			...shared,
 		}),
 		reviewerAgent: await reader(

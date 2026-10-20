@@ -84,6 +84,11 @@ export type ProgressEvent =
 			/** The exit code of a configured command that ended with an error. Narration only. */
 			exitCode?: number;
 			/**
+			 * On `error`, for an agent on the model APIs: what the model was told went wrong, such
+			 * as a patch that did not apply or a failed command's output. Narration only.
+			 */
+			error?: string;
+			/**
 			 * `in_progress` only once the call is about to run, after any approval. `denied` when
 			 * it never ran because no one allowed it, with no `in_progress` before it.
 			 */

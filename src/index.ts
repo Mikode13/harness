@@ -49,6 +49,7 @@ export {
 	type StepContext,
 	type RunOptions,
 } from './agent/domain/agent.ts';
+export type { Transcript, TranscriptCallback } from './agent/domain/transcript.ts';
 export {
 	InvalidAgentConfigError,
 	RecoverableError,

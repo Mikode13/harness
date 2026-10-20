@@ -223,7 +223,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		expect(llmClient.contexts).toHaveLength(9);
 	});
 
-	it('returns a non-zero exit as an error result with its exit code in progress', async () => {
+	it('returns a non-zero exit as an error result, narrated with its exit code and output', async () => {
 		const opened = await open();
 		const tool = await commandToolFor(opened, {
 			test: shell('echo "1 failed"; exit 1'),
@@ -251,7 +251,12 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		);
 		expect(toolEvents).toHaveLength(2);
 		expect(toolEvents[0]).toMatchObject({ status: 'in_progress', id: 'call-1' });
-		expect(toolEvents[1]).toMatchObject({ status: 'error', id: 'call-1', exitCode: 1 });
+		expect(toolEvents[1]).toMatchObject({
+			status: 'error',
+			id: 'call-1',
+			exitCode: 1,
+			error: result.output,
+		});
 	});
 
 	it('leaves out what .gitignore excludes and secrets the host did not open', async () => {
