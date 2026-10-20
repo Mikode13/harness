@@ -508,8 +508,10 @@ or per role, with no upper bound:
 createLLMOrchestrator({ workspace, maxSteps: { executor: 120 } });
 ```
 
-A run also stops sooner when five answers in a row ask for exactly the same tool calls,
-which means the model is stuck. `createLLMAgent` takes one number, 65 by default.
+A run also stops sooner when the model is stuck: when five answers in a row ask for exactly
+the same tool calls, or when one command, with the same input, ends the same way with exactly
+the same output five times in a row, whatever the model did between them. `createLLMAgent`
+takes one number, 65 by default.
 
 No conversation is compacted unless you ask. `compactAt` is the number of input tokens at
 which the provider compacts it on its side, replacing the turns before that call with its own

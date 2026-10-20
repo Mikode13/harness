@@ -13,6 +13,12 @@ export interface PreparedCall {
 	readonly diff?: string;
 	/** For a call that runs a configured command, what it will run, fixed when prepared. */
 	readonly command?: CommandLine;
+	/**
+	 * For a call that runs a configured command, how it ended once it has: its outcome and its
+	 * output, without how long it took, so two runs that ended alike give the same text.
+	 * `undefined` before it runs, and when it never did.
+	 */
+	readonly ending?: () => string | undefined;
 	run(signal: AbortSignal): Promise<string>;
 }
 

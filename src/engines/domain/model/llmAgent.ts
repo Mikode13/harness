@@ -149,6 +149,31 @@ class RepeatedCalls {
 	}
 }
 
+// A command that ends exactly as it did the last times, in output too, this many times in a row
+// means the model's changes in between are not reaching what the command checks.
+const maxRepeatedEndings = 5;
+
+/**
+ * How many times in a row each command call, by tool and input, has ended exactly the same way.
+ * Calls in between to other tools, or to other commands, do not break the count.
+ */
+class RepeatedEndings {
+	private readonly last = new Map<string, { ending: string; times: number }>();
+
+	count(call: ToolCallPart, ending: string | undefined): number {
+		const key = JSON.stringify([call.name, canonical(call.input)]);
+		// A call that never ran a command, such as one denied, says nothing of how it ends.
+		if (ending === undefined) {
+			this.last.delete(key);
+			return 0;
+		}
+		const previous = this.last.get(key);
+		const times = previous?.ending === ending ? previous.times + 1 : 1;
+		this.last.set(key, { ending, times });
+		return times;
+	}
+}
+
 /**
  * An agent whose conversation is owned by MiKode: every run sends the whole context to a
  * stateless `LLMClient`. Within a run the model may call the agent's tools; the agent runs them
@@ -426,6 +451,7 @@ export class LLMAgent implements Agent {
 		diff?: string;
 		summary?: string;
 		exitCode?: number;
+		ending?: string;
 	}> {
 		const result = { type: 'toolResult' as const, callId: call.id, name: call.name };
 		signal.throwIfAborted();
@@ -506,14 +532,18 @@ export class LLMAgent implements Agent {
 		// Set before `execute`, so a tool that fails halfway still counts: it may have had effects.
 		effects.toolRan = true;
 		try {
+			const output = await prepared.run(signal);
+			const ending = prepared.ending?.();
 			return {
-				result: { ...result, output: await prepared.run(signal), isError: false },
+				result: { ...result, output, isError: false },
 				denied: false,
 				...(summary === undefined ? {} : { summary }),
 				...(prepared.diff === undefined ? {} : { diff: prepared.diff }),
+				...(ending === undefined ? {} : { ending }),
 			};
 		} catch (error) {
 			signal.throwIfAborted();
+			const ending = prepared.ending?.();
 			return {
 				result: { ...result, output: describeFailure(error), isError: true },
 				denied: false,
@@ -521,6 +551,7 @@ export class LLMAgent implements Agent {
 				...(error instanceof ToolExecutionError && error.exitCode !== undefined
 					? { exitCode: error.exitCode }
 					: {}),
+				...(ending === undefined ? {} : { ending }),
 			};
 		}
 	}
@@ -575,6 +606,7 @@ export class LLMAgent implements Agent {
 		toolCall: RunToolContext,
 		// Throws the failure of a progress callback a call narrated through.
 		throwIfProgressFailed: () => void,
+		endings: RepeatedEndings,
 	): Promise<Message> {
 		const { signal, onProgress: callback = ignoreProgress } = options;
 		const results: MessagePart[] = [];
@@ -584,7 +616,7 @@ export class LLMAgent implements Agent {
 			signal.throwIfAborted();
 			// `runTool` announces the call only once it is allowed to run, so a consumer never
 			// shows a call as running early, nor while the user is still being asked.
-			const { result, denied, diff, summary, exitCode } = await this.runTool(
+			const { result, denied, diff, summary, exitCode, ending } = await this.runTool(
 				call,
 				options,
 				effects,
@@ -619,6 +651,12 @@ export class LLMAgent implements Agent {
 				);
 			} else narrate(result, callback, summary, exitCode);
 			results.push(result);
+			// After its result is narrated, so the consumer sees the ending that stopped the run.
+			if (endings.count(call, ending) >= maxRepeatedEndings) {
+				throw new UnrecoverableError('The LLM kept getting the same result from a command', {
+					cause: `${summary === undefined ? `"${call.name}"` : `"${summary}"`} ended the same way, with the same output, ${String(maxRepeatedEndings)} times in a row.`,
+				});
+			}
 		}
 
 		return { role: 'tool', content: results };
@@ -710,6 +748,7 @@ export class LLMAgent implements Agent {
 			// After following the history, which may have made every earlier read stale.
 			const reads = this.reads.begin();
 			const repeats = new RepeatedCalls();
+			const endings = new RepeatedEndings();
 			// A tool that does its own work on the model, such as running subagents, counts it here.
 			const spend = (spent: Tokens | undefined, unreportedCall: boolean) => {
 				tokens = addTokens(tokens, spent);
@@ -794,6 +833,7 @@ export class LLMAgent implements Agent {
 						effects,
 						{ run: context, reads, onProgress, spend },
 						throwIfProgressFailed,
+						endings,
 					);
 					runMessages.push(results);
 				}
