@@ -1968,6 +1968,8 @@ The user chose:
 
 tags: #mikode-harness #tools #llm #orchestration
 
+partially superseded by: "An explorer says where the answer is, and the role reads it, several files at once" (below) — the 16 KB bound is per read, and one `readFiles` call can make up to 10 reads, so a tool result can reach 160 KB.
+
 **Decision:**
 
 - **A byte limit as well as a line limit.** `readFile`, in both its versions, and `searchText` return at most 16 KB per call, in whole lines. A read cut short says which lines it showed and where to continue; a search says how many matches it showed and asks to narrow the pattern, the path or the glob. The first line is always shown. Cut by `cutLine`, a line holds at most 5,000 UTF-16 units, so it never exceeds the limit on its own.
