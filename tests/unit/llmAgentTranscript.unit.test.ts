@@ -135,6 +135,46 @@ describe('LLMAgent transcripts', () => {
 		expect(received.map(transcript => transcript.outcome)).toEqual(['cancelled']);
 	});
 
+	it('hands over a copy, so changing it changes nothing the agent sends next', async () => {
+		const llmClient = client(textResponse('Sunny.'), textResponse('Still sunny.'));
+		const agent = new LLMAgent({
+			llmClient,
+			tools: [weather],
+			onTranscript: ({ content }) => {
+				const { tools, messages } = content as {
+					tools: { inputSchema: Record<string, unknown> }[];
+					messages: unknown[];
+				};
+				for (const tool of tools) tool.inputSchema.type = 'changed';
+				messages.length = 0;
+			},
+		});
+
+		await agent.run('Weather?', { signal });
+		await agent.run('And now?', { signal });
+
+		expect(llmClient.tools[1]?.[0]?.inputSchema).toMatchObject({ type: 'object' });
+		expect(llmClient.contexts[1]).toHaveLength(3);
+	});
+
+	it('keeps the failure of a run whose transcript callback fails too', async () => {
+		const warn = vi.fn();
+		const agent = new LLMAgent({
+			llmClient: client(assistantResponse([madrid])),
+			tools: [weather],
+			maxSteps: 1,
+			logger: { warn },
+			onTranscript: () => {
+				throw new Error('disk full');
+			},
+		});
+
+		await expect(agent.run('Weather?', { signal })).rejects.toMatchObject({
+			cause: 'The model was still calling tools after 1 steps.',
+		});
+		expect(warn).toHaveBeenCalledWith("The run's transcript could not be handed over: disk full");
+	});
+
 	it('logs a transcript callback that fails, and keeps the run as it ended', async () => {
 		const warn = vi.fn();
 		const agent = new LLMAgent({

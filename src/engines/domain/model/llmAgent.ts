@@ -743,17 +743,18 @@ export class LLMAgent implements Agent {
 		error?: unknown,
 	): Promise<void> {
 		if (!this.onTranscript) return;
-		const content = {
-			instructions: this.llmClient.systemPrompt,
-			tools: seen.tools.map(({ name, description, inputSchema }) => ({
-				name,
-				description,
-				inputSchema,
-			})),
-			messages: structuredClone(seen.messages()),
-			...(outcome === 'completed' ? {} : { error: describeFailure(error) }),
-		};
 		try {
+			// A copy, so a consumer that changes it cannot change the agent's tools or conversation.
+			const content: unknown = structuredClone({
+				instructions: this.llmClient.systemPrompt,
+				tools: seen.tools.map(({ name, description, inputSchema }) => ({
+					name,
+					description,
+					inputSchema,
+				})),
+				messages: seen.messages(),
+				...(outcome === 'completed' ? {} : { error: describeFailure(error) }),
+			});
 			await this.onTranscript({ outcome, content });
 		} catch (failure) {
 			treatErrors(

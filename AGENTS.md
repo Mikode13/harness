@@ -29,7 +29,8 @@ Cancellation is the one deliberate exception: an `AbortError`, or the `TimeoutEr
 because a deliberate stop is not a failure and consumers check for it first.
 Failures from host-provided callbacks, loggers, or local event mapping are classified as
 `UnrecoverableError`: the provider turn may already have produced side effects, so replay
-is unsafe.
+is unsafe. `onTranscript` is the one exception: it runs once the run's outcome is decided, and
+a failure in it is logged, because a debugging aid must not change the run it observes.
 
 **Log what you absorb, throw what you don't.** A component logs a failure through
 `ILogger.warn` only when it handles it and carries on — provider output it does not
