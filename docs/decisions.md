@@ -953,6 +953,8 @@ Against plain `grep` ripgrep wins by far, and the 22 extra lines are `node_modul
 
 tags: #mikode-harness #provider-integration #public-api
 
+partially superseded by: "Claude's aliases name the 5.5 models on both paths, and Haiku executes on Anthropic" (below) — `sonnet` and `haiku` now pin `claude-sonnet-5-5` and `claude-haiku-5-5`, Haiku takes an effort, and the Agent SDK is sent the pinned ID instead of resolving the alias itself.
+
 **Decision:** `AgentProvider` is `'anthropic' | 'openai'`, for `createAgent`, `createOrchestrator` and `createLLMAgent` alike. A provider is the company that authenticates and bills the call; whether it is reached through its Agent SDK (Claude Code, Codex) or its model API is the factory's choice. The model API clients also take the Agent SDK's names, so one role of the orchestrator's table can run on either path:
 
 - `ClaudeLLMClient` takes `opus`, `fable` and `sonnet`, and sends the ID each one pins: `claude-opus-5-5`, `claude-fable-5-1` and `claude-sonnet-5`. Haiku was left out at first, because it has no adaptive thinking; #81 added it (`claude-haiku-4-5`), without thinking or an effort, for the summary of what was undone.
