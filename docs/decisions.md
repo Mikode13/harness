@@ -2224,3 +2224,28 @@ tags: #mikode-harness #llm #debugging
 - Each retried attempt has its own transcript, and an explorer's arrives before the run of the role that sent it.
 - A transcript holds every file the model read and every command output it saw, and the CLI writes it wherever `--debug` points.
 - The transcript of a run that is killed with its process is lost.
+
+## Claude's aliases name the 5.5 models on both paths, and Anthropic's roles are Opus, Haiku and Sonnet
+
+tags: #mikode-harness #models #orchestration
+
+**Decision:**
+
+- `sonnet` names Claude Sonnet 5.5 (`claude-sonnet-5-5`) and `haiku` names Claude Haiku 5.5 (`claude-haiku-5-5`); `opus` stays Claude Opus 5.5 and `fable` Claude Fable 5.1. One table, `claudeModelIds`, pins them for the Messages API and for the Agent SDK, which is now sent the ID instead of the alias, so both paths run the same model for the same name.
+- Haiku 5.5 thinks adaptively, takes a reasoning effort and compacts, so the client no longer refuses either for `haiku`.
+- With `provider: 'anthropic'`, the planner is Opus at `high`, the executor Haiku at `xhigh`, and the reviewer Sonnet at `high`. Before, Sonnet executed and Opus reviewed. This partially supersedes "The harness owns the orchestrator's composition, with a manual provider flag": on Anthropic, the reviewer is no longer the strongest model.
+- An explorer on Claude runs Haiku 5.5 at `medium`, as `gpt-5.6-luna` does on OpenAI. The summary of what was undone runs Haiku 5.5 at `low`, the nearest to the "without thinking" the user chose for Haiku 4.5 in #81, which accepted no thinking.
+
+**Context:** on 2026-10-20 the user asked that the Anthropic models be the 5.5 ones from now on, with the roles Opus, Haiku and Sonnet. In the #22 runs of the same day, Haiku 5.5 at `xhigh` failed 4 of 50 edits, against GPT's 8 of 61 patches, and it ran through a copy of the harness, because no alias named it. The Agent SDK resolves an alias its own way, so `haiku` could still have meant Haiku 4.5 there, which refuses an effort.
+
+**Alternatives considered:**
+
+- **A new alias for Haiku 5.5, keeping `haiku` on 4.5.** No consumer's model would change under it, but there would be two names for a cheaper model, and the older one is dearer: Haiku 4.5 costs ten times as much per token. Not chosen.
+- **Leaving the Agent SDK on aliases.** It follows Claude Code's choice of model without a release, but the two paths could then run different models for one name. Not chosen.
+
+**Consequences:**
+
+- Every consumer that names `sonnet` or `haiku`, and every default on Anthropic, now runs a 5.5 model: a change in behavior and cost with no change in the types.
+- Haiku 5.5 charges five times as much per token past 100,000 tokens of context, so an Anthropic executor without `compactAt` gets dearer as its context grows. In the #22 run its calls cost about $0.018 each before it compacted at 209,000 tokens, and about $0.001 after.
+- Through the Agent SDK, that Claude Code accepts `claude-haiku-5-5` at `xhigh` was not checked: the tests never call a provider.
+- A newer Claude model again means editing `claudeModelIds` by hand.

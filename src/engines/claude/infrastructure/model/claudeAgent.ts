@@ -32,9 +32,16 @@ import {
 import type { ILogger } from '#src/shared/domain/logger';
 import type { Tokens } from '#src/shared/domain/tokens';
 import { isOneOf } from '#src/shared/domain/isOneOf';
+import { claudeModelIds } from '#src/llm/infrastructure/claudeModelIds';
 
-// The SDK types `model` as a plain string, so this list is maintained by hand.
-export const claudeModels = ['haiku', 'sonnet', 'opus', 'fable'] as const;
+// The SDK types `model` as a plain string, so this list is maintained by hand. Each is sent as
+// the ID `claudeModelIds` pins, not as the alias, which the Agent SDK would resolve its own way.
+export const claudeModels = [
+	'haiku',
+	'sonnet',
+	'opus',
+	'fable',
+] as const satisfies readonly (keyof typeof claudeModelIds)[];
 export type ClaudeModel = (typeof claudeModels)[number];
 
 export const claudeReasoningEfforts = [
@@ -232,7 +239,7 @@ export class ClaudeAgent implements Agent {
 				prompt,
 				options: {
 					effort: this.reasoningEffort,
-					model: this.model,
+					model: claudeModelIds[this.model],
 					maxTurns: 3,
 					cwd: process.cwd(),
 					resume: this.sessionId,

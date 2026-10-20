@@ -95,32 +95,20 @@ describe('ClaudeLLMClient', () => {
 		expect(Anthropic).not.toHaveBeenCalled();
 	});
 
-	it('runs Haiku without thinking or an effort, which it would refuse', async () => {
+	it('runs Haiku 5.5 with adaptive thinking at the effort given', async () => {
 		const { create } = createSdk(response());
 
 		await new ClaudeLLMClient({
 			model: 'haiku',
+			reasoningEffort: 'xhigh',
 			systemPrompt: 'Sum up.',
 			logger: { warn: vi.fn() },
 		}).send({ context: [userMessage('undone turns')], tools: [] }, signal);
 
 		const request = create.mock.calls[0]?.[0] as Record<string, unknown>;
-		expect(request.model).toBe('claude-haiku-4-5');
-		expect(request).not.toHaveProperty('thinking');
-		expect(request).not.toHaveProperty('output_config');
-	});
-
-	it('refuses a reasoning effort for Haiku before building the SDK', () => {
-		expect(
-			() =>
-				new ClaudeLLMClient({
-					model: 'haiku',
-					reasoningEffort: 'high',
-					systemPrompt: '',
-					logger: { warn: vi.fn() },
-				}),
-		).toThrow('Claude Haiku takes no reasoning effort: it runs without thinking');
-		expect(Anthropic).not.toHaveBeenCalled();
+		expect(request.model).toBe('claude-haiku-5-5');
+		expect(request.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+		expect(request.output_config).toEqual({ effort: 'xhigh' });
 	});
 
 	it('rejects a reasoning effort the Messages API does not take before building the SDK', () => {
@@ -212,7 +200,7 @@ describe('ClaudeLLMClient', () => {
 		// Without tools the request carries no `tools` field at all.
 		expect(create).toHaveBeenCalledWith(
 			{
-				model: 'claude-sonnet-5',
+				model: 'claude-sonnet-5-5',
 				max_tokens: 64_000,
 				system: 'Be brief.',
 				messages: [
@@ -967,9 +955,18 @@ describe('ClaudeLLMClient compaction', () => {
 		},
 	);
 
-	it('rejects compactAt on Haiku, which Claude does not compact', () => {
-		expect(() => compactingClient(150_000, 'haiku')).toThrow(InvalidAgentConfigError);
-		expect(Anthropic).not.toHaveBeenCalled();
+	it('asks Haiku 5.5 to compact too', async () => {
+		const { create } = createSdk(response());
+
+		await compactingClient(150_000, 'haiku').send(
+			{ context: [userMessage('prompt')], tools: [] },
+			signal,
+		);
+
+		expect(create.mock.calls[0]?.[0]).toMatchObject({
+			model: 'claude-haiku-5-5',
+			betas: ['compact-2026-01-12'],
+		});
 	});
 
 	it('keeps the compaction Claude returns, and sends from it on, leaving out what it replaced', async () => {

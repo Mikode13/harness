@@ -121,7 +121,9 @@ not a failure and every consumer checks for it before either error type.
 Dependencies point inward. `src/engines/` and `src/factory/` depend on `src/agent/`;
 `src/agent/` depends on nothing but `src/shared/`. `src/llm/` depends only on `src/shared/`,
 for the failure contract and `Tokens`; only its `infrastructure` imports an SDK. `LLMAgent` depends on
-`src/llm/`, and `src/llm/` knows nothing about agents. `LLMAgent` also reads the workspace's
+`src/llm/`, and `src/llm/` knows nothing about agents. `ClaudeAgent` imports `claudeModelIds`
+from `src/llm/infrastructure/`, the one table of the model each Claude alias names, so both
+Claude paths run the same model for the same name. `LLMAgent` also reads the workspace's
 history through the `src/recovery/` domain; the conversation itself knows only an opaque run id. `src/workflow/` depends only on `src/agent/` and
 `src/shared/`: a stage creates an `Agent`, whatever builds it. No module imports `src/factory/`, which is
 why it is the only place that knows every provider.
@@ -206,8 +208,7 @@ Four contracts have rules of their own:
   `agentReasoningEfforts` for the Agent SDKs, and `llmModels` and `llmReasoningEfforts` for the
   model APIs. Each engine or client constructor still rejects what its provider does not support
   with `InvalidAgentConfigError`, while the agent is being built. The catalogs do not encode
-  model-specific constraints such as Haiku taking no effort, so constructor validation remains
-  the final boundary and the factory does not otherwise validate the values.
+  model-specific constraints, so constructor validation remains the final boundary and the factory does not otherwise validate the values.
 
 External integrations are `@anthropic-ai/claude-agent-sdk` and `@openai/codex-sdk`, each
 reached only from its own engine, `openai` and `@anthropic-ai/sdk`, each reached only from its own `LLMClient`, and `zod`, used by

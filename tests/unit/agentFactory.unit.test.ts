@@ -335,7 +335,7 @@ describe('createAgent', () => {
 		await createAgent('anthropic', { logger: createLogger() }).run('prompt', { signal });
 
 		expect(codexModels(startThread)).toEqual(['gpt-5.6-sol']);
-		expect(claudeModels()).toEqual(['opus']);
+		expect(claudeModels()).toEqual(['claude-opus-5-5']);
 	});
 
 	it('passes the requested model and reasoning effort to the engine', () => {
@@ -513,7 +513,7 @@ describe('createLLMAgent', () => {
 		expect(response.response).toBe('hi');
 		expect(create).toHaveBeenCalledWith(
 			expect.objectContaining({
-				model: 'claude-sonnet-5',
+				model: 'claude-sonnet-5-5',
 				system: 'Be brief.',
 				output_config: { effort: 'high' },
 			}),
@@ -580,17 +580,20 @@ describe('createLLMAgent', () => {
 		).toThrow(InvalidAgentConfigError);
 	});
 
-	it('rejects a reasoning effort for haiku, which runs without thinking', () => {
-		claudeAPIReplying('hi');
+	it('runs haiku, which names Claude Haiku 5.5, at the reasoning effort given', async () => {
+		const create = claudeAPIReplying('hi');
 
-		expect(() =>
-			createLLMAgent('anthropic', {
-				model: 'haiku',
-				reasoningEffort: 'high',
-				systemPrompt: '',
-				logger: createLogger(),
-			}),
-		).toThrow(InvalidAgentConfigError);
+		await createLLMAgent('anthropic', {
+			model: 'haiku',
+			reasoningEffort: 'xhigh',
+			systemPrompt: '',
+			logger: createLogger(),
+		}).run('prompt', { signal });
+
+		expect(create).toHaveBeenCalledWith(
+			expect.objectContaining({ model: 'claude-haiku-5-5', output_config: { effort: 'xhigh' } }),
+			{ signal },
+		);
 	});
 
 	it('rejects an unknown provider', () => {
@@ -621,7 +624,7 @@ describe('createOrchestrator', () => {
 
 		expect(codexModels(startThread)).toEqual(['gpt-5.6-sol', 'gpt-5.6-luna']);
 		expect(codexEfforts(startThread)).toEqual(['high', 'xhigh']);
-		expect(claudeModels()).toEqual(['opus']);
+		expect(claudeModels()).toEqual(['claude-opus-5-5']);
 		expect(claudeEfforts()).toEqual(['high']);
 	});
 
@@ -637,7 +640,7 @@ describe('createOrchestrator', () => {
 			}),
 		).resolves.toMatchObject({ response: 'All job has finished' });
 
-		expect(claudeModels()).toEqual(['opus', 'sonnet', 'opus']);
+		expect(claudeModels()).toEqual(['claude-opus-5-5', 'claude-haiku-5-5', 'claude-sonnet-5-5']);
 		expect(claudeEfforts()).toEqual(['high', 'xhigh', 'high']);
 		// The Agent SDKs take no system prompt, so each role's instructions lead its prompt.
 		expect(vi.mocked(query).mock.calls.map(([params]) => params.prompt)).toEqual([
@@ -956,8 +959,8 @@ describe('createLLMOrchestrator', () => {
 		const requests = requestsOf(claudeCreate);
 		expect(requests.map(request => request.model)).toEqual([
 			'claude-opus-5-5',
-			'claude-sonnet-5',
-			'claude-opus-5-5',
+			'claude-haiku-5-5',
+			'claude-sonnet-5-5',
 		]);
 		expect(requests[1]).toMatchObject({ output_config: { effort: 'xhigh' } });
 		expect(declared(requests[1])).toEqual([

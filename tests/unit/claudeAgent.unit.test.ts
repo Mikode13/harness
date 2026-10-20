@@ -307,7 +307,7 @@ describe('ClaudeAgent', () => {
 		);
 	});
 
-	it('preserves session continuity and result metadata', async () => {
+	it('preserves session continuity and result metadata, sending the model the alias pins', async () => {
 		const secondSessionId = 'session-2';
 		vi.mocked(query)
 			.mockReturnValueOnce(stream([result('first')]))
@@ -331,7 +331,7 @@ describe('ClaudeAgent', () => {
 				cwd: process.cwd(),
 				effort: 'low',
 				maxTurns: 3,
-				model: 'sonnet',
+				model: 'claude-sonnet-5-5',
 				permissionMode: 'bypassPermissions',
 				resume: sessionId,
 			},
@@ -351,7 +351,7 @@ describe('ClaudeAgent', () => {
 				cwd: process.cwd(),
 				effort: 'high',
 				maxTurns: 3,
-				model: 'sonnet',
+				model: 'claude-sonnet-5-5',
 				resume: undefined,
 			},
 		});

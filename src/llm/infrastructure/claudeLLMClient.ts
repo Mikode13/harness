@@ -33,20 +33,16 @@ import { MaxContextError } from '../domain/errors.ts';
 import type { LLMClient, LLMResponse, StopReason } from '../domain/llm.ts';
 import { type Message, type MessagePart, sentContext } from '../domain/message.ts';
 import { type NativeTool, nativeOf, type ToolDefinition } from '../domain/tool.ts';
+import { claudeModelIds } from './claudeModelIds.ts';
 
-// The Messages API takes full model IDs. Callers name a model by the Agent SDK's alias, so both
-// paths share one vocabulary; this table pins the ID each alias means here, and moves by hand
-// when Anthropic releases a newer model. Haiku runs without thinking: it has no adaptive thinking
-// and takes no reasoning effort, and it is here for short, simple calls such as a summary.
-export const claudeLLMModels = ['opus', 'fable', 'sonnet', 'haiku'] as const;
+// The Messages API takes full model IDs; `claudeModelIds` pins the one each alias names.
+export const claudeLLMModels = [
+	'opus',
+	'fable',
+	'sonnet',
+	'haiku',
+] as const satisfies readonly (keyof typeof claudeModelIds)[];
 export type ClaudeLLMModel = (typeof claudeLLMModels)[number];
-
-const claudeLLMModelIds = {
-	opus: 'claude-opus-5-5',
-	fable: 'claude-fable-5-1',
-	sonnet: 'claude-sonnet-5',
-	haiku: 'claude-haiku-4-5',
-} as const satisfies Record<ClaudeLLMModel, string>;
 
 export const claudeLLMReasoningEfforts = [
 	'low',
@@ -59,8 +55,8 @@ export type ClaudeLLMReasoningEffort = (typeof claudeLLMReasoningEfforts)[number
 
 // Adaptive thinking spends from this budget too, so a hard step at a high effort can need most
 // of it. The request is streamed so it is not bound by the SDK's ten-minute timeout, which made
-// it refuse more than about 21,000 without a stream. 64,000 is the most Haiku 4.5 writes; the
-// other models write up to 128,000, which a single answer here has not needed.
+// it refuse more than about 21,000 without a stream. A single answer here has not needed more
+// than 64,000, which every model writes.
 const maxOutputTokens = 64_000;
 
 // The request itself is wrong or not allowed, so sending it again cannot succeed.
@@ -364,9 +360,8 @@ function classifyClaudeFailure(error: unknown, connected: boolean): Error {
  */
 export class ClaudeLLMClient implements LLMClient {
 	private readonly client: Anthropic;
-	private readonly model: (typeof claudeLLMModelIds)[ClaudeLLMModel];
-	// Missing for Haiku, which runs without thinking.
-	private readonly reasoningEffort: ClaudeLLMReasoningEffort | undefined;
+	private readonly model: (typeof claudeModelIds)[ClaudeLLMModel];
+	private readonly reasoningEffort: ClaudeLLMReasoningEffort;
 	private readonly compactAt: number | undefined;
 	readonly systemPrompt: string;
 	readonly providerDataSource = claudeSource;
@@ -393,27 +388,16 @@ export class ClaudeLLMClient implements LLMClient {
 				`"${model}" is not a Claude API model; expected one of: ${claudeLLMModels.join(', ')}`,
 			);
 		}
-		if (model === 'haiku' && reasoningEffort !== undefined) {
-			throw new InvalidAgentConfigError(
-				'Claude Haiku takes no reasoning effort: it runs without thinking',
-			);
-		}
-		const effort = model === 'haiku' ? undefined : (reasoningEffort ?? 'high');
-		if (effort !== undefined && !isOneOf(claudeLLMReasoningEfforts, effort)) {
+		const effort = reasoningEffort ?? 'high';
+		if (!isOneOf(claudeLLMReasoningEfforts, effort)) {
 			throw new InvalidAgentConfigError(
 				`"${effort}" is not a Claude API reasoning effort; expected one of: ${claudeLLMReasoningEfforts.join(', ')}`,
 			);
 		}
-		if (compactAt !== undefined) {
-			// The alias names Claude Haiku 4.5, which Anthropic does not compact.
-			if (model === 'haiku') {
-				throw new InvalidAgentConfigError('Claude Haiku cannot compact: leave compactAt out');
-			}
-			if (!(Number.isInteger(compactAt) && compactAt >= minCompactAt)) {
-				throw new InvalidAgentConfigError(
-					`compactAt must be a whole number of tokens of at least ${String(minCompactAt)} on Claude, not ${String(compactAt)}`,
-				);
-			}
+		if (compactAt !== undefined && !(Number.isInteger(compactAt) && compactAt >= minCompactAt)) {
+			throw new InvalidAgentConfigError(
+				`compactAt must be a whole number of tokens of at least ${String(minCompactAt)} on Claude, not ${String(compactAt)}`,
+			);
 		}
 
 		try {
@@ -428,7 +412,7 @@ export class ClaudeLLMClient implements LLMClient {
 			});
 		}
 
-		this.model = claudeLLMModelIds[model];
+		this.model = claudeModelIds[model];
 		this.reasoningEffort = effort;
 		this.compactAt = compactAt;
 		this.systemPrompt = systemPrompt;
@@ -465,11 +449,8 @@ export class ClaudeLLMClient implements LLMClient {
 					messages: sentContext(context, claudeSource).flatMap(toClaudeInput),
 					// Left out when empty, so a request without tools stays as it always was.
 					...(tools.length > 0 && { tools: tools.map(toClaudeTool) }),
-					// Haiku has no adaptive thinking, and an effort is refused with a 400.
-					...(this.reasoningEffort !== undefined && {
-						thinking: { type: 'adaptive', display: 'summarized' },
-						output_config: { effort: this.reasoningEffort },
-					}),
+					thinking: { type: 'adaptive', display: 'summarized' },
+					output_config: { effort: this.reasoningEffort },
 					// Anthropic caches only on request. This marks the last block, so the next call
 					// reads everything before it from the cache instead of paying for it again.
 					cache_control: { type: 'ephemeral' },
