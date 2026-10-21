@@ -844,6 +844,8 @@ The published declaration files contain `#src/...` too, so TypeScript consumers 
 
 tags: #mikode-harness #agent-loops #tool-use #error-handling
 
+partially superseded by: "A run cut by the output limit stays in the conversation" (below) — such a run is recorded, though it fails.
+
 **Decision:** `LLMAgent` runs its own tool loop. The model receives the definitions of the agent's tools and may answer with calls; the agent runs them and calls the model again with their results, until an answer calls no tool. The rules:
 
 - **A call is a part; results travel in a `tool` message.** An answer's `toolCall` parts sit in the assistant message beside its text and reasoning. The step's results go back together as `toolResult` parts in one message with the role `tool`, never flattened into text. Each part carries a string id that pairs a result with its call.
@@ -1362,6 +1364,8 @@ A move to a run that is gone reports `HistoryExpiredError`, naming the run that 
 
 tags: #mikode-harness #recovery #undo #llm
 
+partially superseded by: "A run cut by the output limit stays in the conversation" (below) — such a run is recorded, so its note is not given again.
+
 **Decision:** an `LLMAgent` given the workspace's history (`history`) follows the user's moves through it before each run.
 
 - **A conversation is a tree of turns.** A turn that wrote is tied to the history run it wrote in. The tie lives in an object the run's context shares, so a turn recorded before the run first wrote still learns it. A turn that wrote nothing belongs to the run of the turn it followed.
@@ -1434,6 +1438,8 @@ The user delegated the remaining names to me.
 ## An edit starts only from a version the conversation read
 
 tags: #mikode-harness #tools #llm
+
+partially superseded by: "A run cut by the output limit stays in the conversation" (below) — the reads of such a run are kept with it.
 
 **Decision:** each `LLMAgent` keeps a `ReadRegistry`, its conversation's map from a file's real path to the hash of the content it saw. Before a modification or a deletion, `prepareTrackedEdit` checks it:
 
@@ -2292,3 +2298,30 @@ tags: #mikode-harness #tools #agent-loops #cost
 - One `readFiles` call can return up to 10 reads of 16 KB each, which the context carries on every step after.
 - A consumer that gives an agent `createWorkspaceTools` and a tool of its own named `readFiles` now has two tools with one name, which `createLLMAgent` refuses.
 - Whether Opus uses `readFiles`, and whether the planner reads less, is measured by the next #22 runs, not by the tests.
+
+## A run cut by the output limit stays in the conversation
+
+tags: #mikode-harness #llm #agent-loops
+
+**Decision:**
+
+- **A run whose answer stops at the output limit is recorded, and still fails.** The conversation takes its prompt, every step with its tool results, and what the cut answer held: its text and reasoning, narrated as they would have been. The answer's tool calls are left out, since their input may be cut, and so is its provider data, which a provider may refuse to read back incomplete: an OpenAI reasoning item without the item it led to, or a Claude thinking block cut before its signature. An answer left with nothing is not recorded; its run's steps are.
+- **Its reads are kept,** as a completed run's are, so the next run can edit from what it read.
+- **The failure says so:** "The model stopped with "truncated". The run, and what the answer held before the limit, are kept in the conversation." Any other failed run is still not recorded.
+- **Claude may write 128,000 output tokens in an answer,** up from 64,000: every model the aliases name allows it.
+
+**Context:** in the #22 run of 2026-10-20 on the `anthropic` roles, Claude Haiku 5.5 at `xhigh` read 26 ranges without changing a file, and its tenth answer stopped at the 64,000 output tokens the client allowed. The whole run was lost with it, and the transcript did not hold the answer; see "Provider profiles on #22" in learnings.md. On 2026-10-21 the user chose to keep Haiku at `xhigh` and raise the limit for every Claude model, and to keep the cut run in the conversation, whole, so the work can be taken up later and the agent's next call has it.
+
+**Alternatives considered:**
+
+- **Haiku at `high`.** It might not have spent so much on one answer, but one run does not show that `xhigh` caused it. Not chosen.
+- **128,000 for Haiku alone.** An Opus answer that reached it would cost about $2.56, but the limit would differ per model. Not chosen.
+- **Keeping the cut answer in the transcript only.** It would explain the failure without changing what the conversation holds, but the next run would start over. Not chosen.
+- **Keeping only the cut answer.** The next run would read an answer about files and results it never saw. Not chosen.
+- **Continuing in the same run,** with a message that the answer was cut. The run could finish, but an answer that keeps reaching the limit would repeat until `maxSteps`. Not chosen.
+
+**Consequences:**
+
+- The conversation now holds one kind of failed run, which a consumer that sends the next prompt continues. A retry of the same prompt after such a failure would follow it; `RetryingAgent` never retries an `UnrecoverableError`.
+- The next call reads only the cut answer's text. Its readable reasoning stays in the conversation and the transcript, but neither client sends reasoning text back, and the provider data that would carry it is left out. An answer that was cut while thinking, as Haiku's may have been, gives the next call nothing but the run before it.
+- A Claude answer can cost twice as much as before at the limit.
