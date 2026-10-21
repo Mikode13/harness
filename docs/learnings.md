@@ -546,3 +546,33 @@ included, are in `bench-results/2026-10-21-issue22-stuck-guard`.
     later states and the diffs, not proved.
 - **What changed:** "A V4A hunk applies at its first match, and a refused one shows the lines
   most like it" and "An edit shows the lines the formatter rewrote" in decisions.md.
+
+## #22 with hunks at their first match and the formatter's lines shown (2026-10-21)
+
+The same script ran #22 once more on `fb87ba4`, with the default roles and the harness of this
+change at `45e90d5`: "A V4A hunk applies at its first match, and a refused one shows the lines
+most like it" and "An edit shows the lines the formatter rewrote" in decisions.md. It cost $2.33,
+against $2.41 that morning, and took 30 minutes. The reviewer approved it in the second round,
+as in the morning, and the tree passed `check` and its 1098 tests. The results are in
+`bench-results/2026-10-21-issue22-patch-first-match`, with the scripts of the replay.
+
+### Luna's failed patches fell from 21% to 8%
+
+- **What happened:** the executor's `apply_patch` failed 5 of 65 times (8%), against 16 of 77
+  (21%) that morning. In the first round it failed 4 of 46 times, against 13 of 49.
+- **Evidence:**
+  - No hunk failed for matching more than once.
+  - Two hunks came out of order, and the error said so. The next patch to the file applied one
+    call later and three calls later.
+  - One hunk expected an import in the README as the model had written it, on several lines.
+    The formatter had put it on one, and the response to that edit showed it so, 54 calls
+    before. The next patch applied.
+  - One hunk expected a wrapped paragraph the file never had, and one patch changed nothing.
+  - The formatter rewrote 19 of the 60 writes, and each response said which lines.
+- **What it means:**
+  - The first match removed the largest cause of failures, as the replay predicted.
+  - Showing the formatter's lines did not stop a model that edits from what it wrote long
+    before. Making it read the file again after the formatter changed it is the next step, if
+    those failures grow.
+  - It is one run, and the cost fell little: the failures were a small part of it.
+- **What changed:** nothing more.
