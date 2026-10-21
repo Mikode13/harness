@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	historyStart,
+	type FileState,
 	type RunJournal,
 	WorkspaceBusyError,
 } from '../../src/recovery/domain/recoveryStore.ts';
@@ -375,6 +376,34 @@ describe('FileRecoveryStore', () => {
 				{ runId: second.runId, parentRunId: first.runId, status: 'failed' },
 			]);
 			expect(runs[0]).not.toHaveProperty('parentRunId');
+		});
+
+		it('gives the state its applied changes left, the same again once one is undone', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const run = await store.startRun();
+			const one = { exists: true, hash: 'one', mode: 0o644 } as const;
+			const two = { exists: true, hash: 'two', mode: 0o644 } as const;
+			const apply = async (path: string, before: FileState, after: FileState) => {
+				await run.applied(await run.prepare({ path, before, after }));
+			};
+			const initial = run.contentState();
+
+			await apply('a.txt', one, two);
+			const changed = run.contentState();
+			// Prepared and abandoned, or never settled: neither reached a file.
+			await run.abandoned(await run.prepare({ path: 'b.txt', before: absent, after: one }));
+			await run.prepare({ path: 'c.txt', before: absent, after: one });
+			const unsettled = run.contentState();
+			await apply('a.txt', two, one);
+			const undone = run.contentState();
+			await apply('d.txt', absent, one);
+
+			expect(changed).not.toBe(initial);
+			expect(unsettled).toBe(changed);
+			expect(undone).toBe(initial);
+			expect(run.contentState()).not.toBe(initial);
+			expect(run.appliedPaths).toEqual(['a.txt', 'a.txt', 'd.txt']);
+			await run.finish('completed');
 		});
 
 		it('takes a run that changed nothing out of the history, back to the run before it', async () => {

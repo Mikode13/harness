@@ -39,6 +39,7 @@ import type { Asker } from '#src/agent/domain/question';
 import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcript';
 import {
 	type AgentTool,
+	type CommandEnding,
 	type PreparedCall,
 	prepareCall,
 	ToolExecutionError,
@@ -51,6 +52,18 @@ import { InvalidToolInputError } from '#src/tools/domain/tool';
 import { isAbortError } from '#src/shared/domain/isAbortError';
 import type { ILogger } from '#src/shared/domain/logger';
 import { addTokens, type Tokens } from '#src/shared/domain/tokens';
+import {
+	anotherAttempt,
+	askAt,
+	type Alike,
+	CommandLoops,
+	extensionNote,
+	loopQuestion,
+	loopStop,
+	loopWarning,
+	stop,
+	warnAt,
+} from './commandLoops.ts';
 import { measureContext } from './stepContext.ts';
 import {
 	askUserDefinition,
@@ -154,31 +167,6 @@ class RepeatedCalls {
 		this.times = key === this.last ? this.times + 1 : 1;
 		this.last = key;
 		return this.times;
-	}
-}
-
-// A command that ends exactly as it did the last times, in output too, this many times in a row
-// means the model's changes in between are not reaching what the command checks.
-const maxRepeatedEndings = 5;
-
-/**
- * How many times in a row each command call, by tool and input, has ended exactly the same way.
- * Calls in between to other tools, or to other commands, do not break the count.
- */
-class RepeatedEndings {
-	private readonly last = new Map<string, { ending: string; times: number }>();
-
-	count(call: ToolCallPart, ending: string | undefined): number {
-		const key = JSON.stringify([call.name, canonical(call.input)]);
-		// A call that never ran a command, such as one denied, says nothing of how it ends.
-		if (ending === undefined) {
-			this.last.delete(key);
-			return 0;
-		}
-		const previous = this.last.get(key);
-		const times = previous?.ending === ending ? previous.times + 1 : 1;
-		this.last.set(key, { ending, times });
-		return times;
 	}
 }
 
@@ -464,7 +452,9 @@ export class LLMAgent implements Agent {
 		diff?: string;
 		summary?: string;
 		exitCode?: number;
-		ending?: string;
+		ending?: CommandEnding;
+		// It ran, and may have changed files the history does not record.
+		unrecorded?: boolean;
 	}> {
 		const result = { type: 'toolResult' as const, callId: call.id, name: call.name };
 		signal.throwIfAborted();
@@ -544,12 +534,14 @@ export class LLMAgent implements Agent {
 		signal.throwIfAborted();
 		// Set before `execute`, so a tool that fails halfway still counts: it may have had effects.
 		effects.toolRan = true;
+		const unrecorded = prepared.unrecorded === true && prepared.risk !== 'safe';
 		try {
 			const output = await prepared.run(signal);
 			const ending = prepared.ending?.();
 			return {
 				result: { ...result, output, isError: false },
 				denied: false,
+				unrecorded,
 				...(summary === undefined ? {} : { summary }),
 				...(prepared.diff === undefined ? {} : { diff: prepared.diff }),
 				...(ending === undefined ? {} : { ending }),
@@ -560,6 +552,7 @@ export class LLMAgent implements Agent {
 			return {
 				result: { ...result, output: describeFailure(error), isError: true },
 				denied: false,
+				unrecorded,
 				...(summary === undefined ? {} : { summary }),
 				...(error instanceof ToolExecutionError && error.exitCode !== undefined
 					? { exitCode: error.exitCode }
@@ -619,24 +612,34 @@ export class LLMAgent implements Agent {
 		toolCall: RunToolContext,
 		// Throws the failure of a progress callback a call narrated through.
 		throwIfProgressFailed: () => void,
-		endings: RepeatedEndings,
-	): Promise<Message> {
+		loops: CommandLoops,
+	): Promise<{ message: Message; stopped?: UnrecoverableError }> {
 		const { signal, onProgress: callback = ignoreProgress } = options;
 		const results: MessagePart[] = [];
-		for (const call of calls) {
+		for (const [index, call] of calls.entries()) {
 			// A call before this one may have ignored the cancellation; this one must not start,
 			// nor be announced as running.
 			signal.throwIfAborted();
 			// `runTool` announces the call only once it is allowed to run, so a consumer never
 			// shows a call as running early, nor while the user is still being asked.
-			const { result, denied, diff, summary, exitCode, ending } = await this.runTool(
-				call,
-				options,
-				effects,
-				toolCall,
-			);
+			const ran = await this.runTool(call, options, effects, toolCall);
+			const { denied, diff, summary, exitCode, ending } = ran;
+			let { result } = ran;
 			// A call that failed to narrate ends the run before the next one can start.
 			throwIfProgressFailed();
+			if (ran.unrecorded) loops.unrecordedCallRan();
+			const key = JSON.stringify([call.name, canonical(call.input)]);
+			const label = summary ?? call.name;
+			const alike = ending === undefined ? undefined : loops.observe(key, ending);
+			// A command that changed what the history cannot copy hides that change from the next.
+			if (ending !== undefined && ending.state === undefined) loops.unrecordedCallRan();
+			// Narrated with it, so the person watching reads what the model is told.
+			if (alike?.times === warnAt) {
+				result = {
+					...result,
+					output: `${result.output}\n\n${loopWarning(label, alike, loops.wentOn)}`,
+				};
+			}
 			if (denied) {
 				emit(
 					{
@@ -663,16 +666,72 @@ export class LLMAgent implements Agent {
 					callback,
 				);
 			} else narrate(result, callback, summary, exitCode);
-			results.push(result);
-			// After its result is narrated, so the consumer sees the ending that stopped the run.
-			if (endings.count(call, ending) >= maxRepeatedEndings) {
-				throw new UnrecoverableError('The LLM kept getting the same result from a command', {
-					cause: `${summary === undefined ? `"${call.name}"` : `"${summary}"`} ended the same way, with the same output, ${String(maxRepeatedEndings)} times in a row.`,
-				});
+			// After its result is narrated, so the user is asked about the ending they have seen.
+			if (alike !== undefined && alike.times >= askAt) {
+				const decision = await this.decideOnLoop(key, label, alike, loops, options);
+				if (typeof decision !== 'string') {
+					// So the next run's model reads why this one ended where it did.
+					results.push({
+						...result,
+						output: `${result.output}\n\nThe run stopped here: ${decision.cause}`,
+					});
+					// The calls after it never run, but each still gets a result, so the run that is
+					// kept has none without one.
+					for (const later of calls.slice(index + 1)) {
+						results.push({
+							type: 'toolResult',
+							callId: later.id,
+							name: later.name,
+							output: 'Not run: the run stopped before it.',
+							isError: true,
+						});
+					}
+					return { message: { role: 'tool', content: results }, stopped: decision };
+				}
+				result = { ...result, output: `${result.output}\n\n${decision}` };
 			}
+			results.push(result);
 		}
 
-		return { role: 'tool', content: results };
+		return { message: { role: 'tool', content: results } };
+	}
+
+	/**
+	 * On the fifth ending alike: the note for the model if the user lets the run go on, or the
+	 * failure that stops it. The run goes on once at most, and never without someone to ask.
+	 */
+	private async decideOnLoop(
+		key: string,
+		label: string,
+		alike: Alike,
+		loops: CommandLoops,
+		{ ask, signal }: RunOptions,
+	): Promise<string | UnrecoverableError> {
+		const stopped = (reason: string) =>
+			new UnrecoverableError('The LLM kept getting the same result from a command', {
+				cause: loopStop(label, alike, reason),
+			});
+		if (!ask) return stopped('No one could be asked whether to go on.');
+		if (!loops.extend(key)) return stopped('The user had already let the run go on once.');
+
+		const questions = [loopQuestion(label, alike)];
+		let answers: unknown;
+		try {
+			answers = await ask(questions, signal);
+		} catch (error) {
+			signal.throwIfAborted();
+			throw classifyHostFailure(error, 'The asker failed');
+		}
+		// An answer that arrives after a cancellation is not acted on.
+		signal.throwIfAborted();
+		const [answer] = readAnswers(answers, questions) ?? [];
+		if (answer === undefined) {
+			throw new UnrecoverableError('The asker failed', {
+				cause: 'It must answer the question with some text.',
+			});
+		}
+		if (answer === stop) return stopped('The user stopped it.');
+		return extensionNote(alike, answer === anotherAttempt ? undefined : answer);
 	}
 
 	/**
@@ -814,7 +873,7 @@ export class LLMAgent implements Agent {
 			// After following the history, which may have made every earlier read stale.
 			const reads = this.reads.begin();
 			const repeats = new RepeatedCalls();
-			const endings = new RepeatedEndings();
+			const loops = new CommandLoops();
 			// A tool that does its own work on the model, such as running subagents, counts it here.
 			const spend = (spent: Tokens | undefined, unreportedCall: boolean) => {
 				tokens = addTokens(tokens, spent);
@@ -913,15 +972,20 @@ export class LLMAgent implements Agent {
 
 				// On the last step no call is left to send the results to, so the tools do not run.
 				if (step < this.maxSteps) {
-					const results = await this.runTools(
+					const { message, stopped } = await this.runTools(
 						calls,
 						options,
 						effects,
 						{ run: context, reads, onProgress, spend },
 						throwIfProgressFailed,
-						endings,
+						loops,
 					);
-					runMessages.push(results);
+					runMessages.push(message);
+					// Kept like a run cut by the output limit: the user may take it up.
+					if (stopped) {
+						remember();
+						throw stopped;
+					}
 				}
 			}
 

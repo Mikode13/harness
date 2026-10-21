@@ -2168,6 +2168,8 @@ tags: #mikode-harness #tools #cost
 
 tags: #mikode-harness #llm #tools #cost
 
+superseded by: "A command that keeps ending alike warns the model, then asks the user" (below) — a pass counts only with nothing changed, endings alike count across the whole run, colors and times are left out, and the fifth asks the user instead of stopping.
+
 **Decision:**
 
 - **A run fails with `UnrecoverableError` on the fifth time in a row** that a configured command, called with the same input, ends exactly as it did before: the same outcome, exit code, signal and output. Its duration does not count.
@@ -2307,6 +2309,8 @@ tags: #mikode-harness #tools #agent-loops #cost
 
 tags: #mikode-harness #llm #agent-loops
 
+partially superseded by: "A command that keeps ending alike warns the model, then asks the user" (below) — a run stopped on such a command is kept too.
+
 **Decision:**
 
 - **A run whose answer stops at the output limit is recorded, and still fails.** The conversation takes its prompt, every step with its tool results, and what the cut answer held: its text and reasoning, narrated as they would have been. The answer's tool calls are left out, since their input may be cut, and so is its provider data, which a provider may refuse to read back incomplete: an OpenAI reasoning item without the item it led to, or a Claude thinking block cut before its signature. An answer left with nothing is not recorded; its run's steps are.
@@ -2329,3 +2333,39 @@ tags: #mikode-harness #llm #agent-loops
 - The conversation now holds one kind of failed run, which a consumer that sends the next prompt continues. A retry of the same prompt after such a failure would follow it; `RetryingAgent` never retries an `UnrecoverableError`.
 - The next call reads only the cut answer's text. Its readable reasoning stays in the conversation and the transcript, but neither client sends reasoning text back, and the provider data that would carry it is left out. An answer that was cut while thinking, as Haiku's may have been, gives the next call nothing but the run before it.
 - A Claude answer can cost twice as much as before at the limit.
+
+## A command that keeps ending alike warns the model, then asks the user
+
+tags: #mikode-harness #llm #tools #cost
+
+**Decision:**
+
+- **Two endings of a command are alike** when the same call, by tool and input, ended the same way and printed the same, with colors, durations and clock times left out. A failure is alike whatever changed between: the changes did not reach what it reports. A pass is alike only when nothing changed, since a passing check prints the same whatever it checked.
+- **What changed is read from the content, not counted.** The run's journal keeps what each file it changed holds, and `contentState` hashes those paths and states. A file back to what it held before the run first changed it counts as unchanged, so a change and its undo leave the state as it was, and a patch that fails changes nothing. The state is unknown, and a pass never alike, when the command, or one run between, changed something the history cannot copy, or a consumer's `Tool` judged other than `safe` ran between.
+- **Every ending of the run counts,** not only those in a row: no other call, and no other ending of the command, starts the count again, so a check that alternates A, B, A stays suspect. A call that never ran a command counts for nothing.
+- **The third ending alike warns the model,** in that call's result: how many times, the files changed between the first and the last, and that the user will be asked on the fifth, or, once they let the run go on, that it will stop.
+- **The fifth asks the user,** through the run's `ask`. The question shows the command, the times, the files changed and the last lines it printed, and says it may be a check that passes after every change. The answers:
+  - **Another attempt:** the run goes on, and the model is told to change its approach. The command's count starts again, and the next fifth stops the run without asking. The run may go on once.
+  - **Stop:** the run fails, and is kept in the conversation as one cut by the output limit is, so the next prompt continues from it. Its changes stay.
+  - **Words of their own:** they reach the model, and the run goes on as with another attempt.
+- **With no `ask`,** the fifth stops the run as **Stop** does. The result of the call that stopped it says why, so the next run's model reads it. The calls of the same answer after it do not run, and each gets a result that says so, so the run kept has no call without one.
+- **The count belongs to the `run()`,** as before, and so does the one extension.
+
+**Context:** in the #22 run of 2026-10-20 on the `openai` roles, the executor ran `typecheck` five times with exit code 0, with 21 patches between them, and "A run stops when a command ends the same way five times in a row" ended a run whose tree passed `check` and the tests; see "Provider profiles on #22" in learnings.md. Counting changes would not tell a change from its undo. On 2026-10-21 the user chose a state read from the content, a count per command that nothing else breaks, a warning on the third ending alike and a pause on the fifth that asks them: another attempt, once, or stop with the run kept. They chose to leave colors and times out, and to stop as **Stop** does when no one can be asked.
+
+**Alternatives considered:**
+
+- **Starting the count again after any change.** A passing check would never stop a run, but neither would the loop #122 was for: a check failing the same way after every patch. Not chosen.
+- **Only failing endings count.** No pass would ever be stopped, nor would a model rerunning a green check with nothing changed. Not chosen.
+- **Stopping on the fifth, without asking.** The decision before this one. It cannot tell a false alarm from a loop, and the user can. Not chosen.
+- **Starting the count again with each extension, or giving two endings more.** The run could go on more than once, but a real loop would ask the user again and again. Not chosen.
+- **Not running a command again once nothing changed.** It would save the run, but the model would read an old result as a new one. Not chosen.
+- **Comparing diagnostics, by file, rule and message.** It would tell progress from a change of wording, but only for checks the harness knows, which it does not: commands are the consumer's. Left for later.
+
+**Consequences:**
+
+- A check that passes after every change never stops a run, and one that fails the same way after every change asks on the fifth, as before but with a warning on the third.
+- The pattern for times also drops a number followed by `s`, `m` or `h` as a word, so "2 s" and "2s" read as the same time: two outputs that differ only in such a number are alike.
+- A consumer without `ask` sees the run fail as before, now with the run kept in the conversation.
+- A question in the middle of a run waits for the user, as `askUser` already does.
+- `RunJournal` gains `appliedPaths` and `contentState`, and `PreparedCall` a `CommandEnding` and `unrecorded`; all are internal.

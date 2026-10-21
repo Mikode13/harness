@@ -15,7 +15,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApprovalRequest, Approver } from '../../src/agent/domain/approval.ts';
 import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
-import { RunContext } from '../../src/agent/domain/runContext.ts';
+import { RunContext, withRunContext } from '../../src/agent/domain/runContext.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import { historyStart } from '../../src/recovery/domain/recoveryStore.ts';
 import { showChanges } from '../../src/recovery/domain/runChanges.ts';
@@ -28,6 +28,7 @@ import { createCommandTool } from '../../src/tools/infrastructure/commandTool.ts
 import { runCommandProcess } from '../../src/tools/infrastructure/commandProcess.ts';
 import {
 	commandToolFor,
+	fileToolsFor,
 	type OpenedWorkspace,
 	openWorkspace,
 	type WorkspaceOptions,
@@ -162,43 +163,107 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		expect(read('src/b.ts')).toBe('export const b = 2;\n');
 	});
 
-	// What the agent compares to stop a model whose changes never reach what a check reports.
+	/** Prepares and runs `name` in `context`, returning its report and how it ended. */
+	async function runIn(tool: PreparingTool, context: RunContext, name: string) {
+		const prepared = await tool.prepare({ command: { name } }, signal, {
+			run: context,
+			reads: new ReadRegistry().begin(),
+			callId: 'call',
+			onProgress: () => undefined,
+			spend: () => undefined,
+		});
+		expect(prepared.ending?.()).toBeUndefined();
+		const report = await prepared.run(signal).catch((error: unknown) => (error as Error).message);
+		return { report, ending: prepared.ending?.() };
+	}
+
+	// What the agent compares to tell a model whose changes never reach what a check reports.
 	it('ends two runs that printed the same alike, however long each took', async () => {
 		const opened = await open();
-		// Slow and with a change the first time only: the report differs, the ending does not.
+		// Slow and with a change the first time only: the report differs, the output does not.
 		const tool = (await commandToolFor(opened, {
 			test: shell('[ -f done ] || { touch done; sleep 0.3; }; echo "1 failed"; exit 1'),
 			other: shell('echo "2 failed"; exit 1'),
 			passing: shell('echo "1 failed"'),
 		})) as PreparingTool;
 		const context = new RunContext();
-		const run = async (name: string) => {
-			const prepared = await tool.prepare({ command: { name } }, signal, {
-				run: context,
-				reads: new ReadRegistry().begin(),
-				callId: 'call',
-				onProgress: () => undefined,
-				spend: () => undefined,
-			});
-			expect(prepared.ending?.()).toBeUndefined();
-			const report = await prepared.run(signal).catch((error: unknown) => (error as Error).message);
-			return { report, ending: prepared.ending?.() };
-		};
 
-		const first = await run('test');
-		const second = await run('test');
-		const other = await run('other');
-		const passing = await run('passing');
+		const first = await runIn(tool, context, 'test');
+		const second = await runIn(tool, context, 'test');
+		const other = await runIn(tool, context, 'other');
+		const passing = await runIn(tool, context, 'passing');
 		await context.finish('completed');
 
 		expect(first.report).not.toBe(second.report);
-		expect(first.ending).toBeDefined();
-		expect(second.ending).toBe(first.ending);
-		expect(other.ending).not.toBe(first.ending);
-		expect(passing.ending).not.toBe(first.ending);
+		expect(first.ending).toEqual({
+			passed: false,
+			how: 'exited with code 1',
+			output: '1 failed\n',
+			state: expect.any(String) as unknown,
+			changed: ['done'],
+		});
+		expect(second.ending).toEqual(first.ending);
+		expect(other.ending?.output).toBe('2 failed\n');
+		expect(passing.ending).toMatchObject({ passed: true, how: 'exited with code 0' });
 	});
 
-	it('stops a run whose command fails with the same output five times in a row', async () => {
+	it('leaves colors, durations and clock times out of what it printed', async () => {
+		const opened = await open();
+		const tool = (await commandToolFor(opened, {
+			slow: shell(String.raw`printf '\033[32m✓\033[0m 3 passed in 1.32s (12ms) at 00:12:53\n'`),
+			fast: shell(String.raw`printf '\033[31m✓\033[0m 3 passed in 0.4 s (9ms) at 10:01:02\n'`),
+		})) as PreparingTool;
+		const context = new RunContext();
+
+		const slow = await runIn(tool, context, 'slow');
+		const fast = await runIn(tool, context, 'fast');
+		await context.finish('completed');
+
+		expect(slow.ending?.output).toBe('✓ 3 passed in <time> (<time>) at <time>\n');
+		expect(fast.ending?.output).toBe(slow.ending?.output);
+	});
+
+	it("gives the state of the run's files, the same again once a change is undone", async () => {
+		const opened = await open();
+		const tool = (await commandToolFor(opened, {
+			check: shell('true'),
+			change: shell("printf 'export const a = 2;\\n' > src/a.ts"),
+			undo: shell("printf 'export const a = 1 ;\\n' > src/a.ts"),
+			ignored: shell('mkdir -p node_modules && echo x > node_modules/out.js'),
+		})) as PreparingTool;
+		const context = new RunContext();
+
+		const before = await runIn(tool, context, 'check');
+		await runIn(tool, context, 'change');
+		const changed = await runIn(tool, context, 'check');
+		await runIn(tool, context, 'undo');
+		const undone = await runIn(tool, context, 'check');
+		await runIn(tool, context, 'ignored');
+		const ignored = await runIn(tool, context, 'check');
+		await context.finish('completed');
+
+		expect(changed.ending?.state).not.toBe(before.ending?.state);
+		expect(undone.ending?.state).toBe(before.ending?.state);
+		expect(undone.ending?.changed).toEqual(['src/a.ts', 'src/a.ts']);
+		// What the history leaves out is not part of the state.
+		expect(ignored.ending?.state).toBe(before.ending?.state);
+	});
+
+	it('has no state for a command that changed what the history cannot copy', async () => {
+		const opened = await open();
+		const tool = (await commandToolFor(opened, {
+			swap: shell('rm src/b.ts && mkdir src/b.ts'),
+		})) as PreparingTool;
+		const context = new RunContext();
+
+		const swap = await runIn(tool, context, 'swap');
+		await context.finish('completed');
+
+		expect(swap.ending).toBeDefined();
+		expect(swap.ending?.state).toBeUndefined();
+	});
+
+	it('stops a run whose command fails with the same output five times, with no one to ask', async () => {
 		const opened = await open();
 		const tool = await commandToolFor(opened, {
 			test: shell('echo "1 failed"; exit 1'),
@@ -218,9 +283,50 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			new LLMAgent({ llmClient, tools: [tool], autoApprove: true }).run('prompt', { signal }),
 		).rejects.toMatchObject({
 			message: 'The LLM kept getting the same result from a command',
-			cause: `"sh -c echo "1 failed"; exit 1" ended the same way, with the same output, 5 times in a row.`,
+			cause:
+				'"sh -c echo "1 failed"; exit 1" exited with code 1 with the same output 5 times. No file the history covers changed between them. No one could be asked whether to go on. The run is kept in the conversation.',
 		});
 		expect(llmClient.contexts).toHaveLength(9);
+	});
+
+	// The executor of a #22 run was stopped so, with every check it ran green.
+	it('lets a check that passes run after every change, however many times', async () => {
+		const opened = await open();
+		const check = await commandToolFor(opened, { typecheck: shell('true') });
+		const editor = fileToolsFor('anthropic', opened).find(
+			tool => tool.name === 'str_replace_based_edit_tool',
+		);
+		if (!editor) throw new Error('Expected the text editor');
+		const ids = ['1', '2', '3', '4', '5', '6'];
+		// Claude's client, which declares the text editor.
+		const llmClient = Object.assign(
+			new FakeLLMClient(
+				...ids.flatMap(id => [
+					assistantResponse([
+						toolCall(`check-${id}`, 'runCommand', { command: { name: 'typecheck' } }),
+					]),
+					assistantResponse([
+						toolCall(`edit-${id}`, 'str_replace_based_edit_tool', {
+							command: 'create',
+							path: `src/c${id}.ts`,
+							file_text: `export const c = ${id};\n`,
+						}),
+					]),
+				]),
+				textResponse('done'),
+			),
+			{ supportsNative: () => true },
+		);
+		const context = new RunContext();
+
+		await expect(
+			new LLMAgent({ llmClient, tools: [check, editor], autoApprove: true }).run(
+				'prompt',
+				withRunContext({ signal }, context),
+			),
+		).resolves.toMatchObject({ response: 'done' });
+		await context.finish('completed');
+		expect(read('src/c6.ts')).toBe('export const c = 6;\n');
 	});
 
 	it('returns a non-zero exit as an error result, narrated with its exit code and output', async () => {

@@ -3,6 +3,23 @@ import type { ToolDefinition } from '#src/llm/domain/tool';
 import type { ToolCallContext } from './readRegistry.ts';
 import type { Tool, ToolSummarizer } from './tool.ts';
 
+/** How a configured command ended, for telling a command run again for nothing. */
+export interface CommandEnding {
+	/** It exited with code 0. */
+	passed: boolean;
+	/** How it ended, such as "exited with code 1" or "ran past its time limit". */
+	how: string;
+	/** What it printed, or the end of it, without colors, durations or clock times. */
+	output: string;
+	/**
+	 * What the files the run changed held when it ended, as `RunJournal.contentState` gives it.
+	 * Missing when it changed something the history could not record.
+	 */
+	state?: string;
+	/** The file of every change the run had applied by then, in order, as the model names it. */
+	changed: readonly string[];
+}
+
 /**
  * A tool call checked and fixed before anyone approves it: its risk is judged on what will
  * really happen, and `run` does exactly that, nothing worked out again.
@@ -14,11 +31,12 @@ export interface PreparedCall {
 	/** For a call that runs a configured command, what it will run, fixed when prepared. */
 	readonly command?: CommandLine;
 	/**
-	 * For a call that runs a configured command, how it ended once it has: its outcome and its
-	 * output, without how long it took, so two runs that ended alike give the same text.
-	 * `undefined` before it runs, and when it never did.
+	 * For a call that runs a configured command, how it ended once it has. `undefined` before it
+	 * runs, and when it never did.
 	 */
-	readonly ending?: () => string | undefined;
+	readonly ending?: () => CommandEnding | undefined;
+	/** A consumer's call: whatever it changes, the history does not record. */
+	readonly unrecorded?: true;
 	run(signal: AbortSignal): Promise<string>;
 }
 
@@ -67,5 +85,5 @@ export async function prepareCall(
 	if (isPreparing(tool)) return tool.prepare(input, signal, call);
 
 	const risk = tool.risk(input);
-	return { risk, run: runSignal => tool.execute(input, runSignal) };
+	return { risk, unrecorded: true, run: runSignal => tool.execute(input, runSignal) };
 }

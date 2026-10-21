@@ -340,6 +340,20 @@ reviewer: the OpenAI executor was ended by the stop for a command that ends the 
 Haiku by the output limit. They cost $0.79 and $1.05. The results, transcripts included, are in
 `bench-results/2026-10-20-issue22-provider-profiles`.
 
+### The stop for a repeated command ended a run whose checks were green
+
+- **What happened:** the OpenAI executor was stopped at its 64th call: "`pnpm run typecheck`
+  ended the same way, with the same output, 5 times in a row". The tree it left passes `check`
+  and the 1,090 tests, against 1,084 at the base.
+- **Evidence:** of its 17 commands, `typecheck` ran 10 times, and its last 5 runs, each with
+  exit code 0, were the ones counted. Between the first of them and the last, the executor made
+  21 successful patches, most to `workflowRunner.ts`, and ran `test`, `lint` and `format`. A
+  `tsc` that passes prints the same whatever changed.
+- **What it means:** the decision took the same output as a sign that nothing the check sees
+  had changed. That holds for a check that fails, not for one that passes.
+- **What changed:** "A command that keeps ending alike warns the model, then asks the user" in
+  decisions.md: a pass counts only with nothing changed, read from the content of the files.
+
 ### Haiku at `xhigh` spent its whole output on one answer
 
 - **What happened:** the Haiku executor read 26 ranges, 166,261 characters of files, and

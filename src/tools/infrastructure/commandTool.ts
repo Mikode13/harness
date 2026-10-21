@@ -18,7 +18,11 @@ import {
 	validateCommands,
 } from '../domain/commands.ts';
 import { EditRefusedError, EditUnconfirmedError } from '../domain/fileEdits.ts';
-import { ToolExecutionError, type PreparingTool } from '../domain/preparedCall.ts';
+import {
+	type CommandEnding,
+	ToolExecutionError,
+	type PreparingTool,
+} from '../domain/preparedCall.ts';
 import { CommandCheckpoint, type CoveredFiles } from './commandCheckpoint.ts';
 import { type CommandProcessResult, runCommandProcess } from './commandProcess.ts';
 import { definePreparingTool } from './defineTool.ts';
@@ -115,7 +119,7 @@ export async function createCommandTool({
 				cwd: command.cwd,
 			});
 
-			let ending: string | undefined;
+			let ending: CommandEnding | undefined;
 			return {
 				// A command can change anything its user can: it is always asked about.
 				risk: 'destructive',
@@ -128,8 +132,8 @@ export async function createCommandTool({
 						definition: command.definition,
 						context: run,
 						signal: runSignal,
-						ended: text => {
-							ending = text;
+						ended: end => {
+							ending = end;
 						},
 					}),
 			};
@@ -150,7 +154,7 @@ export async function createCommandTool({
 		context: RunContext;
 		signal: AbortSignal;
 		/** Told how the command ended, once it ran to an end and everything it changed is recorded. */
-		ended: (ending: string) => void;
+		ended: (ending: CommandEnding) => void;
 	}): Promise<string> {
 		signal.throwIfAborted();
 		const session = writes.sessionFor(context);
@@ -205,16 +209,13 @@ export async function createCommandTool({
 		}
 		// After its changes are recorded: a cancelled command is never reported as finished.
 		if (result.outcome === 'cancelled') signal.throwIfAborted();
-		// Everything but the duration, which differs between two runs of the same check.
-		ended(
-			JSON.stringify([
-				result.outcome,
-				result.exitCode,
-				result.signal,
-				result.printedBytes,
-				result.output,
-			]),
-		);
+		ended({
+			passed: result.outcome === 'exited' && result.exitCode === 0,
+			how: howItEnded(result),
+			output: withoutColorsOrTimes(result.output),
+			...(observed.unrecorded.length === 0 ? { state: journal.contentState() } : {}),
+			changed: journal.appliedPaths.map(path => displayPath(base, path)),
+		});
 		if (result.outcome !== 'exited') throw new ToolExecutionError(report);
 		if (result.exitCode !== 0) {
 			throw new ToolExecutionError(report, {
@@ -268,6 +269,24 @@ export async function createCommandTool({
 		}
 		return lines.join('\n');
 	}
+}
+
+// eslint-disable-next-line no-control-regex -- the escape that starts every terminal color
+const colors = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+// A duration such as "1.3 s", "12ms" or "2m", and a clock time such as "00:12:53".
+const durations = /\b\d+(?:\.\d+)?\s?(?:ms|s|m|h)\b/g;
+const clockTimes = /\b\d{1,2}:\d{2}:\d{2}(?:\.\d+)?\b/g;
+
+function howItEnded(result: CommandProcessResult): string {
+	if (result.outcome === 'timedOut') return 'ran past its time limit';
+	if (result.outcome === 'cancelled') return 'was cancelled';
+	if (result.exitCode !== null) return `exited with code ${String(result.exitCode)}`;
+	return `was killed by ${result.signal ?? 'a signal'}`;
+}
+
+/** The output as two runs that ended alike print it: a test runner times every run. */
+export function withoutColorsOrTimes(output: string): string {
+	return output.replace(colors, '').replace(clockTimes, '<time>').replace(durations, '<time>');
 }
 
 function kilobytes(bytes: number): string {
