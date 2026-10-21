@@ -4,6 +4,8 @@ import type { CommandEnding } from '#src/tools/domain/preparedCall';
 // The third ending alike warns the model; the fifth asks the user whether the run goes on.
 export const warnAt = 3;
 export const askAt = 5;
+// So many answers in a row asking for exactly the same calls ask the user too, before they run.
+export const repeatedAnswersAt = 5;
 
 export const anotherAttempt = 'Another attempt';
 export const stop = 'Stop';
@@ -58,13 +60,14 @@ export class CommandLoops {
 	}
 
 	/**
-	 * Whether the user may still let the run go on: once per run. Granting it forgets the call's
-	 * endings, so its count starts again.
+	 * Whether the user may still let the run go on: once per run, for a command or for repeated
+	 * answers alike. Granting it for a command forgets that call's endings, so its count starts
+	 * again.
 	 */
-	extend(key: string): boolean {
+	extend(key?: string): boolean {
 		if (this.extended) return false;
 		this.extended = true;
-		this.endings.delete(key);
+		if (key !== undefined) this.endings.delete(key);
 		return true;
 	}
 }
@@ -72,7 +75,7 @@ export class CommandLoops {
 function sameEnding(earlier: Seen, now: Seen): boolean {
 	const a = earlier.ending;
 	const b = now.ending;
-	if (a.passed !== b.passed || a.how !== b.how || a.output !== b.output) return false;
+	if (a.passed !== b.passed || a.how !== b.how || a.fingerprint !== b.fingerprint) return false;
 	if (!b.passed) return true;
 	// A state that could not be read, or a call the history cannot see, may hide a change.
 	return a.state !== undefined && a.state === b.state && earlier.unrecorded === now.unrecorded;
@@ -93,13 +96,16 @@ function describeChanges({ first, last }: Alike): string {
 	return `Files changed between them${back}: ${files.join(', ')}.${unseen}`;
 }
 
-/** Told to the model with the result that makes the third ending alike. */
-export function loopWarning(label: string, alike: Alike, wentOn: boolean): string {
+/**
+ * Told to the model with the result that makes the third ending alike. `asks` is whether the
+ * fifth will ask the user: not once they let the run go on, nor when no one can be asked.
+ */
+export function loopWarning(label: string, alike: Alike, asks: boolean): string {
 	const again = alike.last.ending.passed
 		? 'Running it again with nothing changed tells you nothing new.'
 		: 'Find out why your changes do not reach what it reports before you run it again.';
-	const then = wentOn ? 'the run stops' : 'the user is asked whether the run goes on';
-	return `"${label}" has ${alike.last.ending.how} with the same output ${String(alike.times)} times in this run. ${describeChanges(alike)} ${again} If it ends this way ${String(askAt)} times, ${then}.`;
+	const then = asks ? 'the user is asked whether the run goes on' : 'the run stops';
+	return `"${label}" ${alike.last.ending.how} with the same output ${String(alike.times)} times in this run. ${describeChanges(alike)} ${again} If it ends this way ${String(askAt)} times, ${then}.`;
 }
 
 /** The question for the user on the fifth ending alike. */
@@ -109,23 +115,27 @@ export function loopQuestion(label: string, alike: Alike): UserQuestion {
 		lines.length > shownCharacters ? `…${lines.slice(-shownCharacters)}` : lines || '(nothing)';
 	return {
 		question: [
-			`Possible loop: "${label}" has ${alike.last.ending.how} with the same output ${String(alike.times)} times in this run. ${describeChanges(alike)}`,
+			`Possible loop: "${label}" ${alike.last.ending.how} with the same output ${String(alike.times)} times in this run. ${describeChanges(alike)}`,
 			'It may be a check that passes after every change, which is no loop, or the model repeating itself.',
 			`What it printed, the last lines:\n${output}`,
 		].join('\n'),
-		options: [
-			{
-				label: anotherAttempt,
-				description: `Let the run go on, once. If it ends this way ${String(askAt)} more times, the run stops without asking.`,
-			},
-			{
-				label: stop,
-				description:
-					'End the run here. What it did and changed is kept, and your next prompt continues from it.',
-			},
-		],
+		options: loopOptions(`If it ends this way ${String(askAt)} more times`),
 		multiSelect: false,
 	};
+}
+
+function loopOptions(again: string): UserQuestion['options'] {
+	return [
+		{
+			label: anotherAttempt,
+			description: `Let the run go on, once. ${again}, or any other loop is found, the run stops without asking.`,
+		},
+		{
+			label: stop,
+			description:
+				'End the run here. What it did and changed is kept, and your next prompt continues from it.',
+		},
+	];
 }
 
 /** Told to the model when the user let the run go on, with their words if they wrote some. */
@@ -137,4 +147,30 @@ export function extensionNote(alike: Alike, words?: string): string {
 /** Why the run stopped, for the failure it ends with. */
 export function loopStop(label: string, alike: Alike, reason: string): string {
 	return `"${label}" ${alike.last.ending.how} with the same output ${String(alike.times)} times. ${describeChanges(alike)} ${reason} The run is kept in the conversation.`;
+}
+
+/** The question for the user when the model asks for the same `calls` again, before they run. */
+export function repeatQuestion(calls: string): UserQuestion {
+	return {
+		question: [
+			`Possible loop: the model asked for the same tool calls ${String(repeatedAnswersAt)} times in a row, with nothing else between.`,
+			'It may be waiting for something that changes by itself, which is no loop, or repeating itself.',
+			`The calls:\n${calls}`,
+		].join('\n'),
+		options: loopOptions(
+			`If it asks for the same calls ${String(repeatedAnswersAt)} more times in a row`,
+		),
+		multiSelect: false,
+	};
+}
+
+/** Told to the model, with the results of the calls, when the user let them run again. */
+export function repeatNote(words?: string): string {
+	const said = words === undefined ? '' : ` They said: ${words}`;
+	return `You asked for these same calls ${String(repeatedAnswersAt)} times in a row. The user let the run go on, once.${said} Change your approach: if you ask for the same calls ${String(repeatedAnswersAt)} more times in a row, the run stops.`;
+}
+
+/** Why the run stopped on repeated answers, for the failure it ends with. */
+export function repeatStop(reason: string): string {
+	return `The model asked for the same tool calls ${String(repeatedAnswersAt)} times in a row. ${reason} The run is kept in the conversation.`;
 }

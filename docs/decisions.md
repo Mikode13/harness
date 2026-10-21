@@ -1686,6 +1686,8 @@ tags: #mikode-harness #tools #llm
 
 partially superseded by: "The reviewer takes from the executor whether the tests pass, and is never told they did" (below) — the reviewer is no longer told that the tests passed; it takes that from the executor's response, and still does not run them.
 
+partially superseded by: "A command that keeps ending alike warns the model, then asks the user" (below) — five answers in a row with the same calls ask the user before the fifth set runs, and a run stopped so is kept.
+
 **Decision:**
 
 - **A command declares the roles that get it** (`roles`: `planner`, `executor`, `reviewer`), the executor by default.
@@ -2340,18 +2342,19 @@ tags: #mikode-harness #llm #tools #cost
 
 **Decision:**
 
-- **Two endings of a command are alike** when the same call, by tool and input, ended the same way and printed the same, with colors, durations and clock times left out. A failure is alike whatever changed between: the changes did not reach what it reports. A pass is alike only when nothing changed, since a passing check prints the same whatever it checked.
+- **Two endings of a command are alike** when the same call, by tool and input, ended the same way and printed the same. What it printed is compared as a hash of all of it, not only the end its result keeps, line by line and with its standard output and error apart. Colors are left out, and so are the times a known runner prints: its summary (Vitest, Jest, Mocha, pytest, cargo, `Done in`), the duration at the end of a line that reports a test or file with a mark or a status, Node's `duration_ms`, the timestamp `tsc --watch` starts a line with, and `prettier --write`'s time per file. Every other time stays: in `expected 1s, received 2s` it is what failed. A failure is alike whatever changed between: the changes did not reach what it reports. A pass is alike only when nothing changed, since a passing check prints the same whatever it checked.
 - **What changed is read from the content, not counted.** The run's journal keeps what each file it changed holds, and `contentState` hashes those paths and states. A file back to what it held before the run first changed it counts as unchanged, so a change and its undo leave the state as it was, and a patch that fails changes nothing. The state is unknown, and a pass never alike, when the command, or one run between, changed something the history cannot copy, or a consumer's `Tool` judged other than `safe` ran between.
 - **Every ending of the run counts,** not only those in a row: no other call, and no other ending of the command, starts the count again, so a check that alternates A, B, A stays suspect. A call that never ran a command counts for nothing.
-- **The third ending alike warns the model,** in that call's result: how many times, the files changed between the first and the last, and that the user will be asked on the fifth, or, once they let the run go on, that it will stop.
+- **The third ending alike warns the model,** in that call's result: how many times, the files changed between the first and the last, and that the user will be asked on the fifth, or that the run will stop, once they let it go on or when there is no `ask`.
 - **The fifth asks the user,** through the run's `ask`. The question shows the command, the times, the files changed and the last lines it printed, and says it may be a check that passes after every change. The answers:
   - **Another attempt:** the run goes on, and the model is told to change its approach. The command's count starts again, and the next fifth stops the run without asking. The run may go on once.
   - **Stop:** the run fails, and is kept in the conversation as one cut by the output limit is, so the next prompt continues from it. Its changes stay.
   - **Words of their own:** they reach the model, and the run goes on as with another attempt.
 - **With no `ask`,** the fifth stops the run as **Stop** does. The result of the call that stopped it says why, so the next run's model reads it. The calls of the same answer after it do not run, and each gets a result that says so, so the run kept has no call without one.
+- **Five answers in a row asking for exactly the same calls ask too,** before the fifth set runs, with the same answers and the same one extension, which a command's loop and this one share. Another attempt runs them, with a note for the model after their results, and the count starts again. A stop gives each call a result saying it did not run, the first one saying why, and keeps the run.
 - **The count belongs to the `run()`,** as before, and so does the one extension.
 
-**Context:** in the #22 run of 2026-10-20 on the `openai` roles, the executor ran `typecheck` five times with exit code 0, with 21 patches between them, and "A run stops when a command ends the same way five times in a row" ended a run whose tree passed `check` and the tests; see "Provider profiles on #22" in learnings.md. Counting changes would not tell a change from its undo. On 2026-10-21 the user chose a state read from the content, a count per command that nothing else breaks, a warning on the third ending alike and a pause on the fifth that asks them: another attempt, once, or stop with the run kept. They chose to leave colors and times out, and to stop as **Stop** does when no one can be asked.
+**Context:** in the #22 run of 2026-10-20 on the `openai` roles, the executor ran `typecheck` five times with exit code 0, with 21 patches between them, and "A run stops when a command ends the same way five times in a row" ended a run whose tree passed `check` and the tests; see "Provider profiles on #22" in learnings.md. Counting changes would not tell a change from its undo. On 2026-10-21 the user chose a state read from the content, a count per command that nothing else breaks, a warning on the third ending alike and a pause on the fifth that asks them: another attempt, once, or stop with the run kept. They chose to leave colors and times out, and to stop as **Stop** does when no one can be asked. After the review of #130 they chose a hash of the whole output, times left out only where a known runner prints them, and the stop for repeated answers to ask as well, sharing the extension.
 
 **Alternatives considered:**
 
@@ -2360,12 +2363,20 @@ tags: #mikode-harness #llm #tools #cost
 - **Stopping on the fifth, without asking.** The decision before this one. It cannot tell a false alarm from a loop, and the user can. Not chosen.
 - **Starting the count again with each extension, or giving two endings more.** The run could go on more than once, but a real loop would ask the user again and again. Not chosen.
 - **Not running a command again once nothing changed.** It would save the run, but the model would read an old result as a new one. Not chosen.
+- **Comparing the end of the output a result keeps.** Two failures that differ before a shared end, such as a summary, would read as alike. Not chosen.
+- **Not counting an output that was cut.** No false alarm, but a check that fails the same way with a long output would never be caught. Not chosen.
+- **Leaving out any time, anywhere.** Every runner would repeat, but a value that failed, such as `received 2s`, would be lost. Not chosen.
+- **Letting the consumer declare what to leave out, per command.** Exact, but new public API, and a runner not configured would never repeat. Not chosen.
+- **Leaving the stop for repeated answers as it was.** A model that reruns a check with nothing between would be stopped before the fifth run, without being asked and without the run kept. Not chosen.
 - **Comparing diagnostics, by file, rule and message.** It would tell progress from a change of wording, but only for checks the harness knows, which it does not: commands are the consumer's. Left for later.
 
 **Consequences:**
 
 - A check that passes after every change never stops a run, and one that fails the same way after every change asks on the fifth, as before but with a warning on the third.
-- The pattern for times also drops a number followed by `s`, `m` or `h` as a word, so "2 s" and "2s" read as the same time: two outputs that differ only in such a number are alike.
+- A runner the list does not know keeps its times in the comparison: if it prints a different one each run, its output never repeats, and only the step limit stops a loop on it. The list grows with the runners we meet.
+- A line a known runner prints as metadata loses every time on it, such as a test's name that ends with a duration.
+- `runCommandProcess` hands every chunk to an `onOutput` callback, so the whole output is hashed as it arrives, in memory no larger than its longest line, cut at 64 KB.
 - A consumer without `ask` sees the run fail as before, now with the run kept in the conversation.
 - A question in the middle of a run waits for the user, as `askUser` already does.
 - `RunJournal` gains `appliedPaths` and `contentState`, and `PreparedCall` a `CommandEnding` and `unrecorded`; all are internal.
+- A consumer without `ask` sees a run whose answers repeat fail as before, now with the run kept.

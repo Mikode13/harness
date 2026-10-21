@@ -291,18 +291,19 @@ never receives a tool's `execute`. When the answer calls tools, the agent runs t
 time, in order, and calls the model again with the calls and a `tool` message holding their
 results. The run ends when an answer calls no tool. After `maxSteps` calls to the model, 65 by
 default (80 for the orchestrator's executor), it fails with `UnrecoverableError` instead, without running the last step's calls,
-because no call is left to send their results to. It fails the same way, before running them,
-when five answers in a row ask for exactly the same calls, by tool and input. `CommandLoops` keeps
-every ending of each configured command in the run, by its input: how it ended, what it printed
-without colors or times, and `RunJournal.contentState`, a hash of what the files the run changed
-hold. A failure is alike an earlier one whatever changed; a pass only with the same state, and
+because no call is left to send their results to. `CommandLoops` keeps
+every ending of each configured command in the run, by its input: how it ended, a hash of all it
+printed, which `commandOutput.ts` takes line by line without colors or the times a known runner
+prints, and `RunJournal.contentState`, a hash of what the files the run changed hold. A failure is alike an earlier one whatever changed; a pass only with the same state, and
 with no consumer `Tool` that is not `safe`, nor a command that changed what the history cannot
 copy, run between. The third ending alike adds a warning to its
 result. The fifth asks the user through `ask`, after its result is narrated: another attempt goes
 on once, with the command's count started again; a stop, or no `ask`, ends the run with
 `UnrecoverableError`, the result that stopped it saying why, the later calls of that answer each
 given a result saying they did not run,
-and the run kept in the conversation. A client built with
+and the run kept in the conversation. Five answers in a row that ask for exactly the same calls,
+by tool and input, ask the same way before the fifth set runs, and share the one extension; a
+stop gives each of those calls a result saying it did not run. A client built with
 `compactAt` has its provider compact the context inside the call that passes it; the summary is a
 `compaction` part of the answer, unless the compaction failed and Claude returned no summary, which
 the client leaves out with a warning. That client sends the context from its latest compaction on,

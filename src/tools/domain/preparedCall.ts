@@ -9,8 +9,13 @@ export interface CommandEnding {
 	passed: boolean;
 	/** How it ended, such as "exited with code 1" or "ran past its time limit". */
 	how: string;
-	/** What it printed, or the end of it, without colors, durations or clock times. */
+	/** What it printed, or the end of it, without colors, as the user is shown it. */
 	output: string;
+	/**
+	 * A hash of everything it printed, line by line, without colors or the times a known test
+	 * runner adds: what tells two endings apart.
+	 */
+	fingerprint: string;
 	/**
 	 * What the files the run changed held when it ended, as `RunJournal.contentState` gives it.
 	 * Missing when it changed something the history could not record.

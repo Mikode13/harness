@@ -199,28 +199,57 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			passed: false,
 			how: 'exited with code 1',
 			output: '1 failed\n',
+			fingerprint: expect.any(String) as unknown,
 			state: expect.any(String) as unknown,
 			changed: ['done'],
 		});
 		expect(second.ending).toEqual(first.ending);
-		expect(other.ending?.output).toBe('2 failed\n');
+		expect(other.ending?.fingerprint).not.toBe(first.ending?.fingerprint);
 		expect(passing.ending).toMatchObject({ passed: true, how: 'exited with code 0' });
 	});
 
-	it('leaves colors, durations and clock times out of what it printed', async () => {
+	it('leaves colors and the times of a known runner out, and keeps every other time', async () => {
 		const opened = await open();
 		const tool = (await commandToolFor(opened, {
-			slow: shell(String.raw`printf '\033[32m✓\033[0m 3 passed in 1.32s (12ms) at 00:12:53\n'`),
-			fast: shell(String.raw`printf '\033[31m✓\033[0m 3 passed in 0.4 s (9ms) at 10:01:02\n'`),
+			slow: shell(
+				String.raw`printf '\033[32m✓\033[0m a.test.ts (3 tests) 1.32s\n   Duration  2.1s (setup 12ms)\nexpected 1s, received 2s\n'`,
+			),
+			fast: shell(
+				String.raw`printf '\033[31m✓\033[0m a.test.ts (3 tests) 9ms\n   Duration  0.4 s (setup 9ms)\nexpected 1s, received 2s\n'`,
+			),
+			changed: shell(
+				String.raw`printf '✓ a.test.ts (3 tests) 9ms\n   Duration  0.4 s (setup 9ms)\nexpected 1s, received 3s\n'`,
+			),
 		})) as PreparingTool;
 		const context = new RunContext();
 
 		const slow = await runIn(tool, context, 'slow');
 		const fast = await runIn(tool, context, 'fast');
+		const changed = await runIn(tool, context, 'changed');
 		await context.finish('completed');
 
-		expect(slow.ending?.output).toBe('✓ 3 passed in <time> (<time>) at <time>\n');
-		expect(fast.ending?.output).toBe(slow.ending?.output);
+		expect(slow.ending?.output).toBe(
+			'✓ a.test.ts (3 tests) 1.32s\n   Duration  2.1s (setup 12ms)\nexpected 1s, received 2s\n',
+		);
+		expect(fast.ending?.fingerprint).toBe(slow.ending?.fingerprint);
+		expect(changed.ending?.fingerprint).not.toBe(fast.ending?.fingerprint);
+	});
+
+	it('tells apart two outputs whose kept ends are the same', async () => {
+		const opened = await open();
+		const end = 'x'.repeat(200);
+		const tool = (await commandToolFor(opened, {
+			first: shell(`echo "error in a.ts"; echo ${end}; exit 1`, { outputBytes: 100 }),
+			second: shell(`echo "error in b.ts"; echo ${end}; exit 1`, { outputBytes: 100 }),
+		})) as PreparingTool;
+		const context = new RunContext();
+
+		const first = await runIn(tool, context, 'first');
+		const second = await runIn(tool, context, 'second');
+		await context.finish('completed');
+
+		expect(second.ending?.output).toBe(first.ending?.output);
+		expect(second.ending?.fingerprint).not.toBe(first.ending?.fingerprint);
 	});
 
 	it("gives the state of the run's files, the same again once a change is undone", async () => {

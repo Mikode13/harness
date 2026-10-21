@@ -35,7 +35,7 @@ import { Conversation } from '#src/llm/domain/conversation';
 import type { LLMClient, LLMResponse } from '#src/llm/domain/llm';
 import type { Message, MessagePart, ToolCallPart, ToolResultPart } from '#src/llm/domain/message';
 import { asNative, nativeOf, type ToolDefinition } from '#src/llm/domain/tool';
-import type { Asker } from '#src/agent/domain/question';
+import type { Asker, UserQuestion } from '#src/agent/domain/question';
 import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcript';
 import {
 	type AgentTool,
@@ -55,12 +55,15 @@ import { addTokens, type Tokens } from '#src/shared/domain/tokens';
 import {
 	anotherAttempt,
 	askAt,
-	type Alike,
 	CommandLoops,
 	extensionNote,
 	loopQuestion,
 	loopStop,
 	loopWarning,
+	repeatedAnswersAt,
+	repeatNote,
+	repeatQuestion,
+	repeatStop,
 	stop,
 	warnAt,
 } from './commandLoops.ts';
@@ -151,14 +154,18 @@ function canonical(value: unknown): unknown {
 	);
 }
 
-// A model that asks for exactly the same calls this many times in a row is stuck: it already
-// has what they return, and running them again changes nothing.
-const maxRepeatedSteps = 5;
-
-/** How many steps in a row have asked for exactly the same tool calls, with the same input. */
+/**
+ * How many steps in a row have asked for exactly the same tool calls, with the same input. A
+ * model that keeps asking is likely stuck: it already has what they return.
+ */
 class RepeatedCalls {
 	private last: string | undefined;
 	private times = 0;
+
+	/** The user let the run go on: the count starts again. */
+	reset(): void {
+		this.times = 0;
+	}
 
 	count(calls: readonly ToolCallPart[]): number {
 		// Keys sorted at every level: the same input with its properties in another order is the
@@ -168,6 +175,35 @@ class RepeatedCalls {
 		this.last = key;
 		return this.times;
 	}
+}
+
+// How a call the user is asked about is shown: its tool and input, cut short.
+const shownCallCharacters = 300;
+
+function describeCall(call: ToolCallPart): string {
+	const text = `${call.name} ${JSON.stringify(canonical(call.input))}`;
+	return text.length > shownCallCharacters ? `${text.slice(0, shownCallCharacters)}…` : text;
+}
+
+/** The result of a call the run stopped before. */
+function notRun(call: ToolCallPart): ToolResultPart {
+	return {
+		type: 'toolResult',
+		callId: call.id,
+		name: call.name,
+		output: 'Not run: the run stopped before it.',
+		isError: true,
+	};
+}
+
+/** The tool results, with `note` for the model after the last of them. */
+function withNote(message: Message, note: string): Message {
+	const last = message.content.at(-1);
+	if (last?.type !== 'toolResult') return message;
+	return {
+		...message,
+		content: [...message.content.slice(0, -1), { ...last, output: `${last.output}\n\n${note}` }],
+	};
 }
 
 /**
@@ -637,7 +673,7 @@ export class LLMAgent implements Agent {
 			if (alike?.times === warnAt) {
 				result = {
 					...result,
-					output: `${result.output}\n\n${loopWarning(label, alike, loops.wentOn)}`,
+					output: `${result.output}\n\n${loopWarning(label, alike, options.ask !== undefined && !loops.wentOn)}`,
 				};
 			}
 			if (denied) {
@@ -668,7 +704,16 @@ export class LLMAgent implements Agent {
 			} else narrate(result, callback, summary, exitCode);
 			// After its result is narrated, so the user is asked about the ending they have seen.
 			if (alike !== undefined && alike.times >= askAt) {
-				const decision = await this.decideOnLoop(key, label, alike, loops, options);
+				const decision = await this.decideOnLoop(
+					{
+						question: loopQuestion(label, alike),
+						failure: 'The LLM kept getting the same result from a command',
+						stopped: reason => loopStop(label, alike, reason),
+						note: words => extensionNote(alike, words),
+					},
+					() => loops.extend(key),
+					options,
+				);
 				if (typeof decision !== 'string') {
 					// So the next run's model reads why this one ended where it did.
 					results.push({
@@ -677,15 +722,7 @@ export class LLMAgent implements Agent {
 					});
 					// The calls after it never run, but each still gets a result, so the run that is
 					// kept has none without one.
-					for (const later of calls.slice(index + 1)) {
-						results.push({
-							type: 'toolResult',
-							callId: later.id,
-							name: later.name,
-							output: 'Not run: the run stopped before it.',
-							isError: true,
-						});
-					}
+					results.push(...calls.slice(index + 1).map(notRun));
 					return { message: { role: 'tool', content: results }, stopped: decision };
 				}
 				result = { ...result, output: `${result.output}\n\n${decision}` };
@@ -697,24 +734,26 @@ export class LLMAgent implements Agent {
 	}
 
 	/**
-	 * On the fifth ending alike: the note for the model if the user lets the run go on, or the
-	 * failure that stops it. The run goes on once at most, and never without someone to ask.
+	 * On a loop found, the fifth ending alike of a command or the fifth answer in a row asking for
+	 * the same calls: the note for the model if the user lets the run go on, or the failure that
+	 * stops it. The run goes on once at most, and never without someone to ask.
 	 */
 	private async decideOnLoop(
-		key: string,
-		label: string,
-		alike: Alike,
-		loops: CommandLoops,
+		loop: {
+			question: UserQuestion;
+			failure: string;
+			stopped: (reason: string) => string;
+			note: (words?: string) => string;
+		},
+		extend: () => boolean,
 		{ ask, signal }: RunOptions,
 	): Promise<string | UnrecoverableError> {
 		const stopped = (reason: string) =>
-			new UnrecoverableError('The LLM kept getting the same result from a command', {
-				cause: loopStop(label, alike, reason),
-			});
+			new UnrecoverableError(loop.failure, { cause: loop.stopped(reason) });
 		if (!ask) return stopped('No one could be asked whether to go on.');
-		if (!loops.extend(key)) return stopped('The user had already let the run go on once.');
+		if (!extend()) return stopped('The user had already let the run go on once.');
 
-		const questions = [loopQuestion(label, alike)];
+		const questions = [loop.question];
 		let answers: unknown;
 		try {
 			answers = await ask(questions, signal);
@@ -731,7 +770,7 @@ export class LLMAgent implements Agent {
 			});
 		}
 		if (answer === stop) return stopped('The user stopped it.');
-		return extensionNote(alike, answer === anotherAttempt ? undefined : answer);
+		return loop.note(answer === anotherAttempt ? undefined : answer);
 	}
 
 	/**
@@ -964,10 +1003,41 @@ export class LLMAgent implements Agent {
 				}
 
 				// Before running them again: the model has already seen what they return.
-				if (repeats.count(calls) >= maxRepeatedSteps) {
-					throw new UnrecoverableError('The LLM repeated the same tool calls', {
-						cause: `The model asked for the same tool calls ${String(maxRepeatedSteps)} times in a row.`,
-					});
+				let repeatedNote: string | undefined;
+				// Not on the last step, whose calls never run: there is nothing to let go on.
+				if (step < this.maxSteps && repeats.count(calls) >= repeatedAnswersAt) {
+					const decision = await this.decideOnLoop(
+						{
+							question: repeatQuestion(calls.map(describeCall).join('\n')),
+							failure: 'The LLM repeated the same tool calls',
+							stopped: repeatStop,
+							note: repeatNote,
+						},
+						() => loops.extend(),
+						options,
+					);
+					if (typeof decision !== 'string') {
+						// Kept like a run stopped on a command, every call given a result.
+						const [first, ...rest] = calls.map(notRun);
+						runMessages.push({
+							role: 'tool',
+							content: [
+								...(first
+									? [
+											{
+												...first,
+												output: `Not run: the run stopped here. ${decision.cause}`,
+											},
+										]
+									: []),
+								...rest,
+							],
+						});
+						remember();
+						throw decision;
+					}
+					repeats.reset();
+					repeatedNote = decision;
 				}
 
 				// On the last step no call is left to send the results to, so the tools do not run.
@@ -980,7 +1050,7 @@ export class LLMAgent implements Agent {
 						throwIfProgressFailed,
 						loops,
 					);
-					runMessages.push(message);
+					runMessages.push(repeatedNote === undefined ? message : withNote(message, repeatedNote));
 					// Kept like a run cut by the output limit: the user may take it up.
 					if (stopped) {
 						remember();

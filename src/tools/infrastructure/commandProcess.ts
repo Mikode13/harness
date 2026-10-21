@@ -54,6 +54,7 @@ export function runCommandProcess(
 		gracePeriodMs = defaultGracePeriodMs,
 		killWaitMs = defaultKillWaitMs,
 		recheckMs = defaultRecheckMs,
+		onOutput,
 	}: {
 		cwd: string;
 		env: NodeJS.ProcessEnv;
@@ -66,6 +67,8 @@ export function runCommandProcess(
 		killWaitMs?: number;
 		/** How often an unconfirmed group is asked about again. Defaults to 1 s. */
 		recheckMs?: number;
+		/** Given every chunk it prints as it arrives, all of it, not only the end `output` keeps. */
+		onOutput?: (stream: 'stdout' | 'stderr', chunk: Buffer) => void;
 	},
 ): Promise<CommandProcessResult> {
 	// A rejection, not a throw: a caller awaiting the result must see it as one.
@@ -98,9 +101,11 @@ export function runCommandProcess(
 		);
 		child.stdout.on('data', (chunk: Buffer) => {
 			tail.push(chunk);
+			onOutput?.('stdout', chunk);
 		});
 		child.stderr.on('data', (chunk: Buffer) => {
 			tail.push(chunk);
+			onOutput?.('stderr', chunk);
 		});
 
 		const stop = (why: 'timedOut' | 'cancelled'): void => {

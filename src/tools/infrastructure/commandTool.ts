@@ -24,6 +24,7 @@ import {
 	type PreparingTool,
 } from '../domain/preparedCall.ts';
 import { CommandCheckpoint, type CoveredFiles } from './commandCheckpoint.ts';
+import { OutputFingerprint, withoutColors } from './commandOutput.ts';
 import { type CommandProcessResult, runCommandProcess } from './commandProcess.ts';
 import { definePreparingTool } from './defineTool.ts';
 import type { WorkspaceWrites } from './workspaceWrites.ts';
@@ -172,6 +173,7 @@ export async function createCommandTool({
 
 		let result: CommandProcessResult | undefined;
 		let startFailure: unknown;
+		const fingerprint = new OutputFingerprint();
 		try {
 			result = await runProcess(line.executable, line.args, {
 				cwd: line.cwd,
@@ -179,6 +181,9 @@ export async function createCommandTool({
 				timeoutMs: definition.timeoutMs ?? defaultCommandTimeoutMs,
 				outputBytes: definition.outputBytes ?? defaultCommandOutputBytes,
 				signal,
+				onOutput: (stream, chunk) => {
+					fingerprint.push(stream, chunk);
+				},
 			});
 		} catch (error) {
 			startFailure = error;
@@ -212,7 +217,8 @@ export async function createCommandTool({
 		ended({
 			passed: result.outcome === 'exited' && result.exitCode === 0,
 			how: howItEnded(result),
-			output: withoutColorsOrTimes(result.output),
+			output: withoutColors(result.output),
+			fingerprint: fingerprint.digest(),
 			...(observed.unrecorded.length === 0 ? { state: journal.contentState() } : {}),
 			changed: journal.appliedPaths.map(path => displayPath(base, path)),
 		});
@@ -271,22 +277,11 @@ export async function createCommandTool({
 	}
 }
 
-// eslint-disable-next-line no-control-regex -- the escape that starts every terminal color
-const colors = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
-// A duration such as "1.3 s", "12ms" or "2m", and a clock time such as "00:12:53".
-const durations = /\b\d+(?:\.\d+)?\s?(?:ms|s|m|h)\b/g;
-const clockTimes = /\b\d{1,2}:\d{2}:\d{2}(?:\.\d+)?\b/g;
-
 function howItEnded(result: CommandProcessResult): string {
 	if (result.outcome === 'timedOut') return 'ran past its time limit';
 	if (result.outcome === 'cancelled') return 'was cancelled';
 	if (result.exitCode !== null) return `exited with code ${String(result.exitCode)}`;
 	return `was killed by ${result.signal ?? 'a signal'}`;
-}
-
-/** The output as two runs that ended alike print it: a test runner times every run. */
-export function withoutColorsOrTimes(output: string): string {
-	return output.replace(colors, '').replace(clockTimes, '<time>').replace(durations, '<time>');
 }
 
 function kilobytes(bytes: number): string {
