@@ -437,16 +437,12 @@ included, are in `bench-results/2026-10-21-issue22-stuck-guard`.
 - **What happened:** the run with the default roles cost $2.41, against $1.99 for the same roles
   on 2026-10-20 ("Two roles on #22 after #100"). Both had two rounds.
 - **Evidence:**
-
-  | Role                | 2026-10-20       | This run   |
-  | ------------------- | ---------------- | ---------- |
-  | Reviewer            | $0.45, 9 steps   | $0.93, 18  |
-  | Planner             | $1.01, 12 steps  | $0.86, 9   |
-  | Planner's explorers | $0.11, 56 steps  | $0.17, 97  |
-  | Executor            | $0.42, 100 steps | $0.45, 135 |
+  - The reviewer: $0.93 over 18 steps, against $0.45 over 9.
+  - The planner: $0.86 over 9 steps, against $1.01 over 12.
+  - The planner's explorers: $0.17 over 97 steps, against $0.11 over 56.
+  - The executor: $0.45 over 135 steps, against $0.42 over 100.
   - The executor read in 56 calls, against 74.
   - On 2026-10-17, the same roles cost $1.89 in one run and $2.95 in another.
-
 - **What it means:** what changed since 2026-10-20 acts on runs that fail. In a run that does
   not fail, only fewer reads show. One run per setup varies more than the difference between
   setups, so comparing their cost needs three to five runs of each.
@@ -495,12 +491,9 @@ included, are in `bench-results/2026-10-21-issue22-stuck-guard`.
   (21%), against 8 of 61 on 2026-10-20. In the `openai` run it failed 37 of 175 times (21%).
   Haiku's `str_replace_based_edit_tool` failed 2 of 88 times (2%).
 - **Evidence:**
-
-  | Cause                             | Default run | `openai` run |
-  | --------------------------------- | ----------- | ------------ |
-  | A hunk matched two places or more | 4           | 26           |
-  | A hunk did not match the file     | 9           | 9            |
-  | The patch changed nothing         | 3           | 1            |
+  - A hunk matched two places or more: 4 times in the default run, 26 in the `openai` one.
+  - A hunk did not match the file: 9 times in each.
+  - The patch changed nothing: 3 times, and once.
   - **Hunks that matched more than once:** 18 of the 30 were a hunk after the first. `applyUpdate`
     already searches each hunk from the one before it. They failed on the rule that a hunk with
     no `@@` line must match once in the rest of the file, where Codex takes the first match ("Each
