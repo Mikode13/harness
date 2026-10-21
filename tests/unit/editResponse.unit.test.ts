@@ -71,7 +71,7 @@ describe('what an edit says of the formatter', () => {
 		expect(describeFormatting('a.txt', written, formatted)).toBe(
 			[
 				'',
-				'The formatter rewrote some of what you sent. Those lines now read as follows; a later edit must copy these, not yours:',
+				'The formatter rewrote some of what you sent, so read the file again before you edit it. Those lines now read:',
 				'3: line 3',
 				'4: line 4',
 				'5: LINE 5',

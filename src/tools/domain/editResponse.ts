@@ -59,15 +59,15 @@ export function describeModification(path: string, before: string, after: string
 }
 
 /**
- * What an edit adds to its response when the formatter rewrote what the model sent: those lines
- * as the file now reads them, since the model would otherwise edit on from the ones it wrote.
- * Nothing when the formatter left the file as written.
+ * What an edit adds to its response when the formatter rewrote what the model sent: that the file
+ * must be read again, and those lines as it now reads them. Nothing when the formatter left the
+ * file as written.
  */
 export function describeFormatting(path: string, written: string, formatted: string): string {
 	if (written === formatted || formatted === '') return '';
 	return [
 		'',
-		'The formatter rewrote some of what you sent. Those lines now read as follows; a later edit must copy these, not yours:',
+		'The formatter rewrote some of what you sent, so read the file again before you edit it. Those lines now read:',
 		...changedLines(path, written, formatted),
 	].join('\n');
 }

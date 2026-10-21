@@ -477,8 +477,8 @@ export function createLLMAgent(
  * this user can. Not supported on Windows yet.
  *
  * With `formatter`, every file an edit creates or changes is formatted right after, its path
- * the formatter's last argument, and the edit returns the file as the formatter left it. Like a
- * command it runs without a shell, in a small environment, and what it changes in that file is
+ * the formatter's last argument. The edit shows the lines the formatter rewrote, and the model
+ * reads a file it rewrote again before editing it. Like a command it runs without a shell, in a small environment, and what it changes in that file is
  * in the history. When it fails, the file stays as the edit wrote it, and the model is told
  * why. Not supported on Windows yet.
  *

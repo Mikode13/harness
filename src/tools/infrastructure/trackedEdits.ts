@@ -29,8 +29,9 @@ function hashOf(content: Buffer): string {
 
 /**
  * What the file holds once the formatter, if there is one, ran on what the edit wrote, and what
- * the model needs to know when it may not be formatted. The conversation knows the file as it is
- * now, so it can edit it again without reading it.
+ * the model needs to know when it may not be formatted. A file as the edit wrote it is known to
+ * the conversation, so it can edit it again without reading it. One the formatter rewrote is not:
+ * the model would edit on from the lines it sent, so it must read the file again.
  */
 async function afterFormatting(
 	writes: WorkspaceWrites,
@@ -47,8 +48,8 @@ async function afterFormatting(
 	}
 	const failure = await formatter.format(absolute, writes.sessionFor(run), signal);
 	const { content } = await editor.current(path, signal);
-	if (content === undefined) reads.forget(absolute);
-	else reads.record(absolute, hashOf(content));
+	if (content?.equals(written)) reads.record(absolute, hashOf(content));
+	else reads.forget(absolute);
 	return { content, note: failure === undefined ? '' : `\n${failure}` };
 }
 
@@ -59,9 +60,9 @@ async function afterFormatting(
  * - a file changed since it read it is `STALE_FILE`;
  * - a new file needs a path that does not exist.
  *
- * Once applied, and formatted when the workspace has a formatter, the conversation knows the
- * file as it is then, so it can edit it again without reading it. What it returns to the model
- * is short: the lines around a change, or a confirmation.
+ * Once applied, the conversation knows the file as it wrote it, so it can edit it again without
+ * reading it, unless the formatter rewrote it. What it returns to the model is short: the lines
+ * around a change, or a confirmation, and the lines the formatter rewrote.
  */
 export async function prepareTrackedEdit(
 	writes: WorkspaceWrites,

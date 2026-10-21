@@ -545,14 +545,15 @@ included, are in `bench-results/2026-10-21-issue22-stuck-guard`.
   - This is one task in two runs, and where a hunk was meant to go was judged from the file's
     later states and the diffs, not proved.
 - **What changed:** "A V4A hunk applies at its first match, and a refused one shows the lines
-  most like it" and "An edit shows the lines the formatter rewrote" in decisions.md.
+  most like it" and "An edit shows the lines the formatter rewrote, and has the file read again"
+  in decisions.md.
 
 ## #22 with hunks at their first match and the formatter's lines shown (2026-10-21)
 
 The same script ran #22 once more on `fb87ba4`, with the default roles and the harness of this
-change at `45e90d5`: "A V4A hunk applies at its first match, and a refused one shows the lines
-most like it" and "An edit shows the lines the formatter rewrote" in decisions.md. It cost $2.33,
-against $2.41 that morning, and took 30 minutes. The reviewer approved it in the second round,
+change at `45e90d5`: hunks at their first match, the lines most like a hunk that failed, and the
+lines the formatter rewrote in an edit's response, before the file had to be read again. It cost
+$2.33, against $2.41 that morning, and took 30 minutes. The reviewer approved it in the second round,
 as in the morning, and the tree passed `check` and its 1098 tests. The results are in
 `bench-results/2026-10-21-issue22-patch-first-match`, with the scripts of the replay.
 
@@ -572,7 +573,7 @@ as in the morning, and the tree passed `check` and its 1098 tests. The results a
 - **What it means:**
   - The first match removed the largest cause of failures, as the replay predicted.
   - Showing the formatter's lines did not stop a model that edits from what it wrote long
-    before. Making it read the file again after the formatter changed it is the next step, if
-    those failures grow.
+    before.
   - It is one run, and the cost fell little: the failures were a small part of it.
-- **What changed:** nothing more.
+- **What changed:** "An edit shows the lines the formatter rewrote, and has the file read again"
+  in decisions.md, not measured.

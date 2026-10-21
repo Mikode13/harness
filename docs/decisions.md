@@ -2142,7 +2142,7 @@ partially superseded by: "An explorer says where the answer is, and the role rea
 
 tags: #mikode-harness #tools #cost
 
-partially superseded by: "An edit shows the lines the formatter rewrote" (below) — a creation returned only its size, and a change mixed the formatter's lines with the model's, so the model edited on from what it had sent.
+partially superseded by: "An edit shows the lines the formatter rewrote, and has the file read again" (below) — a creation returned only its size, a change mixed the formatter's lines with the model's, and the next edit needed no read, so the model edited on from what it had sent.
 
 **Decision:**
 
@@ -2412,22 +2412,26 @@ tags: #mikode-harness #tools #llm #cost
 - Finding the lines most like a hunk compares each stretch of the file with it, only when the hunk failed.
 - Only OpenAI's `apply_patch` uses this applier. Claude's `str_replace` still needs its text to appear once.
 
-## An edit shows the lines the formatter rewrote
+## An edit shows the lines the formatter rewrote, and has the file read again
 
 tags: #mikode-harness #tools #cost
 
-**Decision:** when the formatter changes what an edit wrote, the edit's response adds the lines it rewrote, numbered as the file now reads them, with two lines around each, and says a later edit must copy these and not the model's. A creation gets them after its size, a change after the lines around it. An edit the formatter left as written returns what it returned before.
+**Decision:**
 
-**Context:** step of #100. Replaying the failed patches of the #22 runs of 2026-10-21, 5 of the 18 hunks that did not match expected lines as the model had written them, which the formatter had rewritten, such as a union or a function type put on one line. Two came after a `create_file`, whose response gave only the file's size. Three came after a change, whose response showed the formatted lines among the model's own, with nothing to tell them apart. The history already recorded the formatted version as the one the conversation knows, so no `STALE_FILE` warned the model. On 2026-10-21 the user chose to show the rewritten lines, and to measure it with a paid run before going further.
+- **When the formatter changes what an edit wrote,** the edit's response adds the lines it rewrote, numbered as the file now reads them, with two lines around each, and says to read the file again. A creation gets them after its size, a change after the lines around it.
+- **The conversation then no longer knows the file,** so the next edit to it is `READ_REQUIRED` until the model reads it.
+- **An edit the formatter left as written** returns what it returned before, and the next edit needs no read.
+
+**Context:** step of #100. Replaying the failed patches of the #22 runs of 2026-10-21, 5 of the 18 hunks that did not match expected lines as the model had written them, which the formatter had rewritten, such as a union or a function type put on one line. Two came after a `create_file`, whose response gave only the file's size. Three came after a change, whose response showed the formatted lines among the model's own, with nothing to tell them apart. The conversation already knew the formatted version, so no `STALE_FILE` warned the model. On 2026-10-21 the user chose first to show the rewritten lines. In the paid run that followed, one patch still expected an import as the model had written it, 54 calls after the response that showed it rewritten; see "#22 with hunks at their first match and the formatter's lines shown" in learnings.md. The user then chose to have the file read again as well, keeping the lines, without another paid run.
 
 **Alternatives considered:**
 
-- **Making the model read the file again** whenever the formatter changed it, by forgetting the read. Its view would be current for sure, but at a call more for each such edit: the formatter changed 22 of the 138 writes in the `openai` run, 14 of the 30 to one file. Not chosen for now: it is the next step if showing the lines is not enough.
-- **Only saying that the formatter changed the file.** Cheaper, but it relies on the model reading it again, and in one replayed failure it kept its own lines with the real ones in front of it. Not chosen.
+- **Only showing the rewritten lines.** No call more, but a model that edits from what it wrote long before ignores them, as the paid run showed. Not chosen.
+- **Only having the file read again.** Cheaper per edit, but the model would have to find in the read what the formatter changed. Not chosen.
+- **Only saying that the formatter changed the file.** The cheapest, but it relies on the model reading it again. Not chosen.
 
 **Consequences:**
 
-- An edit the formatter rewrites returns more, up to 60 more lines; what does not fit is counted.
-- A change shows the formatter's lines twice: among the lines around the change, and apart.
-- Claude's text editor gets the same response, since both formats run on the same edit engine.
-- Whether it lowers the failed patches takes a paid run.
+- An edit the formatter rewrites costs a read more before the next edit to that file: in the `openai` run of 2026-10-21, the formatter rewrote 22 of 138 writes, and 19 of 60 in the run that followed.
+- Its response returns more, up to 60 more lines; what does not fit is counted. A change shows the formatter's lines twice: among the lines around the change, and apart.
+- Claude's text editor gets the same response and the same read, since both formats run on the same edit engine.

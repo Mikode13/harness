@@ -596,8 +596,8 @@ Configure only commands you would run yourself on that repository.
 
 With `formatter`, `createFileTools` and `createLLMOrchestrator` run your formatter on every
 file an edit creates or changes, right after writing it. The edit's response shows the lines
-the formatter rewrote, as it left them, so the model edits on from those and not from the ones it
-sent:
+the formatter rewrote, as it left them, and the model must read a file the formatter rewrote
+again before it edits it, so it never edits on from the lines it sent:
 
 ```ts
 const tools = await createFileTools('openai', workspace, {
