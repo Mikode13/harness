@@ -6,6 +6,7 @@ const maxDiffBytes = 512 * 1024;
 const maxHunks = 500;
 // What an error quotes of a hunk or of the file, to fix the call without flooding the context.
 const quotedLines = 8;
+const nearLines = 16;
 
 /** One line of a hunk: kept as the file has it, removed, or added. */
 interface Step {
@@ -146,18 +147,52 @@ function quote(lines: string[]): string {
 	return shown.join('\n');
 }
 
-/** The real lines near where a hunk's first line appears, so the model can copy them. */
-function near(lines: string[], hunk: Hunk): string {
-	const first = expected(hunk)
-		.find(line => line.trim() !== '')
-		?.trim();
-	const at = first === undefined ? -1 : lines.findIndex(line => line.trim() === first);
-	if (at === -1) return '';
-	const from = Math.max(0, at - 1);
+/**
+ * The stretch of the file most like a hunk that did not match, so the model can copy its real
+ * lines: as long as the hunk, holding the most of its lines in any order, so a line changed or
+ * left out does not hide it. On a tie, the first at or after where the hunk was looked for.
+ */
+function near(lines: string[], hunk: Hunk, from: number): string {
+	const old = expected(hunk);
+	const wanted = new Set(old.map(line => line.trim()).filter(line => line !== ''));
+	// The stretch slides one line at a time, counting the hunk's lines in it as they enter and
+	// leave, so a large hunk that failed costs no more than reading the file once.
+	const inStretch = new Map<string, number>();
+	let score = 0;
+	const slide = (line: string | undefined, by: 1 | -1) => {
+		const text = line?.trim();
+		if (text === undefined || !wanted.has(text)) return;
+		const count = (inStretch.get(text) ?? 0) + by;
+		inStretch.set(text, count);
+		if (count === (by === 1 ? 1 : 0)) score += by;
+	};
+	for (let at = 0; at < old.length; at++) slide(lines[at], 1);
+	let best = { at: -1, score: 0 };
+	for (let at = 0; at < lines.length; at++) {
+		if (at > 0) {
+			slide(lines[at - 1], -1);
+			slide(lines[at + old.length - 1], 1);
+		}
+		const later = best.at < from && at >= from;
+		if (score > best.score || (score > 0 && score === best.score && later)) best = { at, score };
+	}
+	if (best.at === -1) return '';
+	// From the first of the hunk's lines in the stretch to the last, with a line around them.
+	const held = (line: string | undefined) => line !== undefined && wanted.has(line.trim());
+	let first = best.at;
+	while (!held(lines[first])) first++;
+	let last = Math.min(best.at + old.length, lines.length) - 1;
+	while (!held(lines[last])) last--;
+	const start = Math.max(0, first - 1);
+	const end = Math.min(lines.length, last + 2, start + nearLines);
 	const shown = lines
-		.slice(from, from + quotedLines)
-		.map((line, offset) => `  ${String(from + offset + 1)}: ${line}`);
-	return `\nThe file has, near line ${String(at + 1)}:\n${shown.join('\n')}`;
+		.slice(start, end)
+		.map((line, offset) => `  ${String(start + offset + 1)}: ${line}`);
+	const order =
+		first < from
+			? '\nThose lines come before where the hunk was looked for: each hunk is found after the one before it, and after its "@@" lines.'
+			: '';
+	return `\nThe file has, near line ${String(first + 1)}:\n${shown.join('\n')}${order}`;
 }
 
 /**
@@ -182,13 +217,13 @@ function seekAnchor(lines: string[], hunk: Hunk, from: number, path: string, n: 
 }
 
 /**
- * Applies the hunks of a V4A `update_file` diff to `content`, in order, each after the one before
- * it. A hunk with no anchor must match exactly once in the part of the file it searches, or
- * nothing is changed: a hunk is never applied where the model did not mean it. After an anchor,
- * it is the first match: the anchor already says where. Each line the hunk does not change is
- * written back as it was, ending included, and an added line ends like the line before it.
+ * Applies the hunks of a V4A `update_file` diff to `content`, in order, each at its first match
+ * after the one before it and after its anchor, as Codex does: the order of the hunks says which
+ * of two alike places is meant. Each line the hunk does not change is written back as it was,
+ * ending included, and an added line ends like the line before it.
  *
- * @throws {EditRefusedError} naming the hunk, what it expected and what the file has near it.
+ * @throws {EditRefusedError} naming the hunk, what it expected and the lines of the file most
+ * like it.
  */
 export function applyUpdate(content: string, diff: string, path: string): string {
 	checkSize(diff, path);
@@ -211,12 +246,10 @@ export function applyUpdate(content: string, diff: string, path: string): string
 			cursor = at + added.length;
 			continue;
 		}
-		const at = seek(texts, old, { from, atEnd: hunk.atEnd, once: hunk.anchor === undefined });
+		const at = seek(texts, old, { from, atEnd: hunk.atEnd, once: false });
 		if (typeof at !== 'number') {
 			throw new EditRefusedError(
-				at === null
-					? `Hunk ${String(n)} of the patch for "${path}" does not match the file. It expected:\n${quote(old)}${near(texts, hunk)}`
-					: `Hunk ${String(n)} of the patch for "${path}" matches ${String(at.places)} places; add an "@@" line naming the function or more context`,
+				`Hunk ${String(n)} of the patch for "${path}" does not match the file. It expected:\n${quote(old)}${near(texts, hunk, from)}`,
 			);
 		}
 		// A kept line stays as the file has it, even where the patch copied it with a space lost. An

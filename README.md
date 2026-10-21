@@ -595,8 +595,9 @@ Configure only commands you would run yourself on that repository.
 ### Formatting what the agent writes
 
 With `formatter`, `createFileTools` and `createLLMOrchestrator` run your formatter on every
-file an edit creates or changes, right after writing it. The model reads the file as the
-formatter left it, so no later edit fails because the formatter moved its lines:
+file an edit creates or changes, right after writing it. The edit's response shows the lines
+the formatter rewrote, as it left them, and the model must read a file the formatter rewrote
+again before it edits it, so it never edits on from the lines it sent:
 
 ```ts
 const tools = await createFileTools('openai', workspace, {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	describeCreation,
 	describeDeletion,
+	describeFormatting,
 	describeModification,
 } from '../../src/tools/domain/editResponse.ts';
 
@@ -59,6 +60,30 @@ describe('what an edit returns', () => {
 		expect(describeCreation('a.txt', Buffer.from(''))).toBe('Created a.txt (0 lines, 0 bytes).');
 		expect(describeCreation('a.txt', Buffer.from('one'))).toBe('Created a.txt (1 line, 3 bytes).');
 		expect(describeDeletion('a.txt')).toBe('Deleted a.txt.');
+	});
+});
+
+describe('what an edit says of the formatter', () => {
+	it('shows the lines it rewrote, as the file now reads them', () => {
+		const written = `${numbered(10).join('\n')}\n`;
+		const formatted = written.replace('line 5\n', 'LINE 5\n');
+
+		expect(describeFormatting('a.txt', written, formatted)).toBe(
+			[
+				'',
+				'The formatter rewrote some of what you sent, so read the file again before you edit it. Those lines now read:',
+				'3: line 3',
+				'4: line 4',
+				'5: LINE 5',
+				'6: line 6',
+				'7: line 7',
+			].join('\n'),
+		);
+	});
+
+	it('says nothing when it left the file as written, or emptied it', () => {
+		expect(describeFormatting('a.txt', 'a\n', 'a\n')).toBe('');
+		expect(describeFormatting('a.txt', 'a\n', '')).toBe('');
 	});
 });
 

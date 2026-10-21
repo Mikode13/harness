@@ -419,12 +419,16 @@ describe('formatting what an edit wrote', () => {
 		writeFileSync(join(root, 'a.ts'), 'const a = 1;\nconst b = 2;\n');
 	});
 
-	it('shows the change as the formatter left it, and edits on from that version', async () => {
+	it('shows the change as the formatter left it, and has a file it rewrote read again', async () => {
 		const model = new CallingModel().then(
 			read('a.ts'),
 			modify('a.ts', 'a = 1;', 'a = 10 ;'),
-			// No read in between: the conversation knows the formatted file.
+			// The formatter rewrote what the model sent, so the model must see the file again.
 			modify('a.ts', 'b = 2;', 'b = 20;'),
+			read('a.ts'),
+			modify('a.ts', 'b = 2;', 'b = 20;'),
+			// The formatter left that edit as written: the conversation knows the file.
+			modify('a.ts', 'b = 20;', 'b = 21;'),
 		);
 
 		await (await agentOver(model, { formatter: tidy })).run('change it', { signal });
@@ -434,20 +438,51 @@ describe('formatting what an edit wrote', () => {
 				'Changed a.ts. It now reads, around the change:',
 				'1: const a = 10;',
 				'2: const b = 2;',
+				'The formatter rewrote some of what you sent, so read the file again before you edit it. Those lines now read:',
+				'1: const a = 10;',
+				'2: const b = 2;',
+			].join('\n'),
+			isError: false,
+		});
+		expect(model.outputs[2]).toEqual({
+			output: 'READ_REQUIRED: read "a.ts" before changing it',
+			isError: true,
+		});
+		// The formatter left this edit as written, so its response says nothing of it.
+		expect(model.outputs[4]).toEqual({
+			output: [
+				'Changed a.ts. It now reads, around the change:',
+				'1: const a = 10;',
+				'2: const b = 20;',
 			].join('\n'),
 			isError: false,
 		});
 		expect(model.last?.isError).toBe(false);
-		expect(onDisk('a.ts')).toBe('const a = 10;\nconst b = 20;\n');
+		expect(onDisk('a.ts')).toBe('const a = 10;\nconst b = 21;\n');
 	});
 
-	it('formats a file it creates', async () => {
-		const model = new CallingModel().then(create('b.ts', 'export const b = 2 ;\n'));
+	it('formats a file it creates, shows the lines the formatter rewrote, and has it read', async () => {
+		const model = new CallingModel().then(
+			create('b.ts', 'export const a = 1;\nexport const b = 2 ;\n'),
+			modify('b.ts', 'a = 1;', 'a = 10;'),
+		);
 
 		await (await agentOver(model, { formatter: tidy })).run('create it', { signal });
 
-		expect(model.last?.isError).toBe(false);
-		expect(onDisk('b.ts')).toBe('export const b = 2;\n');
+		expect(model.last).toEqual({
+			output: 'READ_REQUIRED: read "b.ts" before changing it',
+			isError: true,
+		});
+		expect(model.outputs[0]).toEqual({
+			output: [
+				'Created b.ts (2 lines, 40 bytes).',
+				'The formatter rewrote some of what you sent, so read the file again before you edit it. Those lines now read:',
+				'1: export const a = 1;',
+				'2: export const b = 2;',
+			].join('\n'),
+			isError: false,
+		});
+		expect(onDisk('b.ts')).toBe('export const a = 1;\nexport const b = 2;\n');
 	});
 
 	it('records what the formatter changed, so undoing the run undoes both', async () => {

@@ -1496,6 +1496,8 @@ Messages name a file only as the model wrote it.
 
 tags: #mikode-harness #tools #llm
 
+partially superseded by: "A V4A hunk applies at its first match, and a refused one shows the lines most like it" (below) — a hunk with no anchor now takes its first match after the one before it, as in Codex.
+
 **Decision:** an editing agent writes files with the tool its provider's models were trained on:
 
 - **OpenAI's `apply_patch`**: one `create_file`, `update_file` or `delete_file` operation per call, with V4A diffs.
@@ -2140,6 +2142,8 @@ partially superseded by: "An explorer says where the answer is, and the role rea
 
 tags: #mikode-harness #tools #cost
 
+partially superseded by: "An edit shows the lines the formatter rewrote, and has the file read again" (below) — a creation returned only its size, a change mixed the formatter's lines with the model's, and the next edit needed no read, so the model edited on from what it had sent.
+
 **Decision:**
 
 - **A `formatter` option.** `createLLMOrchestrator` and `createFileTools` take a `Formatter`: an `executable`, its `args`, and optionally `cwd`, `env` and `timeoutMs`. The file's path is always its last argument, relative to `cwd`, so `pnpm exec prettier --write --ignore-unknown` works as it is. The CLI reads it from the repository's `formatter` setting.
@@ -2380,3 +2384,54 @@ tags: #mikode-harness #llm #tools #cost
 - A question in the middle of a run waits for the user, as `askUser` already does.
 - `RunJournal` gains `appliedPaths` and `contentState`, and `PreparedCall` a `CommandEnding` and `unrecorded`; all are internal.
 - A consumer without `ask` sees a run whose answers repeat fail as before, now with the run kept.
+
+## A V4A hunk applies at its first match, and a refused one shows the lines most like it
+
+tags: #mikode-harness #tools #llm #cost
+
+**Decision:**
+
+- **A hunk with no `@@` line applies at its first match** after the hunk before it, as Codex does. The order of the hunks says which of two alike places is meant. A first `@@` line must still appear once.
+- **A hunk that does not match shows the lines of the file most like it.** The applier looks for the stretch as long as the hunk that holds the most of its lines, in any order, so a line changed or left out does not hide it. On a tie, it takes the first at or after where the hunk was looked for. The error shows it from the first of those lines to the last, with one line around, at most 16. Before, it showed the 8 lines from where the hunk's first line appeared, and nothing when the file did not have that line.
+- **When those lines come before where the hunk was looked for,** the error says that each hunk is found after the one before it and after its `@@` lines.
+
+**Context:** step of #100. In the #22 runs of 2026-10-21, `gpt-5.6-luna`'s `apply_patch` failed 16 of 77 times on the default roles and 37 of 175 on the `openai` ones. 30 of those 53 failures were a hunk that matched more than once, and 18 a hunk that did not match; see "Replayed, the patches that matched twice would have applied as the model meant" in learnings.md. Replayed against the files as they were, 29 of the 30 apply at their first match, and none in a place the model did not mean. On 2026-10-21 the user chose the first match, and an error that shows where the file is most like the hunk.
+
+**Alternatives considered:**
+
+- **Keeping the rule that a hunk must match once.** No change can land in the wrong place, but Luna writes hunks with little context and counts on their order, as Codex reads them, and 57% of its failures were that rule. Not chosen.
+- **Trying the next match when a later hunk fails.** It would recover one failure of the 53, at the cost of a search that backtracks. Not chosen.
+- **Looking before the cursor for a hunk sent out of order.** It would apply 2 of the 18 that did not match. Not chosen: the error now says the order is wrong instead.
+- **Matching while ignoring every space, or a line number copied from a read.** It would apply 2 of the 18, and could take a different line for the one the model meant. Not chosen.
+- **Answering a patch that changes nothing as already applied.** 5 of the failures were that, but it would hide that the model lost track of what it did. Not chosen.
+
+**Consequences:**
+
+- A hunk whose context appears twice, and whose order does not tell the places apart, lands at the first without an error. The result of the patch shows the lines around each change, so the model can see where it went, and the history can undo it.
+- The error for a hunk that matches more than once no longer exists.
+- Finding the lines most like a hunk compares each stretch of the file with it, only when the hunk failed.
+- Only OpenAI's `apply_patch` uses this applier. Claude's `str_replace` still needs its text to appear once.
+
+## An edit shows the lines the formatter rewrote, and has the file read again
+
+tags: #mikode-harness #tools #cost
+
+**Decision:**
+
+- **When the formatter changes what an edit wrote,** the edit's response adds the lines it rewrote, numbered as the file now reads them, with two lines around each, and says to read the file again. A creation gets them after its size, a change after the lines around it.
+- **The conversation then no longer knows the file,** so the next edit to it is `READ_REQUIRED` until the model reads it.
+- **An edit the formatter left as written** returns what it returned before, and the next edit needs no read.
+
+**Context:** step of #100. Replaying the failed patches of the #22 runs of 2026-10-21, 5 of the 18 hunks that did not match expected lines as the model had written them, which the formatter had rewritten, such as a union or a function type put on one line. Two came after a `create_file`, whose response gave only the file's size. Three came after a change, whose response showed the formatted lines among the model's own, with nothing to tell them apart. The conversation already knew the formatted version, so no `STALE_FILE` warned the model. On 2026-10-21 the user chose first to show the rewritten lines. In the paid run that followed, one patch still expected an import as the model had written it, 54 calls after the response that showed it rewritten; see "#22 with hunks at their first match and the formatter's lines shown" in learnings.md. The user then chose to have the file read again as well, keeping the lines, without another paid run.
+
+**Alternatives considered:**
+
+- **Only showing the rewritten lines.** No call more, but a model that edits from what it wrote long before ignores them, as the paid run showed. Not chosen.
+- **Only having the file read again.** Cheaper per edit, but the model would have to find in the read what the formatter changed. Not chosen.
+- **Only saying that the formatter changed the file.** The cheapest, but it relies on the model reading it again. Not chosen.
+
+**Consequences:**
+
+- An edit the formatter rewrites costs a read more before the next edit to that file: in the `openai` run of 2026-10-21, the formatter rewrote 22 of 138 writes, and 19 of 60 in the run that followed.
+- Its response returns more, up to 60 more lines; what does not fit is counted. A change shows the formatter's lines twice: among the lines around the change, and apart.
+- Claude's text editor gets the same response and the same read, since both formats run on the same edit engine.
