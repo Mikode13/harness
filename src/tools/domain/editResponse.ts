@@ -17,12 +17,10 @@ function lineCount(text: string): number {
 }
 
 /**
- * What a modification returns: its path, then the lines around each change as the file now
- * reads them, numbered, with two lines of context. The model can check its edit without reading
- * the file again. What does not fit is counted, not shown.
+ * The lines around each change from `before` to `after`, as `after` reads them, numbered, with
+ * two lines of context. What does not fit is counted, not shown.
  */
-export function describeModification(path: string, before: string, after: string): string {
-	if (after === '') return `Changed ${path}. The file is now empty.`;
+function changedLines(path: string, before: string, after: string): string[] {
 	const shown: string[] = [];
 	let hidden = 0;
 	let line = 0;
@@ -40,13 +38,38 @@ export function describeModification(path: string, before: string, after: string
 		} else hidden++;
 		line++;
 	}
+	if (hidden > 0) {
+		shown.push(
+			`[${String(hidden)} more lines of the change are not shown. Read the file to see them.]`,
+		);
+	}
+	return shown;
+}
 
-	const header = `Changed ${path}. It now reads, around the change:`;
-	const notice =
-		hidden > 0
-			? [`[${String(hidden)} more lines of the change are not shown. Read the file to see them.]`]
-			: [];
-	return [header, ...shown, ...notice].join('\n');
+/**
+ * What a modification returns: its path, then the lines around each change as the file now
+ * reads them. The model can check its edit without reading the file again.
+ */
+export function describeModification(path: string, before: string, after: string): string {
+	if (after === '') return `Changed ${path}. The file is now empty.`;
+	return [
+		`Changed ${path}. It now reads, around the change:`,
+		...changedLines(path, before, after),
+	].join('\n');
+}
+
+/**
+ * What an edit adds to its response when the formatter rewrote what the model sent: those lines
+ * as the file now reads them, since the model would otherwise edit on from the ones it wrote.
+ * Nothing when the formatter left the file as written.
+ */
+export function describeFormatting(path: string, written: string, formatted: string): string {
+	if (written === formatted || formatted === '') return '';
+	return [
+		'',
+		'The formatter rewrote some of what you sent. Those lines now read as follows; a later edit must copy these, not yours:',
+		...changedLines(path, written, formatted),
+	].join('\n');
 }
 
 // What one edit's diff may hold for the person watching; the history keeps the whole change.

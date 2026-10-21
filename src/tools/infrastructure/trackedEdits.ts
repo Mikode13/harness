@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
 	describeCreation,
 	describeDeletion,
+	describeFormatting,
 	describeModification,
 	editDiff,
 } from '../domain/editResponse.ts';
@@ -89,7 +90,9 @@ export async function prepareTrackedEdit(
 					call,
 					runSignal,
 				);
-				return `${content === undefined ? goneAfterFormatting(path) : describeCreation(path, content)}${note}`;
+				return content === undefined
+					? `${goneAfterFormatting(path)}${note}`
+					: `${describeCreation(path, content)}${describeFormatting(path, request.content.toString('utf8'), content.toString('utf8'))}${note}`;
 			},
 		};
 	}
@@ -136,7 +139,9 @@ export async function prepareTrackedEdit(
 				call,
 				runSignal,
 			);
-			return `${now === undefined ? goneAfterFormatting(path) : describeModification(path, content.toString('utf8'), now.toString('utf8'))}${note}`;
+			if (now === undefined) return `${goneAfterFormatting(path)}${note}`;
+			const formatted = now.toString('utf8');
+			return `${describeModification(path, content.toString('utf8'), formatted)}${describeFormatting(path, next.toString('utf8'), formatted)}${note}`;
 		},
 	};
 }

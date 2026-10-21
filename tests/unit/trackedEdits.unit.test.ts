@@ -434,20 +434,41 @@ describe('formatting what an edit wrote', () => {
 				'Changed a.ts. It now reads, around the change:',
 				'1: const a = 10;',
 				'2: const b = 2;',
+				'The formatter rewrote some of what you sent. Those lines now read as follows; a later edit must copy these, not yours:',
+				'1: const a = 10;',
+				'2: const b = 2;',
 			].join('\n'),
 			isError: false,
 		});
-		expect(model.last?.isError).toBe(false);
+		// The formatter left the second edit as written, so its response says nothing of it.
+		expect(model.last).toEqual({
+			output: [
+				'Changed a.ts. It now reads, around the change:',
+				'1: const a = 10;',
+				'2: const b = 20;',
+			].join('\n'),
+			isError: false,
+		});
 		expect(onDisk('a.ts')).toBe('const a = 10;\nconst b = 20;\n');
 	});
 
-	it('formats a file it creates', async () => {
-		const model = new CallingModel().then(create('b.ts', 'export const b = 2 ;\n'));
+	it('formats a file it creates, and shows the lines the formatter rewrote', async () => {
+		const model = new CallingModel().then(
+			create('b.ts', 'export const a = 1;\nexport const b = 2 ;\n'),
+		);
 
 		await (await agentOver(model, { formatter: tidy })).run('create it', { signal });
 
-		expect(model.last?.isError).toBe(false);
-		expect(onDisk('b.ts')).toBe('export const b = 2;\n');
+		expect(model.last).toEqual({
+			output: [
+				'Created b.ts (2 lines, 40 bytes).',
+				'The formatter rewrote some of what you sent. Those lines now read as follows; a later edit must copy these, not yours:',
+				'1: export const a = 1;',
+				'2: export const b = 2;',
+			].join('\n'),
+			isError: false,
+		});
+		expect(onDisk('b.ts')).toBe('export const a = 1;\nexport const b = 2;\n');
 	});
 
 	it('records what the formatter changed, so undoing the run undoes both', async () => {

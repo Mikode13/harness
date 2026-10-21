@@ -526,7 +526,9 @@ included, are in `bench-results/2026-10-21-issue22-stuck-guard`.
   - **The one that still failed** took a first match that left the next hunk with nothing to
     match.
   - **The 18 that did not match:**
-    - 5 expected lines that a patch the model itself had applied earlier had changed.
+    - 5 expected lines as the model had written them, which the formatter had rewritten after
+      the write. Two came after a `create_file`, whose response gave only the size, and three
+      after a change, whose response showed the formatted lines with nothing to tell them apart.
     - 7 expected lines the file never had: a wrapping, a double space, `) ;`, and once a line
       number copied from `readFile`.
     - 6 had lines that were all in the file, but not together: twice the hunks came out of
@@ -543,4 +545,4 @@ included, are in `bench-results/2026-10-21-issue22-stuck-guard`.
   - This is one task in two runs, and where a hunk was meant to go was judged from the file's
     later states and the diffs, not proved.
 - **What changed:** "A V4A hunk applies at its first match, and a refused one shows the lines
-  most like it" in decisions.md.
+  most like it" and "An edit shows the lines the formatter rewrote" in decisions.md.
