@@ -342,6 +342,22 @@ describe('FileRecoveryStore', () => {
 		await first.finish('completed');
 	});
 
+	it('names the history on disk alike under any spelling of its root and its state directory', async () => {
+		symlinkSync(root, join(parent, 'link'));
+		mkdirSync(directory);
+		symlinkSync(directory, join(parent, 'state-link'));
+		const other = join(parent, 'other');
+		mkdirSync(other);
+		const { workspaceId } = await FileRecoveryStore.open({ root, directory });
+
+		await expect(
+			FileRecoveryStore.open({ root: join(parent, 'link'), directory: join(parent, 'state-link') }),
+		).resolves.toMatchObject({ workspaceId });
+		await expect(FileRecoveryStore.open({ root: other, directory })).resolves.not.toMatchObject({
+			workspaceId,
+		});
+	});
+
 	describe('history of runs', () => {
 		const killed: RunJournal[] = [];
 

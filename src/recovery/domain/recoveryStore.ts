@@ -214,6 +214,12 @@ export class NothingToMoveError extends Error {
  */
 export interface RecoveryStore {
 	/**
+	 * The history on disk this store keeps, from the real paths of its root and its state
+	 * directory: two stores opened over one history, under any spelling of those paths, have the
+	 * same one.
+	 */
+	readonly workspaceId: string;
+	/**
 	 * Starts recording a run and holds the workspace for it until `finish`. The new run's parent
 	 * is the run the workspace is at, and the workspace is at the new run from then on. Runs a
 	 * dead process left `running` are settled first.

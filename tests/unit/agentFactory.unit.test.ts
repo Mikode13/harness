@@ -7,7 +7,16 @@ import type { Thread, ThreadEvent } from '@openai/codex-sdk';
 import OpenAI from 'openai';
 import type { Response } from 'openai/resources/responses/responses';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
@@ -57,8 +66,11 @@ import {
 	type OpenAIReasoningEffort,
 } from '../../src/llm/infrastructure/openAILLMClient.ts';
 import { defineTool } from '../../src/tools/infrastructure/defineTool.ts';
-import type { WorkspaceOptions } from '../../src/tools/infrastructure/fileTools.ts';
-import { RunContext } from '../../src/agent/domain/runContext.ts';
+import type { FileTool, WorkspaceOptions } from '../../src/tools/infrastructure/fileTools.ts';
+import { RunContext, runContextOf } from '../../src/agent/domain/runContext.ts';
+import type { Agent } from '../../src/agent/domain/agent.ts';
+import { createWorkflow } from '../../src/factory/infrastructure/workflowFactory.ts';
+import { defineWorkflowStages } from '../../src/workflow/domain/workflow.ts';
 import type { PreparingTool } from '../../src/tools/domain/preparedCall.ts';
 import { ReadRegistry } from '../../src/tools/domain/readRegistry.ts';
 import { createHistory } from '../../src/recovery/infrastructure/createHistory.ts';
@@ -1323,6 +1335,99 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 				{ formatter, logger: createLogger() },
 			),
 		).rejects.toThrow('The formatter needs a cwd inside a write root of the workspace');
+	});
+
+	it('records two stages that write with file tools of their own as one run, each under its policy', async () => {
+		mkdirSync(join(repo, 'config'));
+		// The second stage reaches the same workspace and history through links.
+		symlinkSync(repo, join(parent, 'repo-link'));
+		symlinkSync(join(parent, 'state'), join(parent, 'state-link'));
+		const logger = createLogger();
+		const drafting = await createFileTools(
+			'openai',
+			{
+				...workspace,
+				roots: [
+					{ path: repo, access: 'write' },
+					{ path: join(repo, 'config'), access: 'read' },
+				],
+			},
+			{ logger },
+		);
+		const finishing = await createFileTools(
+			'openai',
+			{
+				roots: [{ path: join(parent, 'repo-link'), access: 'write' }],
+				stateDirectory: join(parent, 'state-link'),
+			},
+			{ logger },
+		);
+		/** A stage whose model creates each of `paths` with `tools`, and reports what each did. */
+		const writer = (tools: FileTool[], paths: string[]) => (): Agent => ({
+			run: async (_prompt, options) => {
+				const patch = tools.find(tool => tool.name === 'apply_patch') as unknown as PreparingTool;
+				const results: string[] = [];
+				for (const path of paths) {
+					try {
+						const prepared = await patch.prepare(
+							{ type: 'create_file', path, diff: '+written' },
+							signal,
+							{
+								run: runContextOf(options) ?? new RunContext(),
+								reads: new ReadRegistry().begin(),
+								callId: path,
+								onProgress: () => undefined,
+								spend: () => undefined,
+							},
+						);
+						results.push(await prepared.run(signal));
+					} catch (error) {
+						results.push((error as Error).message);
+					}
+				}
+				return { response: JSON.stringify(results), duration: 0 };
+			},
+		});
+		const stage = defineWorkflowStages<{ draft: null; finish: null }, string[][]>();
+		const outputs: string[][] = [];
+		const asResults = { validate: (input: unknown) => input as string[] };
+		const workflow = createWorkflow({
+			initialStage: 'draft',
+			stages: {
+				draft: stage('draft', {
+					agent: writer(drafting, ['a.txt', 'config/c.txt']),
+					prompt: () => 'draft',
+					validator: asResults,
+					transition: output => {
+						outputs.push(output);
+						return { type: 'go', stage: 'finish', input: null };
+					},
+				}),
+				finish: stage('finish', {
+					agent: writer(finishing, ['b.txt']),
+					prompt: () => 'finish',
+					validator: asResults,
+					transition: output => ({ type: 'complete', result: [...outputs, output] }),
+				}),
+			},
+			logger,
+		});
+
+		const { result } = await workflow.run(null, { signal });
+
+		expect(result).toEqual([
+			['Created a.txt (1 line, 8 bytes).', expect.stringMatching(/config\/c\.txt/)],
+			['Created b.txt (1 line, 8 bytes).'],
+		]);
+		// The first stage may not write config/, though the second stage may.
+		expect(existsSync(join(repo, 'config', 'c.txt'))).toBe(false);
+		const history = await createHistory({ root: repo, stateDirectory: join(parent, 'state') });
+		const { runs } = await history.list();
+		expect(runs).toHaveLength(1);
+		expect(runs[0]?.files).toEqual(['a.txt', 'b.txt']);
+		await expect(history.undo()).resolves.toMatchObject({ complete: true });
+		expect(existsSync(join(repo, 'a.txt'))).toBe(false);
+		expect(existsSync(join(repo, 'b.txt'))).toBe(false);
 	});
 
 	it('refuses a workspace with no root when the agent is built', () => {

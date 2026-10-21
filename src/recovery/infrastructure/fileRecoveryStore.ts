@@ -246,16 +246,24 @@ async function storeContent(
  * same instant could both believe they hold it.
  */
 export class FileRecoveryStore implements RecoveryStore {
+	readonly workspaceId: string;
 	private readonly root: string;
 	private readonly directory: string;
 	private readonly keepRuns: number;
 	private readonly logger: ILogger;
 
-	private constructor(root: string, directory: string, keepRuns: number, logger: ILogger) {
+	private constructor(
+		root: string,
+		directory: string,
+		keepRuns: number,
+		logger: ILogger,
+		workspaceId: string,
+	) {
 		this.root = root;
 		this.directory = directory;
 		this.keepRuns = keepRuns;
 		this.logger = logger;
+		this.workspaceId = workspaceId;
 	}
 
 	static async open({
@@ -290,7 +298,8 @@ export class FileRecoveryStore implements RecoveryStore {
 		await makeDirectory(join(workspace, 'content'));
 		await writeDurably(join(workspace, 'workspace.json'), JSON.stringify({ root: realRoot }));
 
-		return new FileRecoveryStore(realRoot, workspace, keepRuns, logger);
+		// Real, so a state directory reached through a link is the history it holds.
+		return new FileRecoveryStore(realRoot, workspace, keepRuns, logger, await realpath(workspace));
 	}
 
 	async startRun(): Promise<RunJournal> {
