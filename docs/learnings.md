@@ -510,3 +510,37 @@ included, are in `bench-results/2026-10-21-issue22-stuck-guard`.
   - With Codex's rule, the 30 that matched more than once would have applied, some of them
     perhaps in the wrong place. That choice is still open.
 - **What changed:** nothing.
+
+### Replayed, the patches that matched twice would have applied as the model meant
+
+- **What happened:** the 53 failed patches of the default and `openai` runs were applied again,
+  offline, to each file as the run's history says it was. The applier refused 52 of them again,
+  with the same error. The one left had been refused because the file already held its content,
+  and applied: the history missed a change there.
+- **Evidence:**
+  - **At their first match:** 29 of the 30 that matched more than once applied. 9 gave what the
+    model's next patch to that file gave. 13 gave the file the model reached 1 to 6 patches
+    later. Of the other 7, 5 held changes the patch asked for that the model's later patches
+    did not make, and 2 differed only in formatting, one of them also in a line. In call 41, the
+    model's next patch left out a change the failed one had.
+  - **The one that still failed** took a first match that left the next hunk with nothing to
+    match.
+  - **The 18 that did not match:**
+    - 5 expected lines that a patch the model itself had applied earlier had changed.
+    - 7 expected lines the file never had: a wrapping, a double space, `) ;`, and once a line
+      number copied from `readFile`.
+    - 6 had lines that were all in the file, but not together: twice the hunks came out of
+      order, and four times the model left lines out.
+  - **What the error showed:** the old error showed the file's lines for 10 of the 18, the new
+    one for 14. The new one showed more of what the model's next patch changed in 6, and less in
+    none. Twice it said the hunks came out of order.
+  - With the first match, the `openai` run would have failed 12 patches of 175, not 37, and the
+    default run 12 of 77, not 16.
+- **What it means:**
+  - Luna counts on the order of its hunks to tell alike places apart, as Codex reads them. The
+    rule that a hunk must match once caused most of its failures.
+  - The applier cannot fix a hunk written from memory. A better error is all it can give.
+  - This is one task in two runs, and where a hunk was meant to go was judged from the file's
+    later states and the diffs, not proved.
+- **What changed:** "A V4A hunk applies at its first match, and a refused one shows the lines
+  most like it" in decisions.md.

@@ -132,11 +132,30 @@ describe('applying a V4A update', () => {
 		);
 	});
 
-	it('refuses lines that appear twice without an anchor, and changes nothing', () => {
+	it('applies lines that appear twice without an anchor at their first match, as Codex does', () => {
 		const text = ['a', 'same', 'b', 'same', ''].join('\n');
 
-		expect(() => applyUpdate(text, '@@\n-same\n+other', 'a.txt')).toThrow(
-			'Hunk 1 of the patch for "a.txt" matches 2 places; add an "@@" line naming the function or more context',
+		expect(applyUpdate(text, '@@\n-same\n+other', 'a.txt')).toBe(
+			['a', 'other', 'b', 'same', ''].join('\n'),
+		);
+	});
+
+	it('tells two alike places apart by the order of the hunks', () => {
+		// What gpt-5.6-luna sends: the same closing lines once for each block, in the file's order.
+		const text = ['{', '\tfirst,', '},', '{', '\tsecond,', '},', ''].join('\n');
+		const diff = [
+			'@@',
+			' \tfirst,',
+			'-},',
+			'+} satisfies A,',
+			'@@',
+			' \tsecond,',
+			'-},',
+			'+} satisfies B,',
+		];
+
+		expect(applyUpdate(text, diff.join('\n'), 'a.ts')).toBe(
+			['{', '\tfirst,', '} satisfies A,', '{', '\tsecond,', '} satisfies B,', ''].join('\n'),
 		);
 	});
 
@@ -163,6 +182,50 @@ describe('applying a V4A update', () => {
 				'src/greet.ts',
 			),
 		).toThrow(/The file has, near line 1:\n {2}1: export function greet/);
+	});
+
+	it('shows the lines most like a hunk whose first line the file does not have', () => {
+		const diff = [
+			'@@',
+			' export function hello(name: string): string {',
+			"-\treturn 'Hello, ' + name;",
+			'+x',
+			' }',
+		];
+
+		expect(() => applyUpdate(greet, diff.join('\n'), 'src/greet.ts')).toThrow(
+			[
+				'The file has, near line 2:',
+				'  1: export function greet(name: string): string {',
+				"  2: \treturn 'Hello, ' + name;",
+				'  3: }',
+				'  4: ',
+			].join('\n'),
+		);
+	});
+
+	it('shows the lines after the hunk before, when the file has them twice', () => {
+		const text = ['a', 'b', 'c', 'a', 'b', 'c', ''].join('\n');
+		const diff = ['@@', '-a', '+A', '@@', ' b', '-x', '+y'];
+
+		expect(() => applyUpdate(text, diff.join('\n'), 'a.txt')).toThrow(
+			/The file has, near line 2:\n {2}1: A\n {2}2: b\n {2}3: c$/,
+		);
+	});
+
+	it('says when the lines most like a hunk come before the hunk before it', () => {
+		const diff = ['@@', '-line 8', '+LINE 8', '@@', ' line 2', '-line 3', '+LINE 3'];
+
+		expect(() => applyUpdate(lines(10), diff.join('\n'), 'a.txt')).toThrow(
+			[
+				'The file has, near line 2:',
+				'  1: line 1',
+				'  2: line 2',
+				'  3: line 3',
+				'  4: line 4',
+				'Those lines come before where the hunk was looked for: each hunk is found after the one before it, and after its "@@" lines.',
+			].join('\n'),
+		);
 	});
 
 	it("forgives trailing spaces the model lost, and keeps the file's CRLF endings", () => {
