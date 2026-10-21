@@ -291,11 +291,19 @@ never receives a tool's `execute`. When the answer calls tools, the agent runs t
 time, in order, and calls the model again with the calls and a `tool` message holding their
 results. The run ends when an answer calls no tool. After `maxSteps` calls to the model, 65 by
 default (80 for the orchestrator's executor), it fails with `UnrecoverableError` instead, without running the last step's calls,
-because no call is left to send their results to. It fails the same way, before running them,
-when five answers in a row ask for exactly the same calls, by tool and input. It also fails once a
-configured command, by its input, has ended five times in a row with the same outcome and the same
-output, whatever other calls came between; it stops on the fifth, after narrating its result and
-before any later call of that answer. A client built with
+because no call is left to send their results to. `CommandLoops` keeps
+every ending of each configured command in the run, by its input: how it ended, a hash of all it
+printed, which `commandOutput.ts` takes line by line without colors or the times a known runner
+prints, and `RunJournal.contentState`, a hash of what the files the run changed hold. A failure is alike an earlier one whatever changed; a pass only with the same state, and
+with no consumer `Tool` that is not `safe`, nor a command that changed what the history cannot
+copy, run between. The third ending alike adds a warning to its
+result. The fifth asks the user through `ask`, after its result is narrated: another attempt goes
+on once, with the command's count started again; a stop, or no `ask`, ends the run with
+`UnrecoverableError`, the result that stopped it saying why, the later calls of that answer each
+given a result saying they did not run,
+and the run kept in the conversation. Five answers in a row that ask for exactly the same calls,
+by tool and input, ask the same way before the fifth set runs, and share the one extension; a
+stop gives each of those calls a result saying it did not run. A client built with
 `compactAt` has its provider compact the context inside the call that passes it; the summary is a
 `compaction` part of the answer, unless the compaction failed and Claude returned no summary, which
 the client leaves out with a warning. That client sends the context from its latest compaction on,
@@ -322,10 +330,10 @@ result in one user turn, and OpenAI's `function_call` and `function_call_output`
 
 Nothing is recorded until the run completes. Then the prompt, every answer and every tool
 result enter the conversation together, so a failed run leaves it untouched, no tool call is
-kept without its result, and a retry of the same prompt cannot appear twice. A run cut by the
-output limit is the one failed run recorded: the answer that was cut keeps its text and
-reasoning, without its tool calls or provider data, and its reads are kept, so the next run can
-take it up. Once a call has
+kept without its result, and a retry of the same prompt cannot appear twice. Two failed runs are
+recorded, with their reads, so the next run can take them up: one cut by the output limit,
+whose cut answer keeps its text and reasoning without its tool calls or provider data, and one
+stopped on a command that keeps ending alike. Once a call has
 reached an existing tool, a recoverable failure becomes `UnrecoverableError`: `RetryingAgent`
 would run the prompt again and repeat the tool's effects. A call to a missing tool, or a denied
 one, does not count, because nothing ran. Text and reasoning are narrated as each answer arrives, as

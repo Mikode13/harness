@@ -12,7 +12,7 @@ import {
 	UnrecoverableError,
 } from '../../src/shared/domain/errors.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
-import type { PreparingTool } from '../../src/tools/domain/preparedCall.ts';
+import type { CommandEnding, PreparingTool } from '../../src/tools/domain/preparedCall.ts';
 import type { Tool } from '../../src/tools/domain/tool.ts';
 import {
 	assistantResponse,
@@ -576,27 +576,104 @@ describe('LLMAgent with tools', () => {
 	});
 
 	// Each step's calls get new ids; what makes them the same is the tool and its input.
-	it('stops a model that asks for the same calls five times in a row, before the fifth runs', async () => {
-		const weather = fakeTool('weather');
+	describe('a model that asks for the same calls again and again', () => {
 		const same = (id: string) => assistantResponse([toolCall(id, 'weather', { city: 'Madrid' })]);
-		const llmClient = new FakeLLMClient(
-			same('a'),
-			same('b'),
-			same('c'),
-			same('d'),
-			same('e'),
-			textResponse('never'),
-		);
+		const answers = (count: number, last = 'never') =>
+			new FakeLLMClient(
+				...Array.from({ length: count }, (_, index) => same(String(index + 1))),
+				textResponse(last),
+			);
 
-		await expect(
-			new LLMAgent({ llmClient, tools: [weather] }).run('prompt', { signal }),
-		).rejects.toMatchObject({
-			constructor: UnrecoverableError,
-			message: 'The LLM repeated the same tool calls',
-			cause: 'The model asked for the same tool calls 5 times in a row.',
-			tokens: { inputTokens: 5, outputTokens: 5 },
+		it('stops on the fifth with no one to ask, before it runs, and keeps the run', async () => {
+			const weather = fakeTool('weather');
+			const llmClient = answers(5, 'next');
+			const agent = new LLMAgent({ llmClient, tools: [weather] });
+
+			await expect(agent.run('prompt', { signal })).rejects.toMatchObject({
+				constructor: UnrecoverableError,
+				message: 'The LLM repeated the same tool calls',
+				cause:
+					'The model asked for the same tool calls 5 times in a row. No one could be asked whether to go on. The run is kept in the conversation.',
+				tokens: { inputTokens: 5, outputTokens: 5 },
+			});
+			expect(weather.execute).toHaveBeenCalledTimes(4);
+
+			await agent.run('go on', { signal });
+			expect(llmClient.contexts[5]?.slice(-3)).toEqual([
+				{ role: 'assistant', content: [toolCall('5', 'weather', { city: 'Madrid' })] },
+				toolMessage(
+					toolResult(
+						'5',
+						'weather',
+						'Not run: the run stopped here. The model asked for the same tool calls 5 times in a row. No one could be asked whether to go on. The run is kept in the conversation.',
+						true,
+					),
+				),
+				userMessage('go on'),
+			]);
 		});
-		expect(weather.execute).toHaveBeenCalledTimes(4);
+
+		it('asks the user on the fifth, and runs them once more when they allow another attempt', async () => {
+			const weather = fakeTool('weather');
+			const ask = vi.fn(() => ['Another attempt']);
+			const llmClient = answers(10);
+
+			await expect(
+				new LLMAgent({ llmClient, tools: [weather] }).run('prompt', { signal, ask }),
+			).rejects.toMatchObject({
+				cause:
+					'The model asked for the same tool calls 5 times in a row. The user had already let the run go on once. The run is kept in the conversation.',
+			});
+			expect(ask).toHaveBeenCalledOnce();
+			expect(ask).toHaveBeenCalledWith(
+				[
+					{
+						question:
+							'Possible loop: the model asked for the same tool calls 5 times in a row, with nothing else between.\nIt may be waiting for something that changes by itself, which is no loop, or repeating itself.\nThe calls:\nweather {"city":"Madrid"}',
+						options: [
+							{
+								label: 'Another attempt',
+								description:
+									'Let the run go on, once. If it asks for the same calls 5 more times in a row, or any other loop is found, the run stops without asking.',
+							},
+							{
+								label: 'Stop',
+								description:
+									'End the run here. What it did and changed is kept, and your next prompt continues from it.',
+							},
+						],
+						multiSelect: false,
+					},
+				],
+				signal,
+			);
+			// The fifth ran, with the note; the count started again, so the tenth stopped the run.
+			expect(weather.execute).toHaveBeenCalledTimes(9);
+			expect(llmClient.contexts[5]?.at(-1)).toEqual(
+				toolMessage(
+					toolResult(
+						'5',
+						'weather',
+						'Madrid: sunny\n\nYou asked for these same calls 5 times in a row. The user let the run go on, once. Change your approach: if you ask for the same calls 5 more times in a row, the run stops.',
+					),
+				),
+			);
+		});
+
+		it('ends the run, kept, when the user stops it', async () => {
+			const weather = fakeTool('weather');
+
+			await expect(
+				new LLMAgent({ llmClient: answers(5), tools: [weather] }).run('prompt', {
+					signal,
+					ask: () => ['Stop'],
+				}),
+			).rejects.toMatchObject({
+				cause:
+					'The model asked for the same tool calls 5 times in a row. The user stopped it. The run is kept in the conversation.',
+			});
+			expect(weather.execute).toHaveBeenCalledTimes(4);
+		});
 	});
 
 	it('counts the same input with its properties in another order as the same call', async () => {
@@ -662,23 +739,48 @@ describe('LLMAgent with tools', () => {
 	});
 
 	describe('a command that keeps ending the same way', () => {
+		type Ending = Partial<CommandEnding> | undefined;
+		const failed: CommandEnding = {
+			passed: false,
+			how: 'exited with code 1',
+			output: '1 failed',
+			fingerprint: '1 failed',
+			state: 'one',
+			changed: [],
+		};
+		const passed: CommandEnding = {
+			...failed,
+			passed: true,
+			how: 'exited with code 0',
+			output: '',
+		};
+
 		/**
-		 * A command tool whose calls end as `endings` say, one per run in order, as the real one
-		 * reports its outcome and output; `undefined` is a call that never ran a command.
+		 * A command tool whose calls end as `endings` say, one per run in order, each over
+		 * `failed`, as the real one reports them; `undefined` is a call that never ran a command.
 		 */
-		function fakeCommand(...endings: (string | undefined)[]) {
+		function fakeCommand(...endings: Ending[]) {
 			let runs = 0;
 			const tool: PreparingTool = {
 				name: 'runCommand',
 				description: 'Runs a command',
 				inputSchema: { type: 'object', properties: {}, required: [] },
 				prepare: () => {
-					let ending: string | undefined;
+					let ending: CommandEnding | undefined;
 					return Promise.resolve({
 						risk: 'safe',
 						ending: () => ending,
 						run: () => {
-							ending = endings[runs];
+							const next = endings[runs];
+							// What it printed tells endings apart, unless the test says otherwise.
+							ending =
+								next === undefined
+									? undefined
+									: {
+											...failed,
+											...next,
+											fingerprint: next.fingerprint ?? next.output ?? '1 failed',
+										};
 							runs++;
 							return Promise.resolve(`run ${String(runs)}`);
 						},
@@ -689,10 +791,51 @@ describe('LLMAgent with tools', () => {
 		}
 		const check = (id: string) => toolCall(id, 'runCommand', { command: { name: 'check' } });
 		const edit = (id: string) => toolCall(id, 'weather', { city: id });
+		// A failure after each edit, which the run's history saw change `id.ts`.
+		const failures = (count: number): Ending[] =>
+			Array.from({ length: count }, (_, index) => ({
+				state: String(index),
+				changed: Array.from({ length: index }, (_, file) => `${String(file + 1)}.ts`),
+			}));
+		// Check, edit, check again: `count` checks, with an edit after each but the last.
+		const checksAndEdits = (count: number, last = 'never') =>
+			new FakeLLMClient(
+				...Array.from({ length: count }, (_, index) => [
+					assistantResponse([check(`check-${String(index + 1)}`)]),
+					assistantResponse([edit(`edit-${String(index + 1)}`)]),
+				])
+					.flat()
+					.slice(0, -1),
+				textResponse(last),
+			);
+		/** What the model was told of each check, in order. */
+		const checkResults = (llmClient: FakeLLMClient) =>
+			llmClient.contexts
+				.at(-1)
+				?.flatMap(message => message.content)
+				.flatMap(part =>
+					part.type === 'toolResult' && part.name === 'runCommand' ? [part.output] : [],
+				) ?? [];
+
+		it('warns the model on the third failure alike, naming what changed between them', async () => {
+			const command = fakeCommand(...failures(3));
+			const llmClient = checksAndEdits(3, 'done');
+
+			await new LLMAgent({ llmClient, tools: [command.tool, fakeTool('weather')] }).run('prompt', {
+				signal,
+			});
+
+			const [first, second, third] = checkResults(llmClient);
+			expect(first).toBe('run 1');
+			expect(second).toBe('run 2');
+			expect(third).toBe(
+				'run 3\n\n"runCommand" exited with code 1 with the same output 3 times in this run. Files changed between them: 1.ts, 2.ts. Find out why your changes do not reach what it reports before you run it again. If it ends this way 5 times, the run stops.',
+			);
+		});
 
 		// The loop of #100: check, patch, check again, with the patch never fixing what fails.
-		it('stops the run on the fifth, whatever the calls between, and runs nothing after it', async () => {
-			const command = fakeCommand('fail', 'fail', 'fail', 'fail', 'fail');
+		it('stops on the fifth with no one to ask, keeps the run, and runs nothing after it', async () => {
+			const command = fakeCommand(...failures(5));
 			const weather = fakeTool('weather');
 			const llmClient = new FakeLLMClient(
 				...['1', '2', '3', '4'].flatMap(id => [
@@ -700,58 +843,257 @@ describe('LLMAgent with tools', () => {
 					assistantResponse([edit(`edit-${id}`)]),
 				]),
 				assistantResponse([check('check-5'), edit('edit-5')]),
-				textResponse('never'),
+				textResponse('next'),
 			);
+			const agent = new LLMAgent({ llmClient, tools: [command.tool, weather] });
 
-			await expect(
-				new LLMAgent({ llmClient, tools: [command.tool, weather] }).run('prompt', { signal }),
-			).rejects.toMatchObject({
+			await expect(agent.run('prompt', { signal })).rejects.toMatchObject({
 				constructor: UnrecoverableError,
 				message: 'The LLM kept getting the same result from a command',
-				cause: '"runCommand" ended the same way, with the same output, 5 times in a row.',
+				cause:
+					'"runCommand" exited with code 1 with the same output 5 times. Files changed between them: 1.ts, 2.ts, 3.ts, 4.ts. No one could be asked whether to go on. The run is kept in the conversation.',
 				tokens: { inputTokens: 9, outputTokens: 9 },
 			});
 			expect(command.runs()).toBe(5);
 			expect(weather.execute).toHaveBeenCalledTimes(4);
-			expect(llmClient.contexts).toHaveLength(9);
+
+			await agent.run('go on', { signal });
+			expect(llmClient.contexts[9]?.slice(-2)).toEqual([
+				toolMessage(
+					toolResult(
+						'check-5',
+						'runCommand',
+						'run 5\n\nThe run stopped here: "runCommand" exited with code 1 with the same output 5 times. Files changed between them: 1.ts, 2.ts, 3.ts, 4.ts. No one could be asked whether to go on. The run is kept in the conversation.',
+					),
+					toolResult('edit-5', 'weather', 'Not run: the run stopped before it.', true),
+				),
+				userMessage('go on'),
+			]);
 		});
 
-		it('starts the count again when the command ends another way, or never runs', async () => {
-			const command = fakeCommand(
-				'fail',
-				'fail',
-				'fail',
-				'fail',
-				'other',
-				'fail',
-				'fail',
-				'fail',
-				'fail',
-				undefined,
-				'fail',
-				'fail',
-				'fail',
-				'fail',
-			);
-			// An edit between each, as in a real loop, so the calls are never the same twice in a row.
-			const calls = Array.from({ length: 14 }, (_, index) => [
-				assistantResponse([check(`check-${String(index)}`)]),
-				assistantResponse([edit(`edit-${String(index)}`)]),
-			]).flat();
-			const llmClient = new FakeLLMClient(...calls, textResponse('done'));
+		it('asks the user on the fifth, and goes on once when they allow another attempt', async () => {
+			const command = fakeCommand(...failures(10));
+			const ask = vi.fn(() => ['Another attempt']);
+			const llmClient = checksAndEdits(10);
 
 			await expect(
 				new LLMAgent({ llmClient, tools: [command.tool, fakeTool('weather')] }).run('prompt', {
 					signal,
+					ask,
 				}),
-			).resolves.toMatchObject({ response: 'done' });
-			expect(command.runs()).toBe(14);
+			).rejects.toMatchObject({
+				cause: expect.stringContaining(
+					'The user had already let the run go on once. The run is kept in the conversation.',
+				) as unknown,
+			});
+			expect(command.runs()).toBe(10);
+			expect(ask).toHaveBeenCalledOnce();
+			expect(ask).toHaveBeenCalledWith(
+				[
+					{
+						question:
+							'Possible loop: "runCommand" exited with code 1 with the same output 5 times in this run. Files changed between them: 1.ts, 2.ts, 3.ts, 4.ts.\nIt may be a check that passes after every change, which is no loop, or the model repeating itself.\nWhat it printed, the last lines:\n1 failed',
+						options: [
+							{
+								label: 'Another attempt',
+								description:
+									'Let the run go on, once. If it ends this way 5 more times, or any other loop is found, the run stops without asking.',
+							},
+							{
+								label: 'Stop',
+								description:
+									'End the run here. What it did and changed is kept, and your next prompt continues from it.',
+							},
+						],
+						multiSelect: false,
+					},
+				],
+				signal,
+			);
+			const results = checkResults(llmClient);
+			expect(results[2]).toContain(
+				'If it ends this way 5 times, the user is asked whether the run goes on.',
+			);
+			expect(results[4]).toBe(
+				'run 5\n\nIt has ended this way 5 times. The user let the run go on, once. Change your approach: if it ends this way 5 more times, the run stops.',
+			);
+			// The count started again: the eighth is the third since, and the fifth since will stop.
+			expect(results[7]).toContain('with the same output 3 times in this run');
+			expect(results[7]).toContain('If it ends this way 5 times, the run stops.');
 		});
 
-		it('counts each command apart, so another between does not break the count', async () => {
-			const command = fakeCommand(...Array.from({ length: 10 }, () => 'fail'));
+		it('shares the one extension with a model that asks for the same calls again', async () => {
+			const command = fakeCommand(...failures(5));
+			const ask = vi.fn(() => ['Another attempt']);
+			const same = (id: string) => assistantResponse([edit('same')].map(call => ({ ...call, id })));
+			const llmClient = new FakeLLMClient(
+				...['a', 'b', 'c', 'd', 'e'].map(same),
+				...Array.from({ length: 5 }, (_, index) => [
+					assistantResponse([check(`check-${String(index + 1)}`)]),
+					assistantResponse([edit(`edit-${String(index + 1)}`)]),
+				])
+					.flat()
+					.slice(0, -1),
+				textResponse('never'),
+			);
+
+			await expect(
+				new LLMAgent({ llmClient, tools: [command.tool, fakeTool('weather')] }).run('prompt', {
+					signal,
+					ask,
+				}),
+			).rejects.toMatchObject({
+				cause: expect.stringContaining('The user had already let the run go on once.') as unknown,
+			});
+			expect(ask).toHaveBeenCalledOnce();
+			expect(command.runs()).toBe(5);
+		});
+
+		it('goes on after another attempt on repeated answers that run the same command', async () => {
+			const command = fakeCommand(...Array.from({ length: 5 }, () => ({})));
+			const ask = vi.fn(() => ['Another attempt']);
+			const llmClient = new FakeLLMClient(
+				...['1', '2', '3', '4', '5'].map(id => assistantResponse([check(`check-${id}`)])),
+				textResponse('done'),
+			);
+
+			await expect(
+				new LLMAgent({ llmClient, tools: [command.tool] }).run('prompt', { signal, ask }),
+			).resolves.toMatchObject({ response: 'done' });
+			expect(ask).toHaveBeenCalledOnce();
+			expect(command.runs()).toBe(5);
+			// The fifth is the first since the user let it go on, so the model reads the note alone.
+			expect(checkResults(llmClient)[4]).toBe(
+				'run 5\n\nYou asked for these same calls 5 times in a row. The user let the run go on, once. Change your approach: if you ask for the same calls 5 more times in a row, the run stops.',
+			);
+		});
+
+		it('ends the run, kept, when the user stops it', async () => {
+			const command = fakeCommand(...failures(5));
+			const llmClient = checksAndEdits(5);
+
+			await expect(
+				new LLMAgent({ llmClient, tools: [command.tool, fakeTool('weather')] }).run('prompt', {
+					signal,
+					ask: () => ['Stop'],
+				}),
+			).rejects.toMatchObject({
+				cause: expect.stringContaining(
+					'The user stopped it. The run is kept in the conversation.',
+				) as unknown,
+			});
+		});
+
+		it("gives the model the user's own words, as their one extension", async () => {
+			const command = fakeCommand(...failures(5));
+			const llmClient = checksAndEdits(5, 'done');
+
+			await new LLMAgent({ llmClient, tools: [command.tool, fakeTool('weather')] }).run('prompt', {
+				signal,
+				ask: () => ['Run only the failing test file.'],
+			});
+
+			expect(checkResults(llmClient)[4]).toBe(
+				'run 5\n\nIt has ended this way 5 times. The user let the run go on, once. They said: Run only the failing test file. Change your approach: if it ends this way 5 more times, the run stops.',
+			);
+		});
+
+		// The executor of a #22 run was stopped so, with every check it ran green.
+		it('counts a pass only when nothing changed since', async () => {
+			const changing = fakeCommand(
+				...Array.from({ length: 6 }, (_, index) => ({ ...passed, state: String(index) })),
+			);
+			await expect(
+				new LLMAgent({
+					llmClient: checksAndEdits(6, 'done'),
+					tools: [changing.tool, fakeTool('weather')],
+				}).run('prompt', { signal }),
+			).resolves.toMatchObject({ response: 'done' });
+
+			const unchanged = fakeCommand(...Array.from({ length: 5 }, () => passed));
+			await expect(
+				new LLMAgent({
+					llmClient: checksAndEdits(5),
+					tools: [unchanged.tool, fakeTool('weather')],
+				}).run('prompt', { signal }),
+			).rejects.toThrow('The LLM kept getting the same result from a command');
+		});
+
+		it('takes a pass for a change when a tool the history cannot see ran between', async () => {
+			const command = fakeCommand(...Array.from({ length: 6 }, () => passed));
+			const writing = fakeTool('weather', undefined, () => 'mutating');
+
+			await expect(
+				new LLMAgent({ llmClient: checksAndEdits(6, 'done'), tools: [command.tool, writing] }).run(
+					'prompt',
+					{ signal },
+				),
+			).resolves.toMatchObject({ response: 'done' });
+		});
+
+		it('takes a pass for a change when a command changed what the history cannot copy', async () => {
+			// Each check passes with the same state; each format between changed a file too large.
+			const command = fakeCommand(
+				...Array.from({ length: 11 }, (_, index) =>
+					index % 2 === 0 ? passed : { ...passed, state: undefined },
+				),
+			);
+			const format = (id: string) => toolCall(id, 'runCommand', { command: { name: 'format' } });
+			const llmClient = new FakeLLMClient(
+				...['1', '2', '3', '4', '5'].flatMap(id => [
+					assistantResponse([check(`check-${id}`)]),
+					assistantResponse([format(`format-${id}`)]),
+				]),
+				assistantResponse([check('check-6')]),
+				textResponse('done'),
+			);
+
+			await expect(
+				new LLMAgent({ llmClient, tools: [command.tool] }).run('prompt', { signal }),
+			).resolves.toMatchObject({ response: 'done' });
+			expect(command.runs()).toBe(11);
+		});
+
+		it('tells apart failures whose kept ends are the same but whose output differs', async () => {
+			const command = fakeCommand(
+				...Array.from({ length: 5 }, (_, index) => ({
+					output: '1 failed',
+					fingerprint: String(index),
+				})),
+			);
+
+			await expect(
+				new LLMAgent({
+					llmClient: checksAndEdits(5, 'done'),
+					tools: [command.tool, fakeTool('weather')],
+				}).run('prompt', { signal }),
+			).resolves.toMatchObject({ response: 'done' });
+		});
+
+		it('keeps counting a failure that comes back after another', async () => {
+			const command = fakeCommand(
+				{ output: 'A' },
+				{ output: 'B' },
+				{ output: 'A' },
+				{ output: 'B' },
+				{ output: 'A' },
+			);
+			const llmClient = checksAndEdits(5, 'done');
+
+			await new LLMAgent({ llmClient, tools: [command.tool, fakeTool('weather')] }).run('prompt', {
+				signal,
+			});
+
+			const results = checkResults(llmClient);
+			expect(results.slice(0, 4).every(result => !result.includes('times in this run'))).toBe(true);
+			expect(results[4]).toContain('with the same output 3 times in this run');
+		});
+
+		it('counts each command apart, and a call that ran no command breaks no count', async () => {
+			const command = fakeCommand(
+				...Array.from({ length: 10 }, (_, index) => (index === 3 ? undefined : {})),
+			);
 			const test = (id: string) => toolCall(id, 'runCommand', { command: { name: 'test' } });
-			// Each in a step of its own, with the same calls in every pair: only the command differs.
 			const llmClient = new FakeLLMClient(
 				...['1', '2', '3', '4', '5'].flatMap(id => [
 					assistantResponse([check(`check-${id}`)]),
@@ -768,16 +1110,19 @@ describe('LLMAgent with tools', () => {
 		});
 
 		it('starts each run with no count', async () => {
-			const command = fakeCommand(...Array.from({ length: 8 }, () => 'fail'));
+			const command = fakeCommand(...Array.from({ length: 8 }, () => ({})));
 			const four = (run: string) =>
-				['1', '2', '3', '4'].map(id => assistantResponse([check(`${run}-${id}`)]));
+				['1', '2', '3', '4'].flatMap(id => [
+					assistantResponse([check(`${run}-${id}`)]),
+					assistantResponse([edit(`${run}-edit-${id}`)]),
+				]);
 			const llmClient = new FakeLLMClient(
 				...four('a'),
 				textResponse('first'),
 				...four('b'),
 				textResponse('second'),
 			);
-			const agent = new LLMAgent({ llmClient, tools: [command.tool] });
+			const agent = new LLMAgent({ llmClient, tools: [command.tool, fakeTool('weather')] });
 
 			await agent.run('first', { signal });
 			await expect(agent.run('second', { signal })).resolves.toMatchObject({

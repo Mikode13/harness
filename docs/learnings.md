@@ -340,6 +340,20 @@ reviewer: the OpenAI executor was ended by the stop for a command that ends the 
 Haiku by the output limit. They cost $0.79 and $1.05. The results, transcripts included, are in
 `bench-results/2026-10-20-issue22-provider-profiles`.
 
+### The stop for a repeated command ended a run whose checks were green
+
+- **What happened:** the OpenAI executor was stopped at its 64th call: "`pnpm run typecheck`
+  ended the same way, with the same output, 5 times in a row". The tree it left passes `check`
+  and the 1,090 tests, against 1,084 at the base.
+- **Evidence:** of its 17 commands, `typecheck` ran 10 times, and its last 5 runs, each with
+  exit code 0, were the ones counted. Between the first of them and the last, the executor made
+  21 successful patches, most to `workflowRunner.ts`, and ran `test`, `lint` and `format`. A
+  `tsc` that passes prints the same whatever changed.
+- **What it means:** the decision took the same output as a sign that nothing the check sees
+  had changed. That holds for a check that fails, not for one that passes.
+- **What changed:** "A command that keeps ending alike warns the model, then asks the user" in
+  decisions.md: a pass counts only with nothing changed, read from the content of the files.
+
 ### Haiku at `xhigh` spent its whole output on one answer
 
 - **What happened:** the Haiku executor read 26 ranges, 166,261 characters of files, and
@@ -384,4 +398,115 @@ Haiku by the output limit. They cost $0.79 and $1.05. The results, transcripts i
   GPT's patches", a read just before is no guarantee: the model writes the context from memory,
   and a wrapped sentence or a padded line is where it goes wrong. With one run, 25% is not a
   rate.
+- **What changed:** nothing.
+
+## #22 with the guard for commands that keep ending alike (2026-10-21)
+
+The script of "Provider profiles on #22" ran #22 three more times, on the same base, `fb87ba4`,
+with the harness of #130 at `9231c60`: 128,000 output tokens for Claude, a run cut by the output
+limit kept, and "A command that keeps ending alike warns the model, then asks the user" in
+decisions.md. No run had `ask`, so the fifth ending alike would have stopped it. The runs had the
+`openai` roles, the `anthropic` roles, and the default ones: `gpt-5.6-sol` plans, `gpt-5.6-luna`
+executes and Claude Opus 5.5 reviews. They cost $4.01, $1.97 and $2.41. The results, transcripts
+included, are in `bench-results/2026-10-21-issue22-stuck-guard`.
+
+### Every run ended, and the guard stopped none
+
+- **What happened:** the `anthropic` run was approved in its first round, in 20 minutes, and the
+  default one in its second, in 32. The `openai` run ended after 50 minutes, its three rounds
+  rejected by the reviewer. Each left a tree that passes `check` and the tests: 1,120, 1,096 and
+  1,098 of them.
+- **Evidence:**
+  - No command was warned about or stopped. In its first round, the OpenAI executor ran
+    `typecheck` 17 times, many of them green. Each pass came after a change, and its failures,
+    with exit code 2, each printed something else.
+  - Haiku's longest answer had 38,152 output tokens. That is below the 64,000 it was cut at the
+    day before, so this run does not show that 128,000 is needed.
+  - The `openai` reviewer rejected each round with real design findings:
+    - routed handoffs that lost their types;
+    - cancellation not checked again after host callbacks;
+    - transition builders the root does not export, which the only test of them imports from
+      the module.
+- **What it means:** the guard no longer ends a run whose checks pass. One run each does not
+  show that it still catches a real loop. The `openai` run ended on the orchestrator's limit of
+  rounds, not on a guard.
+- **What changed:** nothing.
+
+### The default roles cost more, in the reviewer
+
+- **What happened:** the run with the default roles cost $2.41, against $1.99 for the same roles
+  on 2026-10-20 ("Two roles on #22 after #100"). Both had two rounds.
+- **Evidence:**
+  - The reviewer: $0.93 over 18 steps, against $0.45 over 9.
+  - The planner: $0.86 over 9 steps, against $1.01 over 12.
+  - The planner's explorers: $0.17 over 97 steps, against $0.11 over 56.
+  - The executor: $0.45 over 135 steps, against $0.42 over 100.
+  - The executor read in 56 calls, against 74.
+  - On 2026-10-17, the same roles cost $1.89 in one run and $2.95 in another.
+- **What it means:** what changed since 2026-10-20 acts on runs that fail. In a run that does
+  not fail, only fewer reads show. One run per setup varies more than the difference between
+  setups, so comparing their cost needs three to five runs of each.
+- **What changed:** nothing.
+
+### No run reached the bar #109 was merged at
+
+- **What happened:** seven solutions of #22 were compared against two references:
+  - #22's acceptance criteria;
+  - the two blocking findings of #109's own review: stage agents shared across runs, and
+    handoffs not typed.
+
+  The seven are 2026-10-17 without and with compaction, the two runs of 2026-10-20, and the three
+  of this day. #109 itself started from the two runs of 2026-10-17, with both findings fixed by
+  hand ("A workflow is a chain of stages, each with an agent and a context of its own" in
+  decisions.md).
+
+- **Evidence:**
+  - **Agents created per run:** only this day's `anthropic` solution does so, as #109 does.
+    Every other one keeps one agent per stage, whose conversation carries over from one run of
+    the workflow to the next.
+  - **Handoffs typed at compile time:** only this day's `openai` solution has them. It gets them
+    through 9 `as unknown as` casts and duplicate names for the same options: `prompt` and
+    `buildPrompt`, `validate` and `validator`, `transition` and `onResult`, and three ways to set
+    the attempts. The run of 2026-10-17 with compaction typed a handoff's input, but not its
+    destination.
+  - **What all of them cover:** the four transitions, a stop that succeeds, a bound on
+    transitions, usage per stage, and the link to #17. Every one except the run of 2026-10-17
+    without compaction asks again with the reason an output was refused.
+  - **Size:** between 556 and 991 lines of source, against 498 for #109. The tests of the
+    workflow number between 9 and 41, against 20.
+  - **This day's default solution** rethrows `options.signal.reason` as it is. A signal aborted
+    with a string reason escapes it unclassified, which `AGENTS.md` rules out.
+  - **The Opus reviewer** raised neither blocking finding in any run.
+- **What it means:**
+  - The harness's changes made the runs end, not the solutions better. Their quality follows the
+    model and the reviewer.
+  - The comparison is not blind, since who wrote each one was known, and there is one run per
+    setup.
+  - What it can count is what it checked: agents per run, typed handoffs, casts, size.
+- **What changed:** nothing.
+
+### Most failed patches matched twice, or were written from memory
+
+- **What happened:** the OpenAI executor's `apply_patch` failed 16 of 77 times in the default run
+  (21%), against 8 of 61 on 2026-10-20. In the `openai` run it failed 37 of 175 times (21%).
+  Haiku's `str_replace_based_edit_tool` failed 2 of 88 times (2%).
+- **Evidence:**
+  - A hunk matched two places or more: 4 times in the default run, 26 in the `openai` one.
+  - A hunk did not match the file: 9 times in each.
+  - The patch changed nothing: 3 times, and once.
+  - **Hunks that matched more than once:** 18 of the 30 were a hunk after the first. `applyUpdate`
+    already searches each hunk from the one before it. They failed on the rule that a hunk with
+    no `@@` line must match once in the rest of the file, where Codex takes the first match ("Each
+    provider edits in its native format, on the one edit engine" in decisions.md).
+  - **Hunks that did not match:** 11 of the 18 came right after a patch to the same file had
+    applied. A patch's result shows only the lines around its change. 6 came after a read, and
+    about 2 differed only in formatting.
+  - **One example:** Luna sent a hunk of two context lines with no change, to pass over a block,
+    and the next hunk expected code the file did not have.
+
+- **What it means:**
+  - Most failures come from the edit format and the model: too little context, and a file
+    remembered from before the model's own changes.
+  - With Codex's rule, the 30 that matched more than once would have applied, some of them
+    perhaps in the wrong place. That choice is still open.
 - **What changed:** nothing.

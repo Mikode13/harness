@@ -1077,6 +1077,13 @@ class FileRunJournal implements RunJournal {
 	private readonly release: () => Promise<void>;
 	private sequence = 0;
 	private stored = 0;
+	// For the content state: what each change will leave, what each file held before the run first
+	// changed it, and what it holds since its last applied change.
+	private readonly pendingStates = new Map<number, { path: string; after: FileState }>();
+	private readonly firstStates = new Map<string, FileState>();
+	private readonly currentStates = new Map<string, FileState>();
+	private readonly appliedInOrder: string[] = [];
+	private state: { applied: number; hash: string } | undefined;
 	// The changes recorded as prepared and not abandoned: those that may have reached a file. One
 	// whose `prepared` line failed is not here, since nothing writes a file before that line.
 	private readonly effects = new Set<number>();
@@ -1123,12 +1130,19 @@ class FileRunJournal implements RunJournal {
 		const sequence = ++this.sequence;
 		await this.append({ type: 'prepared', sequence, ...change });
 		this.effects.add(sequence);
+		this.pendingStates.set(sequence, { path: change.path, after: change.after });
+		if (!this.firstStates.has(change.path)) this.firstStates.set(change.path, change.before);
 		return sequence;
 	}
 
-	applied(sequence: number): Promise<void> {
+	async applied(sequence: number): Promise<void> {
 		this.assertOpen();
-		return this.append({ type: 'applied', sequence });
+		await this.append({ type: 'applied', sequence });
+		const change = this.pendingStates.get(sequence);
+		if (!change) return;
+		this.pendingStates.delete(sequence);
+		this.currentStates.set(change.path, change.after);
+		this.appliedInOrder.push(change.path);
 	}
 
 	async abandoned(sequence: number): Promise<void> {
@@ -1136,6 +1150,7 @@ class FileRunJournal implements RunJournal {
 		await this.append({ type: 'abandoned', sequence });
 		// Only once recorded: a change whose abandonment was not may still count as made.
 		this.effects.delete(sequence);
+		this.pendingStates.delete(sequence);
 	}
 
 	async observe(manifest: string, by: string): Promise<number> {
@@ -1156,6 +1171,27 @@ class FileRunJournal implements RunJournal {
 
 	get storedBytes(): number {
 		return this.stored;
+	}
+
+	get appliedPaths(): readonly string[] {
+		return this.appliedInOrder;
+	}
+
+	// Computed again only after a change was applied.
+	contentState(): string {
+		if (this.state?.applied !== this.appliedInOrder.length) {
+			const changed = [...this.currentStates]
+				.filter(([path, current]) => {
+					const first = this.firstStates.get(path);
+					return !first || !sameState(first, current);
+				})
+				.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+			this.state = {
+				applied: this.appliedInOrder.length,
+				hash: hashOf(Buffer.from(JSON.stringify(changed))),
+			};
+		}
+		return this.state.hash;
 	}
 
 	get changed(): boolean {

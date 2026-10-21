@@ -105,6 +105,14 @@ export interface RunJournal {
 	observed(sequence: number, measure?: ObservationMeasure): Promise<void>;
 	/** How many bytes of content this run stored that the store did not hold yet. */
 	readonly storedBytes: number;
+	/** The path of every change it recorded as applied, in order: each one reached a file. */
+	readonly appliedPaths: readonly string[];
+	/**
+	 * What the files this run changed hold now, as one hash of their paths and states. A file back
+	 * to what it held before the run's first change to it counts as unchanged, so a change undone
+	 * gives the state from before it.
+	 */
+	contentState(): string;
 	/**
 	 * Whether a change it recorded may have reached a file: one prepared and not abandoned. It
 	 * holds whatever happens to the record afterwards.

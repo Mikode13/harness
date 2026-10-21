@@ -523,10 +523,17 @@ or per role, with no upper bound:
 createLLMOrchestrator({ workspace, maxSteps: { executor: 120 } });
 ```
 
-A run also stops sooner when the model is stuck: when five answers in a row ask for exactly
-the same tool calls, or when one command, with the same input, ends the same way with exactly
-the same output five times in a row, whatever the model did between them. `createLLMAgent`
-takes one number, 65 by default.
+`createLLMAgent` takes one number, 65 by default.
+
+A run also watches for a model that is stuck. Two endings of one command, with the same input,
+are alike when it printed the same, all of it, colors aside and the times a known test runner
+prints, and either failed both times or passed with no file changed between them: a check that
+passes after every change is never counted. On the third ending alike the model is warned. On the
+fifth, the run asks you through `ask` whether to go on, and so it does, before they run, when
+five answers in a row ask for exactly the same tool calls. **Another attempt** lets it go on
+once, **Stop** ends it, and words of your own reach the model. A run stopped this way, or with no
+`ask` to ask, fails with `UnrecoverableError`, and is kept in the conversation with its changes,
+so your next prompt continues from it.
 
 No conversation is compacted unless you ask. `compactAt` is the number of input tokens at
 which the provider compacts it on its side, replacing the turns before that call with its own
