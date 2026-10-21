@@ -61,13 +61,13 @@ export class CommandLoops {
 
 	/**
 	 * Whether the user may still let the run go on: once per run, for a command or for repeated
-	 * answers alike. Granting it for a command forgets that call's endings, so its count starts
-	 * again.
+	 * answers alike. Granting it forgets the endings of the calls `keys` names, the ones the user
+	 * let run again, so their counts start again and the same loop is not judged twice.
 	 */
-	extend(key?: string): boolean {
+	extend(keys: readonly string[]): boolean {
 		if (this.extended) return false;
 		this.extended = true;
-		if (key !== undefined) this.endings.delete(key);
+		for (const key of keys) this.endings.delete(key);
 		return true;
 	}
 }

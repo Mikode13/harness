@@ -177,6 +177,11 @@ class RepeatedCalls {
 	}
 }
 
+/** A call by its tool and input, its properties in any order. */
+function callKey(call: ToolCallPart): string {
+	return JSON.stringify([call.name, canonical(call.input)]);
+}
+
 // How a call the user is asked about is shown: its tool and input, cut short.
 const shownCallCharacters = 300;
 
@@ -664,7 +669,7 @@ export class LLMAgent implements Agent {
 			// A call that failed to narrate ends the run before the next one can start.
 			throwIfProgressFailed();
 			if (ran.unrecorded) loops.unrecordedCallRan();
-			const key = JSON.stringify([call.name, canonical(call.input)]);
+			const key = callKey(call);
 			const label = summary ?? call.name;
 			const alike = ending === undefined ? undefined : loops.observe(key, ending);
 			// A command that changed what the history cannot copy hides that change from the next.
@@ -711,7 +716,7 @@ export class LLMAgent implements Agent {
 						stopped: reason => loopStop(label, alike, reason),
 						note: words => extensionNote(alike, words),
 					},
-					() => loops.extend(key),
+					() => loops.extend([key]),
 					options,
 				);
 				if (typeof decision !== 'string') {
@@ -1013,7 +1018,7 @@ export class LLMAgent implements Agent {
 							stopped: repeatStop,
 							note: repeatNote,
 						},
-						() => loops.extend(),
+						() => loops.extend(calls.map(callKey)),
 						options,
 					);
 					if (typeof decision !== 'string') {

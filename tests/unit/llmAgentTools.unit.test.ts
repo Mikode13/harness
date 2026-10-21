@@ -949,6 +949,25 @@ describe('LLMAgent with tools', () => {
 			expect(command.runs()).toBe(5);
 		});
 
+		it('goes on after another attempt on repeated answers that run the same command', async () => {
+			const command = fakeCommand(...Array.from({ length: 5 }, () => ({})));
+			const ask = vi.fn(() => ['Another attempt']);
+			const llmClient = new FakeLLMClient(
+				...['1', '2', '3', '4', '5'].map(id => assistantResponse([check(`check-${id}`)])),
+				textResponse('done'),
+			);
+
+			await expect(
+				new LLMAgent({ llmClient, tools: [command.tool] }).run('prompt', { signal, ask }),
+			).resolves.toMatchObject({ response: 'done' });
+			expect(ask).toHaveBeenCalledOnce();
+			expect(command.runs()).toBe(5);
+			// The fifth is the first since the user let it go on, so the model reads the note alone.
+			expect(checkResults(llmClient)[4]).toBe(
+				'run 5\n\nYou asked for these same calls 5 times in a row. The user let the run go on, once. Change your approach: if you ask for the same calls 5 more times in a row, the run stops.',
+			);
+		});
+
 		it('ends the run, kept, when the user stops it', async () => {
 			const command = fakeCommand(...failures(5));
 			const llmClient = checksAndEdits(5);
