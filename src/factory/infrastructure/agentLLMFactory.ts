@@ -311,7 +311,7 @@ function summarizerFor(provider: AgentProvider, logger: ILogger): LLMClient {
  * The workspace's history, opened on first use, so a factory that builds an agent stays
  * synchronous. Every agent and every file tool of one workspace reads the same files on disk.
  */
-function historyOf(workspace: WorkspaceOptions): HistoryReader {
+function historyOf(workspace: WorkspaceOptions, logger: ILogger): HistoryReader {
 	// Checked now: an agent with no root to follow is a setup error, not a first-run one.
 	if (workspace.roots.length === 0) {
 		throw new InvalidAgentConfigError('A workspace needs at least one root');
@@ -319,7 +319,7 @@ function historyOf(workspace: WorkspaceOptions): HistoryReader {
 	let store: Promise<RecoveryStore> | undefined;
 	const open = () => {
 		store ??= stateDirectoryOf(workspace)
-			.then(directory => openStore(workspace, directory))
+			.then(directory => openStore(workspace, directory, logger))
 			.catch((error: unknown) => {
 				// Not kept: the next run tries again, as one whose disk was full for a moment.
 				store = undefined;
@@ -445,7 +445,7 @@ export function createLLMAgent(
 			: systemPrompt,
 		// A file tool is a harness tool under its public name.
 		tools: tools as AgentTool[],
-		...(workspace ? { history: historyOf(workspace) } : {}),
+		...(workspace ? { history: historyOf(workspace, logger) } : {}),
 		...(workspace && summarizeUndone ? { summarizer: summarizerFor(provider, logger) } : {}),
 		maxSteps,
 		compactAt,

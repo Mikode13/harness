@@ -1605,6 +1605,8 @@ tags: #mikode-harness #tools #recovery
 
 partially superseded by: "Undo never takes back a change the history could not copy, and says so" (below) — a covered file over 64 MB that a command changed is no longer recorded as created, and a change to or from something the history cannot copy is recorded as `unrecorded`.
 
+partially superseded by: "A run that finished with an observation open is settled, and keeps how it ended" (below) — an observation left open when a run finishes is settled at once, or by the next run or move, not only one a dead run left.
+
 **Decision:** with `commands`, `createFileTools` and `createLLMOrchestrator` give the executor `runCommand`, which runs one of the commands the consumer configured.
 
 - **The consumer declares each command in code** (`Commands`): a fixed `executable`, its `args`, a `cwd` inside a `write` root, extra `env`, and optional limits. It runs without a shell, so no argument is read as shell syntax.
@@ -2463,3 +2465,29 @@ tags: #mikode-harness #recovery #tools
 - A command that creates a file over 64 MB is recorded as `unrecorded`, though undo could have deleted it: the history cannot redo it.
 - A large file a command rewrites while keeping it over 64 MB is still not covered, and undo never knows.
 - The journal on disk has a new line type. A journal written before it has none, and reads as before.
+
+## A run that finished with an observation open is settled, and keeps how it ended
+
+tags: #mikode-harness #recovery #tools
+
+**Decision:**
+
+- **How a run ended and whether its journal is settled are apart.** A run that finishes with an observation still open, such as a command whose files could not be compared after it ran, is recorded with its status and `unsettled` in its `run.json`.
+- **`finish` settles it at once,** under the run's own lock, from the observation's manifest, as the next run settles one a dead run left open. If that fails, the failure is logged, the mark stays, and the next run or move settles it first. Settling keeps the run's status and removes the mark.
+- **A file that cannot be read while settling is recorded as `unrecorded`,** with a warning, so undo leaves it and reports it, and a file nobody can read never stops every later run from starting.
+- **What an open observation needs is kept from cleanup:** its manifest and every content in it, until it is settled.
+- **Moves settle first,** as they already did for interrupted runs, so undo never reports a complete move over a journal that is not settled.
+
+**Context:** #118, from the external audit of 2026-10-18 (A2). When the comparison after a command failed, the run finished with its observation open. Only runs still `running` were settled, so what the command changed never reached the journal, and undo of that run reported `complete: true` with nothing to undo while the file kept the command's change. On 2026-10-21 the user chose to mark such a run and also settle it when it finishes.
+
+**Alternatives considered:**
+
+- **The mark alone,** settled by the next run or move. Cheap, since the store already reads every `run.json`. Not chosen: the run would wait for the next one even when the failure was passing.
+- **Reading the journals** for open observations, with no new field. Not chosen: every run start and every move would read every kept journal, a cost that grows with the history.
+
+**Consequences:**
+
+- When a command could not be confirmed stopped, its run is settled as it finishes, and what the command writes after that is not recorded. The mark alone would have waited for the next run, and recorded more.
+- `RunRecord` has an internal field, `unsettled`. A record written before it has none, and reads as before.
+- A run an earlier version finished with an observation open carries no mark, so it is never settled. What its observation needs is kept until retention removes the run.
+- `FileRecoveryStore.open` takes a `logger`, which the factories and `openWorkspace` pass on.

@@ -87,6 +87,12 @@ export interface RunRecord {
 	startedAt: string;
 	finishedAt?: string;
 	status: RunStatus;
+	/**
+	 * It finished with an observation still open, such as a command whose changes could not be
+	 * compared after it ran: its journal may not hold all it changed yet. The next run or move
+	 * settles it, as for an interrupted run, and keeps its status.
+	 */
+	unsettled?: true;
 	/** The process that ran it, so a run whose process died can be told from a live one. */
 	pid: number;
 }
@@ -143,7 +149,9 @@ export interface RunJournal {
 	/**
 	 * Ends the run and releases the workspace for the next writer. A run that `changed` nothing
 	 * leaves the history, and the workspace is back at the run before it. If removing it fails,
-	 * the store still treats it as gone, and the next run or move finishes removing it.
+	 * the store still treats it as gone, and the next run or move finishes removing it. A run that
+	 * ends with an observation open is settled from its manifest now, or by the next run or move
+	 * if that fails.
 	 */
 	finish(status: Exclude<RunStatus, 'running' | 'interrupted'>): Promise<void>;
 }
