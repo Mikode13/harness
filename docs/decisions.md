@@ -683,6 +683,8 @@ tags: #mikode-harness #api-design #data-modelling
 
 tags: #mikode-harness #agent-loops #failure-handling
 
+partially superseded by: "A run cut by the output limit stays in the conversation" (below) — a run whose answer stops at the output limit is recorded, though it fails.
+
 **Decision:** `LLMAgent` sends the stored context plus the new prompt without touching the conversation. Only after a completed answer does it call `Conversation.addExchange(prompt, answer)`, which stores both together. `Conversation` deep-copies every message it takes in and every context it hands out. The agent sends the prompt as a copy, so the prompt it records is the one it built.
 
 **Context:** the first version appended the prompt before calling the model. When `send` fails with a `RecoverableError`, `RetryingAgent` runs the same prompt again, so the conversation would hold it twice. The same happened after a refusal, a truncation or a cancellation. A review of PR #38 then found that `getContext()` copied only the array: a client that edited the messages it was sent would silently rewrite the stored history. A test with such a client also found that the prompt reached the client as the same object the agent recorded afterwards.
@@ -2076,6 +2078,8 @@ How the user sees a workflow's context: like the orchestrator's roles, each agen
 tags: #mikode-harness #provider-integration #llm
 
 partially superseded by: "Claude's aliases name the 5.5 models on both paths, and Haiku executes on Anthropic" (below) — `haiku` names Claude Haiku 5.5, so the limit is no longer the most the smallest model writes. It stays at 64,000 because no answer has needed more.
+
+partially superseded by: "A run cut by the output limit stays in the conversation" (below) — the limit is 128,000, since Haiku 5.5 at `xhigh` spent 64,000 on one answer.
 
 **Decision:**
 
