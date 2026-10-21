@@ -109,6 +109,30 @@ describe('LLMAgent transcripts', () => {
 		});
 	});
 
+	it('hands over a run cut by the output limit with what its answer held', async () => {
+		const { received, onTranscript } = transcripts();
+		const agent = new LLMAgent({
+			llmClient: client(
+				assistantResponse([{ type: 'reasoning', text: 'A long plan' }], {
+					stopReason: 'truncated',
+				}),
+			),
+			onTranscript,
+		});
+
+		await expect(agent.run('Plan it', { signal })).rejects.toThrow(UnrecoverableError);
+
+		expect(received[0]).toMatchObject({
+			outcome: 'failed',
+			content: {
+				messages: [
+					userMessage('Plan it'),
+					{ role: 'assistant', content: [{ type: 'reasoning', text: 'A long plan' }] },
+				],
+			},
+		});
+	});
+
 	it('hands over a cancelled run, and still cancels it', async () => {
 		const { received, onTranscript } = transcripts();
 		const controller = new AbortController();

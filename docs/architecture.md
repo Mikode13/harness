@@ -314,14 +314,18 @@ go back to the model, and the rest go to `ask`, whose answers the model reads; a
 throws or answers wrongly ends the run as host code. `RetryingAgent` wraps `ask` with
 `rememberAnswers` for the whole run, so a retry tells the model what the user already answered
 and never asks the same question twice. A
-`refused` or `truncated` stop ends the run with `UnrecoverableError`. Each client maps the
+`refused` or `truncated` stop ends the run with `UnrecoverableError`. Claude may write 128,000
+output tokens in one answer. Each client maps the
 parts to its provider's shapes and back: Claude's `tool_use` and `tool_result`, with every
 result in one user turn, and OpenAI's `function_call` and `function_call_output`, paired by
 `call_id`, where a failed result is marked in the text sent, since OpenAI has no error flag.
 
 Nothing is recorded until the run completes. Then the prompt, every answer and every tool
 result enter the conversation together, so a failed run leaves it untouched, no tool call is
-kept without its result, and a retry of the same prompt cannot appear twice. Once a call has
+kept without its result, and a retry of the same prompt cannot appear twice. A run cut by the
+output limit is the one failed run recorded: the answer that was cut keeps its text and
+reasoning, without its tool calls or provider data, and its reads are kept, so the next run can
+take it up. Once a call has
 reached an existing tool, a recoverable failure becomes `UnrecoverableError`: `RetryingAgent`
 would run the prompt again and repeat the tool's effects. A call to a missing tool, or a denied
 one, does not count, because nothing ran. Text and reasoning are narrated as each answer arrives, as

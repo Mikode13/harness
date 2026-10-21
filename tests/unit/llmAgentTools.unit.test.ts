@@ -62,6 +62,62 @@ function fakeTool(
 const madridCall = toolCall('call-1', 'weather', { city: 'Madrid' });
 
 describe('LLMAgent with tools', () => {
+	// Haiku at `xhigh` once spent its whole output on one answer, losing the run that led to it.
+	it('keeps a run cut by the output limit, with what its answer held before the limit', async () => {
+		const reasoning = { type: 'reasoning' as const, text: 'Now the forecast.' };
+		const llmClient = new FakeLLMClient(
+			assistantResponse([madridCall]),
+			assistantResponse(
+				[
+					reasoning,
+					{ type: 'text', text: 'Madrid is sunny, and' },
+					toolCall('call-2', 'weather', { city: 'Par' }),
+					{ type: 'providerData', source: 'fake', data: { cut: true } },
+				],
+				{ stopReason: 'truncated' },
+			),
+			textResponse('done'),
+		);
+		const weather = fakeTool('weather');
+		const agent = new LLMAgent({ llmClient, tools: [weather] });
+		const events: ProgressEvent[] = [];
+
+		await expect(
+			agent.run('weather?', { signal, onProgress: narration(events) }),
+		).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			message: 'The LLM stopped before completing its answer',
+			cause:
+				'The model stopped with "truncated". The run, and what the answer held before the limit, are kept in the conversation.',
+		});
+		await agent.run('go on', { signal });
+
+		expect(weather.execute).toHaveBeenCalledOnce();
+		expect(llmClient.contexts[2]).toEqual([
+			userMessage('weather?'),
+			{ role: 'assistant', content: [madridCall] },
+			toolMessage(toolResult('call-1', 'weather', 'Madrid: sunny')),
+			{ role: 'assistant', content: [reasoning, { type: 'text', text: 'Madrid is sunny, and' }] },
+			userMessage('go on'),
+		]);
+		expect(events).toContainEqual({ type: 'agentMessage', message: 'Madrid is sunny, and' });
+	});
+
+	it('keeps a cut run whose answer held only a call, without an empty answer', async () => {
+		const llmClient = new FakeLLMClient(
+			assistantResponse([toolCall('call-1', 'weather', { city: 'Mad' })], {
+				stopReason: 'truncated',
+			}),
+			textResponse('done'),
+		);
+		const agent = new LLMAgent({ llmClient, tools: [fakeTool('weather')] });
+
+		await expect(agent.run('weather?', { signal })).rejects.toBeInstanceOf(UnrecoverableError);
+		await agent.run('go on', { signal });
+
+		expect(llmClient.contexts[1]).toEqual([userMessage('weather?'), userMessage('go on')]);
+	});
+
 	it('offers the model the definition of each tool, never its code', async () => {
 		const llmClient = new FakeLLMClient(textResponse('answer'));
 

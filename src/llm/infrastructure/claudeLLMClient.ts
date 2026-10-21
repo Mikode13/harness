@@ -55,9 +55,9 @@ export type ClaudeLLMReasoningEffort = (typeof claudeLLMReasoningEfforts)[number
 
 // Adaptive thinking spends from this budget too, so a hard step at a high effort can need most
 // of it. The request is streamed so it is not bound by the SDK's ten-minute timeout, which made
-// it refuse more than about 21,000 without a stream. A single answer here has not needed more
-// than 64,000, which every model writes.
-const maxOutputTokens = 64_000;
+// it refuse more than about 21,000 without a stream. Every model the aliases name writes up to
+// 128,000; Haiku 5.5 at `xhigh` once spent 64,000 on one answer.
+const maxOutputTokens = 128_000;
 
 // The request itself is wrong or not allowed, so sending it again cannot succeed.
 const unrecoverableStatuses = [400, 401, 403, 404, 413, 422];

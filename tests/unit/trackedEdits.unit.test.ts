@@ -49,7 +49,7 @@ type Call = [name: string, input: Record<string, unknown>];
  */
 class CallingModel implements LLMClient {
 	readonly outputs: { output: string; isError: boolean }[] = [];
-	private readonly script: (Call | 'answer' | Error)[] = [];
+	private readonly script: (Call | 'answer' | 'cut' | Error)[] = [];
 	private calls = 0;
 
 	then(...calls: Call[]): this {
@@ -68,6 +68,12 @@ class CallingModel implements LLMClient {
 		return this;
 	}
 
+	/** Answers, stopped by the output limit. */
+	cuts(): this {
+		this.script.push('cut');
+		return this;
+	}
+
 	send({ context }: { context: Message[] }): Promise<LLMResponse> {
 		for (const part of context.at(-1)?.content ?? []) {
 			if (part.type === 'toolResult') {
@@ -78,6 +84,7 @@ class CallingModel implements LLMClient {
 		if (next === undefined) return Promise.reject(new Error('The script ran out'));
 		if (next instanceof Error) return Promise.reject(next);
 		if (next === 'answer') return Promise.resolve(textResponse('done'));
+		if (next === 'cut') return Promise.resolve(textResponse('I will', { stopReason: 'truncated' }));
 		this.calls++;
 		const [name, input] = next;
 		return Promise.resolve(
@@ -235,6 +242,18 @@ describe('editing only from a version the model read', () => {
 		await agent.run('change it', { signal });
 
 		expect(model.last?.output).toMatch(/^READ_REQUIRED/);
+	});
+
+	it('keeps what a run cut by the output limit read, since its conversation keeps it', async () => {
+		const model = new CallingModel().makes(read('a.txt')).cuts();
+		const agent = await agentOver(model);
+		await expect(agent.run('read it', { signal })).rejects.toThrow();
+
+		model.then(modify('a.txt', 'two', 'TWO'));
+		await agent.run('change it', { signal });
+
+		expect(model.last?.isError).toBe(false);
+		expect(onDisk('a.txt')).toBe('one\nTWO\nthree\n');
 	});
 
 	it('forgets every read once the workspace moved through its history', async () => {

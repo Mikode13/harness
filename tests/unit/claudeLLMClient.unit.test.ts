@@ -201,7 +201,7 @@ describe('ClaudeLLMClient', () => {
 		expect(create).toHaveBeenCalledWith(
 			{
 				model: 'claude-sonnet-5-5',
-				max_tokens: 64_000,
+				max_tokens: 128_000,
 				system: 'Be brief.',
 				messages: [
 					{ role: 'user', content: [{ type: 'text', text: 'first' }] },

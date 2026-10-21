@@ -208,26 +208,43 @@ describe('LLMAgent', () => {
 		});
 	});
 
-	it.each(['refused', 'truncated'] as const)(
-		'fails without remembering the exchange when the model stopped as %s',
-		async stopReason => {
-			const llmClient = new FakeLLMClient(
-				textResponse('partial', { stopReason }),
-				textResponse('answer'),
-			);
-			const agent = new LLMAgent({ llmClient });
+	it('fails without remembering the exchange when the model refused', async () => {
+		const llmClient = new FakeLLMClient(
+			textResponse('partial', { stopReason: 'refused' }),
+			textResponse('answer'),
+		);
+		const agent = new LLMAgent({ llmClient });
 
-			await expect(agent.run('first', { signal })).rejects.toMatchObject({
-				constructor: UnrecoverableError,
-				cause: `The model stopped with "${stopReason}".`,
-				// The unusable answer was billed.
-				tokens: textResponse('').usage,
-			});
-			await agent.run('second', { signal });
+		await expect(agent.run('first', { signal })).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			cause: 'The model stopped with "refused".',
+			// The unusable answer was billed.
+			tokens: textResponse('').usage,
+		});
+		await agent.run('second', { signal });
 
-			expect(llmClient.contexts[1]).toEqual([userMessage('second')]);
-		},
-	);
+		expect(llmClient.contexts[1]).toEqual([userMessage('second')]);
+	});
+
+	it('fails on an answer cut by the output limit, and remembers what it held', async () => {
+		const llmClient = new FakeLLMClient(
+			textResponse('partial', { stopReason: 'truncated' }),
+			textResponse('answer'),
+		);
+		const agent = new LLMAgent({ llmClient });
+
+		await expect(agent.run('first', { signal })).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			tokens: textResponse('').usage,
+		});
+		await agent.run('second', { signal });
+
+		expect(llmClient.contexts[1]).toEqual([
+			userMessage('first'),
+			{ role: 'assistant', content: [{ type: 'text', text: 'partial' }] },
+			userMessage('second'),
+		]);
+	});
 
 	// Missing accounting does not make the answer wrong: only the tokens are unknown.
 	it('keeps an answer whose usage was not reported, without tokens', async () => {

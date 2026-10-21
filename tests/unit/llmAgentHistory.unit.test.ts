@@ -47,7 +47,9 @@ afterEach(() => {
  */
 class ScriptedModel implements LLMClient {
 	readonly firstContexts: Message[][] = [];
-	private readonly script: ({ write: [string, string] } | { answer: string } | Error)[] = [];
+	private readonly script: (
+		{ write: [string, string] } | { answer: string } | { cut: string } | Error
+	)[] = [];
 	private waitingForAnswer = false;
 
 	writes(path: string, content: string): this {
@@ -65,6 +67,12 @@ class ScriptedModel implements LLMClient {
 		return this;
 	}
 
+	/** Answers with `text`, stopped by the output limit. */
+	cuts(text: string): this {
+		this.script.push({ cut: text });
+		return this;
+	}
+
 	send({ context }: { context: Message[] }): Promise<LLMResponse> {
 		if (this.waitingForAnswer) {
 			this.waitingForAnswer = false;
@@ -75,6 +83,7 @@ class ScriptedModel implements LLMClient {
 		if (!next) return Promise.reject(new Error('The script ran out'));
 		if (next instanceof Error) return Promise.reject(next);
 		if ('answer' in next) return Promise.resolve(textResponse(next.answer));
+		if ('cut' in next) return Promise.resolve(textResponse(next.cut, { stopReason: 'truncated' }));
 		this.waitingForAnswer = true;
 		const [path, content] = next.write;
 		return Promise.resolve(assistantResponse([toolCall('call', 'replace', { path, content })]));
@@ -265,6 +274,21 @@ describe('LLMAgent following moves through the workspace history', () => {
 		for (const context of model.firstContexts.slice(1)) {
 			expect(prompt(context)[0]).toContain('«first»');
 		}
+	});
+
+	it('gives the note once when the run that carried it was cut by the output limit', async () => {
+		const model = new ScriptedModel().writes('a.txt', 'one').cuts('I will now').answers('ok');
+		const agent = await agentOver(model);
+		await agent.run('first', { signal });
+		await store.undo();
+
+		await expect(agent.run('cut me', { signal })).rejects.toBeInstanceOf(UnrecoverableError);
+		await agent.run('go on', { signal });
+
+		expect(prompt(model.firstContexts[1])[0]).toContain('«first»');
+		// The cut run is kept with its note, so the next prompt goes alone.
+		expect(prompt(model.firstContexts[2])).toEqual(['go on']);
+		expect(texts(model.firstContexts[2])).toContain('I will now');
 	});
 
 	it('uses a summary from the summarizer in place of the prompts, and counts its tokens', async () => {

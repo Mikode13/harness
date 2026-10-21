@@ -840,6 +840,14 @@ export class LLMAgent implements Agent {
 			const offersAsk = options.ask !== undefined && !this.tools.has(askUserName);
 			const tools = offersAsk ? [...this.toolDefinitions, askUserDefinition] : this.toolDefinitions;
 			seen.tools = tools;
+			// Recorded only once the run ends in a way that keeps it, so it never leaves a tool call
+			// without its result; a run that is not kept gives its note on what was undone again.
+			const remember = () => {
+				this.conversation.addRunAfter(after, runMessages, context.historyRun);
+				// With the turns that read them, and only then.
+				reads.commit();
+				if (followed) this.seenRevision = followed.latestRevision;
+			};
 			for (let step = 1; step <= this.maxSteps; step++) {
 				const { response, context: sent } = await this.llmCall(runMessages, after, {
 					signal,
@@ -852,8 +860,24 @@ export class LLMAgent implements Agent {
 				// After the tokens are counted, so a throwing callback still reports them, and for an
 				// unusable answer too: the call was sent, and billed.
 				this.narrateStep(step, response.usage, { context: sent, tools }, callback);
+				if (response.stopReason === 'truncated') {
+					// What it wrote before the output limit, kept with the run so the next run can
+					// take it up. Not its calls, whose input may be cut, nor what only the provider
+					// reads back, which it may refuse incomplete.
+					const written = response.message.content.filter(
+						part => part.type === 'text' || part.type === 'reasoning',
+					);
+					for (const part of written) narrate(part, callback);
+					if (written.length > 0) runMessages.push({ role: 'assistant', content: written });
+					remember();
+					throw new UnrecoverableError('The LLM stopped before completing its answer', {
+						cause:
+							'The model stopped with "truncated". The run, and what the answer held before the limit, are kept in the conversation.',
+					});
+				}
 				if (response.stopReason !== 'completed') {
-					// Its tokens are already counted with the run's, which the failure carries.
+					// Its tokens are already counted with the run's, which the failure carries. A run
+					// that ends so is not remembered.
 					throw new UnrecoverableError('The LLM stopped before completing its answer', {
 						cause: `The model stopped with "${response.stopReason}".`,
 					});
@@ -867,12 +891,7 @@ export class LLMAgent implements Agent {
 
 				const calls = response.message.content.filter(part => part.type === 'toolCall');
 				if (calls.length === 0) {
-					// Recorded only now, so a failed run leaves no tool call without its result, and a
-					// note about what was undone is given again to the next run.
-					this.conversation.addRunAfter(after, runMessages, context.historyRun);
-					// With the turns that read them, and only then: a failed run is not remembered.
-					reads.commit();
-					if (followed) this.seenRevision = followed.latestRevision;
+					remember();
 
 					return {
 						// Only the final answer: text from earlier steps was narrated as it came.

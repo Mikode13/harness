@@ -328,3 +328,60 @@ and both left `check` and the tests green. The results are in
   - Which run wrote the better code is not known from these figures: both reviewers approved,
     but they were different models.
 - **What changed:** nothing.
+
+## Provider profiles on #22 (2026-10-20)
+
+The script of "Two roles on #22 after #100" ran #22 twice more, on the same base, `fb87ba4`, with
+the harness at `6ba50b7`: `readFiles`, explorers that say where to read, a transcript of every
+run, and the 5.5 models. One run had the `openai` roles: `gpt-5.6-sol` at `high` plans and
+reviews, and `gpt-5.6-luna` at `xhigh` executes. The other had the `anthropic` roles: Claude Opus
+5.5 at `high` plans and reviews, and Claude Haiku 5.5 at `xhigh` executes. Neither reached the
+reviewer: the OpenAI executor was ended by the stop for a command that ends the same way, and
+Haiku by the output limit. They cost $0.79 and $1.05. The results, transcripts included, are in
+`bench-results/2026-10-20-issue22-provider-profiles`.
+
+### Haiku at `xhigh` spent its whole output on one answer
+
+- **What happened:** the Haiku executor read 26 ranges, 166,261 characters of files, and
+  changed nothing. Its tenth call stopped at the 64,000 output tokens the client allowed, after
+  251 seconds, and the run failed.
+- **Evidence:** the tenth `step` event reports 64,000 output tokens; the run's error is "The
+  model stopped with \"truncated\"". The transcript ends with the results of the ninth call: it
+  does not hold the answer the limit cut, so what Haiku was writing is not known.
+- **What it means:** one run cannot say whether `xhigh` caused it. A transcript is missing the
+  one answer that would explain a cut.
+- **What changed:** "A run cut by the output limit stays in the conversation" in decisions.md:
+  Claude may write 128,000 tokens, and a cut answer is kept with its run.
+
+### The planners read in fewer calls, and cost a little less
+
+- **What happened:** `gpt-5.6-sol` asked one `explore` with four questions, then read in 2
+  `readFiles` calls and 1 `readFile`. Opus sent no explorer, and read in 7 `readFiles`, 3
+  `readFile` and 4 `searchText` calls.
+- **Evidence:** the planner runs once per round, and the earlier runs had two and three rounds,
+  so only the first rounds compare:
+  - `gpt-5.6-sol`: $0.48 in 5 calls, against $0.58 in 6. Its explorers cost $0.09.
+  - Opus: $1.00 in 12 calls, against $1.09 in 11.
+- **What it means:** reading several files in one call shortened `gpt-5.6-sol`'s plan by one
+  call; Opus batched its reads, but made as many calls. A plan still costs about what it did,
+  and Opus still costs twice as much as `gpt-5.6-sol`.
+- **What changed:** nothing.
+
+### Patches failed after a read too
+
+- **What happened:** the OpenAI executor's `apply_patch` failed 10 of 40 times (25%), against 8
+  of 61 in the run before. With the `error` of each failed `tool` event, each failure has a
+  cause.
+- **Evidence:**
+  - 5 did not match the file. 2 followed a patch to the same file with no read since; 3 came
+    after a read: a sentence of `README.md` the model remembered wrapped at another word, and,
+    twice, a row of `docs/architecture.md`'s module table padded with hundreds of spaces.
+  - 3 matched two places, and the patch needed more context.
+  - 2 named a function, in their `@@` line, that was not in the file.
+  - 6 of the 10 were on `workflowRunner.ts`, between the 42nd call and the 48th, with one patch
+    that applied among them.
+- **What it means:** as in "Haiku 5.5 failed fewer edits, and the formatter is not what fails
+  GPT's patches", a read just before is no guarantee: the model writes the context from memory,
+  and a wrapped sentence or a padded line is where it goes wrong. With one run, 25% is not a
+  rate.
+- **What changed:** nothing.
