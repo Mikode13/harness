@@ -30,6 +30,7 @@ import {
 	type RunJournal,
 	type RunRecord,
 	type RunStatus,
+	type UnrecordedChange,
 	WorkspaceBusyError,
 	WorkspaceMovedError,
 } from '../domain/recoveryStore.ts';
@@ -184,7 +185,8 @@ type JournalLine =
 	| ({ type: 'prepared'; sequence: number } & Omit<JournalEntry, 'sequence' | 'status'>)
 	| { type: 'applied' | 'abandoned'; sequence: number }
 	| { type: 'observing'; sequence: number; manifest: string; by: string }
-	| { type: 'observed'; sequence: number; measure?: ObservationMeasure };
+	| { type: 'observed'; sequence: number; measure?: ObservationMeasure }
+	| ({ type: 'unrecorded'; sequence: number } & UnrecordedChange);
 
 /** An observation a run began and never finished: what its command changed is not recorded yet. */
 interface OpenObservation {
@@ -347,8 +349,8 @@ export class FileRecoveryStore implements RecoveryStore {
 		for (const run of runs) {
 			if (run.status !== 'interrupted') continue;
 			// A journal it cannot read leaves the run listed: whether it changed anything is unknown.
-			const entries = await this.readEntries(run.runId, run.journal).catch(() => undefined);
-			if (entries && changedNothing(entries)) gone.add(run.runId);
+			const journal = await this.readJournal(run.runId, run.journal).catch(() => undefined);
+			if (journal && changedNothing(journal)) gone.add(run.runId);
 		}
 		const parents = new Map(runs.map(run => [run.runId, run.parentRunId]));
 		let { runId: head } = await this.readHead();
@@ -357,7 +359,9 @@ export class FileRecoveryStore implements RecoveryStore {
 		return { ...(head ? { head } : {}), runs: runs.filter(run => !gone.has(run.runId)) };
 	}
 
-	async readRun(runId: string): Promise<{ record: RunRecord; entries: JournalEntry[] }> {
+	async readRun(
+		runId: string,
+	): Promise<{ record: RunRecord; entries: JournalEntry[]; unrecorded: UnrecordedChange[] }> {
 		// An id from outside is checked before it names a folder.
 		if (!runIdPattern.test(runId)) throw new UnknownRunError(runId);
 		// The lock first: a run that finishes between the two reads then shows as finished, not as
@@ -371,10 +375,8 @@ export class FileRecoveryStore implements RecoveryStore {
 			await this.assertNotAbsorbed(runId);
 			throw new UnknownRunError(runId);
 		});
-		return {
-			record: withLiveStatus(record, holder),
-			entries: await this.readEntries(runId, record.journal),
-		};
+		const { entries, unrecorded } = await this.readJournal(runId, record.journal);
+		return { record: withLiveStatus(record, holder), entries, unrecorded };
 	}
 
 	private async readRecord(runId: string): Promise<RunRecord> {
@@ -558,16 +560,15 @@ export class FileRecoveryStore implements RecoveryStore {
 		direction: 'undo' | 'redo',
 		announce: (temporary: string | undefined) => Promise<void>,
 	): Promise<MoveConflict[]> {
-		const { entries } = await this.readRun(runId);
+		const { entries, unrecorded } = await this.readRun(runId);
 		const changes = fileChanges(entries, true);
-		const conflicts: MoveConflict[] = [];
+		// What the history could not copy is left as it is, in either direction.
+		const conflicting = new Set(unrecorded.map(change => change.path));
 		// Undone newest first, so a folder the run created is empty by the time its file goes.
 		for (const change of direction === 'undo' ? changes.reverse() : changes) {
-			if (!(await this.moveFile(change, direction, announce))) {
-				conflicts.push({ path: change.path, runId });
-			}
+			if (!(await this.moveFile(change, direction, announce))) conflicting.add(change.path);
 		}
-		return conflicts;
+		return [...conflicting].map((path): MoveConflict => ({ path, runId }));
 	}
 
 	/**
@@ -665,15 +666,21 @@ export class FileRecoveryStore implements RecoveryStore {
 	private async chain(older: string, newer: string): Promise<void> {
 		const olderRecord = await this.readRecord(older);
 		const newerRecord = await this.readRecord(newer);
-		const entries = chainEntries(
-			await this.readEntries(older, olderRecord.journal),
-			await this.readEntries(newer, newerRecord.journal),
-		);
+		const olderJournal = await this.readJournal(older, olderRecord.journal);
+		const newerJournal = await this.readJournal(newer, newerRecord.journal);
+		const entries = chainEntries(olderJournal.entries, newerJournal.entries);
 		const journal = `journal-${randomBytes(4).toString('hex')}.jsonl`;
 		const lines = entries.flatMap(({ status, sequence, ...change }): JournalLine[] => [
 			{ type: 'prepared', sequence, ...change },
 			...(status === 'prepared' ? [] : [{ type: status, sequence } as const]),
 		]);
+		// What either run could not copy stays uncopied: undoing the chain cannot take it back.
+		for (const [index, change] of [
+			...olderJournal.unrecorded,
+			...newerJournal.unrecorded,
+		].entries()) {
+			lines.push({ type: 'unrecorded', sequence: entries.length + index + 1, ...change });
+		}
 		await writeDurably(
 			join(this.runDirectory(newer), journal),
 			lines.map(line => `${JSON.stringify(line)}\n`).join(''),
@@ -805,7 +812,7 @@ export class FileRecoveryStore implements RecoveryStore {
 				settled.push(...lines);
 			}
 			await appendWhole(join(this.runDirectory(runId), record.journal ?? firstJournal), settled);
-			if (changedNothing(await this.readEntries(runId, record.journal))) {
+			if (changedNothing(await this.readJournal(runId, record.journal))) {
 				await this.discardRun(record);
 				continue;
 			}
@@ -821,7 +828,8 @@ export class FileRecoveryStore implements RecoveryStore {
 	 * The lines that record what a command an interrupted run was observing changed: every file of
 	 * its manifest that holds something else now, as changed by that command, and then the end of
 	 * the observation. A file recorded after the observation began is left alone: the run
-	 * recorded it itself. One that is now a folder, a link or too large to record is left out.
+	 * recorded it itself. One that is now a folder, a link or too large to record, or that was one
+	 * and is no longer, is recorded as a change the history could not copy.
 	 */
 	private async settleObservation(
 		observation: OpenObservation,
@@ -840,15 +848,30 @@ export class FileRecoveryStore implements RecoveryStore {
 		);
 		const lines: JournalLine[] = [];
 		let sequence = lastSequence;
+		const unrecorded = (path: string): JournalLine => ({
+			type: 'unrecorded',
+			sequence: ++sequence,
+			path,
+			by: observation.by,
+		});
 		for (const [path, before] of Object.entries(manifest.files)) {
 			if (!isAbsolute(path) || recorded.has(path)) continue;
 			const after = await this.saveState(path);
-			if (!after || sameState(after, before)) continue;
+			if (!after) {
+				lines.push(unrecorded(path));
+				continue;
+			}
+			if (sameState(after, before)) continue;
 			sequence++;
 			lines.push(
 				{ type: 'prepared', sequence, path, before, after, observedBy: observation.by },
 				{ type: 'applied', sequence },
 			);
+		}
+		// What it held before is unknown, so only a path that is no longer uncopyable has changed.
+		for (const path of manifest.uncopyable ?? []) {
+			if (!isAbsolute(path) || recorded.has(path)) continue;
+			if ((await currentState(path)) !== undefined) lines.push(unrecorded(path));
 		}
 		lines.push({ type: 'observed', sequence: observation.sequence });
 		return lines;
@@ -879,19 +902,27 @@ export class FileRecoveryStore implements RecoveryStore {
 	private async readJournal(
 		runId: string,
 		journal = firstJournal,
-	): Promise<{ entries: JournalEntry[]; observations: OpenObservation[]; lastSequence: number }> {
+	): Promise<{
+		entries: JournalEntry[];
+		observations: OpenObservation[];
+		unrecorded: UnrecordedChange[];
+		lastSequence: number;
+	}> {
 		let text: string;
 		try {
 			text = await readFile(join(this.runDirectory(runId), journal), 'utf8');
 		} catch (error) {
 			// A run that stopped before opening its journal never changed anything.
-			if (isNotFound(error)) return { entries: [], observations: [], lastSequence: 0 };
+			if (isNotFound(error)) {
+				return { entries: [], observations: [], unrecorded: [], lastSequence: 0 };
+			}
 			throw error;
 		}
 		const lines = text.split('\n');
 
 		const entries = new Map<number, JournalEntry>();
 		const observations = new Map<number, OpenObservation>();
+		const unrecorded: UnrecordedChange[] = [];
 		let lastSequence = 0;
 		lines.forEach((text, index) => {
 			if (text === '') return;
@@ -929,6 +960,10 @@ export class FileRecoveryStore implements RecoveryStore {
 				observations.delete(line.sequence);
 				return;
 			}
+			if (line.type === 'unrecorded') {
+				unrecorded.push({ path: line.path, by: line.by });
+				return;
+			}
 			const entry = entries.get(line.sequence);
 			if (entry) entry.status = line.type;
 		});
@@ -936,6 +971,7 @@ export class FileRecoveryStore implements RecoveryStore {
 		return {
 			entries: [...entries.values()],
 			observations: [...observations.values()],
+			unrecorded,
 			lastSequence,
 		};
 	}
@@ -984,9 +1020,18 @@ export class FileRecoveryStore implements RecoveryStore {
 	}
 }
 
-/** No change it recorded may have reached a file: it recorded none, or abandoned each one. */
-function changedNothing(entries: JournalEntry[]): boolean {
-	return entries.every(entry => entry.status === 'abandoned');
+/**
+ * No change it recorded may have reached a file: it recorded none, or abandoned each one, and
+ * none it could not copy.
+ */
+function changedNothing({
+	entries,
+	unrecorded,
+}: {
+	entries: JournalEntry[];
+	unrecorded: UnrecordedChange[];
+}): boolean {
+	return unrecorded.length === 0 && entries.every(entry => entry.status === 'abandoned');
 }
 
 /**
@@ -1087,6 +1132,8 @@ class FileRunJournal implements RunJournal {
 	// The changes recorded as prepared and not abandoned: those that may have reached a file. One
 	// whose `prepared` line failed is not here, since nothing writes a file before that line.
 	private readonly effects = new Set<number>();
+	// A change it could not copy reached a file, and stays in the history.
+	private lost = false;
 	// Appends run one after another, so the lines never interleave.
 	private pending: Promise<unknown> = Promise.resolve();
 	private finished = false;
@@ -1169,6 +1216,12 @@ class FileRunJournal implements RunJournal {
 		this.effects.delete(sequence);
 	}
 
+	async unrecorded(path: string, by: string): Promise<void> {
+		this.assertOpen();
+		await this.append({ type: 'unrecorded', sequence: ++this.sequence, path, by });
+		this.lost = true;
+	}
+
 	get storedBytes(): number {
 		return this.stored;
 	}
@@ -1195,7 +1248,7 @@ class FileRunJournal implements RunJournal {
 	}
 
 	get changed(): boolean {
-		return this.effects.size > 0;
+		return this.lost || this.effects.size > 0;
 	}
 
 	async finish(status: Exclude<RunStatus, 'running' | 'interrupted'>): Promise<void> {

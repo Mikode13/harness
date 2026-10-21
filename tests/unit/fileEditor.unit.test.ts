@@ -378,6 +378,7 @@ describe('FileEditor', () => {
 						abandoned: sequence => journal.abandoned(sequence),
 						observe: (manifest, by) => journal.observe(manifest, by),
 						observed: (sequence, measure) => journal.observed(sequence, measure),
+						unrecorded: (path, by) => journal.unrecorded(path, by),
 						storedBytes: 0,
 						appliedPaths: [],
 						contentState: () => journal.contentState(),

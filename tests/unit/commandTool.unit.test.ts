@@ -424,9 +424,54 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		const { output = '' } = await call(tool as PreparingTool, { command: { name: 'swap' } });
 
 		expect(output).toContain(
-			'Not recorded, because the history cannot copy them (a folder, a link, or a file over 64 MB): src/b.ts.',
+			'Not recorded, because the history cannot copy them (a folder, a link, or a file over 64 MB) before or after: src/b.ts. Undo leaves them as they are.',
 		);
 		expect(output).not.toContain('big.bin');
+	});
+
+	it('never undoes a file too large to capture as one the command created', async () => {
+		// Sparse: over the size limit without writing 64 MB.
+		write('big.bin', '');
+		truncateSync(join(root, 'big.bin'), 65 * 1024 * 1024);
+		const opened = await open();
+		const tool = await commandToolFor(opened, { shrink: shell('echo small > big.bin') });
+
+		const { output = '', context } = await call(tool as PreparingTool, {
+			command: { name: 'shrink' },
+		});
+
+		expect(output).toContain('history cannot copy them (a folder, a link, or a file over 64 MB)');
+		expect(output).toContain('before or after: big.bin.');
+		// The run stays in the history, though it recorded no change it could take back.
+		const runId = context.historyRun.runId ?? '';
+		await expect(opened.store.readRun(runId)).resolves.toMatchObject({
+			entries: [],
+			unrecorded: [{ path: join(root, 'big.bin'), by: 'shrink' }],
+		});
+		await expect(showChanges(opened.store, runId)).resolves.toBe(
+			'# big.bin: changed while the command "shrink" ran, into or from something the history cannot copy (a folder, a link, or a file over 64 MB); undo leaves it as it is',
+		);
+
+		await expect(opened.store.undo()).resolves.toMatchObject({
+			complete: false,
+			conflicts: [{ path: join(root, 'big.bin'), runId }],
+		});
+		expect(read('big.bin')).toBe('small\n');
+		await expect(opened.store.redo()).resolves.toMatchObject({ complete: false });
+		expect(read('big.bin')).toBe('small\n');
+	});
+
+	it('names a file too large to capture that the command deleted, and leaves it out of undo', async () => {
+		write('big.bin', '');
+		truncateSync(join(root, 'big.bin'), 65 * 1024 * 1024);
+		const opened = await open();
+		const tool = await commandToolFor(opened, { clean: shell('rm big.bin') });
+
+		const { output = '' } = await call(tool as PreparingTool, { command: { name: 'clean' } });
+
+		expect(output).toContain('before or after: big.bin.');
+		await expect(opened.store.undo()).resolves.toMatchObject({ complete: false });
+		expect(read('big.bin')).toBeUndefined();
 	});
 
 	it('gives the command no provider key, only the few variables it inherits and its own', async () => {

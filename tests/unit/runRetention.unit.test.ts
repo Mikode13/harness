@@ -88,6 +88,23 @@ describe('keeping a bounded history of runs', () => {
 		]);
 	});
 
+	it('keeps a change the history could not copy when it chains its run away', async () => {
+		const first = await store.startRun();
+		await first.unrecorded(join(root, 'big.bin'), 'build');
+		await first.finish('completed');
+		for (const content of ['1', '2', '3']) await run(['a.txt', content]);
+
+		const { runs } = await store.listRuns();
+		expect(runs[0]).toMatchObject({ absorbed: [first.runId] });
+		await expect(store.readRun(runs[0]?.runId ?? '')).resolves.toMatchObject({
+			unrecorded: [{ path: join(root, 'big.bin'), by: 'build' }],
+		});
+		await expect(store.goTo(historyStart)).resolves.toMatchObject({
+			complete: false,
+			conflicts: [{ path: join(root, 'big.bin') }],
+		});
+	});
+
 	it('frees the contents only the chained-away states referred to', async () => {
 		writeFileSync(join(root, 'a.txt'), 'original');
 		for (const content of ['1', '2', '3', '4']) await run(['a.txt', content]);

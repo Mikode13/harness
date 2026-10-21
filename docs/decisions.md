@@ -1603,6 +1603,8 @@ Without a `write` root they only read. `WorkspaceOptions` lists the roots, each 
 
 tags: #mikode-harness #tools #recovery
 
+partially superseded by: "Undo never takes back a change the history could not copy, and says so" (below) — a covered file over 64 MB that a command changed is no longer recorded as created, and a change to or from something the history cannot copy is recorded as `unrecorded`.
+
 **Decision:** with `commands`, `createFileTools` and `createLLMOrchestrator` give the executor `runCommand`, which runs one of the commands the consumer configured.
 
 - **The consumer declares each command in code** (`Commands`): a fixed `executable`, its `args`, a `cwd` inside a `write` root, extra `env`, and optional limits. It runs without a shell, so no argument is read as shell syntax.
@@ -2435,3 +2437,29 @@ tags: #mikode-harness #tools #cost
 - An edit the formatter rewrites costs a read more before the next edit to that file: in the `openai` run of 2026-10-21, the formatter rewrote 22 of 138 writes, and 19 of 60 in the run that followed.
 - Its response returns more, up to 60 more lines; what does not fit is counted. A change shows the formatter's lines twice: among the lines around the change, and apart.
 - Claude's text editor gets the same response and the same read, since both formats run on the same edit engine.
+
+## Undo never takes back a change the history could not copy, and says so
+
+tags: #mikode-harness #recovery #tools
+
+**Decision:**
+
+- **"Absent" and "not captured" are different states.** A covered path the checkpoint could not copy before a command, such as a file over 64 MB, a folder or a link, is never taken as absent. The manifest names those paths as `uncopyable`.
+- **A change the history cannot copy is recorded as `unrecorded`,** a journal line with the path and the command it was seen around. That is a path it could copy only before the command, or only after: a file made too large, one too large replaced by a small one, or deleted. One it could copy neither before nor after is not covered, as before: whether it changed is unknown.
+- **A move over a run leaves such a path as it is,** undo and redo alike, and names it in `conflicts`, so the move is not `complete`. `conflicts` already meant a change that could not be undone or redone; it now also covers this one, and the public types do not change.
+- **It stays in the history.** A run whose only change is `unrecorded` is kept, retention carries the line into the run it chains into, and an observation a dead run left open is settled the same way from its manifest.
+- **It is named.** The command's result says that undo leaves those paths as they are, `showChanges` names each one with its command, and `HistoryRun.files` lists them.
+
+**Context:** #117, from the external audit of 2026-10-18 (A1). A covered file over 64 MB had no entry in the manifest, so after a command replaced it with a small file the change was recorded as a creation, and undo deleted the file while reporting a complete move. The same gap left a file the command made too large, or turned into a folder, out of the history: the model was told, but undo reported a complete move. On 2026-10-21 the user chose to record such changes and report the move as incomplete through `conflicts`, rather than only leaving them out of the history, or adding a field of its own to `Move`.
+
+**Alternatives considered:**
+
+- **Only leaving them out of the history.** No data lost and a smaller change, but undo would still report a complete move over a change it did not take back. Not chosen.
+- **A field of its own on `Move`,** such as `irreversible`. It would tell a file the user edited since from one the history could not copy, at the cost of a new field on a public type. Not chosen: both are files a move left as they were.
+- **Copying files of any size.** It would remove the case, but the store would hold a copy of every large covered file for every command. Not chosen.
+
+**Consequences:**
+
+- A command that creates a file over 64 MB is recorded as `unrecorded`, though undo could have deleted it: the history cannot redo it.
+- A large file a command rewrites while keeping it over 64 MB is still not covered, and undo never knows.
+- The journal on disk has a new line type. A journal written before it has none, and reads as before.

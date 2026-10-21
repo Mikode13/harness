@@ -10,6 +10,7 @@ import {
 	rmSync,
 	statSync,
 	symlinkSync,
+	truncateSync,
 	writeFileSync,
 } from 'node:fs';
 import { open, type FileHandle } from 'node:fs/promises';
@@ -559,6 +560,46 @@ describe('FileRecoveryStore', () => {
 			await store.goTo(historyStart);
 			expect(readFileSync(formatted.path, 'utf8')).toBe('a ;\n');
 			expect(readFileSync(deleted.path, 'utf8')).toBe('gone\n');
+		});
+
+		it('names what an interrupted run was observing that the history could not copy', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const dead = await store.startRun();
+			const path = (name: string) => join(root, name);
+			writeFileSync(path('small.txt'), 'small\n');
+			chmodSync(path('small.txt'), 0o644);
+			const small = {
+				exists: true,
+				hash: await dead.saveContent(Buffer.from('small\n')),
+				mode: 0o644,
+			} as const;
+			// Sparse: over the size limit without writing 64 MB.
+			for (const name of ['shrunk.bin', 'kept.bin']) {
+				writeFileSync(path(name), '');
+				truncateSync(path(name), 65 * 1024 * 1024);
+			}
+			const manifest = {
+				files: { [path('small.txt')]: small },
+				uncopyable: [path('shrunk.bin'), path('kept.bin')],
+			};
+			await dead.observe(await dead.saveContent(Buffer.from(JSON.stringify(manifest))), 'build');
+			// The command ran, and the process died before comparing the files.
+			truncateSync(path('small.txt'), 65 * 1024 * 1024);
+			writeFileSync(path('shrunk.bin'), 'shrunk\n');
+			kill(dead);
+
+			const next = await store.startRun();
+			await next.finish('completed');
+
+			const { entries, unrecorded } = await store.readRun(dead.runId);
+			expect(entries).toEqual([]);
+			// One still too large is not covered at all: whether it changed is unknown.
+			expect(unrecorded).toEqual([
+				{ path: path('small.txt'), by: 'build' },
+				{ path: path('shrunk.bin'), by: 'build' },
+			]);
+			await expect(store.goTo(historyStart)).resolves.toMatchObject({ complete: false });
+			expect(readFileSync(path('shrunk.bin'), 'utf8')).toBe('shrunk\n');
 		});
 
 		it('leaves alone a file the run recorded itself after its observation began', async () => {

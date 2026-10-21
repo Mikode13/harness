@@ -126,6 +126,7 @@ export async function undoNote({
 		if (!record) continue;
 		root = record.record.root;
 		for (const entry of record.entries) files.add(entry.path);
+		for (const change of record.unrecorded) files.add(change.path);
 	}
 	if (files.size > 0) {
 		lines.push(
