@@ -2375,7 +2375,7 @@ tags: #mikode-harness #llm #tools #cost
 - A check that passes after every change never stops a run, and one that fails the same way after every change asks on the fifth, as before but with a warning on the third.
 - A runner the list does not know keeps its times in the comparison: if it prints a different one each run, its output never repeats, and only the step limit stops a loop on it. The list grows with the runners we meet.
 - A line a known runner prints as metadata loses every time on it, such as a test's name that ends with a duration.
-- `runCommandProcess` hands every chunk to an `onOutput` callback, so the whole output is hashed as it arrives, in memory no larger than its longest line, cut at 64 KB.
+- `runCommandProcess` hands every chunk to an `onOutput` callback, so the whole output is hashed as it arrives, keeping no more than 64 KB of a line. A line longer than that is compared as printed, colors and times included, so it hashes the same however its chunks arrived.
 - A consumer without `ask` sees the run fail as before, now with the run kept in the conversation.
 - A question in the middle of a run waits for the user, as `askUser` already does.
 - `RunJournal` gains `appliedPaths` and `contentState`, and `PreparedCall` a `CommandEnding` and `unrecorded`; all are internal.

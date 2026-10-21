@@ -71,6 +71,35 @@ describe('OutputFingerprint', () => {
 		expect(run('a.ts failed', '1.2s')).not.toBe(run('b.ts failed', '1.2s'));
 	});
 
+	it('hashes a long colored or timed line the same, whole or in chunks', () => {
+		const lines = [
+			`\u001b[31m×\u001b[0m ${'y'.repeat(70_000)} 12ms\n`,
+			`   Duration  ${'z'.repeat(70_000)} 1.2s\r\n`,
+		];
+		for (const line of lines) {
+			const whole = fingerprint(['stdout', `a\n${line}b\n`]);
+			expect(
+				fingerprint(
+					['stdout', `a\n${line.slice(0, 66_000)}`],
+					['stdout', `${line.slice(66_000)}b\n`],
+				),
+			).toBe(whole);
+			expect(
+				fingerprint(
+					['stdout', `a\n${line.slice(0, 30_000)}`],
+					['stdout', line.slice(30_000, 69_000)],
+					['stdout', line.slice(69_000)],
+					['stdout', 'b\n'],
+				),
+			).toBe(whole);
+		}
+		// Without a final newline too.
+		const last = `${'w'.repeat(70_000)} 3s`;
+		expect(fingerprint(['stdout', last.slice(0, 66_000)], ['stdout', last.slice(66_000)])).toBe(
+			fingerprint(['stdout', last]),
+		);
+	});
+
 	it('hashes a line longer than it keeps in pieces, the same however it arrived', () => {
 		const long = 'y'.repeat(200_000);
 		expect(fingerprint(['stdout', long.slice(0, 70_000)], ['stdout', long.slice(70_000)])).toBe(

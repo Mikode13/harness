@@ -48,7 +48,8 @@ export function normalizedLine(line: string): string {
 	return rule ? plain.replace(rule.time, '<time>') : plain;
 }
 
-// A line longer than this is hashed in pieces, unchanged: no runner prints its time in one.
+// A line longer than this is hashed as printed, colors and all, whether it came whole or in
+// chunks: no runner prints its time in one, and what is kept of it stays bounded.
 const longestLine = 65_536;
 
 /** One stream's lines, hashed as they arrive. */
@@ -56,6 +57,8 @@ class StreamFingerprint {
 	private readonly decoder = new StringDecoder('utf8');
 	private readonly hash: Hash = createHash('sha256');
 	private partial = '';
+	// Part of the line being read was already hashed, as printed, since it ran past `longestLine`.
+	private long = false;
 
 	push(chunk: Buffer): void {
 		this.add(this.decoder.write(chunk));
@@ -63,7 +66,7 @@ class StreamFingerprint {
 
 	digest(): string {
 		this.add(this.decoder.end());
-		if (this.partial !== '') this.line(this.partial);
+		if (this.partial !== '' || this.long) this.line(this.partial);
 		return this.hash.digest('hex');
 	}
 
@@ -71,14 +74,21 @@ class StreamFingerprint {
 		const lines = (this.partial + text).split('\n');
 		this.partial = lines.pop() ?? '';
 		for (const line of lines) this.line(line);
-		while (this.partial.length > longestLine) {
-			this.hash.update(this.partial.slice(0, longestLine));
-			this.partial = this.partial.slice(longestLine);
+		if (this.partial.length > longestLine) {
+			this.hash.update(this.partial);
+			this.partial = '';
+			this.long = true;
 		}
 	}
 
+	// A long line is hashed as it came, `\r` included, so its pieces add up to the whole line.
 	private line(line: string): void {
-		this.hash.update(`${normalizedLine(line.replace(/\r$/, ''))}\n`);
+		this.hash.update(
+			this.long || line.length > longestLine
+				? `${line}\n`
+				: `${normalizedLine(line.replace(/\r$/, ''))}\n`,
+		);
+		this.long = false;
 	}
 }
 
