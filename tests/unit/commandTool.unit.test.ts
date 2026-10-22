@@ -462,6 +462,34 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		expect(read('big.bin')).toBe('small\n');
 	});
 
+	it('tells the model after an undo which files the history could not copy back', async () => {
+		write('big.bin', '');
+		truncateSync(join(root, 'big.bin'), 65 * 1024 * 1024);
+		const opened = await open();
+		const tool = await commandToolFor(opened, { shrink: shell('echo small > big.bin') });
+		const llmClient = new FakeLLMClient(
+			assistantResponse([toolCall('call-1', 'runCommand', { command: { name: 'shrink' } })]),
+			textResponse('shrunk'),
+			textResponse('again'),
+		);
+		const agent = new LLMAgent({
+			llmClient,
+			tools: [tool],
+			autoApprove: true,
+			history: opened.store,
+		});
+
+		await agent.run('shrink it', { signal });
+		await opened.store.undo();
+		await agent.run('what now', { signal });
+
+		const note = JSON.stringify(llmClient.contexts.at(-1)?.at(-1));
+		expect(note).toContain(
+			'Files left as they were, because the history cannot copy them (a folder, a link, or a file over 64 MB): big.bin',
+		);
+		expect(note).not.toContain('had changed since');
+	});
+
 	it('names a file too large to capture that the command deleted, and leaves it out of undo', async () => {
 		write('big.bin', '');
 		truncateSync(join(root, 'big.bin'), 65 * 1024 * 1024);
@@ -733,6 +761,30 @@ describe('runCommand', { timeout: 20_000 }, () => {
 
 		expect(JSON.stringify(llmClient.contexts.at(-1))).toContain('first prompt');
 		expect(JSON.stringify(llmClient.contexts.at(-1))).not.toContain('undone');
+	});
+
+	it('lists once a file a command not confirmed stopped made too large, after the run finishes', async () => {
+		const opened = await open();
+		const tool = await createCommandTool({
+			commands: { grow: shell('true') },
+			policy: opened.policy,
+			writes: opened.writes,
+			covered: opened.covered,
+			base: opened.base,
+			runProcess: async (...args) => {
+				truncateSync(join(root, 'src', 'a.ts'), 65 * 1024 * 1024);
+				const result = await runCommandProcess(...args);
+				return { ...result, outcome: 'timedOut', stopped: false };
+			},
+		});
+
+		const { error, context } = await call(tool, { command: { name: 'grow' } });
+
+		expect(error).toBeInstanceOf(EditUnconfirmedError);
+		// Recorded when the command ended, and not again when the run settled what it left open.
+		await expect(opened.store.readRun(context.historyRun.runId ?? '')).resolves.toMatchObject({
+			unrecorded: [{ path: join(root, 'src', 'a.ts'), by: 'grow' }],
+		});
 	});
 
 	it('says a program that cannot start did not run, and leaves no run in the history', async () => {

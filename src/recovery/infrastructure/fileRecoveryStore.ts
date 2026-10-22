@@ -398,7 +398,11 @@ export class FileRecoveryStore implements RecoveryStore {
 			throw new UnknownRunError(runId);
 		});
 		const { entries, unrecorded } = await this.readJournal(runId, record.journal);
-		return { record: withLiveStatus(record, holder), entries, unrecorded };
+		return {
+			record: withLiveStatus(record, holder),
+			entries,
+			unrecorded: unrecorded.map(({ path, by }) => ({ path, by })),
+		};
 	}
 
 	private async readRecord(runId: string): Promise<RunRecord> {
@@ -697,11 +701,11 @@ export class FileRecoveryStore implements RecoveryStore {
 			...(status === 'prepared' ? [] : [{ type: status, sequence } as const]),
 		]);
 		// What either run could not copy stays uncopied: undoing the chain cannot take it back.
-		for (const [index, change] of [
+		for (const [index, { path, by }] of [
 			...olderJournal.unrecorded,
 			...newerJournal.unrecorded,
 		].entries()) {
-			lines.push({ type: 'unrecorded', sequence: entries.length + index + 1, ...change });
+			lines.push({ type: 'unrecorded', sequence: entries.length + index + 1, path, by });
 		}
 		await writeDurably(
 			join(this.runDirectory(newer), journal),
@@ -884,7 +888,7 @@ export class FileRecoveryStore implements RecoveryStore {
 		}
 		let sequence = journal.lastSequence;
 		for (const observation of journal.observations) {
-			const observed = await this.settleObservation(observation, journal.entries, sequence);
+			const observed = await this.settleObservation(observation, journal, sequence);
 			sequence += observed.length;
 			lines.push(...observed);
 		}
@@ -913,7 +917,10 @@ export class FileRecoveryStore implements RecoveryStore {
 	 */
 	private async settleObservation(
 		observation: OpenObservation,
-		entries: JournalEntry[],
+		{
+			entries,
+			unrecorded: uncopied,
+		}: { entries: JournalEntry[]; unrecorded: { sequence: number; path: string }[] },
 		lastSequence: number,
 	): Promise<JournalLine[]> {
 		const stored = await this.readContent(observation.manifest).catch((error: unknown) => {
@@ -923,8 +930,12 @@ export class FileRecoveryStore implements RecoveryStore {
 		// Its manifest was never stored whole: the command it was saved for never started.
 		if (!stored) return [{ type: 'observed', sequence: observation.sequence }];
 		const manifest = JSON.parse(stored.toString('utf8')) as Manifest;
+		// What the run recorded itself after the observation began, its changes and those it could
+		// not copy, such as when a command could not be confirmed stopped.
 		const recorded = new Set(
-			entries.filter(entry => entry.sequence > observation.sequence).map(entry => entry.path),
+			[...entries, ...uncopied]
+				.filter(line => line.sequence > observation.sequence)
+				.map(line => line.path),
 		);
 		const lines: JournalLine[] = [];
 		let sequence = lastSequence;
@@ -1013,7 +1024,8 @@ export class FileRecoveryStore implements RecoveryStore {
 	): Promise<{
 		entries: JournalEntry[];
 		observations: OpenObservation[];
-		unrecorded: UnrecordedChange[];
+		/** With the sequence of its line, which `readRun` leaves out. */
+		unrecorded: (UnrecordedChange & { sequence: number })[];
 		lastSequence: number;
 	}> {
 		let text: string;
@@ -1030,7 +1042,7 @@ export class FileRecoveryStore implements RecoveryStore {
 
 		const entries = new Map<number, JournalEntry>();
 		const observations = new Map<number, OpenObservation>();
-		const unrecorded: UnrecordedChange[] = [];
+		const unrecorded: (UnrecordedChange & { sequence: number })[] = [];
 		let lastSequence = 0;
 		lines.forEach((text, index) => {
 			if (text === '') return;
@@ -1069,7 +1081,7 @@ export class FileRecoveryStore implements RecoveryStore {
 				return;
 			}
 			if (line.type === 'unrecorded') {
-				unrecorded.push({ path: line.path, by: line.by });
+				unrecorded.push({ sequence: line.sequence, path: line.path, by: line.by });
 				return;
 			}
 			const entry = entries.get(line.sequence);
