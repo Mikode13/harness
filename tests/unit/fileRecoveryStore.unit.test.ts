@@ -10,6 +10,7 @@ import {
 	rmSync,
 	statSync,
 	symlinkSync,
+	truncateSync,
 	writeFileSync,
 } from 'node:fs';
 import { open, type FileHandle } from 'node:fs/promises';
@@ -341,6 +342,22 @@ describe('FileRecoveryStore', () => {
 		await first.finish('completed');
 	});
 
+	it('names the history on disk alike under any spelling of its root and its state directory', async () => {
+		symlinkSync(root, join(parent, 'link'));
+		mkdirSync(directory);
+		symlinkSync(directory, join(parent, 'state-link'));
+		const other = join(parent, 'other');
+		mkdirSync(other);
+		const { workspaceId } = await FileRecoveryStore.open({ root, directory });
+
+		await expect(
+			FileRecoveryStore.open({ root: join(parent, 'link'), directory: join(parent, 'state-link') }),
+		).resolves.toMatchObject({ workspaceId });
+		await expect(FileRecoveryStore.open({ root: other, directory })).resolves.not.toMatchObject({
+			workspaceId,
+		});
+	});
+
 	describe('history of runs', () => {
 		const killed: RunJournal[] = [];
 
@@ -561,6 +578,46 @@ describe('FileRecoveryStore', () => {
 			expect(readFileSync(deleted.path, 'utf8')).toBe('gone\n');
 		});
 
+		it('names what an interrupted run was observing that the history could not copy', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const dead = await store.startRun();
+			const path = (name: string) => join(root, name);
+			writeFileSync(path('small.txt'), 'small\n');
+			chmodSync(path('small.txt'), 0o644);
+			const small = {
+				exists: true,
+				hash: await dead.saveContent(Buffer.from('small\n')),
+				mode: 0o644,
+			} as const;
+			// Sparse: over the size limit without writing 64 MB.
+			for (const name of ['shrunk.bin', 'kept.bin']) {
+				writeFileSync(path(name), '');
+				truncateSync(path(name), 65 * 1024 * 1024);
+			}
+			const manifest = {
+				files: { [path('small.txt')]: small },
+				uncopyable: [path('shrunk.bin'), path('kept.bin')],
+			};
+			await dead.observe(await dead.saveContent(Buffer.from(JSON.stringify(manifest))), 'build');
+			// The command ran, and the process died before comparing the files.
+			truncateSync(path('small.txt'), 65 * 1024 * 1024);
+			writeFileSync(path('shrunk.bin'), 'shrunk\n');
+			kill(dead);
+
+			const next = await store.startRun();
+			await next.finish('completed');
+
+			const { entries, unrecorded } = await store.readRun(dead.runId);
+			expect(entries).toEqual([]);
+			// One still too large is not covered at all: whether it changed is unknown.
+			expect(unrecorded).toEqual([
+				{ path: path('small.txt'), by: 'build' },
+				{ path: path('shrunk.bin'), by: 'build' },
+			]);
+			await expect(store.goTo(historyStart)).resolves.toMatchObject({ complete: false });
+			expect(readFileSync(path('shrunk.bin'), 'utf8')).toBe('shrunk\n');
+		});
+
 		it('leaves alone a file the run recorded itself after its observation began', async () => {
 			const store = await FileRecoveryStore.open({ root, directory });
 			const dead = await store.startRun();
@@ -604,6 +661,129 @@ describe('FileRecoveryStore', () => {
 
 			// It changed nothing it recorded, so it left the history.
 			await expect(store.listRuns()).resolves.toEqual({ runs: [] });
+		});
+
+		/** Starts observing `name` in `run`, as a command checkpoint does, with what it holds now. */
+		async function observe(run: RunJournal, name: string, content: string) {
+			const path = join(root, name);
+			writeFileSync(path, content);
+			chmodSync(path, 0o644);
+			const state = {
+				exists: true,
+				hash: await run.saveContent(Buffer.from(content)),
+				mode: 0o644,
+			} as const;
+			const manifest = await run.saveContent(
+				Buffer.from(JSON.stringify({ files: { [path]: state } })),
+			);
+			await run.observe(manifest, 'format');
+			return { path, state, manifest };
+		}
+
+		/** Where the store keeps the content stored under `hash`. */
+		function contentFile(hash: string): string {
+			return join(workspaceFolder(), 'content', hash.slice(0, 2), hash);
+		}
+
+		it('settles what a run was observing when it finished, and the next run if that fails', async () => {
+			const warn = vi.fn();
+			const store = await FileRecoveryStore.open({ root, directory, logger: { warn } });
+			const run = await store.startRun();
+			const { path, state, manifest } = await observe(run, 'a.txt', 'a ;\n');
+			// The command ran, and comparing the files after it failed.
+			writeFileSync(path, 'a;\n');
+			chmodSync(contentFile(manifest), 0o000);
+
+			await run.finish('failed');
+
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringContaining(`could not settle what run ${run.runId} was observing`),
+			);
+			await expect(store.readRun(run.runId)).resolves.toMatchObject({
+				record: { status: 'failed', unsettled: true },
+				entries: [],
+			});
+
+			chmodSync(contentFile(manifest), 0o600);
+			await (await store.startRun()).finish('completed');
+
+			const { record, entries } = await store.readRun(run.runId);
+			expect(record.status).toBe('failed');
+			expect(record).not.toHaveProperty('unsettled');
+			expect(entries).toMatchObject([
+				{ path, before: state, status: 'applied', observedBy: 'format' },
+			]);
+			await store.goTo(historyStart);
+			expect(readFileSync(path, 'utf8')).toBe('a ;\n');
+		});
+
+		it('leaves an observation open when the history cannot store what a file holds now', async () => {
+			const warn = vi.fn();
+			const store = await FileRecoveryStore.open({ root, directory, logger: { warn } });
+			const run = await store.startRun();
+			const { path, state } = await observe(run, 'a.txt', 'a ;\n');
+			writeFileSync(path, 'a;\n');
+			// The file reads, but no new content can be stored.
+			const content = join(workspaceFolder(), 'content');
+			const folders = [content, ...readdirSync(content).map(prefix => join(content, prefix))];
+			for (const folder of folders) chmodSync(folder, 0o500);
+
+			try {
+				await run.finish('failed');
+			} finally {
+				for (const folder of folders) chmodSync(folder, 0o700);
+			}
+
+			expect(warn).toHaveBeenCalledOnce();
+			expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not settle'));
+			await expect(store.readRun(run.runId)).resolves.toMatchObject({
+				record: { unsettled: true },
+				entries: [],
+				unrecorded: [],
+			});
+			await (await store.startRun()).finish('completed');
+			await expect(store.readRun(run.runId)).resolves.toMatchObject({
+				entries: [{ path, before: state, status: 'applied', observedBy: 'format' }],
+			});
+		});
+
+		it('settles a file it cannot read as a change undo cannot take back, and says so', async () => {
+			const warn = vi.fn();
+			const store = await FileRecoveryStore.open({ root, directory, logger: { warn } });
+			const run = await store.startRun();
+			const { path } = await observe(run, 'a.txt', 'a ;\n');
+			writeFileSync(path, 'a;\n');
+			chmodSync(path, 0o000);
+
+			await run.finish('failed');
+
+			expect(warn).toHaveBeenCalledWith(expect.stringContaining(`could not read ${path}`));
+			await expect(store.readRun(run.runId)).resolves.toMatchObject({
+				record: { status: 'failed' },
+				entries: [],
+				unrecorded: [{ path, by: 'format' }],
+			});
+			chmodSync(path, 0o644);
+			await expect(store.goTo(historyStart)).resolves.toMatchObject({ complete: false });
+			expect(readFileSync(path, 'utf8')).toBe('a;\n');
+		});
+
+		it('keeps what an open observation needs from cleanup, in a run finished before runs were marked unsettled', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const old = await store.startRun();
+			const { state, manifest } = await observe(old, 'a.txt', 'a ;\n');
+			kill(old);
+			// As an earlier version recorded it: finished, with nothing saying it is unsettled.
+			const recordFile = join(workspaceFolder(), 'runs', old.runId, 'run.json');
+			writeFileSync(
+				recordFile,
+				JSON.stringify({ ...JSON.parse(readFileSync(recordFile, 'utf8')), status: 'failed' }),
+			);
+
+			await (await store.startRun()).finish('completed');
+
+			expect(existsSync(contentFile(manifest))).toBe(true);
+			expect(existsSync(contentFile(state.hash))).toBe(true);
 		});
 
 		it('keeps a whole last line a crash left without its newline when it settles a run', async () => {

@@ -1603,6 +1603,10 @@ Without a `write` root they only read. `WorkspaceOptions` lists the roots, each 
 
 tags: #mikode-harness #tools #recovery
 
+partially superseded by: "Undo never takes back a change the history could not copy, and says so" (below) — a covered file over 64 MB that a command changed is no longer recorded as created, and a change to or from something the history cannot copy is recorded as `unrecorded`.
+
+partially superseded by: "A run that finished with an observation open is settled, and keeps how it ended" (below) — an observation left open when a run finishes is settled at once, or by the next run or move, not only one a dead run left.
+
 **Decision:** with `commands`, `createFileTools` and `createLLMOrchestrator` give the executor `runCommand`, which runs one of the commands the consumer configured.
 
 - **The consumer declares each command in code** (`Commands`): a fixed `executable`, its `args`, a `cwd` inside a `write` root, extra `env`, and optional limits. It runs without a shell, so no argument is read as shell syntax.
@@ -2435,3 +2439,83 @@ tags: #mikode-harness #tools #cost
 - An edit the formatter rewrites costs a read more before the next edit to that file: in the `openai` run of 2026-10-21, the formatter rewrote 22 of 138 writes, and 19 of 60 in the run that followed.
 - Its response returns more, up to 60 more lines; what does not fit is counted. A change shows the formatter's lines twice: among the lines around the change, and apart.
 - Claude's text editor gets the same response and the same read, since both formats run on the same edit engine.
+
+## Undo never takes back a change the history could not copy, and says so
+
+tags: #mikode-harness #recovery #tools
+
+**Decision:**
+
+- **"Absent" and "not captured" are different states.** A covered path the checkpoint could not copy before a command, such as a file over 64 MB, a folder or a link, is never taken as absent. The manifest names those paths as `uncopyable`.
+- **A change the history cannot copy is recorded as `unrecorded`,** a journal line with the path and the command it was seen around. That is a path it could copy only before the command, or only after: a file made too large, one too large replaced by a small one, or deleted. One it could copy neither before nor after is not covered, as before: whether it changed is unknown.
+- **A move over a run leaves such a path as it is,** undo and redo alike, and names it in `conflicts`, so the move is not `complete`. `conflicts` already meant a change that could not be undone or redone; it now also covers this one, and the public types do not change.
+- **It stays in the history.** A run whose only change is `unrecorded` is kept, retention carries the line into the run it chains into, and an observation a dead run left open is settled the same way from its manifest.
+- **It is named.** The command's result says that undo leaves those paths as they are, `showChanges` names each one with its command, `HistoryRun.files` lists them, and the note the model gets after an undo says the history could not copy them, not that they changed since.
+
+**Context:** #117, from the external audit of 2026-10-18 (A1). A covered file over 64 MB had no entry in the manifest, so after a command replaced it with a small file the change was recorded as a creation, and undo deleted the file while reporting a complete move. The same gap left a file the command made too large, or turned into a folder, out of the history: the model was told, but undo reported a complete move. On 2026-10-21 the user chose to record such changes and report the move as incomplete through `conflicts`, rather than only leaving them out of the history, or adding a field of its own to `Move`.
+
+**Alternatives considered:**
+
+- **Only leaving them out of the history.** No data lost and a smaller change, but undo would still report a complete move over a change it did not take back. Not chosen.
+- **A field of its own on `Move`,** such as `irreversible`. It would tell a file the user edited since from one the history could not copy, at the cost of a new field on a public type. Not chosen: both are files a move left as they were.
+- **Copying files of any size.** It would remove the case, but the store would hold a copy of every large covered file for every command. Not chosen.
+
+**Consequences:**
+
+- A command that creates a file over 64 MB is recorded as `unrecorded`, though undo could have deleted it: the history cannot redo it.
+- A large file a command rewrites while keeping it over 64 MB is still not covered, and undo never knows.
+- The journal on disk has a new line type. A journal written before it has none, and reads as before.
+
+## A run that finished with an observation open is settled, and keeps how it ended
+
+tags: #mikode-harness #recovery #tools
+
+**Decision:**
+
+- **How a run ended and whether its journal is settled are apart.** A run that finishes with an observation still open, such as a command whose files could not be compared after it ran, is recorded with its status and `unsettled` in its `run.json`.
+- **`finish` settles it at once,** under the run's own lock, from the observation's manifest, as the next run settles one a dead run left open. If that fails, the failure is logged, the mark stays, and the next run or move settles it first. Settling keeps the run's status and removes the mark. A run that settling at finish finds changed nothing leaves the history, and its turns are untied from it. One settled later is kept, with no changes: the turns of a conversation may name it, and a turn whose run is gone reads as undone.
+- **A file that cannot be read while settling is recorded as `unrecorded`,** with a warning, so undo leaves it and reports it, and a file nobody can read never stops every later run from starting. A failure to store what a file holds is not that: it leaves the observation open, and settling it is tried again.
+- **What an open observation needs is kept from cleanup:** its manifest and every content in it, until it is settled.
+- **Moves settle first,** as they already did for interrupted runs, so undo never reports a complete move over a journal that is not settled.
+
+**Context:** #118, from the external audit of 2026-10-18 (A2). When the comparison after a command failed, the run finished with its observation open. Only runs still `running` were settled, so what the command changed never reached the journal, and undo of that run reported `complete: true` with nothing to undo while the file kept the command's change. On 2026-10-21 the user chose to mark such a run and also settle it when it finishes.
+
+**Alternatives considered:**
+
+- **The mark alone,** settled by the next run or move. Cheap, since the store already reads every `run.json`. Not chosen: the run would wait for the next one even when the failure was passing.
+- **Reading the journals** for open observations, with no new field. Not chosen: every run start and every move would read every kept journal, a cost that grows with the history.
+
+**Consequences:**
+
+- When a command could not be confirmed stopped, its run is settled as it finishes, and what the command writes after that is not recorded. The mark alone would have waited for the next run, and recorded more.
+- A run that finished, was settled later and changed nothing stays in the history with no files, counts against retention, and an undo over it changes nothing.
+- `RunRecord` has an internal field, `unsettled`. A record written before it has none, and reads as before.
+- A run an earlier version finished with an observation open carries no mark, so it is never settled. What its observation needs is kept until retention removes the run.
+- `FileRecoveryStore.open` takes a `logger`, which the factories and `openWorkspace` pass on.
+
+## The file tools of one run share its write session, each under its own policy
+
+tags: #mikode-harness #tools #recovery
+
+**Decision:**
+
+- **One `WriteSession` per run and history on disk,** whichever set of file tools asks for it. Two sets built apart over one workspace, such as the tools of two stages of a workflow, record one run in one journal, under one lock.
+- **The history is named by its physical identity,** `RecoveryStore.workspaceId`, which the recovery layer takes from the real paths of the root and the state directory. Two calls to `createFileTools`, even through a link to the same folder, find the same session. A store object would not do: each opening returns another one.
+- **The registry lives in the tools' infrastructure,** a `WeakMap` from the run's `RunContext` to its sessions by `workspaceId`. A session is registered before anything is awaited, and registers its end once with `RunContext.onFinish`. `RunContext` keeps only the run's lifecycle, and knows nothing of `WriteSession` or of files.
+- **The journal is shared; permissions are not.** Each set of tools keeps its `FileEditor` with its own policy, so a stage that may write only `src/` still cannot write `config/`, whatever another stage may. Nor are the records of what each agent read: another agent having read a file does not mean this one has seen it.
+- **What the session holds is shared with it:** the journal and the lock, the limit of 500 changes, the stop on every write after one that could not be confirmed, and the run's id in the history.
+
+**Context:** #120, from the external audit of 2026-10-18 (A4). Each set of file tools opened its own `WorkspaceWrites`, which kept one session per run in a `WeakMap` of its own. In a workflow (#109), whose stages share one `RunContext`, the second stage with tools of its own opened another session for the same run and workspace, and the lock refused it: its file was never written. `createLLMOrchestrator` gives its roles one shared workspace, so it did not hit this. On 2026-10-22 the user designed the registry, the identity and the split between the shared journal and each set's permissions.
+
+**Alternatives considered:**
+
+- **The sessions on `RunContext`,** through a generic slot. Not chosen: `RunContext` would hold state that belongs to the tools.
+- **One store and one `WorkspaceWrites` per workspace for the whole process.** Not chosen: hidden global state that two independent consumers of one process would share without knowing, with the first one's logger.
+- **A lock the same run can take again,** with a `finish` that counts its holders. Not chosen: the recovery layer would learn what a run is, deciding the final status of a shared journal is delicate, and it needs a registry per process anyway.
+- **Only documenting** that the stages of one workflow must share their file tools. Not chosen: the trap would stay, and two stages could not have different permissions.
+
+**Consequences:**
+
+- Another run has another `RunContext`, so it gets another session, and is still refused while the workspace is busy.
+- Sharing a session does not make writes from two stages at once to the same files safe; that needs coordination of its own.
+- `RunContext.historyRun` holds one run id. A run that writes to two histories would have each session overwrite it; allowing that means tying the reference to each history.

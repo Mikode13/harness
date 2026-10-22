@@ -92,11 +92,12 @@ export async function stateDirectoryOf({ stateDirectory }: WorkspaceOptions): Pr
 export async function openStore(
 	workspace: WorkspaceOptions,
 	directory: string,
+	logger: ILogger,
 ): Promise<RecoveryStore> {
 	const [first] = workspace.roots;
 	if (!first) throw new InvalidAgentConfigError('A workspace needs at least one root');
 	try {
-		return await FileRecoveryStore.open({ root: resolve(first.path), directory });
+		return await FileRecoveryStore.open({ root: resolve(first.path), directory, logger });
 	} catch (error) {
 		throw new UnrecoverableError('The workspace history could not be opened', {
 			cause: describeFailure(error),
@@ -124,7 +125,7 @@ export async function openWorkspace(
 		// The history holds the source a run replaced: no tool may read or write it.
 		protectedPaths: [stateDirectory],
 	});
-	const store = await openStore(workspace, stateDirectory);
+	const store = await openStore(workspace, stateDirectory, logger);
 	// Real, as the policy's paths are, so a file's path can be judged by name.
 	const root = await realpath(resolve(roots[0]?.path ?? '.'));
 	const inner = await chooseWorkspace({

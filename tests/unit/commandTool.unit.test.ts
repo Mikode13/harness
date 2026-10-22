@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -424,9 +425,82 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		const { output = '' } = await call(tool as PreparingTool, { command: { name: 'swap' } });
 
 		expect(output).toContain(
-			'Not recorded, because the history cannot copy them (a folder, a link, or a file over 64 MB): src/b.ts.',
+			'Not recorded, because the history cannot copy them (a folder, a link, or a file over 64 MB) before or after: src/b.ts. Undo leaves them as they are.',
 		);
 		expect(output).not.toContain('big.bin');
+	});
+
+	it('never undoes a file too large to capture as one the command created', async () => {
+		// Sparse: over the size limit without writing 64 MB.
+		write('big.bin', '');
+		truncateSync(join(root, 'big.bin'), 65 * 1024 * 1024);
+		const opened = await open();
+		const tool = await commandToolFor(opened, { shrink: shell('echo small > big.bin') });
+
+		const { output = '', context } = await call(tool as PreparingTool, {
+			command: { name: 'shrink' },
+		});
+
+		expect(output).toContain('history cannot copy them (a folder, a link, or a file over 64 MB)');
+		expect(output).toContain('before or after: big.bin.');
+		// The run stays in the history, though it recorded no change it could take back.
+		const runId = context.historyRun.runId ?? '';
+		await expect(opened.store.readRun(runId)).resolves.toMatchObject({
+			entries: [],
+			unrecorded: [{ path: join(root, 'big.bin'), by: 'shrink' }],
+		});
+		await expect(showChanges(opened.store, runId)).resolves.toBe(
+			'# big.bin: changed while the command "shrink" ran, into or from something the history cannot copy (a folder, a link, or a file over 64 MB); undo leaves it as it is',
+		);
+
+		await expect(opened.store.undo()).resolves.toMatchObject({
+			complete: false,
+			conflicts: [{ path: join(root, 'big.bin'), runId }],
+		});
+		expect(read('big.bin')).toBe('small\n');
+		await expect(opened.store.redo()).resolves.toMatchObject({ complete: false });
+		expect(read('big.bin')).toBe('small\n');
+	});
+
+	it('tells the model after an undo which files the history could not copy back', async () => {
+		write('big.bin', '');
+		truncateSync(join(root, 'big.bin'), 65 * 1024 * 1024);
+		const opened = await open();
+		const tool = await commandToolFor(opened, { shrink: shell('echo small > big.bin') });
+		const llmClient = new FakeLLMClient(
+			assistantResponse([toolCall('call-1', 'runCommand', { command: { name: 'shrink' } })]),
+			textResponse('shrunk'),
+			textResponse('again'),
+		);
+		const agent = new LLMAgent({
+			llmClient,
+			tools: [tool],
+			autoApprove: true,
+			history: opened.store,
+		});
+
+		await agent.run('shrink it', { signal });
+		await opened.store.undo();
+		await agent.run('what now', { signal });
+
+		const note = JSON.stringify(llmClient.contexts.at(-1)?.at(-1));
+		expect(note).toContain(
+			'Files left as they were, because the history cannot copy them (a folder, a link, or a file over 64 MB): big.bin',
+		);
+		expect(note).not.toContain('had changed since');
+	});
+
+	it('names a file too large to capture that the command deleted, and leaves it out of undo', async () => {
+		write('big.bin', '');
+		truncateSync(join(root, 'big.bin'), 65 * 1024 * 1024);
+		const opened = await open();
+		const tool = await commandToolFor(opened, { clean: shell('rm big.bin') });
+
+		const { output = '' } = await call(tool as PreparingTool, { command: { name: 'clean' } });
+
+		expect(output).toContain('before or after: big.bin.');
+		await expect(opened.store.undo()).resolves.toMatchObject({ complete: false });
+		expect(read('big.bin')).toBeUndefined();
 	});
 
 	it('gives the command no provider key, only the few variables it inherits and its own', async () => {
@@ -589,6 +663,128 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			'The harness could not capture the files before "mark", so it did not run',
 		);
 		expect(read('marker')).toBeUndefined();
+	});
+
+	it('records what a command changed when listing the files after it fails, so undo takes it back', async () => {
+		const opened = await open();
+		let listings = 0;
+		const tool = await createCommandTool({
+			commands: { format: shell("sed -i.bak 's/ ;/;/' src/a.ts && rm src/a.ts.bak") },
+			policy: opened.policy,
+			writes: opened.writes,
+			// The capture before the command lists the files; the comparison after it cannot.
+			covered: async listSignal => {
+				if (listings++ > 0) throw new Error('listing failed');
+				return opened.covered(listSignal);
+			},
+			base: opened.base,
+		});
+
+		const { error, context } = await call(tool, { command: { name: 'format' } });
+
+		expect(error).toBeInstanceOf(EditUnconfirmedError);
+		expect(read('src/a.ts')).toBe('export const a = 1;\n');
+		const runId = context.historyRun.runId ?? '';
+		// The run keeps how it ended, and its journal holds what the command changed.
+		await expect(opened.store.readRun(runId)).resolves.toMatchObject({
+			record: { status: 'failed' },
+			entries: [{ path: join(root, 'src', 'a.ts'), status: 'applied', observedBy: 'format' }],
+		});
+		await (await opened.store.startRun()).finish('completed');
+
+		await expect(opened.store.undo()).resolves.toMatchObject({ complete: true, conflicts: [] });
+		expect(read('src/a.ts')).toBe('export const a = 1 ;\n');
+	});
+
+	it('leaves no run behind when a command whose comparison failed changed nothing', async () => {
+		const opened = await open();
+		let listings = 0;
+		const tool = await createCommandTool({
+			commands: { check: shell('true') },
+			policy: opened.policy,
+			writes: opened.writes,
+			covered: async listSignal => {
+				if (listings++ > 0) throw new Error('listing failed');
+				return opened.covered(listSignal);
+			},
+			base: opened.base,
+		});
+
+		const { error, context } = await call(tool, { command: { name: 'check' } });
+
+		expect(error).toBeInstanceOf(EditUnconfirmedError);
+		// Settling as the run finished found nothing changed, so the run is out of the history.
+		expect(context.historyRun.runId).toBeUndefined();
+		await expect(opened.store.listRuns()).resolves.toMatchObject({ runs: [] });
+	});
+
+	it('keeps a turn whose run another run settled later and found unchanged', async () => {
+		const opened = await open();
+		const content = (): string[] => {
+			const workspaces = join(parent, 'state', 'workspaces');
+			const folder = join(workspaces, readdirSync(workspaces)[0] ?? '', 'content');
+			return readdirSync(folder).flatMap(prefix =>
+				readdirSync(join(folder, prefix)).map(name => join(folder, prefix, name)),
+			);
+		};
+		let listings = 0;
+		const tool = await createCommandTool({
+			commands: { check: shell('true') },
+			policy: opened.policy,
+			writes: opened.writes,
+			// The comparison after the command fails, and so does settling it as the run finishes:
+			// its manifest cannot be read for a moment.
+			covered: async listSignal => {
+				if (listings++ === 0) return opened.covered(listSignal);
+				for (const file of content()) chmodSync(file, 0o000);
+				throw new Error('listing failed');
+			},
+			base: opened.base,
+		});
+		const llmClient = new FakeLLMClient(
+			assistantResponse([toolCall('call-1', 'runCommand', { command: { name: 'check' } })]),
+			textResponse('first answer'),
+			textResponse('second answer'),
+		);
+		const agent = new LLMAgent({
+			llmClient,
+			tools: [tool],
+			autoApprove: true,
+			history: opened.store,
+		});
+
+		await agent.run('first prompt', { signal });
+		for (const file of content()) chmodSync(file, 0o600);
+		// Another run settles it, and finds that the command changed nothing.
+		await (await opened.store.startRun()).finish('completed');
+		await agent.run('second prompt', { signal });
+
+		expect(JSON.stringify(llmClient.contexts.at(-1))).toContain('first prompt');
+		expect(JSON.stringify(llmClient.contexts.at(-1))).not.toContain('undone');
+	});
+
+	it('lists once a file a command not confirmed stopped made too large, after the run finishes', async () => {
+		const opened = await open();
+		const tool = await createCommandTool({
+			commands: { grow: shell('true') },
+			policy: opened.policy,
+			writes: opened.writes,
+			covered: opened.covered,
+			base: opened.base,
+			runProcess: async (...args) => {
+				truncateSync(join(root, 'src', 'a.ts'), 65 * 1024 * 1024);
+				const result = await runCommandProcess(...args);
+				return { ...result, outcome: 'timedOut', stopped: false };
+			},
+		});
+
+		const { error, context } = await call(tool, { command: { name: 'grow' } });
+
+		expect(error).toBeInstanceOf(EditUnconfirmedError);
+		// Recorded when the command ended, and not again when the run settled what it left open.
+		await expect(opened.store.readRun(context.historyRun.runId ?? '')).resolves.toMatchObject({
+			unrecorded: [{ path: join(root, 'src', 'a.ts'), by: 'grow' }],
+		});
 	});
 
 	it('says a program that cannot start did not run, and leaves no run in the history', async () => {

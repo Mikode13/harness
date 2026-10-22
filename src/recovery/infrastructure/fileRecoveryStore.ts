@@ -15,6 +15,13 @@ import {
 import type { FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
+import type { ILogger } from '#src/shared/domain/logger';
+import {
+	classifyHostFailure,
+	describeFailure,
+	treatErrors,
+} from '#src/shared/domain/providerFailure';
+import { Logger } from '#src/shared/infrastructure/logger';
 import { type FileChange, fileChanges, sameState } from '../domain/fileChanges.ts';
 import {
 	historyStart,
@@ -30,6 +37,7 @@ import {
 	type RunJournal,
 	type RunRecord,
 	type RunStatus,
+	type UnrecordedChange,
 	WorkspaceBusyError,
 	WorkspaceMovedError,
 } from '../domain/recoveryStore.ts';
@@ -184,7 +192,8 @@ type JournalLine =
 	| ({ type: 'prepared'; sequence: number } & Omit<JournalEntry, 'sequence' | 'status'>)
 	| { type: 'applied' | 'abandoned'; sequence: number }
 	| { type: 'observing'; sequence: number; manifest: string; by: string }
-	| { type: 'observed'; sequence: number; measure?: ObservationMeasure };
+	| { type: 'observed'; sequence: number; measure?: ObservationMeasure }
+	| ({ type: 'unrecorded'; sequence: number } & UnrecordedChange);
 
 /** An observation a run began and never finished: what its command changed is not recorded yet. */
 interface OpenObservation {
@@ -237,20 +246,31 @@ async function storeContent(
  * same instant could both believe they hold it.
  */
 export class FileRecoveryStore implements RecoveryStore {
+	readonly workspaceId: string;
 	private readonly root: string;
 	private readonly directory: string;
 	private readonly keepRuns: number;
+	private readonly logger: ILogger;
 
-	private constructor(root: string, directory: string, keepRuns: number) {
+	private constructor(
+		root: string,
+		directory: string,
+		keepRuns: number,
+		logger: ILogger,
+		workspaceId: string,
+	) {
 		this.root = root;
 		this.directory = directory;
 		this.keepRuns = keepRuns;
+		this.logger = logger;
+		this.workspaceId = workspaceId;
 	}
 
 	static async open({
 		root,
 		directory = defaultStateDirectory(),
 		keepRuns = defaultKeepRuns,
+		logger = new Logger(),
 	}: {
 		root: string;
 		/** Defaults to the platform's state directory. */
@@ -261,6 +281,8 @@ export class FileRecoveryStore implements RecoveryStore {
 		 * no next run to be chained into, so pruning can leave two runs besides the new one.
 		 */
 		keepRuns?: number;
+		/** Where it reports a failure it absorbs. Defaults to standard error. */
+		logger?: ILogger;
 	}): Promise<FileRecoveryStore> {
 		if (!Number.isInteger(keepRuns) || keepRuns < 3) {
 			throw new RangeError(`keepRuns must be an integer of at least 3; got ${String(keepRuns)}`);
@@ -276,7 +298,8 @@ export class FileRecoveryStore implements RecoveryStore {
 		await makeDirectory(join(workspace, 'content'));
 		await writeDurably(join(workspace, 'workspace.json'), JSON.stringify({ root: realRoot }));
 
-		return new FileRecoveryStore(realRoot, workspace, keepRuns);
+		// Real, so a state directory reached through a link is the history it holds.
+		return new FileRecoveryStore(realRoot, workspace, keepRuns, logger, await realpath(workspace));
 	}
 
 	async startRun(): Promise<RunJournal> {
@@ -315,6 +338,7 @@ export class FileRecoveryStore implements RecoveryStore {
 				contentDirectory: join(this.directory, 'content'),
 				journal,
 				discard: () => this.discardRun(record),
+				settle: finished => this.settleAtFinish(finished),
 				release: () => this.unlock(runId),
 			});
 		} catch (error) {
@@ -347,8 +371,8 @@ export class FileRecoveryStore implements RecoveryStore {
 		for (const run of runs) {
 			if (run.status !== 'interrupted') continue;
 			// A journal it cannot read leaves the run listed: whether it changed anything is unknown.
-			const entries = await this.readEntries(run.runId, run.journal).catch(() => undefined);
-			if (entries && changedNothing(entries)) gone.add(run.runId);
+			const journal = await this.readJournal(run.runId, run.journal).catch(() => undefined);
+			if (journal && changedNothing(journal)) gone.add(run.runId);
 		}
 		const parents = new Map(runs.map(run => [run.runId, run.parentRunId]));
 		let { runId: head } = await this.readHead();
@@ -357,7 +381,9 @@ export class FileRecoveryStore implements RecoveryStore {
 		return { ...(head ? { head } : {}), runs: runs.filter(run => !gone.has(run.runId)) };
 	}
 
-	async readRun(runId: string): Promise<{ record: RunRecord; entries: JournalEntry[] }> {
+	async readRun(
+		runId: string,
+	): Promise<{ record: RunRecord; entries: JournalEntry[]; unrecorded: UnrecordedChange[] }> {
 		// An id from outside is checked before it names a folder.
 		if (!runIdPattern.test(runId)) throw new UnknownRunError(runId);
 		// The lock first: a run that finishes between the two reads then shows as finished, not as
@@ -371,9 +397,11 @@ export class FileRecoveryStore implements RecoveryStore {
 			await this.assertNotAbsorbed(runId);
 			throw new UnknownRunError(runId);
 		});
+		const { entries, unrecorded } = await this.readJournal(runId, record.journal);
 		return {
 			record: withLiveStatus(record, holder),
-			entries: await this.readEntries(runId, record.journal),
+			entries,
+			unrecorded: unrecorded.map(({ path, by }) => ({ path, by })),
 		};
 	}
 
@@ -558,16 +586,15 @@ export class FileRecoveryStore implements RecoveryStore {
 		direction: 'undo' | 'redo',
 		announce: (temporary: string | undefined) => Promise<void>,
 	): Promise<MoveConflict[]> {
-		const { entries } = await this.readRun(runId);
+		const { entries, unrecorded } = await this.readRun(runId);
 		const changes = fileChanges(entries, true);
-		const conflicts: MoveConflict[] = [];
+		// What the history could not copy is left as it is, in either direction.
+		const conflicting = new Set(unrecorded.map(change => change.path));
 		// Undone newest first, so a folder the run created is empty by the time its file goes.
 		for (const change of direction === 'undo' ? changes.reverse() : changes) {
-			if (!(await this.moveFile(change, direction, announce))) {
-				conflicts.push({ path: change.path, runId });
-			}
+			if (!(await this.moveFile(change, direction, announce))) conflicting.add(change.path);
 		}
-		return conflicts;
+		return [...conflicting].map((path): MoveConflict => ({ path, runId }));
 	}
 
 	/**
@@ -665,15 +692,21 @@ export class FileRecoveryStore implements RecoveryStore {
 	private async chain(older: string, newer: string): Promise<void> {
 		const olderRecord = await this.readRecord(older);
 		const newerRecord = await this.readRecord(newer);
-		const entries = chainEntries(
-			await this.readEntries(older, olderRecord.journal),
-			await this.readEntries(newer, newerRecord.journal),
-		);
+		const olderJournal = await this.readJournal(older, olderRecord.journal);
+		const newerJournal = await this.readJournal(newer, newerRecord.journal);
+		const entries = chainEntries(olderJournal.entries, newerJournal.entries);
 		const journal = `journal-${randomBytes(4).toString('hex')}.jsonl`;
 		const lines = entries.flatMap(({ status, sequence, ...change }): JournalLine[] => [
 			{ type: 'prepared', sequence, ...change },
 			...(status === 'prepared' ? [] : [{ type: status, sequence } as const]),
 		]);
+		// What either run could not copy stays uncopied: undoing the chain cannot take it back.
+		for (const [index, { path, by }] of [
+			...olderJournal.unrecorded,
+			...newerJournal.unrecorded,
+		].entries()) {
+			lines.push({ type: 'unrecorded', sequence: entries.length + index + 1, path, by });
+		}
 		await writeDurably(
 			join(this.runDirectory(newer), journal),
 			lines.map(line => `${JSON.stringify(line)}\n`).join(''),
@@ -745,12 +778,29 @@ export class FileRecoveryStore implements RecoveryStore {
 		await rm(this.runDirectory(record.runId), { recursive: true, force: true });
 	}
 
-	/** Removes the stored contents no kept run refers to. */
+	/**
+	 * Removes the stored contents no kept run refers to. An observation still open refers to its
+	 * manifest and to every content in it, which settling it needs.
+	 */
 	private async collectContent(): Promise<void> {
 		const referenced = new Set<string>();
 		for (const run of (await this.listRuns()).runs) {
-			for (const entry of await this.readEntries(run.runId, run.journal)) {
+			const { entries, observations } = await this.readJournal(run.runId, run.journal);
+			for (const entry of entries) {
 				for (const state of [entry.before, entry.after]) {
+					if (state.exists) referenced.add(state.hash);
+				}
+			}
+			for (const observation of observations) {
+				referenced.add(observation.manifest);
+				const stored = await this.readContent(observation.manifest).catch((error: unknown) => {
+					// Never stored whole: settling it will find nothing to compare.
+					if (isNotFound(error)) return undefined;
+					throw error;
+				});
+				if (!stored) continue;
+				const manifest = JSON.parse(stored.toString('utf8')) as Manifest;
+				for (const state of Object.values(manifest.files)) {
 					if (state.exists) referenced.add(state.hash);
 				}
 			}
@@ -771,10 +821,9 @@ export class FileRecoveryStore implements RecoveryStore {
 	}
 
 	/**
-	 * Marks every other run still recorded as `running` as `interrupted`: this run holds the lock,
-	 * so their processes are gone. Each change one left `prepared` is settled from what its file
-	 * holds now: its `after` means it was made, its `before` that it was not. A file that holds
-	 * neither stays `prepared`, because nothing tells whether the change reached it.
+	 * Settles every other run left unfinished: one still recorded as `running` is `interrupted`,
+	 * since this run holds the lock and its process is gone, and one that finished `unsettled`
+	 * keeps its status.
 	 */
 	private async settleInterrupted(ownRunId: string): Promise<void> {
 		const ids = (await readdir(join(this.directory, 'runs'))).filter(
@@ -785,47 +834,93 @@ export class FileRecoveryStore implements RecoveryStore {
 				if (isNotFound(error)) return undefined;
 				throw error;
 			});
-			if (record?.status !== 'running') continue;
-
-			const journal = await this.readJournal(runId, record.journal);
-			const settled: JournalLine[] = [];
-			for (const entry of journal.entries) {
-				if (entry.status !== 'prepared' || !isAbsolute(entry.path)) continue;
-				const state = await currentState(entry.path);
-				if (state && sameState(state, entry.after)) {
-					settled.push({ type: 'applied', sequence: entry.sequence });
-				} else if (state && sameState(state, entry.before)) {
-					settled.push({ type: 'abandoned', sequence: entry.sequence });
-				}
-			}
-			let sequence = journal.lastSequence;
-			for (const observation of journal.observations) {
-				const lines = await this.settleObservation(observation, journal.entries, sequence);
-				sequence += lines.length;
-				settled.push(...lines);
-			}
-			await appendWhole(join(this.runDirectory(runId), record.journal ?? firstJournal), settled);
-			if (changedNothing(await this.readEntries(runId, record.journal))) {
-				await this.discardRun(record);
-				continue;
-			}
-			// Last, so a crash before it leaves a run that is settled again, and settling is idempotent.
-			await writeDurably(
-				join(this.runDirectory(runId), 'run.json'),
-				JSON.stringify({ ...record, status: 'interrupted' } satisfies RunRecord),
-			);
+			if (record?.status === 'running' || record?.unsettled) await this.settleRun(record);
 		}
+	}
+
+	/**
+	 * Settles a run that finished with an observation open, under its own lock, before it releases
+	 * the workspace. If that fails, its record stays `unsettled`, and the next run or move settles
+	 * it, so the failure is reported and not thrown.
+	 */
+	private async settleAtFinish(record: RunRecord): Promise<boolean> {
+		try {
+			return await this.settleRun(record, { finishing: true });
+		} catch (error) {
+			treatErrors(
+				() => {
+					this.logger.warn(
+						`The history could not settle what run ${record.runId} was observing when it finished; the next run or move settles it: ${describeFailure(error)}`,
+					);
+				},
+				classifyHostFailure,
+				'Recovery store logger failed while reporting an unsettled run',
+			);
+			return true;
+		}
+	}
+
+	/**
+	 * Settles what a run left unfinished. Each change it left `prepared` is settled from what its
+	 * file holds now: its `after` means it was made, its `before` that it was not. A file that holds
+	 * neither stays `prepared`, because nothing tells whether the change reached it. Each
+	 * observation it left open is settled from its manifest. A run still `running` becomes
+	 * `interrupted`; any other keeps its status. Whether the run is still in the history: one that
+	 * changed nothing leaves it if it was still `running`, or if it is `finishing`, which unties
+	 * its turns from it. One that finished is kept otherwise, since the turns of a conversation may
+	 * name it.
+	 */
+	private async settleRun(
+		record: RunRecord,
+		{ finishing = false }: { finishing?: boolean } = {},
+	): Promise<boolean> {
+		const { runId } = record;
+		const journal = await this.readJournal(runId, record.journal);
+		const lines: JournalLine[] = [];
+		for (const entry of journal.entries) {
+			if (entry.status !== 'prepared' || !isAbsolute(entry.path)) continue;
+			const state = await currentState(entry.path);
+			if (state && sameState(state, entry.after)) {
+				lines.push({ type: 'applied', sequence: entry.sequence });
+			} else if (state && sameState(state, entry.before)) {
+				lines.push({ type: 'abandoned', sequence: entry.sequence });
+			}
+		}
+		let sequence = journal.lastSequence;
+		for (const observation of journal.observations) {
+			const observed = await this.settleObservation(observation, journal, sequence);
+			sequence += observed.length;
+			lines.push(...observed);
+		}
+		await appendWhole(join(this.runDirectory(runId), record.journal ?? firstJournal), lines);
+		const leaves = finishing || record.status === 'running';
+		if (leaves && changedNothing(await this.readJournal(runId, record.journal))) {
+			await this.discardRun(record);
+			return false;
+		}
+		const settled: RunRecord = {
+			...record,
+			status: record.status === 'running' ? 'interrupted' : record.status,
+		};
+		delete settled.unsettled;
+		// Last, so a crash before it leaves a run that is settled again, and settling is idempotent.
+		await writeDurably(join(this.runDirectory(runId), 'run.json'), JSON.stringify(settled));
+		return true;
 	}
 
 	/**
 	 * The lines that record what a command an interrupted run was observing changed: every file of
 	 * its manifest that holds something else now, as changed by that command, and then the end of
 	 * the observation. A file recorded after the observation began is left alone: the run
-	 * recorded it itself. One that is now a folder, a link or too large to record is left out.
+	 * recorded it itself. One that is now a folder, a link or too large to record, or that was one
+	 * and is no longer, or that cannot be read, is recorded as a change the history could not copy.
 	 */
 	private async settleObservation(
 		observation: OpenObservation,
-		entries: JournalEntry[],
+		{
+			entries,
+			unrecorded: uncopied,
+		}: { entries: JournalEntry[]; unrecorded: { sequence: number; path: string }[] },
 		lastSequence: number,
 	): Promise<JournalLine[]> {
 		const stored = await this.readContent(observation.manifest).catch((error: unknown) => {
@@ -835,33 +930,80 @@ export class FileRecoveryStore implements RecoveryStore {
 		// Its manifest was never stored whole: the command it was saved for never started.
 		if (!stored) return [{ type: 'observed', sequence: observation.sequence }];
 		const manifest = JSON.parse(stored.toString('utf8')) as Manifest;
+		// What the run recorded itself after the observation began, its changes and those it could
+		// not copy, such as when a command could not be confirmed stopped.
 		const recorded = new Set(
-			entries.filter(entry => entry.sequence > observation.sequence).map(entry => entry.path),
+			[...entries, ...uncopied]
+				.filter(line => line.sequence > observation.sequence)
+				.map(line => line.path),
 		);
 		const lines: JournalLine[] = [];
 		let sequence = lastSequence;
+		const unrecorded = (path: string): JournalLine => ({
+			type: 'unrecorded',
+			sequence: ++sequence,
+			path,
+			by: observation.by,
+		});
 		for (const [path, before] of Object.entries(manifest.files)) {
 			if (!isAbsolute(path) || recorded.has(path)) continue;
 			const after = await this.saveState(path);
-			if (!after || sameState(after, before)) continue;
+			if (after === undefined || after === 'unreadable') {
+				lines.push(unrecorded(path));
+				continue;
+			}
+			if (sameState(after, before)) continue;
 			sequence++;
 			lines.push(
 				{ type: 'prepared', sequence, path, before, after, observedBy: observation.by },
 				{ type: 'applied', sequence },
 			);
 		}
+		// What it held before is unknown, so only a path that is no longer uncopyable has changed.
+		for (const path of manifest.uncopyable ?? []) {
+			if (!isAbsolute(path) || recorded.has(path)) continue;
+			const now = await currentState(path).catch((error: unknown) => {
+				this.warnUnreadable(path, error);
+				return 'unreadable' as const;
+			});
+			if (now !== undefined) lines.push(unrecorded(path));
+		}
 		lines.push({ type: 'observed', sequence: observation.sequence });
 		return lines;
 	}
 
-	/** What `path` holds now, with its content stored, or `undefined` for what no entry records. */
-	private async saveState(path: string): Promise<FileState | undefined> {
-		const state = await currentState(path);
-		if (!state?.exists) return state;
-		const content = await readFile(path).catch((error: unknown) => {
-			if (isNotFound(error)) return undefined;
-			throw error;
-		});
+	private warnUnreadable(path: string, error: unknown): void {
+		treatErrors(
+			() => {
+				this.logger.warn(
+					`The history could not read ${path} to settle what a command changed, and records it as a change undo cannot take back: ${describeFailure(error)}`,
+				);
+			},
+			classifyHostFailure,
+			'Recovery store logger failed while reporting an unreadable file',
+		);
+	}
+
+	/**
+	 * What `path` holds now, with its content stored, or `undefined` for what no entry records.
+	 * A file it cannot read is `unreadable`, and reported: it cannot be undone either, and settling
+	 * never waits on it, or every later run would fail to start. A failure to store its content is
+	 * thrown, so the observation stays open and settling it is tried again.
+	 */
+	private async saveState(path: string): Promise<FileState | undefined | 'unreadable'> {
+		let state: FileState | undefined;
+		let content: Buffer | undefined;
+		try {
+			state = await currentState(path);
+			if (!state?.exists) return state;
+			content = await readFile(path).catch((error: unknown) => {
+				if (isNotFound(error)) return undefined;
+				throw error;
+			});
+		} catch (error) {
+			this.warnUnreadable(path, error);
+			return 'unreadable';
+		}
 		if (!content) return { exists: false };
 		const { hash } = await storeContent(join(this.directory, 'content'), content);
 		// Read again: the file may have changed between hashing it and storing it.
@@ -879,19 +1021,28 @@ export class FileRecoveryStore implements RecoveryStore {
 	private async readJournal(
 		runId: string,
 		journal = firstJournal,
-	): Promise<{ entries: JournalEntry[]; observations: OpenObservation[]; lastSequence: number }> {
+	): Promise<{
+		entries: JournalEntry[];
+		observations: OpenObservation[];
+		/** With the sequence of its line, which `readRun` leaves out. */
+		unrecorded: (UnrecordedChange & { sequence: number })[];
+		lastSequence: number;
+	}> {
 		let text: string;
 		try {
 			text = await readFile(join(this.runDirectory(runId), journal), 'utf8');
 		} catch (error) {
 			// A run that stopped before opening its journal never changed anything.
-			if (isNotFound(error)) return { entries: [], observations: [], lastSequence: 0 };
+			if (isNotFound(error)) {
+				return { entries: [], observations: [], unrecorded: [], lastSequence: 0 };
+			}
 			throw error;
 		}
 		const lines = text.split('\n');
 
 		const entries = new Map<number, JournalEntry>();
 		const observations = new Map<number, OpenObservation>();
+		const unrecorded: (UnrecordedChange & { sequence: number })[] = [];
 		let lastSequence = 0;
 		lines.forEach((text, index) => {
 			if (text === '') return;
@@ -929,6 +1080,10 @@ export class FileRecoveryStore implements RecoveryStore {
 				observations.delete(line.sequence);
 				return;
 			}
+			if (line.type === 'unrecorded') {
+				unrecorded.push({ sequence: line.sequence, path: line.path, by: line.by });
+				return;
+			}
 			const entry = entries.get(line.sequence);
 			if (entry) entry.status = line.type;
 		});
@@ -936,6 +1091,7 @@ export class FileRecoveryStore implements RecoveryStore {
 		return {
 			entries: [...entries.values()],
 			observations: [...observations.values()],
+			unrecorded,
 			lastSequence,
 		};
 	}
@@ -984,9 +1140,18 @@ export class FileRecoveryStore implements RecoveryStore {
 	}
 }
 
-/** No change it recorded may have reached a file: it recorded none, or abandoned each one. */
-function changedNothing(entries: JournalEntry[]): boolean {
-	return entries.every(entry => entry.status === 'abandoned');
+/**
+ * No change it recorded may have reached a file: it recorded none, or abandoned each one, and
+ * none it could not copy.
+ */
+function changedNothing({
+	entries,
+	unrecorded,
+}: {
+	entries: JournalEntry[];
+	unrecorded: UnrecordedChange[];
+}): boolean {
+	return unrecorded.length === 0 && entries.every(entry => entry.status === 'abandoned');
 }
 
 /**
@@ -1074,6 +1239,7 @@ class FileRunJournal implements RunJournal {
 	private readonly contentDirectory: string;
 	private readonly journal: FileHandle;
 	private readonly discard: () => Promise<void>;
+	private readonly settle: (record: RunRecord) => Promise<boolean>;
 	private readonly release: () => Promise<void>;
 	private sequence = 0;
 	private stored = 0;
@@ -1087,6 +1253,12 @@ class FileRunJournal implements RunJournal {
 	// The changes recorded as prepared and not abandoned: those that may have reached a file. One
 	// whose `prepared` line failed is not here, since nothing writes a file before that line.
 	private readonly effects = new Set<number>();
+	// The observations begun and not yet observed: what they saw is not all recorded.
+	private readonly observing = new Set<number>();
+	// A change it could not copy reached a file, and stays in the history.
+	private lost = false;
+	// Settling what it left open as it finished found that it changed nothing.
+	private settledEmpty = false;
 	// Appends run one after another, so the lines never interleave.
 	private pending: Promise<unknown> = Promise.resolve();
 	private finished = false;
@@ -1100,6 +1272,7 @@ class FileRunJournal implements RunJournal {
 		contentDirectory,
 		journal,
 		discard,
+		settle,
 		release,
 	}: {
 		record: RunRecord;
@@ -1107,6 +1280,11 @@ class FileRunJournal implements RunJournal {
 		contentDirectory: string;
 		journal: FileHandle;
 		discard: () => Promise<void>;
+		/**
+		 * Settles the run's open observations, once its record names it `unsettled`, and tells
+		 * whether the run is still in the history.
+		 */
+		settle: (record: RunRecord) => Promise<boolean>;
 		release: () => Promise<void>;
 	}) {
 		this.runId = record.runId;
@@ -1115,6 +1293,7 @@ class FileRunJournal implements RunJournal {
 		this.contentDirectory = contentDirectory;
 		this.journal = journal;
 		this.discard = discard;
+		this.settle = settle;
 		this.release = release;
 	}
 
@@ -1159,6 +1338,7 @@ class FileRunJournal implements RunJournal {
 		await this.append({ type: 'observing', sequence, manifest, by });
 		// Until it is observed, whatever ran may have changed a file.
 		this.effects.add(sequence);
+		this.observing.add(sequence);
 		return sequence;
 	}
 
@@ -1167,6 +1347,13 @@ class FileRunJournal implements RunJournal {
 		await this.append({ type: 'observed', sequence, ...(measure ? { measure } : {}) });
 		// Its changes, if any, are entries of their own now.
 		this.effects.delete(sequence);
+		this.observing.delete(sequence);
+	}
+
+	async unrecorded(path: string, by: string): Promise<void> {
+		this.assertOpen();
+		await this.append({ type: 'unrecorded', sequence: ++this.sequence, path, by });
+		this.lost = true;
 	}
 
 	get storedBytes(): number {
@@ -1195,7 +1382,7 @@ class FileRunJournal implements RunJournal {
 	}
 
 	get changed(): boolean {
-		return this.effects.size > 0;
+		return !this.settledEmpty && (this.lost || this.effects.size > 0);
 	}
 
 	async finish(status: Exclude<RunStatus, 'running' | 'interrupted'>): Promise<void> {
@@ -1209,8 +1396,16 @@ class FileRunJournal implements RunJournal {
 				await this.discard();
 				return;
 			}
-			const record: RunRecord = { ...this.record, status, finishedAt: new Date().toISOString() };
+			const unsettled = this.observing.size > 0;
+			const record: RunRecord = {
+				...this.record,
+				status,
+				finishedAt: new Date().toISOString(),
+				...(unsettled ? { unsettled } : {}),
+			};
 			await writeDurably(join(this.runDirectory, 'run.json'), JSON.stringify(record));
+			// Recorded first as unsettled, so a failure or a crash here leaves it to the next run.
+			if (unsettled) this.settledEmpty = !(await this.settle(record));
 		} finally {
 			await this.release();
 		}

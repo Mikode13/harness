@@ -28,18 +28,28 @@ export async function showChanges(
 	runId: string,
 	{ maxLines = 1000, visible }: ShowChangesOptions = {},
 ): Promise<string> {
-	const { record, entries } = await store.readRun(runId);
+	const { record, entries, unrecorded } = await store.readRun(runId);
 	const all = changedFiles(record, entries);
 	const changes: FileChange[] = [];
 	for (const change of all) if (!visible || (await visible(change.path))) changes.push(change);
+	const uncopied: typeof unrecorded = [];
+	for (const change of unrecorded) {
+		if (!visible || (await visible(change.path))) uncopied.push(change);
+	}
 	const output: string[] = [];
-	const hidden = all.length - changes.length;
+	const hidden = all.length + unrecorded.length - changes.length - uncopied.length;
 	if (hidden > 0) {
 		output.push(
 			`# ${String(hidden)} changed ${hidden === 1 ? 'file is' : 'files are'} not shown: you may not read ${hidden === 1 ? 'it' : 'them'}`,
 		);
 	}
 
+	// Named first: no diff can show them, and they must not be cut away with the diffs.
+	for (const { path, by } of uncopied) {
+		output.push(
+			`# ${displayPath(record.root, path)}: changed while the command "${by}" ran, into or from something the history cannot copy (a folder, a link, or a file over 64 MB); undo leaves it as it is`,
+		);
+	}
 	for (const [index, change] of changes.entries()) {
 		const name = displayPath(record.root, change.path);
 		const lines = await renderFile(store, name, change);

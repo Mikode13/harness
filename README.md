@@ -642,7 +642,9 @@ writing is still listed, with that status. A run that changed nothing is not kep
 
 A move writes a file only if it still holds what the history expects. A file you
 changed since is left as it is and named in the move's `conflicts`, and the move is
-then not `complete`. The reason is kept with the move.
+then not `complete`. So is a file a command changed into, or from, something the history
+cannot copy, such as a file over 64 MB: what it held on the other side is unknown. The
+reason is kept with the move.
 
 A move can be tied to where the workspace is. Pass `from`, a run or `historyStart`, and
 the move happens only if the workspace is still there; otherwise it fails with

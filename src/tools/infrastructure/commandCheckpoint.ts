@@ -101,7 +101,10 @@ export class CommandCheckpoint {
 			const state = states[index];
 			if (state) files[path] = state;
 		});
-		const manifest: Manifest = { files };
+		const manifest: Manifest = {
+			files,
+			...(uncopyable.size > 0 ? { uncopyable: [...uncopyable] } : {}),
+		};
 		const hash = await journal.saveContent(Buffer.from(JSON.stringify(manifest)));
 		signal.throwIfAborted();
 		const sequence = await journal.observe(hash, by);
@@ -121,8 +124,9 @@ export class CommandCheckpoint {
 	 * cancelled: once the command has run, what it changed must reach the history. Unless
 	 * `complete`, the observation stays open, because the command may still be changing files.
 	 *
-	 * @returns the changes, and the paths it could not record because they are now something the
-	 * history cannot copy, such as a file the command replaced with a folder, or made too large.
+	 * @returns the changes, and the paths it could not record because they are now, or were before,
+	 * something the history cannot copy, such as a file the command replaced with a folder, or one
+	 * too large that it replaced with a small one. The journal names them, so undo leaves them.
 	 */
 	async end({ complete }: { complete: boolean }): Promise<{
 		changes: ObservedChange[];
@@ -130,20 +134,29 @@ export class CommandCheckpoint {
 	}> {
 		const started = performance.now();
 		const signal = new AbortController().signal;
-		const paths = new Set([...Object.keys(this.manifest.files), ...(await this.covered(signal))]);
+		const paths = new Set([
+			...Object.keys(this.manifest.files),
+			...this.uncopyable,
+			...(await this.covered(signal)),
+		]);
 		const changes: ObservedChange[] = [];
 		const unrecorded: string[] = [];
 		let bytesRead = this.measure.bytesRead;
 
 		for (const path of paths) {
-			const before: FileState = this.manifest.files[path] ?? { exists: false };
 			const read = await readState(path);
-			if (!read) {
-				// One it could not copy before either, such as a file over the size limit, is not
-				// covered at all; one it could is now something no entry records.
-				if (!this.uncopyable.has(path)) unrecorded.push(path);
+			// One it could not copy before or after, such as a file over the size limit, is not
+			// covered at all. One it could copy only before, or only after, changed in a way the
+			// history cannot take back: what it held on the other side is unknown.
+			const copiedBefore = !this.uncopyable.has(path);
+			if (!read || !copiedBefore) {
+				if (read || copiedBefore) {
+					await this.journal.unrecorded(path, this.by);
+					unrecorded.push(path);
+				}
 				continue;
 			}
+			const before: FileState = this.manifest.files[path] ?? { exists: false };
 			let after: FileState = { exists: false };
 			if (read.content) {
 				bytesRead += read.content.length;

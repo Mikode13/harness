@@ -84,7 +84,7 @@ export async function followHistory(
 /**
  * What the model is told when the workspace was moved back past some of its turns: that they
  * were undone and no longer show, what they asked, or a summary of what they tried, the files
- * those runs had changed, the files a move left as they were, and the user's reasons.
+ * those runs had changed, the files a move left as they were and why, and the user's reasons.
  */
 export async function undoNote({
 	conversation,
@@ -115,6 +115,8 @@ export async function undoNote({
 
 	let root: string | undefined;
 	const files = new Set<string>();
+	// What a move leaves for this reason too, though nobody changed it since.
+	const uncopied = new Set<string>();
 	const runs = new Set(
 		conversation
 			.describeTurns()
@@ -126,6 +128,10 @@ export async function undoNote({
 		if (!record) continue;
 		root = record.record.root;
 		for (const entry of record.entries) files.add(entry.path);
+		for (const change of record.unrecorded) {
+			files.add(change.path);
+			uncopied.add(change.path);
+		}
 	}
 	if (files.size > 0) {
 		lines.push(
@@ -139,10 +145,18 @@ export async function undoNote({
 			followed.revisions.flatMap(revision => revision.conflicts.map(conflict => conflict.path)),
 		),
 	];
-	if (conflicts.length > 0) {
+	const changedSince = conflicts.filter(path => !uncopied.has(path));
+	const notCopied = conflicts.filter(path => uncopied.has(path));
+	if (changedSince.length > 0) {
 		lines.push(
 			'',
-			`Files left as they were, because they had changed since: ${conflicts.map(path => relativeTo(root, path)).join(', ')}`,
+			`Files left as they were, because they had changed since: ${changedSince.map(path => relativeTo(root, path)).join(', ')}`,
+		);
+	}
+	if (notCopied.length > 0) {
+		lines.push(
+			'',
+			`Files left as they were, because the history cannot copy them (a folder, a link, or a file over 64 MB): ${notCopied.map(path => relativeTo(root, path)).join(', ')}`,
 		);
 	}
 	const reasons = followed.revisions.flatMap(revision =>

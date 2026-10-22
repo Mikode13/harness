@@ -32,6 +32,23 @@ export interface JournalEntry {
  */
 export interface Manifest {
 	files: Record<string, FileState>;
+	/**
+	 * Covered paths it could not copy, such as a folder, a link or a file too large: what they
+	 * held is unknown, so a change to one can be named but not undone.
+	 */
+	uncopyable?: string[];
+}
+
+/**
+ * A path a command changed into, or from, something the history cannot copy, such as a file
+ * over the size limit: what it held before or after is unknown. Undo and redo leave it as it is,
+ * and report it as a conflict.
+ */
+export interface UnrecordedChange {
+	/** The real path, absolute. */
+	path: string;
+	/** The command it was seen around. */
+	by: string;
 }
 
 /** What one observation cost: before and after together. */
@@ -70,6 +87,12 @@ export interface RunRecord {
 	startedAt: string;
 	finishedAt?: string;
 	status: RunStatus;
+	/**
+	 * It finished with an observation still open, such as a command whose changes could not be
+	 * compared after it ran: its journal may not hold all it changed yet. The next run or move
+	 * settles it, as for an interrupted run, and keeps its status.
+	 */
+	unsettled?: true;
 	/** The process that ran it, so a run whose process died can be told from a live one. */
 	pid: number;
 }
@@ -103,6 +126,11 @@ export interface RunJournal {
 	 * files cost, is kept with it.
 	 */
 	observed(sequence: number, measure?: ObservationMeasure): Promise<void>;
+	/**
+	 * Records that `by` changed `path` into, or from, something the history cannot copy. A move
+	 * over the run leaves it as it is, and is not complete.
+	 */
+	unrecorded(path: string, by: string): Promise<void>;
 	/** How many bytes of content this run stored that the store did not hold yet. */
 	readonly storedBytes: number;
 	/** The path of every change it recorded as applied, in order: each one reached a file. */
@@ -114,14 +142,18 @@ export interface RunJournal {
 	 */
 	contentState(): string;
 	/**
-	 * Whether a change it recorded may have reached a file: one prepared and not abandoned. It
-	 * holds whatever happens to the record afterwards.
+	 * Whether a change it recorded may have reached a file: one prepared and not abandoned, or one
+	 * it could not copy. It holds whatever happens to the record afterwards, except once `finish`
+	 * settled an observation the run left open and found that the run changed nothing: the run
+	 * left the history, so it is `false`.
 	 */
 	readonly changed: boolean;
 	/**
 	 * Ends the run and releases the workspace for the next writer. A run that `changed` nothing
 	 * leaves the history, and the workspace is back at the run before it. If removing it fails,
-	 * the store still treats it as gone, and the next run or move finishes removing it.
+	 * the store still treats it as gone, and the next run or move finishes removing it. A run that
+	 * ends with an observation open is settled from its manifest now, or by the next run or move
+	 * if that fails.
 	 */
 	finish(status: Exclude<RunStatus, 'running' | 'interrupted'>): Promise<void>;
 }
@@ -129,7 +161,10 @@ export interface RunJournal {
 /** The point before any run: going there takes the workspace back to how it was. */
 export const historyStart = 'start';
 
-/** A file a move left as it was, because it did not hold what the history expected there. */
+/**
+ * A file a move left as it was: it did not hold what the history expected there, or a command
+ * changed it into, or from, something the history cannot copy.
+ */
 export interface MoveConflict {
 	path: string;
 	/** The run whose change could not be undone or redone. */
@@ -179,6 +214,12 @@ export class NothingToMoveError extends Error {
  */
 export interface RecoveryStore {
 	/**
+	 * The history on disk this store keeps, from the real paths of its root and its state
+	 * directory: two stores opened over one history, under any spelling of those paths, have the
+	 * same one.
+	 */
+	readonly workspaceId: string;
+	/**
 	 * Starts recording a run and holds the workspace for it until `finish`. The new run's parent
 	 * is the run the workspace is at, and the workspace is at the new run from then on. Runs a
 	 * dead process left `running` are settled first.
@@ -221,12 +262,15 @@ export interface RecoveryStore {
 	/** Every move of the workspace, oldest first. */
 	listRevisions(): Promise<Revision[]>;
 	/**
-	 * A run's record and its changes, in the order they were prepared.
+	 * A run's record, its changes, in the order they were prepared, and the changes it could not
+	 * copy.
 	 *
 	 * @throws {UnknownRunError} when `runId` was never a run of this workspace.
 	 * @throws {HistoryExpiredError} when retention removed `runId` or chained it into a later run.
 	 */
-	readRun(runId: string): Promise<{ record: RunRecord; entries: JournalEntry[] }>;
+	readRun(
+		runId: string,
+	): Promise<{ record: RunRecord; entries: JournalEntry[]; unrecorded: UnrecordedChange[] }>;
 	/** The bytes a hash names. */
 	readContent(hash: string): Promise<Buffer>;
 }

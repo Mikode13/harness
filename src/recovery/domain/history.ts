@@ -33,8 +33,9 @@ export interface Move {
 	/** Every file reached the state the history expected. Otherwise `conflicts` names those left. */
 	complete: boolean;
 	/**
-	 * The files left as they were because they did not hold what the history expected, such as
-	 * one the user edited since, and the run whose change could not be undone or redone.
+	 * The files left as they were, and the run whose change could not be undone or redone: one
+	 * that did not hold what the history expected, such as one the user edited since, or one a
+	 * command changed into, or from, something the history cannot copy, such as a file over 64 MB.
 	 */
 	conflicts: { path: string; runId: string }[];
 }
@@ -110,7 +111,11 @@ export class StoreHistory implements History {
 				throw error;
 			});
 			if (!read) continue;
-			const { record, entries } = read;
+			const { record, entries, unrecorded } = read;
+			const files = [
+				...changedFiles(record, entries).map(change => change.path),
+				...unrecorded.map(change => change.path),
+			];
 			listed.push({
 				runId: record.runId,
 				...(record.parentRunId ? { parentRunId: record.parentRunId } : {}),
@@ -118,7 +123,7 @@ export class StoreHistory implements History {
 				status: record.status,
 				startedAt: record.startedAt,
 				...(record.finishedAt ? { finishedAt: record.finishedAt } : {}),
-				files: changedFiles(record, entries).map(change => displayPath(record.root, change.path)),
+				files: [...new Set(files)].map(path => displayPath(record.root, path)),
 			});
 		}
 		return { ...(head ? { head } : {}), runs: listed };
