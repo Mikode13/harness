@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -634,6 +635,104 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			'The harness could not capture the files before "mark", so it did not run',
 		);
 		expect(read('marker')).toBeUndefined();
+	});
+
+	it('records what a command changed when listing the files after it fails, so undo takes it back', async () => {
+		const opened = await open();
+		let listings = 0;
+		const tool = await createCommandTool({
+			commands: { format: shell("sed -i.bak 's/ ;/;/' src/a.ts && rm src/a.ts.bak") },
+			policy: opened.policy,
+			writes: opened.writes,
+			// The capture before the command lists the files; the comparison after it cannot.
+			covered: async listSignal => {
+				if (listings++ > 0) throw new Error('listing failed');
+				return opened.covered(listSignal);
+			},
+			base: opened.base,
+		});
+
+		const { error, context } = await call(tool, { command: { name: 'format' } });
+
+		expect(error).toBeInstanceOf(EditUnconfirmedError);
+		expect(read('src/a.ts')).toBe('export const a = 1;\n');
+		const runId = context.historyRun.runId ?? '';
+		// The run keeps how it ended, and its journal holds what the command changed.
+		await expect(opened.store.readRun(runId)).resolves.toMatchObject({
+			record: { status: 'failed' },
+			entries: [{ path: join(root, 'src', 'a.ts'), status: 'applied', observedBy: 'format' }],
+		});
+		await (await opened.store.startRun()).finish('completed');
+
+		await expect(opened.store.undo()).resolves.toMatchObject({ complete: true, conflicts: [] });
+		expect(read('src/a.ts')).toBe('export const a = 1 ;\n');
+	});
+
+	it('leaves no run behind when a command whose comparison failed changed nothing', async () => {
+		const opened = await open();
+		let listings = 0;
+		const tool = await createCommandTool({
+			commands: { check: shell('true') },
+			policy: opened.policy,
+			writes: opened.writes,
+			covered: async listSignal => {
+				if (listings++ > 0) throw new Error('listing failed');
+				return opened.covered(listSignal);
+			},
+			base: opened.base,
+		});
+
+		const { error, context } = await call(tool, { command: { name: 'check' } });
+
+		expect(error).toBeInstanceOf(EditUnconfirmedError);
+		// Settling as the run finished found nothing changed, so the run is out of the history.
+		expect(context.historyRun.runId).toBeUndefined();
+		await expect(opened.store.listRuns()).resolves.toMatchObject({ runs: [] });
+	});
+
+	it('keeps a turn whose run another run settled later and found unchanged', async () => {
+		const opened = await open();
+		const content = (): string[] => {
+			const workspaces = join(parent, 'state', 'workspaces');
+			const folder = join(workspaces, readdirSync(workspaces)[0] ?? '', 'content');
+			return readdirSync(folder).flatMap(prefix =>
+				readdirSync(join(folder, prefix)).map(name => join(folder, prefix, name)),
+			);
+		};
+		let listings = 0;
+		const tool = await createCommandTool({
+			commands: { check: shell('true') },
+			policy: opened.policy,
+			writes: opened.writes,
+			// The comparison after the command fails, and so does settling it as the run finishes:
+			// its manifest cannot be read for a moment.
+			covered: async listSignal => {
+				if (listings++ === 0) return opened.covered(listSignal);
+				for (const file of content()) chmodSync(file, 0o000);
+				throw new Error('listing failed');
+			},
+			base: opened.base,
+		});
+		const llmClient = new FakeLLMClient(
+			assistantResponse([toolCall('call-1', 'runCommand', { command: { name: 'check' } })]),
+			textResponse('first answer'),
+			textResponse('second answer'),
+		);
+		const agent = new LLMAgent({
+			llmClient,
+			tools: [tool],
+			autoApprove: true,
+			history: opened.store,
+		});
+
+		await agent.run('first prompt', { signal });
+		for (const file of content()) chmodSync(file, 0o600);
+		// Another run settles it, and finds that the command changed nothing.
+		await (await opened.store.startRun()).finish('completed');
+		await agent.run('second prompt', { signal });
+
+		expect(JSON.stringify(llmClient.contexts.at(-1))).toContain('first prompt');
+		expect(JSON.stringify(llmClient.contexts.at(-1))).not.toContain('undone');
 	});
 
 	it('says a program that cannot start did not run, and leaves no run in the history', async () => {
