@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -687,6 +688,51 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		// Settling as the run finished found nothing changed, so the run is out of the history.
 		expect(context.historyRun.runId).toBeUndefined();
 		await expect(opened.store.listRuns()).resolves.toMatchObject({ runs: [] });
+	});
+
+	it('keeps a turn whose run another run settled later and found unchanged', async () => {
+		const opened = await open();
+		const content = (): string[] => {
+			const workspaces = join(parent, 'state', 'workspaces');
+			const folder = join(workspaces, readdirSync(workspaces)[0] ?? '', 'content');
+			return readdirSync(folder).flatMap(prefix =>
+				readdirSync(join(folder, prefix)).map(name => join(folder, prefix, name)),
+			);
+		};
+		let listings = 0;
+		const tool = await createCommandTool({
+			commands: { check: shell('true') },
+			policy: opened.policy,
+			writes: opened.writes,
+			// The comparison after the command fails, and so does settling it as the run finishes:
+			// its manifest cannot be read for a moment.
+			covered: async listSignal => {
+				if (listings++ === 0) return opened.covered(listSignal);
+				for (const file of content()) chmodSync(file, 0o000);
+				throw new Error('listing failed');
+			},
+			base: opened.base,
+		});
+		const llmClient = new FakeLLMClient(
+			assistantResponse([toolCall('call-1', 'runCommand', { command: { name: 'check' } })]),
+			textResponse('first answer'),
+			textResponse('second answer'),
+		);
+		const agent = new LLMAgent({
+			llmClient,
+			tools: [tool],
+			autoApprove: true,
+			history: opened.store,
+		});
+
+		await agent.run('first prompt', { signal });
+		for (const file of content()) chmodSync(file, 0o600);
+		// Another run settles it, and finds that the command changed nothing.
+		await (await opened.store.startRun()).finish('completed');
+		await agent.run('second prompt', { signal });
+
+		expect(JSON.stringify(llmClient.contexts.at(-1))).toContain('first prompt');
+		expect(JSON.stringify(llmClient.contexts.at(-1))).not.toContain('undone');
 	});
 
 	it('says a program that cannot start did not run, and leaves no run in the history', async () => {

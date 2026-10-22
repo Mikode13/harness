@@ -832,7 +832,7 @@ export class FileRecoveryStore implements RecoveryStore {
 	 */
 	private async settleAtFinish(record: RunRecord): Promise<boolean> {
 		try {
-			return await this.settleRun(record);
+			return await this.settleRun(record, { finishing: true });
 		} catch (error) {
 			treatErrors(
 				() => {
@@ -853,9 +853,14 @@ export class FileRecoveryStore implements RecoveryStore {
 	 * neither stays `prepared`, because nothing tells whether the change reached it. Each
 	 * observation it left open is settled from its manifest. A run still `running` becomes
 	 * `interrupted`; any other keeps its status. Whether the run is still in the history: one that
-	 * changed nothing leaves it.
+	 * changed nothing leaves it if it was still `running`, or if it is `finishing`, which unties
+	 * its turns from it. One that finished is kept otherwise, since the turns of a conversation may
+	 * name it.
 	 */
-	private async settleRun(record: RunRecord): Promise<boolean> {
+	private async settleRun(
+		record: RunRecord,
+		{ finishing = false }: { finishing?: boolean } = {},
+	): Promise<boolean> {
 		const { runId } = record;
 		const journal = await this.readJournal(runId, record.journal);
 		const lines: JournalLine[] = [];
@@ -875,7 +880,8 @@ export class FileRecoveryStore implements RecoveryStore {
 			lines.push(...observed);
 		}
 		await appendWhole(join(this.runDirectory(runId), record.journal ?? firstJournal), lines);
-		if (changedNothing(await this.readJournal(runId, record.journal))) {
+		const leaves = finishing || record.status === 'running';
+		if (leaves && changedNothing(await this.readJournal(runId, record.journal))) {
 			await this.discardRun(record);
 			return false;
 		}
