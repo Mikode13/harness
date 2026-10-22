@@ -419,6 +419,54 @@ describe('agentAsTool', () => {
 		expect(stoppedSignal?.aborted).toBe(true);
 	});
 
+	it("leaves the run's usage unknown when it stopped a delegation that had spent", async () => {
+		let holding!: () => void;
+		const held = new Promise<void>(resolve => {
+			holding = resolve;
+		});
+		const hold: Tool = {
+			name: 'hold',
+			description: 'Holds until stopped',
+			inputSchema: { type: 'object', properties: {}, required: [] },
+			risk: () => 'safe',
+			execute: (_, holdSignal) => {
+				holding();
+				return new Promise((_resolve, reject) => {
+					holdSignal.addEventListener('abort', () => {
+						reject(holdSignal.reason as Error);
+					});
+				});
+			},
+		};
+		// One agent has spent a step and holds; the other's approver then fails, ending the run.
+		const waits = new LLMAgent({
+			llmClient: new FakeLLMClient(assistantResponse([toolCall('h1', 'hold', {})])),
+			tools: [hold],
+		});
+		const fails = new LLMAgent({
+			llmClient: new FakeLLMClient(assistantResponse([toolCall('w1', 'wipe', {})])),
+			tools: [destructiveTool()],
+		});
+		const tool = delegation({
+			createAgent: () => ({
+				run: (task, options) => (task === 'waits' ? waits : fails).run(task, options),
+			}),
+		});
+		const { agent } = delegatingParent(tool, 'waits', 'fails');
+		const approve = async () => {
+			await held;
+			throw new Error('the terminal closed');
+		};
+
+		const failure = await agent.run('work', { signal, approve }).catch((error: unknown) => error);
+
+		expect(failure).toMatchObject({
+			message: 'The tool call approver failed',
+			usageUnreported: true,
+			tokens: undefined,
+		});
+	});
+
 	it('ends as cancelled when the run is cancelled while an agent works', async () => {
 		const controller = new AbortController();
 		const tool = delegation({

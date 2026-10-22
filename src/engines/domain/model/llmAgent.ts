@@ -756,7 +756,15 @@ export class LLMAgent implements Agent {
 		);
 		// The others were stopped for it: what ended the run is the first failure, or the user.
 		options.signal.throwIfAborted();
-		if (ended.failure) throw ended.failure.error;
+		if (ended.failure) {
+			const { error } = ended.failure;
+			// A call stopped on its way may have spent on the model, and a stop carries no tokens:
+			// the run's total is unknown, not short.
+			const stopped = settled.some(
+				outcome => outcome.status === 'rejected' && outcome.reason !== error,
+			);
+			throw stopped ? withSpentTokens(error, undefined, true) : error;
+		}
 		return settled.flatMap(outcome => (outcome.status === 'fulfilled' ? [outcome.value] : []));
 	}
 

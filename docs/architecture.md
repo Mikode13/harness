@@ -295,7 +295,8 @@ progress callback or logger, an invalid transition or an unknown stage is an `Un
 **A model-backed turn.** `LLMAgent.run` sends the stored context, the new prompt and the
 definitions of its tools to its `LLMClient`, inside `classifyProviderFailure`; the client
 never receives a tool's `execute`. When the answer calls tools, the agent runs them one at a
-time, in order, and calls the model again with the calls and a `tool` message holding their
+time, in order, except calls of `parallel` tools next to each other, such as delegations, which
+run together; then it calls the model again with the calls and a `tool` message holding their
 results. The run ends when an answer calls no tool. After `maxSteps` calls to the model, 65 by
 default (80 for the orchestrator's executor), it fails with `UnrecoverableError` instead, without running the last step's calls,
 because no call is left to send their results to. `CommandLoops` keeps
