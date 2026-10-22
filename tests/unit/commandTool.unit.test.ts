@@ -667,6 +667,28 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		expect(read('src/a.ts')).toBe('export const a = 1 ;\n');
 	});
 
+	it('leaves no run behind when a command whose comparison failed changed nothing', async () => {
+		const opened = await open();
+		let listings = 0;
+		const tool = await createCommandTool({
+			commands: { check: shell('true') },
+			policy: opened.policy,
+			writes: opened.writes,
+			covered: async listSignal => {
+				if (listings++ > 0) throw new Error('listing failed');
+				return opened.covered(listSignal);
+			},
+			base: opened.base,
+		});
+
+		const { error, context } = await call(tool, { command: { name: 'check' } });
+
+		expect(error).toBeInstanceOf(EditUnconfirmedError);
+		// Settling as the run finished found nothing changed, so the run is out of the history.
+		expect(context.historyRun.runId).toBeUndefined();
+		await expect(opened.store.listRuns()).resolves.toMatchObject({ runs: [] });
+	});
+
 	it('says a program that cannot start did not run, and leaves no run in the history', async () => {
 		const opened = await open();
 		const tool = await commandToolFor(opened, {

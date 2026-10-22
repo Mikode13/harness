@@ -830,9 +830,9 @@ export class FileRecoveryStore implements RecoveryStore {
 	 * the workspace. If that fails, its record stays `unsettled`, and the next run or move settles
 	 * it, so the failure is reported and not thrown.
 	 */
-	private async settleAtFinish(record: RunRecord): Promise<void> {
+	private async settleAtFinish(record: RunRecord): Promise<boolean> {
 		try {
-			await this.settleRun(record);
+			return await this.settleRun(record);
 		} catch (error) {
 			treatErrors(
 				() => {
@@ -843,6 +843,7 @@ export class FileRecoveryStore implements RecoveryStore {
 				classifyHostFailure,
 				'Recovery store logger failed while reporting an unsettled run',
 			);
+			return true;
 		}
 	}
 
@@ -851,9 +852,10 @@ export class FileRecoveryStore implements RecoveryStore {
 	 * file holds now: its `after` means it was made, its `before` that it was not. A file that holds
 	 * neither stays `prepared`, because nothing tells whether the change reached it. Each
 	 * observation it left open is settled from its manifest. A run still `running` becomes
-	 * `interrupted`; any other keeps its status.
+	 * `interrupted`; any other keeps its status. Whether the run is still in the history: one that
+	 * changed nothing leaves it.
 	 */
-	private async settleRun(record: RunRecord): Promise<void> {
+	private async settleRun(record: RunRecord): Promise<boolean> {
 		const { runId } = record;
 		const journal = await this.readJournal(runId, record.journal);
 		const lines: JournalLine[] = [];
@@ -875,7 +877,7 @@ export class FileRecoveryStore implements RecoveryStore {
 		await appendWhole(join(this.runDirectory(runId), record.journal ?? firstJournal), lines);
 		if (changedNothing(await this.readJournal(runId, record.journal))) {
 			await this.discardRun(record);
-			return;
+			return false;
 		}
 		const settled: RunRecord = {
 			...record,
@@ -884,6 +886,7 @@ export class FileRecoveryStore implements RecoveryStore {
 		delete settled.unsettled;
 		// Last, so a crash before it leaves a run that is settled again, and settling is idempotent.
 		await writeDurably(join(this.runDirectory(runId), 'run.json'), JSON.stringify(settled));
+		return true;
 	}
 
 	/**
@@ -918,13 +921,8 @@ export class FileRecoveryStore implements RecoveryStore {
 		});
 		for (const [path, before] of Object.entries(manifest.files)) {
 			if (!isAbsolute(path) || recorded.has(path)) continue;
-			// One it cannot read cannot be undone either: settling never waits on it, or every later
-			// run would fail to start.
-			const after = await this.saveState(path).catch((error: unknown) => {
-				this.warnUnreadable(path, error);
-				return undefined;
-			});
-			if (!after) {
+			const after = await this.saveState(path);
+			if (after === undefined || after === 'unreadable') {
 				lines.push(unrecorded(path));
 				continue;
 			}
@@ -960,14 +958,26 @@ export class FileRecoveryStore implements RecoveryStore {
 		);
 	}
 
-	/** What `path` holds now, with its content stored, or `undefined` for what no entry records. */
-	private async saveState(path: string): Promise<FileState | undefined> {
-		const state = await currentState(path);
-		if (!state?.exists) return state;
-		const content = await readFile(path).catch((error: unknown) => {
-			if (isNotFound(error)) return undefined;
-			throw error;
-		});
+	/**
+	 * What `path` holds now, with its content stored, or `undefined` for what no entry records.
+	 * A file it cannot read is `unreadable`, and reported: it cannot be undone either, and settling
+	 * never waits on it, or every later run would fail to start. A failure to store its content is
+	 * thrown, so the observation stays open and settling it is tried again.
+	 */
+	private async saveState(path: string): Promise<FileState | undefined | 'unreadable'> {
+		let state: FileState | undefined;
+		let content: Buffer | undefined;
+		try {
+			state = await currentState(path);
+			if (!state?.exists) return state;
+			content = await readFile(path).catch((error: unknown) => {
+				if (isNotFound(error)) return undefined;
+				throw error;
+			});
+		} catch (error) {
+			this.warnUnreadable(path, error);
+			return 'unreadable';
+		}
 		if (!content) return { exists: false };
 		const { hash } = await storeContent(join(this.directory, 'content'), content);
 		// Read again: the file may have changed between hashing it and storing it.
@@ -1202,7 +1212,7 @@ class FileRunJournal implements RunJournal {
 	private readonly contentDirectory: string;
 	private readonly journal: FileHandle;
 	private readonly discard: () => Promise<void>;
-	private readonly settle: (record: RunRecord) => Promise<void>;
+	private readonly settle: (record: RunRecord) => Promise<boolean>;
 	private readonly release: () => Promise<void>;
 	private sequence = 0;
 	private stored = 0;
@@ -1220,6 +1230,8 @@ class FileRunJournal implements RunJournal {
 	private readonly observing = new Set<number>();
 	// A change it could not copy reached a file, and stays in the history.
 	private lost = false;
+	// Settling what it left open as it finished found that it changed nothing.
+	private settledEmpty = false;
 	// Appends run one after another, so the lines never interleave.
 	private pending: Promise<unknown> = Promise.resolve();
 	private finished = false;
@@ -1241,8 +1253,11 @@ class FileRunJournal implements RunJournal {
 		contentDirectory: string;
 		journal: FileHandle;
 		discard: () => Promise<void>;
-		/** Settles the run's open observations, once its record names it `unsettled`. */
-		settle: (record: RunRecord) => Promise<void>;
+		/**
+		 * Settles the run's open observations, once its record names it `unsettled`, and tells
+		 * whether the run is still in the history.
+		 */
+		settle: (record: RunRecord) => Promise<boolean>;
 		release: () => Promise<void>;
 	}) {
 		this.runId = record.runId;
@@ -1340,7 +1355,7 @@ class FileRunJournal implements RunJournal {
 	}
 
 	get changed(): boolean {
-		return this.lost || this.effects.size > 0;
+		return !this.settledEmpty && (this.lost || this.effects.size > 0);
 	}
 
 	async finish(status: Exclude<RunStatus, 'running' | 'interrupted'>): Promise<void> {
@@ -1363,7 +1378,7 @@ class FileRunJournal implements RunJournal {
 			};
 			await writeDurably(join(this.runDirectory, 'run.json'), JSON.stringify(record));
 			// Recorded first as unsettled, so a failure or a crash here leaves it to the next run.
-			if (unsettled) await this.settle(record);
+			if (unsettled) this.settledEmpty = !(await this.settle(record));
 		} finally {
 			await this.release();
 		}

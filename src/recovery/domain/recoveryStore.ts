@@ -143,7 +143,9 @@ export interface RunJournal {
 	contentState(): string;
 	/**
 	 * Whether a change it recorded may have reached a file: one prepared and not abandoned, or one
-	 * it could not copy. It holds whatever happens to the record afterwards.
+	 * it could not copy. It holds whatever happens to the record afterwards, except once `finish`
+	 * settled an observation the run left open and found that the run changed nothing: the run
+	 * left the history, so it is `false`.
 	 */
 	readonly changed: boolean;
 	/**

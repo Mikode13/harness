@@ -701,6 +701,36 @@ describe('FileRecoveryStore', () => {
 			expect(readFileSync(path, 'utf8')).toBe('a ;\n');
 		});
 
+		it('leaves an observation open when the history cannot store what a file holds now', async () => {
+			const warn = vi.fn();
+			const store = await FileRecoveryStore.open({ root, directory, logger: { warn } });
+			const run = await store.startRun();
+			const { path, state } = await observe(run, 'a.txt', 'a ;\n');
+			writeFileSync(path, 'a;\n');
+			// The file reads, but no new content can be stored.
+			const content = join(workspaceFolder(), 'content');
+			const folders = [content, ...readdirSync(content).map(prefix => join(content, prefix))];
+			for (const folder of folders) chmodSync(folder, 0o500);
+
+			try {
+				await run.finish('failed');
+			} finally {
+				for (const folder of folders) chmodSync(folder, 0o700);
+			}
+
+			expect(warn).toHaveBeenCalledOnce();
+			expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not settle'));
+			await expect(store.readRun(run.runId)).resolves.toMatchObject({
+				record: { unsettled: true },
+				entries: [],
+				unrecorded: [],
+			});
+			await (await store.startRun()).finish('completed');
+			await expect(store.readRun(run.runId)).resolves.toMatchObject({
+				entries: [{ path, before: state, status: 'applied', observedBy: 'format' }],
+			});
+		});
+
 		it('settles a file it cannot read as a change undo cannot take back, and says so', async () => {
 			const warn = vi.fn();
 			const store = await FileRecoveryStore.open({ root, directory, logger: { warn } });
