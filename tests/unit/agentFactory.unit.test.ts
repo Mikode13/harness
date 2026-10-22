@@ -1322,6 +1322,7 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 				callId: 'call',
 				onProgress: () => undefined,
 				spend: () => undefined,
+				depth: 0,
 			},
 		);
 		await prepared.run(signal);
@@ -1378,6 +1379,7 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 								callId: path,
 								onProgress: () => undefined,
 								spend: () => undefined,
+								depth: 0,
 							},
 						);
 						results.push(await prepared.run(signal));

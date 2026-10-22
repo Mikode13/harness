@@ -133,14 +133,18 @@ export type ProgressEvent =
 			agent?: ProgressAgent;
 	  }
 	/**
-	 * An event of a subagent that a tool call started, such as one of the explorers an `explore`
-	 * call runs at once. `callId` is the `id` of that call's `tool` events, and `subagent`
-	 * numbers its subagents from 1, so the events of agents running in parallel stay apart.
+	 * An event of a subagent that a tool call started: one of the explorers an `explore` call runs
+	 * at once, or the agent a tool from `agentAsTool` delegates to. `callId` is the `id` of that
+	 * call's `tool` events, and `subagent` numbers its subagents from 1, so the events of agents
+	 * running in parallel stay apart. A subagent's own subagents arrive as `subagent` events
+	 * inside this one's `event`.
 	 */
 	| {
 			type: 'subagent';
 			callId: string;
 			subagent: number;
+			/** Which agent it is: `explorer`, or the name of the tool that delegates to it. */
+			name: string;
 			/** What the subagent was asked. */
 			task: string;
 			event: ProgressEvent;

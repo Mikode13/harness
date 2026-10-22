@@ -60,12 +60,31 @@ export class ToolExecutionError extends Error {
 }
 
 /**
+ * A failure inside a call that ends the run instead of the call, such as an approver that failed
+ * while an agent the call started was asking it: host code failed, and the model must not carry
+ * on as if a tool had. Internal.
+ */
+export class RunEndingToolError extends Error {
+	readonly failure: unknown;
+
+	constructor(failure: unknown) {
+		super('A failure inside a tool call ends the run');
+		this.failure = failure;
+	}
+}
+
+/**
  * A tool built by the harness, such as a write tool, which prepares each call against the
  * state of the run before it is approved. Internal: consumers build a `Tool`.
  */
 export interface PreparingTool extends ToolDefinition {
 	/** Describes the model's input without exposing preparation details to the provider. */
 	summarize?: ToolSummarizer;
+	/**
+	 * Its calls run at the same time as the other calls of their step whose tool is `parallel`,
+	 * such as agents a parent delegates to. Every other call runs alone, in order.
+	 */
+	readonly parallel?: true;
 	/** Rejects with a message for the model when the call cannot run. */
 	prepare(input: unknown, signal: AbortSignal, call: ToolCallContext): Promise<PreparedCall>;
 }

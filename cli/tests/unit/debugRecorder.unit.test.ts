@@ -40,11 +40,17 @@ describe('DebugRecorder', () => {
 		});
 		recorder.transcript({ agent: 'explorer', outcome: 'completed', content: { messages: [] } });
 		recorder.transcript({ agent: 'planner', outcome: 'failed', content: { error: 'limit' } });
+		recorder.transcript({
+			delegation: { tool: 'commit', callId: 'c2', subagent: 1 },
+			outcome: 'completed',
+			content: {},
+		});
 
 		expect(recorder.folder).toBe(join(parent, '2026-10-20T10-00-00.000Z'));
 		expect(readdirSync(recorder.folder).sort()).toEqual([
 			'001-explorer-completed.json',
 			'002-planner-failed.json',
+			'003-commit-completed.json',
 			'events.jsonl',
 		]);
 		const events = readFileSync(join(recorder.folder, 'events.jsonl'), 'utf8').trim().split('\n');

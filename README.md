@@ -43,7 +43,9 @@ chat loop itself never knows the difference.
   harness ships tools that read the repository (list, search, read), bounded by
   `.gitignore`, and `createFileTools`, which also change files in each provider's
   native format, every change recorded so it can be undone, and run the commands you
-  configure, such as the tests, recording what each one changed too.
+  configure, such as the tests, recording what each one changed too. `agentAsTool` offers
+  one agent to another as a tool, such as a cheaper committer to a coding agent, working
+  inside the caller's run.
 - **`OrchestratorAgent`**: coordinates a planner, an executor, and a reviewer
   (each an injected `Agent`) in a plan → execute → review loop. The reviewer's
   decision is a Zod-validated structured `{decision, feedback}`, not free text —
@@ -495,7 +497,8 @@ run in `AgentResponse.runId`. Progress reports each change as a unified `diff` o
 
 For debugging, `onTranscript` receives what the model saw in each run once the run ended,
 completed, failed or cancelled. A `Transcript` has the run's `outcome`, the role it was of in
-`createLLMOrchestrator`, or `explorer`, and a `content` of plain JSON: the instructions, the tool
+`createLLMOrchestrator`, or `explorer`, for an agent another agent's tool started the call that
+started it in `delegation`, and a `content` of plain JSON: the instructions, the tool
 definitions, the run's messages with what the tools returned, and the error a run that did not
 complete ended with. `content` has no stable shape; read it, but do not build on it. A callback
 that fails is logged, and the run stays as it ended.
@@ -549,6 +552,51 @@ createLLMOrchestrator({ workspace, compactAt: { executor: 200_000 } });
 
 Without `workspace` it works on the current directory, read only. One run of the
 orchestrator is one run of the history, every round included.
+
+### Agents that hand work to other agents
+
+`agentAsTool` offers an agent to another one as a tool. The calling model writes the task, and
+a new agent from `createAgent` runs it; its answer is the call's result. Specialists can come
+from a package you reuse in every project, or be written in one project:
+
+```ts
+import { agentAsTool, createFileTools, createLLMAgent } from '@mikode13/harness';
+
+const tools = await createFileTools('anthropic', workspace, { commands });
+const commit = agentAsTool({
+	name: 'commit',
+	description: 'Commits the work done so far, with a message that says why.',
+	createAgent: () =>
+		createLLMAgent('anthropic', {
+			model: 'haiku',
+			systemPrompt: 'You commit the changes you are told about, one commit, with a clear message.',
+			tools,
+		}),
+});
+const coder = createLLMAgent('anthropic', {
+	systemPrompt: 'You write code, with a test for each change, and commit when the tests pass.',
+	tools: [...tools, commit],
+	workspace,
+});
+```
+
+The agent works inside the caller's run:
+
+- what it writes is the same run of the history, so one undo reverts both; it keeps its own
+  tools' access policy, and edits only what it read itself;
+- what it spends counts in the caller's `tokens`, a failed attempt included;
+- it asks and is approved through the run's `ask` and `approve`. Delegating never grants
+  `autoApprove`; the agent has it only if `createAgent` gave it. Handing over a task asks no
+  one unless you set `risk: 'destructive'`;
+- its progress arrives as `subagent` events of the call, with the tool's `name`, and its
+  transcript names the call in `delegation`.
+
+Calls to these tools in one answer run at once. The history stays exact, because every change
+and command of a run is made one at a time, but agents working at once can see each other's
+unfinished work, and a long command holds the others' writes until it ends. An agent that fails
+is the call's error, for the model to act on; a cancellation, or your approver or asker failing
+inside it, ends the run. A call deeper than `maxDepth`, 2 by default, is refused. Only agents
+from `createLLMAgent` work this way: one from `createAgent` runs as a run of its own.
 
 ### Running the project's commands
 
@@ -750,8 +798,10 @@ heading. Reasoning is dim italic and complete by default; pass
 updates the spinner rather than printing a second line, and cancelling a turn clears
 its pending spinner state. Pass `--steps <file>` to append one JSON line per call to the
 model to that file: the call's tokens and what its context held, by origin, for measuring
-what a run spends. An explorer's call is written as the `subagent` event that carries it,
-which names the role that sent the explorer and its number. Pass `--debug <folder>` to keep,
+what a run spends. A subagent's call is written as the `subagent` events that carry it, which
+name the role and the agents that led to it. Each subagent's calls and messages are shown as a
+thread, in a color of its own, such as `planner › explorer 2`, and questions and approvals of
+agents working at once take turns. Pass `--debug <folder>` to keep,
 in a folder for the session under it, every progress event in `events.jsonl` and, with
 `--llm`, the transcript of every run of every agent, one numbered file each, such as
 `003-executor-failed.json`. A failed tool call's event says what the model was told, in

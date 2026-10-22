@@ -157,6 +157,7 @@ describe('showChanges for the planner and the reviewer', () => {
 			callId: 'call',
 			onProgress: () => undefined,
 			spend: () => undefined,
+			depth: 0,
 		});
 		return prepared.run(signal);
 	}

@@ -848,6 +848,8 @@ tags: #mikode-harness #agent-loops #tool-use #error-handling
 
 partially superseded by: "A run cut by the output limit stays in the conversation" (below) — such a run is recorded, though it fails.
 
+partially superseded by: "An agent is offered to another agent as a tool, and works inside its run" (below) — the calls of `agentAsTool` tools next to each other in one answer run at once; every other call still runs alone, in order.
+
 **Decision:** `LLMAgent` runs its own tool loop. The model receives the definitions of the agent's tools and may answer with calls; the agent runs them and calls the model again with their results, until an answer calls no tool. The rules:
 
 - **A call is a part; results travel in a `tool` message.** An answer's `toolCall` parts sit in the assistant message beside its text and reasoning. The step's results go back together as `toolResult` parts in one message with the role `tool`, never flattened into text. Each part carries a string id that pairs a result with its call.
@@ -2115,6 +2117,8 @@ partially superseded by: "Claude's aliases name the 5.5 models on both paths, an
 
 partially superseded by: "An explorer says where the answer is, and the role reads it, several files at once" (below) — an explorer reports where the answer is, the files and line ranges, not what the code does, and it also has `readFiles`.
 
+partially superseded by: "An agent is offered to another agent as a tool, and works inside its run" (below) — a `subagent` event also carries the subagent's `name`, which is breaking, and the CLI shows each subagent's messages as well as its calls, in a color of its own.
+
 **Decision:**
 
 - **`explore` is a tool of the planner and the reviewer.** One call takes up to 4 questions and runs one explorer per question, all at once, inside the tool, then returns their reports in order, each under its question. The agent loop still runs a turn's tool calls one at a time.
@@ -2497,6 +2501,8 @@ tags: #mikode-harness #recovery #tools
 
 tags: #mikode-harness #tools #recovery
 
+partially superseded by: "An agent is offered to another agent as a tool, and works inside its run" (below) — the session now makes each change and each command alone, so agents of one run can write at once and the history stays exact.
+
 **Decision:**
 
 - **One `WriteSession` per run and history on disk,** whichever set of file tools asks for it. Two sets built apart over one workspace, such as the tools of two stages of a workflow, record one run in one journal, under one lock.
@@ -2519,3 +2525,44 @@ tags: #mikode-harness #tools #recovery
 - Another run has another `RunContext`, so it gets another session, and is still refused while the workspace is busy.
 - Sharing a session does not make writes from two stages at once to the same files safe; that needs coordination of its own.
 - `RunContext.historyRun` holds one run id. A run that writes to two histories would have each session overwrite it; allowing that means tying the reference to each history.
+
+---
+
+## An agent is offered to another agent as a tool, and works inside its run
+
+tags: #mikode-harness #agent-loops #tool-use #api-design
+
+**Decision:** `agentAsTool({ name, description, createAgent, risk, maxDepth })` turns a consumer's agent into a tool another agent from `createLLMAgent` can call. The rules:
+
+- **The calling model writes the task.** The tool takes one `task`, as `explore` takes questions, and its `description` tells the model when to use it. The consumer declares no input schema and no mapping to a prompt.
+- **A new agent for each call.** `createAgent` runs on every call, so a specialist starts from its task alone and never shares a conversation across calls. A specialist can come from a package the consumer reuses, or be written in one project.
+- **It works inside the caller's run.** It runs in the caller's `RunContext`, so its changes are the same run of the history and one undo reverts both; each agent keeps its own tools' policy and its own reads. Its usage counts in the caller's `tokens`, a failed attempt included. It is asked and approved through the run's `ask` and `approve`; delegating never grants `autoApprove`, which the agent has only if `createAgent` gave it.
+- **Handing over a task asks no one.** The call is `mutating` unless the consumer sets `risk`, such as `destructive` to approve every task before it is handed over. The agent's own destructive calls are still approved one by one.
+- **The calls of one step run at once, writers included.** The agent loop runs the calls of `parallel` tools next to each other together, and every other call alone, in order. The run's `WriteSession` makes each change and each command alone (`exclusive`): an edit prepared from a version another agent changed meanwhile is refused, and that agent reads the file again. The first failure that ends the run stops the others, and the run ends once all of them have.
+- **Delegation is bounded in depth.** A call deeper than the tool's `maxDepth`, 2 by default, is refused, and the model is told why: planner → coding agent → committer is 2 deep.
+- **A failure of the agent is the call's error.** The model reads why and can act on it. A cancellation ends the run, and so does host code failing inside the agent: an approver or asker that throws or answers wrongly, an agent that cannot be created, or one that rejects with an unclassified error. The run's failure carries what the agent spent.
+- **Progress and transcripts name the agent.** Each of its events arrives in a `subagent` event with the call's id, `subagent: 1`, the new `name` field, the tool's name, and its task; a subagent's own subagents arrive wrapped again inside it. A transcript it gives carries `delegation`, the tool, the call's id and the subagent's number, which ties it to the caller's transcript. Explorers carry both too, as `explorer`.
+- **The CLI shows each subagent as a thread.** Its calls and messages, in a color of its own, labelled with the path of agents that led to it, such as `planner › code 1 › commit 1`. Questions and approvals of agents working at once take turns at the terminal, and an approval waiting its turn finds an "always" given meanwhile. While the user answers, what the other agents narrate waits, and is printed once the answer is given, so neither it nor the spinner overwrites the question.
+- **Only on the model APIs.** An agent from `createAgent` runs as its own run, outside these guarantees.
+
+**Context:** on 2026-10-22 the user set the direction of composable specialists: a committer on a cheaper model, a coding agent, a planner, and agents for writing a CV or reading a job offer, each project offering only those it needs, without a change to the harness. `createLLMAgent` already builds an agent from a system prompt and tools, and a consumer could wrap `agent.run()` in `defineTool`. But `Tool.execute(input, signal)` carries no run: the wrapped agent opened a write session of its own, which the lock refused while the caller held the workspace, and its usage, progress, approvals and questions were lost. `createExploreTool` already ran subagents inside the run, for read-only explorers only. #138 recorded the scope, and the user decided the open points that day: the task written by the calling model, no question before delegating, delegations at once with writers included after the costs below were laid out, a depth of 2 that the consumer can change, the name on the `subagent` event, the transcript tied to the call in the same pull request, and the CLI's threads and queue.
+
+**Alternatives considered:**
+
+- **Wrapping `agent.run()` in `defineTool`, documented.** Not chosen: a writing agent is refused by the lock, and its usage, progress and approvals are lost.
+- **A consumer input schema and `toPrompt`.** Not chosen by the user: the calling model writes the task, as it does for `explore`.
+- **An `agents` option of `createLLMAgent`.** Deferred: a tool beside the others is enough, and the option can wrap the adapter later if use asks for it.
+- **Delegations one at a time, or at once only for agents that read.** Not chosen by the user. One at a time needs no lock, and at once only for readers needs none either, but agents that take long to write would wait for each other.
+- **Identifying the agent from the `tool` event with the same `callId`,** whose `name` is the tool's. It needs no new field, but every consumer has to keep that pairing to label a thread.
+- **A new event type for delegation.** A minor release, but a consumer that does not know it loses all the agent's narration.
+- **Widening `ProgressAgent` with specialist names.** Mixes the orchestrator's fixed roles with free names, and is breaking too.
+
+**Consequences:**
+
+- Adding `name` to `subagent` and `delegation` to `Transcript` is breaking: the release is a major one.
+- Agents working at once see each other's unfinished work: a test run or a commit can include another agent's partial changes. A long command, such as a test run, holds the other agents' writes until it ends.
+- Two agents changing the same file at once: the second's edit is refused, and it reads the file again.
+- The caller's own calls never run beside its agents: the calls of other tools in the step wait until the delegations next to them end.
+- Approvals and questions can arrive at once. A consumer with one person to ask must queue them, as the CLI does.
+- A shared execution budget (#137) is not part of this: a delegation counts its usage in the run, but nothing yet stops a run that spends too much.
+- What an agent's commits do on undo is #140.

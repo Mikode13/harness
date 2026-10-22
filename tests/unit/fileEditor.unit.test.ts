@@ -580,6 +580,62 @@ describe('WriteSession', () => {
 		expect(existsSync(file('k.ts'))).toBe(false);
 	});
 
+	it('makes changes prepared from one version alone, so the second finds the file changed', async () => {
+		const first = await editor.prepare(
+			{ kind: 'replace', path: 'tracked.ts', content: text('first\n') },
+			signal,
+		);
+		const second = await editor.prepare(
+			{ kind: 'replace', path: 'tracked.ts', content: text('second\n') },
+			signal,
+		);
+
+		const [applied, refused] = await Promise.allSettled([
+			editor.apply(first, signal),
+			editor.apply(second, signal),
+		]);
+
+		expect(applied.status).toBe('fulfilled');
+		expect(refused).toMatchObject({
+			status: 'rejected',
+			reason: { message: '"tracked.ts" changed after this change was prepared; read it again' },
+		});
+		expect(read('tracked.ts')).toBe('first\n');
+		expect(await entries()).toHaveLength(1);
+	});
+
+	it('runs a write once the one before it ended, and stops waiting on a cancellation', async () => {
+		const order: string[] = [];
+		let endFirst!: () => void;
+		const first = session.exclusive(async () => {
+			order.push('first');
+			await new Promise<void>(resolve => {
+				endFirst = resolve;
+			});
+			order.push('first ended');
+		}, signal);
+		const controller = new AbortController();
+		const cancelled = session.exclusive(() => {
+			order.push('cancelled');
+			return Promise.resolve();
+		}, controller.signal);
+		const third = session.exclusive(() => {
+			order.push('third');
+			return Promise.resolve();
+		}, signal);
+
+		await vi.waitFor(() => {
+			expect(order).toEqual(['first']);
+		});
+		controller.abort();
+		await expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
+		expect(order).toEqual(['first']);
+		endFirst();
+		await Promise.all([first, third]);
+
+		expect(order).toEqual(['first', 'first ended', 'third']);
+	});
+
 	it('marks the run finished and frees the workspace', async () => {
 		await change({ kind: 'create', path: 'l.ts', content: text('l') });
 		const runId = await session.runId();

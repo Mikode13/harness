@@ -10,6 +10,12 @@ export interface Transcript {
 	 * sent. Missing for an agent from `createLLMAgent`.
 	 */
 	agent?: ProgressAgent | 'explorer';
+	/**
+	 * For an agent another agent's tool started, such as an explorer or the agent of a tool from
+	 * `agentAsTool`, the call that started it: the tool's name, the `id` of that call, which is
+	 * in the transcript of the agent that made it, and which of the call's agents it was, from 1.
+	 */
+	delegation?: { tool: string; callId: string; subagent: number };
 	/** How the run ended. A failed run may be retried, and each attempt has its own transcript. */
 	outcome: 'completed' | 'failed' | 'cancelled';
 	/**

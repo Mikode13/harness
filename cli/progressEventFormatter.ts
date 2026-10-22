@@ -24,6 +24,8 @@ const statusIcon = {
 	denied: '⊘',
 } as const;
 const summaryWidth = 30;
+// Each subagent's lines in a color of their own, so agents working at once read as threads.
+const threadColors = ['cyan', 'magenta', 'yellow', 'green', 'blue'] as const;
 
 /**
  * Presents progress without making the terminal consumer part of the published package.
@@ -36,6 +38,7 @@ export class ProgressEventFormatter {
 	private readonly thinkingHeadings: boolean;
 	private readonly style: ProgressStyler;
 	private readonly pending = new Map<string, PendingTool>();
+	private readonly threads = new Map<string, StyleFormat>();
 	private lastAgent: ProgressEvent['agent'];
 
 	constructor({
@@ -106,17 +109,45 @@ export class ProgressEventFormatter {
 	/** Ends a turn's presentation state, including a call interrupted by cancellation. */
 	reset(): void {
 		this.pending.clear();
+		this.threads.clear();
 		this.lastAgent = undefined;
 	}
 
 	/**
-	 * Only a subagent's tool calls, under the role that sent it and its number: several run at
-	 * once, and their reasoning and messages would bury the role's own.
+	 * A subagent's tool calls and messages, as a thread of its own: in its color, under the role
+	 * that sent it, labelled with the path of agents that led to it and its number. Several run
+	 * at once, and their reasoning would bury the role's own.
 	 */
-	private formatSubagent(item: Extract<ProgressEvent, { type: 'subagent' }>): string | undefined {
-		if (item.event.type !== 'tool') return undefined;
-		const label = `${item.agent ?? 'agent'} › explorer ${String(item.subagent)}`;
-		return this.formatTool({ ...item.event, agent: item.agent }, `${item.callId}:${label}`, label);
+	private formatSubagent(
+		item: Extract<ProgressEvent, { type: 'subagent' }>,
+		// The thread of the subagent that started this one, for a subagent's own subagents.
+		outer?: { key: string; label: string },
+	): string | undefined {
+		const key = `${outer?.key ?? ''}/${item.callId}:${String(item.subagent)}`;
+		const label = `${outer?.label ?? item.agent ?? 'agent'} › ${item.name} ${String(item.subagent)}`;
+		const { event } = item;
+		switch (event.type) {
+			case 'subagent':
+				return this.formatSubagent({ ...event, agent: item.agent }, { key, label });
+			case 'tool':
+				return this.formatTool({ ...event, agent: item.agent }, key, label, this.colorOf(key));
+			case 'agentMessage':
+				return this.withRole(
+					item.agent,
+					this.style(this.colorOf(key), `  ${label}: ${event.message.replace(/\n/g, '\n    ')}`),
+				);
+			default:
+				return undefined;
+		}
+	}
+
+	private colorOf(thread: string): StyleFormat {
+		let color = this.threads.get(thread);
+		if (color === undefined) {
+			color = threadColors[this.threads.size % threadColors.length] ?? 'cyan';
+			this.threads.set(thread, color);
+		}
+		return color;
 	}
 
 	private formatTool(
@@ -124,6 +155,7 @@ export class ProgressEventFormatter {
 		// A subagent's calls have ids of their own conversation, so they are kept apart by it.
 		scope = '',
 		label: string | undefined = item.agent,
+		color?: StyleFormat,
 	): string | undefined {
 		const key = `${item.agent ?? ''}:${scope}:${item.id}`;
 		if (item.status === 'in_progress') {
@@ -158,7 +190,10 @@ export class ProgressEventFormatter {
 		const columns = [`  ${icon} ${role}`, item.name, summary];
 		if (ending) columns.push(ending);
 		const line = columns.join(' | ');
-		const formatted = this.withRole(item.agent, this.operational(line));
+		const formatted = this.withRole(
+			item.agent,
+			color === undefined ? this.operational(line) : this.style(color, line),
+		);
 		if (item.status === 'completed' && item.diff !== undefined) {
 			if (formatted === undefined) return this.style('dim', item.diff);
 			return `${formatted}\n${this.style('dim', item.diff)}`;

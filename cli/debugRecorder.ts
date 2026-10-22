@@ -39,7 +39,9 @@ export class DebugRecorder {
 
 	transcript(transcript: Transcript): void {
 		this.transcripts++;
-		const name = `${String(this.transcripts).padStart(3, '0')}-${transcript.agent ?? 'agent'}-${transcript.outcome}.json`;
+		// A delegated agent by the tool that delegated to it; the file holds the call it served.
+		const agent = transcript.agent ?? transcript.delegation?.tool ?? 'agent';
+		const name = `${String(this.transcripts).padStart(3, '0')}-${agent}-${transcript.outcome}.json`;
 		this.write(() => {
 			writeFileSync(join(this.folder, name), `${JSON.stringify(transcript, null, '\t')}\n`, {
 				mode: privateFile,

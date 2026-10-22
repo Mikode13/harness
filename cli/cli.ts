@@ -22,6 +22,7 @@ import { loadUserConfig, userConfigPath } from './userConfig.ts';
 import { HistoryCommands } from './historyCommands.ts';
 import { formatSpinnerLine } from './spinner.ts';
 import { DebugRecorder } from './debugRecorder.ts';
+import { createPromptQueue } from './promptQueue.ts';
 
 const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 let spinnerFrame = 0;
@@ -120,27 +121,33 @@ const promptEmitter = new PromptEmitter();
 let turnActive = false;
 
 // One memory for the whole session: "always" holds until the CLI exits. The spinner would
-// overwrite the question, so it stops while the user answers.
+// overwrite the question, so it stops while the user answers. Agents working at once take turns
+// at the terminal, and an approval waiting its turn finds an "always" given meanwhile.
 const askInTerminal = createTerminalApprover(promptEmitter, output);
 const questionsInTerminal = createTerminalAsker(promptEmitter, output);
-const ask = async (questions: UserQuestion[], signal: AbortSignal) => {
+const queued = createPromptQueue();
+// While the user answers, what agents still working narrate waits, so neither its lines nor the
+// spinner overwrite the question; it is printed once the answer is given.
+let asking = false;
+const held: string[] = [];
+async function whileAsking<Answer>(answer: () => Promise<Answer>): Promise<Answer> {
 	stopSpinner();
+	asking = true;
 	try {
-		return await questionsInTerminal(questions, signal);
+		return await answer();
 	} finally {
-		startSpinner();
+		asking = false;
+		for (const message of held.splice(0)) output.print(message);
+		startSpinner(progressFormatter.spinnerDescription());
 	}
-};
-const approve = rememberApprovals(
-	async (request, signal) => {
-		stopSpinner();
-		try {
-			return await askInTerminal(request, signal);
-		} finally {
-			startSpinner();
-		}
-	},
-	{ key: approvalKey },
+}
+const ask = queued((questions: UserQuestion[], signal: AbortSignal) =>
+	whileAsking(() => questionsInTerminal(questions, signal)),
+);
+const approve = queued(
+	rememberApprovals((request, signal) => whileAsking(() => askInTerminal(request, signal)), {
+		key: approvalKey,
+	}),
 );
 
 const loop = new ConversationLoop(
@@ -160,8 +167,8 @@ const loop = new ConversationLoop(
 			return;
 		}
 
-		// An explorer's calls arrive inside the `subagent` event that says which role sent it.
-		if (item.type === 'step' || (item.type === 'subagent' && item.event.type === 'step')) {
+		// A subagent's steps arrive inside the `subagent` events that say which agents led to it.
+		if (innermost(item).type === 'step') {
 			if (!stepsFile || !recordingSteps) return;
 			try {
 				appendFileSync(stepsFile, `${JSON.stringify({ at: new Date().toISOString(), ...item })}\n`);
@@ -178,6 +185,10 @@ const loop = new ConversationLoop(
 		}
 
 		const message = progressFormatter.format(item);
+		if (asking) {
+			if (message) held.push(message);
+			return;
+		}
 		if (item.type === 'tool' && item.status === 'in_progress') {
 			// Starts are state for the spinner, never a completed terminal line.
 			startSpinner(progressFormatter.spinnerDescription());
@@ -221,3 +232,8 @@ promptEmitter.onInterrupt(onCancel);
 
 await loop.start();
 loop.close();
+
+/** The event a subagent narrated, inside however many `subagent` events carry it. */
+function innermost(event: ProgressEvent): ProgressEvent {
+	return event.type === 'subagent' ? innermost(event.event) : event;
+}
