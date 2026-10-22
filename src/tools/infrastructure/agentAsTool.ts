@@ -63,9 +63,9 @@ export interface AgentAsToolOptions {
  * - it is asked and approved through the run's `ask` and `approve`. Delegating never grants
  *   `autoApprove`: the agent has it only if `createAgent` gave it.
  *
- * Calls of these tools in one step run at once. Every change and command of the run is made one
- * at a time, so the history stays exact, but agents working at once can see each other's
- * unfinished work. An agent that fails is the call's error result, for the model to act on; a
+ * Calls of these tools next to each other in one step run at once, and any other call runs
+ * alone. Every change and command of the run is made one at a time, so the history stays exact,
+ * but agents working at once can see each other's unfinished work. An agent that fails is the call's error result, for the model to act on; a
  * cancellation, or a run's approver or asker that failed inside it, ends the run.
  *
  * Only for agents on the model APIs, from `createLLMAgent`: an agent from `createAgent` runs as

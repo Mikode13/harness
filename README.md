@@ -591,9 +591,11 @@ The agent works inside the caller's run:
 - its progress arrives as `subagent` events of the call, with the tool's `name`, and its
   transcript names the call in `delegation`.
 
-Calls to these tools in one answer run at once. The history stays exact, because every change
-and command of a run is made one at a time, but agents working at once can see each other's
-unfinished work, and a long command holds the others' writes until it ends. An agent that fails
+Calls to these tools next to each other in one answer run at once; a call to another tool
+between them waits for those before it, and the ones after it wait for it. The history stays
+exact, because every change and command of a run is made one at a time, but agents working at
+once can see each other's unfinished work, and a long command holds the others' writes until it
+ends. An agent that fails
 is the call's error, for the model to act on; a cancellation, or your approver or asker failing
 inside it, ends the run. A call deeper than `maxDepth`, 2 by default, is refused. Only agents
 from `createLLMAgent` work this way: one from `createAgent` runs as a run of its own.
