@@ -2492,3 +2492,30 @@ tags: #mikode-harness #recovery #tools
 - `RunRecord` has an internal field, `unsettled`. A record written before it has none, and reads as before.
 - A run an earlier version finished with an observation open carries no mark, so it is never settled. What its observation needs is kept until retention removes the run.
 - `FileRecoveryStore.open` takes a `logger`, which the factories and `openWorkspace` pass on.
+
+## The file tools of one run share its write session, each under its own policy
+
+tags: #mikode-harness #tools #recovery
+
+**Decision:**
+
+- **One `WriteSession` per run and history on disk,** whichever set of file tools asks for it. Two sets built apart over one workspace, such as the tools of two stages of a workflow, record one run in one journal, under one lock.
+- **The history is named by its physical identity,** `RecoveryStore.workspaceId`, which the recovery layer takes from the real paths of the root and the state directory. Two calls to `createFileTools`, even through a link to the same folder, find the same session. A store object would not do: each opening returns another one.
+- **The registry lives in the tools' infrastructure,** a `WeakMap` from the run's `RunContext` to its sessions by `workspaceId`. A session is registered before anything is awaited, and registers its end once with `RunContext.onFinish`. `RunContext` keeps only the run's lifecycle, and knows nothing of `WriteSession` or of files.
+- **The journal is shared; permissions are not.** Each set of tools keeps its `FileEditor` with its own policy, so a stage that may write only `src/` still cannot write `config/`, whatever another stage may. Nor are the records of what each agent read: another agent having read a file does not mean this one has seen it.
+- **What the session holds is shared with it:** the journal and the lock, the limit of 500 changes, the stop on every write after one that could not be confirmed, and the run's id in the history.
+
+**Context:** #120, from the external audit of 2026-10-18 (A4). Each set of file tools opened its own `WorkspaceWrites`, which kept one session per run in a `WeakMap` of its own. In a workflow (#109), whose stages share one `RunContext`, the second stage with tools of its own opened another session for the same run and workspace, and the lock refused it: its file was never written. `createLLMOrchestrator` gives its roles one shared workspace, so it did not hit this. On 2026-10-22 the user designed the registry, the identity and the split between the shared journal and each set's permissions.
+
+**Alternatives considered:**
+
+- **The sessions on `RunContext`,** through a generic slot. Not chosen: `RunContext` would hold state that belongs to the tools.
+- **One store and one `WorkspaceWrites` per workspace for the whole process.** Not chosen: hidden global state that two independent consumers of one process would share without knowing, with the first one's logger.
+- **A lock the same run can take again,** with a `finish` that counts its holders. Not chosen: the recovery layer would learn what a run is, deciding the final status of a shared journal is delicate, and it needs a registry per process anyway.
+- **Only documenting** that the stages of one workflow must share their file tools. Not chosen: the trap would stay, and two stages could not have different permissions.
+
+**Consequences:**
+
+- Another run has another `RunContext`, so it gets another session, and is still refused while the workspace is busy.
+- Sharing a session does not make writes from two stages at once to the same files safe; that needs coordination of its own.
+- `RunContext.historyRun` holds one run id. A run that writes to two histories would have each session overwrite it; allowing that means tying the reference to each history.
