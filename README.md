@@ -513,8 +513,10 @@ model APIs:
   explorers at once, one per question, on the role's provider's cheaper model at `medium`:
   Claude Haiku 5.5, or `gpt-5.6-luna`. Each starts from its question alone and reports where
   the answer is, the files and line ranges, as a librarian says where a book is; the role
-  then reads those ranges itself, with `readFiles`, instead of searching the repository. Their
-  usage counts in the run's, and their narration arrives as `subagent` events;
+  then reads those ranges itself, with `readFiles`, instead of searching the repository. They
+  work in the background, as the agents of `agentAsTool` do, and each report reaches the role
+  when its explorer finishes. Their usage counts in the run's, and their narration arrives as
+  `subagent` events;
 - the executor gets its provider's file tools. `autoApprove` reaches only the executor;
 - each role gets the commands whose `roles` name it; a command names only the executor unless
   it says otherwise.
@@ -557,8 +559,9 @@ orchestrator is one run of the history, every round included.
 ### Agents that hand work to other agents
 
 `agentAsTool` offers an agent to another one as a tool. The calling model writes the task, and
-a new agent from the `createAgent` option runs it; its answer is the call's result. Specialists can come
-from a package you reuse in every project, or be written in one project:
+a new agent from the `createAgent` option works on it in the background while the caller goes
+on. Specialists can come from a package you reuse in every project, or be written in one
+project:
 
 ```ts
 import { agentAsTool, createFileTools, createLLMAgent } from '@mikode13/harness';
@@ -592,17 +595,26 @@ The agent works inside the caller's run:
   `createAgent` option gave it. Handing over a task asks no one unless you set
   `risk: 'destructive'`;
 - its progress arrives as `subagent` events of the call, with the tool's `name`, and its
-  transcript names the call in `delegation`.
+  transcript names the call in `delegation`. The call's own `tool` event ends with
+  `status: 'sent'`, the agent's events keep arriving after it, and a `subagentEnded` event says
+  when it ended and how: `answered`, `failed`, or `stopped` because the run ended.
 
-Calls to these tools next to each other in one answer run at once; a call to another tool
-between them waits for those before it, and the ones after it wait for it. The history stays
-exact, because every change and command of a run is made one at a time, but agents working at
-once can see each other's unfinished work, and a long command holds the others' writes until it
-ends. An agent that fails
-is the call's error, for the model to act on; a cancellation, or your approver or asker failing
-inside it, ends the run. A call deeper than `maxDepth`, 2 by default, is refused. Only agents
-from `createLLMAgent` work this way: an Agent SDK agent from the `createAgent` factory runs
-as a run of its own.
+The call answers at once, telling the model the agent works in the background. When the agent
+finishes, only its answer reaches the caller's model, in a message of its own at the caller's
+next step; nothing else of its work does. The caller reacts to each answer as it arrives. An
+answer the caller gives while agents still work is a wait, narrated like any other message:
+the run makes no call to the model until the next agent answers, and it ends only when the
+caller answers with nothing pending. Waiting counts against the caller's `maxSteps`, and each
+agent has its own.
+
+Agents that write work at once too. The history stays exact, because every change and command
+of a run is made one at a time, but agents working at once can see each other's unfinished
+work, and a long command holds the others' writes until it ends. An agent that fails answers
+with why, for the model to act on. A cancellation, or your approver or asker failing inside an
+agent, ends the run: every agent still working is stopped, the run ends once they have, and
+what they had changed stays in the run's history. A call deeper than `maxDepth`, 2 by default,
+is refused. Only agents from `createLLMAgent` work this way: an Agent SDK agent from the
+`createAgent` factory runs as a run of its own.
 
 ### Running the project's commands
 
@@ -798,7 +810,10 @@ The CLI shows each command as the line it will run before asking, and "always" a
 that command again, not every command. Tool calls finish as one dimmed line with an
 icon, role, tool name, summary and duration; a failed configured command includes
 `exit N` beside its duration, while a command event also includes its exit code.
-A denied call is marked `denied`. Messages remain normal text under a bold role
+A denied call is marked `denied`. A call that sent agents to work in the background is marked
+`↗ … | sent`, and each of its agents gets a line of its own when it ends, `✓` when it answered,
+`✗` when it failed and `⊘` when it was stopped, with how long it worked; while no call runs,
+the spinner names an agent still at work. Messages remain normal text under a bold role
 heading. Reasoning is dim italic and complete by default; pass
 `--thinking-headings` to show only Markdown bold headings as `∴ …`. A tool start
 updates the spinner rather than printing a second line, and cancelling a turn clears

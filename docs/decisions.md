@@ -2119,6 +2119,8 @@ partially superseded by: "An explorer says where the answer is, and the role rea
 
 partially superseded by: "An agent is offered to another agent as a tool, and works inside its run" (below) — a `subagent` event also carries the subagent's `name`, which is breaking, and the CLI shows each subagent's messages as well as its calls, in a color of its own.
 
+partially superseded by: "Delegated agents work in the background, and only their answers reach the caller" (below) — the `explore` call answers at once, and each explorer's report reaches the role when that explorer finishes, while the role goes on.
+
 **Decision:**
 
 - **`explore` is a tool of the planner and the reviewer.** One call takes up to 4 questions and runs one explorer per question, all at once, inside the tool, then returns their reports in order, each under its question. The agent loop still runs a turn's tool calls one at a time.
@@ -2532,6 +2534,8 @@ partially superseded by: "An agent is offered to another agent as a tool, and wo
 
 tags: #mikode-harness #agent-loops #tool-use #api-design
 
+partially superseded by: "Delegated agents work in the background, and only their answers reach the caller" (below) — a delegation call answers at once, and its agent works in the background while the caller goes on; its answer reaches the caller's model in a message of its own, and the calls of a step no longer run at once.
+
 **Decision:** `agentAsTool({ name, description, createAgent, risk, maxDepth })` turns a consumer's agent into a tool another agent from `createLLMAgent` can call. The rules:
 
 - **The calling model writes the task.** The tool takes one `task`, as `explore` takes questions, and its `description` tells the model when to use it. The consumer declares no input schema and no mapping to a prompt.
@@ -2566,3 +2570,42 @@ tags: #mikode-harness #agent-loops #tool-use #api-design
 - Approvals and questions can arrive at once. A consumer with one person to ask must queue them, as the CLI does.
 - A shared execution budget (#137) is not part of this: a delegation counts its usage in the run, but nothing yet stops a run that spends too much.
 - What an agent's commits do on undo is #140.
+
+## Delegated agents work in the background, and only their answers reach the caller
+
+tags: #mikode-harness #agent-loops #tool-use
+
+**Decision:** the agents an agent sends, with `explore` or a tool from `agentAsTool`, work in the background while the agent that sent them goes on. The rules:
+
+- **A delegation answers at once.** Its result tells the model which agents it sent, that each one's answer comes in a message of its own, and that it can say it is waiting when it has nothing else to do. Every other call still runs to the end within its step, one at a time.
+- **Only the answer reaches the caller.** When an agent finishes, its answer, or why it failed, goes to the caller's model at its next step, in a `user` message that says it comes from the harness, after that step's tool results. Each answer names the agent, the call that sent it and the start of its task. Nothing else of the agent's work does: not its steps, not its unfinished files. Each `explore` question is an agent of its own, so its report arrives when its explorer finishes.
+- **The caller reacts to each answer as it arrives,** not once every agent it sent together has answered.
+- **An answer while agents work is a wait.** It is narrated as any `agentMessage`. The run makes no call to the model until the next agent answers, then goes on with it. There is no `wait` tool: answering already waits.
+- **The run ends when the caller answers with nothing pending:** no agent working, and no answer it has not read. Its `AgentResponse` is that last answer.
+- **Every agent keeps its own limits.** Waiting is a step of the caller's `maxSteps`; a delegated agent has its own, and compacts its own conversation under its own settings. A caller still waiting at its step limit fails.
+- **A run that ends stops its agents.** A cancellation, a failure of the run, or a failure inside an agent that ends the run, such as the run's approver failing there, stops every agent still working. The run ends only once each has stopped, so what they changed stays in the run's history, and one undo reverts it with the rest. An agent stopped before it reported its usage leaves the run's unknown. A failure inside an agent stops the other agents at once, and the caller at its next boundary: after its model call or tool, or while it waits. A run kept in the conversation although it failed, cut by the output limit or stopped on a loop, stops its agents before it is recorded, and records what became of each one in a last harness message: the answers that arrived, and the agents stopped before they answered. Otherwise the next run would read that answers are on their way, and wait for them.
+- **Agents that write are included.** The run's `WriteSession` already makes every change and command alone.
+- **The narration says what runs.** The call's `tool` event ends with the new `status: 'sent'`, emitted before its agents start, so it comes before anything they narrate; it never ends as `completed`, which would read as finished work. A new `subagentEnded` event says when each agent ended: `answered`, `failed`, or `stopped` because the run ended. The CLI shows the call as `↗ … | sent`, each agent's end as a line of its own with its outcome and how long it worked, and, while no call runs, the agents still at work in the spinner.
+- **The stuck guard sees agents at work.** While an agent that may run a consumer's tools works, a check passing again is never taken for a loop, since what the history cannot see may have changed.
+- **Only the model APIs.** The Agent SDK engines run their own subagents.
+
+**Context:** #138 ran the delegations of one step at once, but the caller waited for every one of them before its next step. On 2026-10-23 the user set #29 to let the caller keep working instead, as a planner studies one area while explorers find two others, a future architecture agent hands two parts of a change to two coding agents, or a CV agent has one agent write the CV and another the cover letter. The user decided: always in the background, only the final answer reaching the caller, reacting to each answer as it comes, an answer while agents work being a wait, the run ending with nothing pending, cancellation on a run that ends, writers included, every agent with its own `maxSteps` and compaction, and the agent's whole work kept for the consumer, through its events and transcript, but never in the caller's conversation. Running several independent runs on one project moved to #28.
+
+**Alternatives considered:**
+
+- **The model chooses per call whether to wait,** as Claude Code's `run_in_background`. Not chosen by the user: always in the background is simpler, and the caller can answer that it waits.
+- **Answering once every agent sent together finished.** Fewer steps for the caller, but it waits as long as the slowest agent. The user chose each answer as it arrives: the cost is one more read of the cached context per answer, and the caller uses each result sooner.
+- **A `wait` tool.** Not needed: an answer while agents work already waits, and a tool more is one more thing for the model to forget.
+- **Cancelling the agents when the caller answers.** Not chosen: the caller would lose the work it waits for. Agents are stopped only when the run ends.
+- **The agent's answer as the delegation call's result.** Both APIs need every tool call answered right after it, so a late answer cannot be one.
+- **Ending the call's `tool` event only once its agents end,** with no new status or event. Not chosen by the user: the event would no longer say when the model got the call's result, and it would arrive among the caller's later steps.
+- **A new event when an agent ends, with the call still ending as `completed`.** Not chosen by the user: a consumer still reads the call as finished work, with a duration of a few milliseconds.
+- **Ending the run at once when an agent's failure ends it,** by stopping the caller's model call or tool. Not chosen: the run's own calls keep the run's signal, and it ends at its next boundary.
+
+**Consequences:**
+
+- `status: 'sent'` is a new value of an existing field, which is breaking: a consumer that handles every status must add it. A delegation call's `tool` events end at once, its agents' `subagent` events keep arriving after them, and a consumer learns each agent's end from `subagentEnded`, which a consumer that ignores unknown types can do without.
+- Every answer costs the caller a step, which reads its cached context again.
+- A run that ends waits for its agents to stop: an agent that ignores its cancellation keeps the run from ending.
+- An agent's answer reaches the model as a `user` message. Both APIs accept it after the tool results; Claude joins it to their user turn.
+- Saving a run's conversation (#111, #136) must keep each agent's conversation too, tied to its call; a run with agents still working is no safe point to save.

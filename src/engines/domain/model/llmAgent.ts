@@ -41,7 +41,9 @@ import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcrip
 import {
 	type AgentTool,
 	type CommandEnding,
+	isDelegating,
 	type PreparedCall,
+	type PreparedDelegation,
 	prepareCall,
 	RunEndingToolError,
 	ToolExecutionError,
@@ -69,6 +71,7 @@ import {
 	stop,
 	warnAt,
 } from './commandLoops.ts';
+import { BackgroundAgents, sentNote } from './backgroundAgents.ts';
 import { measureContext } from './stepContext.ts';
 import {
 	askUserDefinition,
@@ -440,11 +443,13 @@ export class LLMAgent implements Agent {
 	 */
 	private async denial(
 		call: ToolCallPart,
-		{ risk, command }: PreparedCall,
+		prepared: PreparedCall | PreparedDelegation,
 		signal: AbortSignal,
 		approve: Approver | undefined,
 	): Promise<string | undefined> {
+		const { risk } = prepared;
 		if (this.autoApprove || risk !== 'destructive') return undefined;
+		const command = 'command' in prepared ? prepared.command : undefined;
 
 		const retry = 'Do not retry the same call; choose another way, or ask the user.';
 		if (!approve) {
@@ -481,13 +486,15 @@ export class LLMAgent implements Agent {
 	/**
 	 * Always answers the call: a missing tool, a denied call or a failing one becomes an error
 	 * result, so the model can correct itself. Only a cancellation, a failing approver, or host
-	 * code that failed inside the call, such as an agent's approver, escapes.
+	 * code that failed inside the call escapes. A call that hands tasks to agents answers once
+	 * it sent them, and `background` watches them from then on.
 	 */
 	private async runTool(
 		call: ToolCallPart,
 		{ signal, onProgress: callback = ignoreProgress, approve, ask }: RunOptions,
 		effects: RunEffects,
 		toolCall: RunToolContext,
+		background: BackgroundAgents,
 	): Promise<{
 		result: ToolResultPart;
 		denied: boolean;
@@ -495,6 +502,8 @@ export class LLMAgent implements Agent {
 		summary?: string;
 		exitCode?: number;
 		ending?: CommandEnding;
+		// It sent agents to work in the background.
+		sent?: boolean;
 		// It ran, and may have changed files the history does not record.
 		unrecorded?: boolean;
 	}> {
@@ -533,9 +542,12 @@ export class LLMAgent implements Agent {
 			throw classifyHostFailure(error, 'The tool call summarizer failed');
 		}
 
-		let prepared: PreparedCall;
+		let prepared: PreparedCall | PreparedDelegation;
 		try {
-			prepared = await prepareCall(tool, call.input, signal, { ...toolCall, callId: call.id });
+			const context = { ...toolCall, callId: call.id };
+			prepared = isDelegating(tool)
+				? await tool.delegate(call.input, signal, context)
+				: await prepareCall(tool, call.input, signal, context);
 		} catch (error) {
 			signal.throwIfAborted();
 			// A call that cannot be prepared, or whose tool cannot judge it, does not run; the
@@ -577,6 +589,28 @@ export class LLMAgent implements Agent {
 		// Set before `execute`, so a tool that fails halfway still counts: it may have had effects.
 		effects.toolRan = true;
 		const unrecorded = prepared.unrecorded === true && prepared.risk !== 'safe';
+		if ('start' in prepared) {
+			// Before its agents start, so the person watching reads it before anything they narrate.
+			emit(
+				{
+					type: 'tool',
+					id: call.id,
+					name: call.name,
+					status: 'sent',
+					...(summary === undefined ? {} : { summary }),
+				},
+				callback,
+			);
+			const agents = prepared.start(background.signal);
+			background.add(call.id, agents, unrecorded);
+			return {
+				result: { ...result, output: sentNote(agents), isError: false },
+				denied: false,
+				sent: true,
+				unrecorded,
+				...(summary === undefined ? {} : { summary }),
+			};
+		}
 		try {
 			const output = await prepared.run(signal);
 			const ending = prepared.ending?.();
@@ -648,9 +682,8 @@ export class LLMAgent implements Agent {
 	}
 
 	/**
-	 * One at a time and in order, so their effects and their narration never interleave. Only
-	 * calls of a `parallel` tool next to each other run at once, such as agents being delegated
-	 * to, each narrated as it goes.
+	 * One at a time and in order, so their effects and their narration never interleave. Agents a
+	 * call hands tasks to keep working in the background once it answered.
 	 */
 	private async runTools(
 		calls: ToolCallPart[],
@@ -660,29 +693,21 @@ export class LLMAgent implements Agent {
 		// Throws the failure of a progress callback a call narrated through.
 		throwIfProgressFailed: () => void,
 		loops: CommandLoops,
+		background: BackgroundAgents,
 	): Promise<{ message: Message; stopped?: UnrecoverableError }> {
 		const { signal } = options;
 		const results: MessagePart[] = [];
-		// The calls before this index already ran, with the ones they ran beside.
-		let ranTo = 0;
 		for (const [index, call] of calls.entries()) {
-			if (index < ranTo) continue;
 			// A call before this one may have ignored the cancellation; this one must not start,
 			// nor be announced as running.
 			signal.throwIfAborted();
-			const together = this.parallelFrom(calls, index);
-			if (together.length > 1) {
-				results.push(...(await this.runTogether(together, options, effects, toolCall, loops)));
-				throwIfProgressFailed();
-				ranTo = index + together.length;
-				continue;
-			}
-
 			// `runTool` announces the call only once it is allowed to run, so a consumer never
 			// shows a call as running early, nor while the user is still being asked.
-			const ran = await this.runTool(call, options, effects, toolCall);
+			const ran = await this.runTool(call, options, effects, toolCall, background);
 			// A call that failed to narrate ends the run before the next one can start.
 			throwIfProgressFailed();
+			// An agent at work since the last call may have changed what the history cannot copy.
+			if (background.mayHaveChangedUnseen()) loops.unrecordedCallRan();
 			const settled = this.settle(call, ran, loops, options);
 			let { result } = settled;
 			const { alike, key, label } = settled;
@@ -717,57 +742,6 @@ export class LLMAgent implements Agent {
 		return { message: { role: 'tool', content: results } };
 	}
 
-	/** The calls from `index` on whose tool is `parallel`, up to the first that is not. */
-	private parallelFrom(calls: ToolCallPart[], index: number): ToolCallPart[] {
-		const together: ToolCallPart[] = [];
-		for (const call of calls.slice(index)) {
-			const tool = this.tools.get(call.name);
-			if (!tool || !('parallel' in tool) || tool.parallel !== true) break;
-			together.push(call);
-		}
-		return together;
-	}
-
-	/**
-	 * Runs the calls at once, their results in the order of the calls. The first failure that
-	 * ends the run stops the others, and the run ends once every one has.
-	 */
-	private async runTogether(
-		calls: ToolCallPart[],
-		options: RunOptions,
-		effects: RunEffects,
-		toolCall: RunToolContext,
-		loops: CommandLoops,
-	): Promise<ToolResultPart[]> {
-		const stopping = new AbortController();
-		const together = { ...options, signal: AbortSignal.any([options.signal, stopping.signal]) };
-		const ended: { failure?: { error: unknown } } = {};
-		const settled = await Promise.allSettled(
-			calls.map(async call => {
-				try {
-					const ran = await this.runTool(call, together, effects, toolCall);
-					return this.settle(call, ran, loops, options).result;
-				} catch (error) {
-					ended.failure ??= { error };
-					stopping.abort();
-					throw error;
-				}
-			}),
-		);
-		// The others were stopped for it: what ended the run is the first failure, or the user.
-		options.signal.throwIfAborted();
-		if (ended.failure) {
-			const { error } = ended.failure;
-			// A call stopped on its way may have spent on the model, and a stop carries no tokens:
-			// the run's total is unknown, not short.
-			const stopped = settled.some(
-				outcome => outcome.status === 'rejected' && outcome.reason !== error,
-			);
-			throw stopped ? withSpentTokens(error, undefined, true) : error;
-		}
-		return settled.flatMap(outcome => (outcome.status === 'fulfilled' ? [outcome.value] : []));
-	}
-
 	/**
 	 * Narrates how a call ended and notes its command's ending, with the warning for the model
 	 * when that ending keeps coming back alike.
@@ -783,7 +757,7 @@ export class LLMAgent implements Agent {
 		key: string;
 		label: string;
 	} {
-		const { denied, diff, summary, exitCode, ending } = ran;
+		const { denied, diff, summary, exitCode, ending, sent } = ran;
 		let { result } = ran;
 		if (ran.unrecorded) loops.unrecordedCallRan();
 		const key = callKey(call);
@@ -809,6 +783,8 @@ export class LLMAgent implements Agent {
 				},
 				callback,
 			);
+		} else if (sent === true) {
+			// Narrated as it sent its agents, which go on after it until each one ends.
 		}
 		// The diff of a change it made, for the person watching; only once it was made.
 		else if (diff !== undefined) {
@@ -982,6 +958,20 @@ export class LLMAgent implements Agent {
 		seen: Seen,
 	): Promise<AgentResponse> {
 		const { signal, onProgress: callback = ignoreProgress } = options;
+		// A tool narrates through this without ever failing: a failing callback would reach
+		// only the tool, which turns any failure into a result for the model. The run ends on
+		// it once that tool returns.
+		let progressFailure: { error: unknown } | undefined;
+		const onProgress = (event: ProgressEvent) => {
+			if (progressFailure) return;
+			try {
+				emit(event, callback);
+			} catch (error) {
+				progressFailure = { error };
+			}
+		};
+		// The agents the run's calls send to work in the background.
+		const background = new BackgroundAgents(signal, onProgress);
 		const start = Date.now();
 		const runMessages: Message[] = [{ role: 'user', content: [{ type: 'text', text: prompt }] }];
 		let tokens: Tokens | undefined;
@@ -1026,20 +1016,10 @@ export class LLMAgent implements Agent {
 				tokens = addTokens(tokens, spent);
 				unreported ||= unreportedCall;
 			};
-			// A tool narrates through this without ever failing: a failing callback would reach
-			// only the tool, which turns any failure into a result for the model. The run ends on
-			// it once that tool returns.
-			let progressFailure: { error: unknown } | undefined;
-			const onProgress = (event: ProgressEvent) => {
-				if (progressFailure) return;
-				try {
-					emit(event, callback);
-				} catch (error) {
-					progressFailure = { error };
-				}
-			};
+			// Also ends the run at its next boundary when an agent at work failed in a way that ends it.
 			const throwIfProgressFailed = () => {
 				if (progressFailure) throw progressFailure.error;
+				background.throwIfEnded();
 			};
 			// The agent's own `askUser` exists only for a run someone can answer, and never beside
 			// a consumer's tool of that name, which the consumer gave first and which stays theirs.
@@ -1054,7 +1034,17 @@ export class LLMAgent implements Agent {
 				reads.commit();
 				if (followed) this.seenRevision = followed.latestRevision;
 			};
+			// A run kept although it failed stops its agents first, and tells the next run what
+			// became of each one, which would otherwise wait for answers that never come.
+			const keepFailed = async () => {
+				await background.stop();
+				const ended = background.takeAnswers();
+				if (ended) runMessages.push(ended);
+				remember();
+			};
 			for (let step = 1; step <= this.maxSteps; step++) {
+				// An agent at work may have narrated through a callback that failed.
+				throwIfProgressFailed();
 				const { response, context: sent } = await this.llmCall(runMessages, after, {
 					signal,
 					step,
@@ -1066,6 +1056,7 @@ export class LLMAgent implements Agent {
 				// After the tokens are counted, so a throwing callback still reports them, and for an
 				// unusable answer too: the call was sent, and billed.
 				this.narrateStep(step, response.usage, { context: sent, tools }, callback);
+				throwIfProgressFailed();
 				if (response.stopReason === 'truncated') {
 					// What it wrote before the output limit, kept with the run so the next run can
 					// take it up. Not its calls, whose input may be cut, nor what only the provider
@@ -1075,7 +1066,7 @@ export class LLMAgent implements Agent {
 					);
 					for (const part of written) narrate(part, callback);
 					if (written.length > 0) runMessages.push({ role: 'assistant', content: written });
-					remember();
+					await keepFailed();
 					throw new UnrecoverableError('The LLM stopped before completing its answer', {
 						cause:
 							'The model stopped with "truncated". The run, and what the answer held before the limit, are kept in the conversation.',
@@ -1097,6 +1088,23 @@ export class LLMAgent implements Agent {
 
 				const calls = response.message.content.filter(part => part.type === 'toolCall');
 				if (calls.length === 0) {
+					// An answer given while agents work, or before the model read what they answered,
+					// is a wait: the model goes on with their answers.
+					let answers = background.takeAnswers();
+					if (!answers && background.working && step < this.maxSteps) {
+						await background.nextAnswer();
+						throwIfProgressFailed();
+						answers = background.takeAnswers();
+					}
+					if (answers || background.working) {
+						if (step === this.maxSteps) {
+							throw new UnrecoverableError('The LLM did not finish within its step limit', {
+								cause: `The model was still waiting for the agents it sent after ${String(this.maxSteps)} steps.`,
+							});
+						}
+						if (answers) runMessages.push(answers);
+						continue;
+					}
 					remember();
 
 					return {
@@ -1105,7 +1113,7 @@ export class LLMAgent implements Agent {
 							.filter(part => part.type === 'text')
 							.map(part => part.text)
 							.join('\n'),
-						tokens: unreported ? undefined : tokens,
+						tokens: unreported || background.usageUnknown ? undefined : tokens,
 						duration: (Date.now() - start) / 1000,
 					};
 				}
@@ -1141,7 +1149,7 @@ export class LLMAgent implements Agent {
 								...rest,
 							],
 						});
-						remember();
+						await keepFailed();
 						throw decision;
 					}
 					repeats.reset();
@@ -1165,13 +1173,17 @@ export class LLMAgent implements Agent {
 						},
 						throwIfProgressFailed,
 						loops,
+						background,
 					);
 					runMessages.push(repeatedNote === undefined ? message : withNote(message, repeatedNote));
 					// Kept like a run cut by the output limit: the user may take it up.
 					if (stopped) {
-						remember();
+						await keepFailed();
 						throw stopped;
 					}
+					// What agents answered meanwhile, after the results the model is waiting for.
+					const answers = background.takeAnswers();
+					if (answers) runMessages.push(answers);
 				}
 			}
 
@@ -1179,6 +1191,9 @@ export class LLMAgent implements Agent {
 				cause: `The model was still calling tools after ${String(this.maxSteps)} steps.`,
 			});
 		} catch (error) {
+			// The run ends only after the agents still working, which stop with it: what they
+			// changed and spent is the run's.
+			await background.stop();
 			let failure = error;
 			if (effects.toolRan && error instanceof RecoverableError) {
 				// RetryingAgent would run the whole prompt again, and with it every tool this run
@@ -1193,7 +1208,7 @@ export class LLMAgent implements Agent {
 			}
 
 			// The run spent the tokens of every step before the one that failed.
-			throw withSpentTokens(failure, tokens, unreported);
+			throw withSpentTokens(failure, tokens, unreported || background.usageUnknown);
 		}
 	}
 }

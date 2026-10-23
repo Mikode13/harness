@@ -80,17 +80,60 @@ export class RunEndingToolError extends Error {
 export interface PreparingTool extends ToolDefinition {
 	/** Describes the model's input without exposing preparation details to the provider. */
 	summarize?: ToolSummarizer;
-	/**
-	 * Its calls run at the same time as the other calls of their step whose tool is `parallel`,
-	 * such as agents a parent delegates to. Every other call runs alone, in order.
-	 */
-	readonly parallel?: true;
 	/** Rejects with a message for the model when the call cannot run. */
 	prepare(input: unknown, signal: AbortSignal, call: ToolCallContext): Promise<PreparedCall>;
 }
 
+/** What an agent a call handed a task to answered, for the model that sent it. */
+export interface DelegatedAnswer {
+	readonly text: string;
+	/** It failed, and `text` says why. */
+	readonly failed?: true;
+}
+
+/** An agent a call handed a task to, working in the background until it answers. */
+export interface Delegated {
+	/** Which agent it is, as its `subagent` events name it: `explorer`, or the tool's name. */
+	readonly name: string;
+	/** Its number among the agents of its call, from 1, as its `subagent` events carry it. */
+	readonly subagent: number;
+	/** The task it was given, as the model wrote it. */
+	readonly task: string;
+	/**
+	 * Its answer for the model that sent it, or why it failed. It rejects only when the run was
+	 * cancelled, or with a `RunEndingToolError`.
+	 */
+	readonly answer: Promise<DelegatedAnswer>;
+}
+
+/**
+ * A call that hands tasks to agents, checked before anyone approves it. Once approved, `start`
+ * sends them and the call answers at once: they work in the background, and each one's answer
+ * reaches the model when it finishes.
+ */
+export interface PreparedDelegation {
+	readonly risk: ToolRisk;
+	/** The agents may run a consumer's tools, whose changes the history does not record. */
+	readonly unrecorded?: true;
+	start(signal: AbortSignal): readonly Delegated[];
+}
+
+/**
+ * A tool built by the harness whose calls hand tasks to agents working in the background, such
+ * as `explore`. Internal.
+ */
+export interface DelegatingTool extends ToolDefinition {
+	summarize?: ToolSummarizer;
+	/** Rejects with a message for the model when the tasks cannot be handed over. */
+	delegate(input: unknown, signal: AbortSignal, call: ToolCallContext): Promise<PreparedDelegation>;
+}
+
 /** What an agent can run: a consumer's `Tool`, or one the harness built. */
-export type AgentTool = Tool | PreparingTool;
+export type AgentTool = Tool | PreparingTool | DelegatingTool;
+
+export function isDelegating(tool: AgentTool): tool is DelegatingTool {
+	return 'delegate' in tool;
+}
 
 function isPreparing(tool: AgentTool): tool is PreparingTool {
 	return 'prepare' in tool;
@@ -101,7 +144,7 @@ function isPreparing(tool: AgentTool): tool is PreparingTool {
  * risk judged now, and later runs on the input as the model sent it.
  */
 export async function prepareCall(
-	tool: AgentTool,
+	tool: Tool | PreparingTool,
 	input: unknown,
 	signal: AbortSignal,
 	call: ToolCallContext,

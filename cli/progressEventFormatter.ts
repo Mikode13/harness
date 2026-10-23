@@ -18,10 +18,19 @@ interface PendingTool {
 	description: string;
 }
 
+type SubagentEnded = Extract<ProgressEvent, { type: 'subagentEnded' }>;
+
 const statusIcon = {
 	completed: '✓',
 	error: '✗',
 	denied: '⊘',
+	// It sent agents to work in the background; each one's end is a line of its own.
+	sent: '↗',
+} as const;
+const endIcon = {
+	answered: '✓',
+	failed: '✗',
+	stopped: '⊘',
 } as const;
 const summaryWidth = 30;
 // Each subagent's lines in a color of their own, so agents working at once read as threads.
@@ -39,6 +48,8 @@ export class ProgressEventFormatter {
 	private readonly style: ProgressStyler;
 	private readonly pending = new Map<string, PendingTool>();
 	private readonly threads = new Map<string, StyleFormat>();
+	// The subagents at work, by thread, from their first event until they end.
+	private readonly working = new Map<string, { label: string; startedAt: number }>();
 	private lastAgent: ProgressEvent['agent'];
 
 	constructor({
@@ -91,6 +102,8 @@ export class ProgressEventFormatter {
 				);
 			case 'subagent':
 				return this.formatSubagent(item);
+			case 'subagentEnded':
+				return this.formatSubagentEnded(item);
 			case 'turnStarted':
 			case 'turnEnded':
 				return undefined;
@@ -101,15 +114,21 @@ export class ProgressEventFormatter {
 		}
 	}
 
-	/** A description for the current spinner, or undefined when no tool is running. */
+	/**
+	 * A description for the current spinner: a running tool, or else a subagent at work, or
+	 * undefined when there is neither.
+	 */
 	spinnerDescription(): string | undefined {
-		return this.pending.values().next().value?.description;
+		return (
+			this.pending.values().next().value?.description ?? this.working.values().next().value?.label
+		);
 	}
 
 	/** Ends a turn's presentation state, including a call interrupted by cancellation. */
 	reset(): void {
 		this.pending.clear();
 		this.threads.clear();
+		this.working.clear();
 		this.lastAgent = undefined;
 	}
 
@@ -123,12 +142,14 @@ export class ProgressEventFormatter {
 		// The thread of the subagent that started this one, for a subagent's own subagents.
 		outer?: { key: string; label: string },
 	): string | undefined {
-		const key = `${outer?.key ?? ''}/${item.callId}:${String(item.subagent)}`;
-		const label = `${outer?.label ?? item.agent ?? 'agent'} › ${item.name} ${String(item.subagent)}`;
+		const { key, label } = this.threadOf(item, outer);
+		if (!this.working.has(key)) this.working.set(key, { label, startedAt: this.now() });
 		const { event } = item;
 		switch (event.type) {
 			case 'subagent':
 				return this.formatSubagent({ ...event, agent: item.agent }, { key, label });
+			case 'subagentEnded':
+				return this.formatSubagentEnded({ ...event, agent: item.agent }, { key, label });
 			case 'tool':
 				return this.formatTool({ ...event, agent: item.agent }, key, label, this.colorOf(key));
 			case 'agentMessage':
@@ -139,6 +160,35 @@ export class ProgressEventFormatter {
 			default:
 				return undefined;
 		}
+	}
+
+	/** The thread of a subagent: its key, and its label, the path of agents that led to it. */
+	private threadOf(
+		item: { callId: string; subagent: number; name: string; agent?: ProgressEvent['agent'] },
+		outer?: { key: string; label: string },
+	): { key: string; label: string } {
+		return {
+			key: `${outer?.key ?? ''}/${item.callId}:${String(item.subagent)}`,
+			label: `${outer?.label ?? item.agent ?? 'agent'} › ${item.name} ${String(item.subagent)}`,
+		};
+	}
+
+	/** One line, in the subagent's color, once it ended: how, and after how long at work. */
+	private formatSubagentEnded(
+		item: SubagentEnded,
+		outer?: { key: string; label: string },
+	): string | undefined {
+		const { key, label } = this.threadOf(item, outer);
+		const working = this.working.get(key);
+		this.working.delete(key);
+		const ending = [
+			item.outcome === 'answered' ? 'ended' : item.outcome,
+			working ? formatDuration(Math.max(0, this.now() - working.startedAt)) : undefined,
+		]
+			.filter(Boolean)
+			.join(' · ');
+		const line = `  ${endIcon[item.outcome]} ${label} | ${ending}`;
+		return this.withRole(item.agent, this.style(this.colorOf(key), line));
 	}
 
 	private colorOf(thread: string): StyleFormat {
@@ -175,8 +225,8 @@ export class ProgressEventFormatter {
 		const role = label ?? 'agent';
 		const summary = truncate(compact(item.summary ?? ''), summaryWidth);
 		const ending =
-			item.status === 'denied'
-				? 'denied'
+			item.status === 'denied' || item.status === 'sent'
+				? item.status
 				: [
 						item.status === 'error'
 							? item.exitCode === undefined
