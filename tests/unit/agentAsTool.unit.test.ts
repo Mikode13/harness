@@ -12,15 +12,23 @@ import type {
 import { delegationOf, runContextOf } from '../../src/agent/domain/runContext.ts';
 import type { Transcript } from '../../src/agent/domain/transcript.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
+import type { LLMClient, LLMResponse } from '../../src/llm/domain/llm.ts';
+import type { Message, MessagePart } from '../../src/llm/domain/message.ts';
 import { createHistory } from '../../src/recovery/infrastructure/createHistory.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
 import { InvalidAgentConfigError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
-import type { AgentTool, PreparingTool } from '../../src/tools/domain/preparedCall.ts';
+import type {
+	AgentTool,
+	CommandEnding,
+	DelegatingTool,
+	PreparingTool,
+} from '../../src/tools/domain/preparedCall.ts';
 import type { Tool } from '../../src/tools/domain/tool.ts';
 import {
 	agentAsTool,
 	type AgentAsToolOptions,
 } from '../../src/tools/infrastructure/agentAsTool.ts';
+import { createExploreTool } from '../../src/tools/infrastructure/exploreTool.ts';
 import {
 	assistantResponse,
 	FakeLLMClient,
@@ -39,24 +47,77 @@ function delegation(
 		name: 'commit',
 		description: 'Commits the work',
 		...options,
-	}) as unknown as PreparingTool;
+	}) as unknown as DelegatingTool;
 }
 
-/** A parent that hands `task` to `tool` in one step, then answers "parent done". */
+/** The answers of agents the harness has given the model in `context`, in order. */
+function answersIn(context: Message[] | undefined): string[] {
+	return (context ?? [])
+		.filter(message => message.role === 'user')
+		.flatMap(message => message.content)
+		.flatMap(part =>
+			part.type === 'text' && part.text.startsWith('This message is from the harness')
+				? part.text.split('\n\n').slice(1)
+				: [],
+		);
+}
+
+/**
+ * A model that takes `steps` in order, then says it waits until it has read the answers of
+ * `agents` agents, and answers `final`: agents finish in their own time.
+ */
+class WaitingModel implements LLMClient {
+	readonly contexts: Message[][] = [];
+	private readonly steps: LLMResponse[];
+	private readonly agents: number;
+	private readonly final: string;
+
+	constructor(steps: LLMResponse[], agents: number, final = 'parent done') {
+		this.steps = steps;
+		this.agents = agents;
+		this.final = final;
+	}
+
+	send({ context }: { context: Message[] }, sendSignal: AbortSignal): Promise<LLMResponse> {
+		if (sendSignal.aborted) {
+			return Promise.reject(new DOMException('The operation was aborted', 'AbortError'));
+		}
+		this.contexts.push(structuredClone(context));
+		const next =
+			this.steps.shift() ??
+			textResponse(answersIn(context).length >= this.agents ? this.final : 'I wait.');
+		return Promise.resolve(structuredClone(next));
+	}
+}
+
+/** A parent that hands each task to `tool` in one step, then answers "parent done". */
 function delegatingParent(tool: AgentTool, ...tasks: string[]) {
-	const llmClient = new FakeLLMClient(
-		assistantResponse(
-			tasks.map((task, index) => toolCall(`call-${String(index + 1)}`, tool.name, { task })),
-		),
-		textResponse('parent done'),
+	const llmClient = new WaitingModel(
+		[
+			assistantResponse(
+				tasks.map((task, index) => toolCall(`call-${String(index + 1)}`, tool.name, { task })),
+			),
+		],
+		tasks.length,
 	);
 	return { llmClient, agent: new LLMAgent({ llmClient, tools: [tool] }) };
 }
 
 /** What the model was sent back for each tool call of its first step. */
-function resultsOf(llmClient: FakeLLMClient) {
-	return llmClient.contexts[1]?.at(-1)?.content;
+function resultsOf(llmClient: { contexts: Message[][] }): MessagePart[] | undefined {
+	return llmClient.contexts[1]?.find(message => message.role === 'tool')?.content;
 }
+
+/** Every answer of an agent the model read by its last step. */
+function answersOf(llmClient: { contexts: Message[][] }): string[] {
+	return answersIn(llmClient.contexts.at(-1));
+}
+
+/** The call's result: the agents it sent work in the background. */
+const sent = (...names: string[]) =>
+	expect.stringContaining(
+		`Sent to work in the background: ${names.join(', ')}.`,
+	) as unknown as string;
 
 function destructiveTool(name = 'wipe'): Tool {
 	return {
@@ -97,12 +158,16 @@ describe('agentAsTool', () => {
 		const response = await agent.run('work', { signal, onProgress: event => events.push(event) });
 
 		expect(response.response).toBe('parent done');
-		// Two parent steps and one step of each child.
-		expect(response.tokens).toEqual(tokens(4));
+		// Every step of the parent and one step of each child.
+		expect(response.tokens).toEqual(tokens(llmClient.contexts.length + 2));
 		expect(children).toHaveLength(2);
 		expect(resultsOf(llmClient)).toEqual([
-			expect.objectContaining({ callId: 'call-1', output: 'committed', isError: false }),
-			expect.objectContaining({ callId: 'call-2', output: 'committed', isError: false }),
+			expect.objectContaining({ callId: 'call-1', output: sent('commit 1'), isError: false }),
+			expect.objectContaining({ callId: 'call-2', output: sent('commit 1'), isError: false }),
+		]);
+		expect(answersOf(llmClient).sort()).toEqual([
+			'commit 1, sent by your call call-1 with the task: Commit a.txt\nIts answer:\ncommitted',
+			'commit 1, sent by your call call-2 with the task: Commit b.txt\nIts answer:\ncommitted',
 		]);
 		expect(runs.map(options => delegationOf(options))).toEqual([
 			{ tool: 'commit', callId: 'call-1', subagent: 1, depth: 1 },
@@ -111,7 +176,20 @@ describe('agentAsTool', () => {
 		// Both children run in the parent's run.
 		expect(runContextOf(runs[0] ?? { signal })).toBe(runContextOf(runs[1] ?? { signal }));
 		expect(runContextOf(runs[0] ?? { signal })).toBeDefined();
-		expect(events).toContainEqual({
+		// The call is narrated as sent, then the agent's work, then its end.
+		const first = events.filter(
+			event =>
+				('callId' in event && event.callId === 'call-1') ||
+				('id' in event && event.id === 'call-1'),
+		);
+		expect(first.map(event => ('status' in event ? event.status : event.type))).toEqual([
+			'in_progress',
+			'sent',
+			'subagent',
+			'subagent',
+			'subagentEnded',
+		]);
+		expect(first).toContainEqual({
 			type: 'subagent',
 			callId: 'call-1',
 			subagent: 1,
@@ -119,9 +197,16 @@ describe('agentAsTool', () => {
 			task: 'Commit a.txt',
 			event: { type: 'agentMessage', message: 'committed' },
 		});
+		expect(first.at(-1)).toEqual({
+			type: 'subagentEnded',
+			callId: 'call-1',
+			subagent: 1,
+			name: 'commit',
+			outcome: 'answered',
+		});
 	});
 
-	it('runs the delegations of one step at once, and the other calls alone, in order', async () => {
+	it('lets the caller work while its agents do, and gives it each answer as it arrives', async () => {
 		const started: string[] = [];
 		const finish: Record<string, (response: AgentResponse) => void> = {};
 		const tool = delegation({
@@ -139,6 +224,8 @@ describe('agentAsTool', () => {
 				toolCall('call-2', 'commit', { task: 'b' }),
 				toolCall('call-3', 'note', {}),
 			]),
+			textResponse('I wait for a and b.'),
+			textResponse('I wait for a.'),
 			textResponse('parent done'),
 		);
 		const execute = vi.fn(() => Promise.resolve('noted'));
@@ -149,42 +236,220 @@ describe('agentAsTool', () => {
 			risk: () => 'safe',
 			execute,
 		};
-		const running = new LLMAgent({ llmClient, tools: [tool, note] }).run('work', { signal });
-
-		await vi.waitFor(() => {
-			expect(started).toEqual(['a', 'b']);
+		const events: ProgressEvent[] = [];
+		const running = new LLMAgent({ llmClient, tools: [tool, note] }).run('work', {
+			signal,
+			onProgress: event => events.push(event),
 		});
-		expect(execute).not.toHaveBeenCalled();
-		finish.b?.({ response: 'b done', duration: 0 });
-		finish.a?.({ response: 'a done', duration: 0 });
-		await running;
 
+		// Its next step comes while both agents still work, with every call answered.
+		await vi.waitFor(() => {
+			expect(llmClient.contexts).toHaveLength(2);
+		});
+		expect(started).toEqual(['a', 'b']);
 		expect(execute).toHaveBeenCalledOnce();
 		expect(resultsOf(llmClient)).toEqual([
-			expect.objectContaining({ callId: 'call-1', output: 'a done' }),
-			expect.objectContaining({ callId: 'call-2', output: 'b done' }),
+			expect.objectContaining({ callId: 'call-1', output: sent('commit 1') }),
+			expect.objectContaining({ callId: 'call-2', output: sent('commit 1') }),
 			expect.objectContaining({ callId: 'call-3', output: 'noted' }),
+		]);
+		// Its answer while they work is a wait, narrated like any message.
+		await vi.waitFor(() => {
+			expect(events).toContainEqual({ type: 'agentMessage', message: 'I wait for a and b.' });
+		});
+		expect(llmClient.contexts).toHaveLength(2);
+
+		// It goes on with the first to finish, without waiting for the other.
+		finish.b?.({ response: 'b done', duration: 0 });
+		await vi.waitFor(() => {
+			expect(llmClient.contexts).toHaveLength(3);
+		});
+		expect(answersIn(llmClient.contexts[2])).toEqual([
+			'commit 1, sent by your call call-2 with the task: b\nIts answer:\nb done',
+		]);
+		finish.a?.({ response: 'a done', duration: 0 });
+
+		await expect(running).resolves.toMatchObject({ response: 'parent done' });
+		expect(answersIn(llmClient.contexts[3]).at(-1)).toBe(
+			'commit 1, sent by your call call-1 with the task: a\nIts answer:\na done',
+		);
+	});
+
+	it("gives an answer that arrived while the caller ran tools after that step's results", async () => {
+		const tool = delegation({
+			createAgent: () => new LLMAgent({ llmClient: new FakeLLMClient(textResponse('committed')) }),
+		});
+		// It works long enough for the agent to finish meanwhile.
+		const slow: Tool = {
+			name: 'slow',
+			description: 'Takes a while',
+			inputSchema: { type: 'object', properties: {}, required: [] },
+			risk: () => 'safe',
+			execute: () =>
+				new Promise(resolve =>
+					setTimeout(() => {
+						resolve('slow done');
+					}, 10),
+				),
+		};
+		const llmClient = new WaitingModel(
+			[
+				assistantResponse([
+					toolCall('call-1', 'commit', { task: 'Commit' }),
+					toolCall('call-2', 'slow', {}),
+				]),
+			],
+			1,
+		);
+
+		await new LLMAgent({ llmClient, tools: [tool, slow] }).run('work', { signal });
+
+		// The step after: every call's result, then the answer, as the model reads them.
+		expect(llmClient.contexts).toHaveLength(2);
+		expect(llmClient.contexts[1]?.slice(-2)).toEqual([
+			{
+				role: 'tool',
+				content: [
+					expect.objectContaining({ callId: 'call-1', output: sent('commit 1') }),
+					expect.objectContaining({ callId: 'call-2', output: 'slow done' }),
+				],
+			},
+			{
+				role: 'user',
+				content: [
+					{
+						type: 'text',
+						text: 'This message is from the harness, not the user: agents you sent finished.\n\ncommit 1, sent by your call call-1 with the task: Commit\nIts answer:\ncommitted',
+					},
+				],
+			},
 		]);
 	});
 
-	it('gives the model an agent that failed as the call error, with what it spent', async () => {
+	it('gives each explorer of one explore call to the caller as it finishes', async () => {
+		const finish: Record<string, (response: AgentResponse) => void> = {};
+		const explore = createExploreTool(() => ({
+			run: (question: string) =>
+				new Promise(resolve => {
+					finish[question] = resolve;
+				}),
+		}));
+		const llmClient = new FakeLLMClient(
+			assistantResponse([toolCall('call-1', 'explore', { questions: ['a?', 'b?'] })]),
+			textResponse('I wait for both.'),
+			textResponse('I wait for a.'),
+			textResponse('parent done'),
+		);
+		const running = new LLMAgent({ llmClient, tools: [explore] }).run('work', { signal });
+
+		await vi.waitFor(() => {
+			expect(llmClient.contexts).toHaveLength(2);
+		});
+		finish['b?']?.({ response: 'b is here', duration: 0 });
+		await vi.waitFor(() => {
+			expect(llmClient.contexts).toHaveLength(3);
+		});
+		expect(answersIn(llmClient.contexts[2])).toEqual([
+			'explorer 2, sent by your call call-1 with the task: b?\nIts answer:\nb is here',
+		]);
+		finish['a?']?.({ response: 'a is here', duration: 0 });
+
+		await expect(running).resolves.toMatchObject({ response: 'parent done' });
+		expect(answersIn(llmClient.contexts[3]).at(-1)).toBe(
+			'explorer 1, sent by your call call-1 with the task: a?\nIts answer:\na is here',
+		);
+	});
+
+	it('ends only once every agent it sent has answered, and the model read it', async () => {
+		let finish!: (response: AgentResponse) => void;
+		const tool = delegation({
+			createAgent: () => ({
+				run: () =>
+					new Promise(resolve => {
+						finish = resolve;
+					}),
+			}),
+		});
+		const { llmClient, agent } = delegatingParent(tool, 'Commit');
+		let ended = false;
+		const running = agent.run('work', { signal }).finally(() => {
+			ended = true;
+		});
+
+		await vi.waitFor(() => {
+			expect(llmClient.contexts).toHaveLength(2);
+		});
+		await new Promise(resolve => setTimeout(resolve, 10));
+		// It answered "I wait.", and makes no call while the agent works.
+		expect(ended).toBe(false);
+		expect(llmClient.contexts).toHaveLength(2);
+		finish({ response: 'committed', duration: 0 });
+
+		await expect(running).resolves.toMatchObject({ response: 'parent done' });
+		expect(llmClient.contexts).toHaveLength(3);
+	});
+
+	it('fails at its step limit when it is still waiting for an agent', async () => {
+		let stopped: AbortSignal | undefined;
+		// It works until it is stopped.
+		const tool = delegation({
+			createAgent: () => ({
+				run: (_: string, options: RunOptions) =>
+					new Promise((_resolve, reject) => {
+						options.signal.addEventListener('abort', () => {
+							stopped = options.signal;
+							reject(options.signal.reason as Error);
+						});
+					}),
+			}),
+		});
+		const llmClient = new WaitingModel(
+			[assistantResponse([toolCall('call-1', 'commit', { task: 'Commit' })])],
+			1,
+		);
+
+		const events: ProgressEvent[] = [];
+
+		await expect(
+			new LLMAgent({ llmClient, tools: [tool], maxSteps: 2 }).run('work', {
+				signal,
+				onProgress: event => events.push(event),
+			}),
+		).rejects.toMatchObject({
+			message: 'The LLM did not finish within its step limit',
+			cause: 'The model was still waiting for the agents it sent after 2 steps.',
+			// The agent was stopped before it reported what it spent.
+			usageUnreported: true,
+		});
+		expect(stopped?.aborted).toBe(true);
+		expect(events.at(-1)).toEqual({
+			type: 'subagentEnded',
+			callId: 'call-1',
+			subagent: 1,
+			name: 'commit',
+			outcome: 'stopped',
+		});
+	});
+
+	it('gives the model an agent that failed as its answer, with what it spent', async () => {
 		const tool = delegation({
 			createAgent: () =>
 				new LLMAgent({ llmClient: new FakeLLMClient(textResponse('', { stopReason: 'refused' })) }),
 		});
 		const { llmClient, agent } = delegatingParent(tool, 'Commit');
+		const events: ProgressEvent[] = [];
 
-		const response = await agent.run('work', { signal });
+		const response = await agent.run('work', { signal, onProgress: event => events.push(event) });
 
 		expect(response.response).toBe('parent done');
-		expect(response.tokens).toEqual(tokens(3));
-		expect(resultsOf(llmClient)).toEqual([
-			expect.objectContaining({
-				isError: true,
-				output: expect.stringContaining(
-					'The agent failed: The LLM stopped before completing its answer',
-				) as string,
-			}),
+		expect(events).toContainEqual(
+			expect.objectContaining({ type: 'subagentEnded', outcome: 'failed' }),
+		);
+		expect(response.tokens).toEqual(tokens(llmClient.contexts.length + 1));
+		expect(answersOf(llmClient)).toEqual([
+			expect.stringContaining(
+				'Its answer:\nThe agent failed: The LLM stopped before completing its answer',
+			),
 		]);
 	});
 
@@ -234,9 +499,9 @@ describe('agentAsTool', () => {
 		const tool = delegation({
 			createAgent: () => new LLMAgent({ llmClient: childClient, tools: [destructiveTool()] }),
 		});
-		const llmClient = new FakeLLMClient(
-			assistantResponse([toolCall('call-1', 'commit', { task: 'Commit' })]),
-			textResponse('parent done'),
+		const llmClient = new WaitingModel(
+			[assistantResponse([toolCall('call-1', 'commit', { task: 'Commit' })])],
+			1,
 		);
 
 		await new LLMAgent({ llmClient, tools: [tool], autoApprove: true }).run('work', { signal });
@@ -271,10 +536,10 @@ describe('agentAsTool', () => {
 
 		expect(failure).toBeInstanceOf(UnrecoverableError);
 		expect(failure).toMatchObject({ message: 'The tool call approver failed' });
-		// The parent and the child each spent one step.
-		expect((failure as UnrecoverableError).tokens).toEqual(tokens(2));
-		// The parent's model never reads a result it would carry on from.
-		expect(llmClient.contexts).toHaveLength(1);
+		// Every step of the parent, and the child's one.
+		expect((failure as UnrecoverableError).tokens).toEqual(tokens(llmClient.contexts.length + 1));
+		// The parent's model never reads an answer it would carry on from.
+		expect(llmClient.contexts.flatMap(answersIn)).toEqual([]);
 	});
 
 	it('ends the run when the asker answers wrongly inside the agent', async () => {
@@ -348,25 +613,27 @@ describe('agentAsTool', () => {
 						});
 			},
 		});
+		const coder = new WaitingModel(
+			[
+				assistantResponse([toolCall('k1', 'commit', { task: 'Commit a' })]),
+				assistantResponse([toolCall('k2', 'commit', { task: 'Commit b' })]),
+			],
+			2,
+			'coded',
+		);
 		const code = delegation({
 			name: 'code',
-			createAgent: () =>
-				new LLMAgent({
-					llmClient: new FakeLLMClient(
-						assistantResponse([toolCall('k1', 'commit', { task: 'Commit a' })]),
-						assistantResponse([toolCall('k2', 'commit', { task: 'Commit b' })]),
-						textResponse('coded'),
-					),
-					tools: [commit],
-				}),
+			createAgent: () => new LLMAgent({ llmClient: coder, tools: [commit] }),
 		});
-		const { agent } = delegatingParent(code, 'Code it');
+		const { llmClient, agent } = delegatingParent(code, 'Code it');
 		const events: ProgressEvent[] = [];
 
 		const response = await agent.run('work', { signal, onProgress: event => events.push(event) });
 
-		// The parent's two steps, the coder's three, and one step of each commit.
-		expect(response.tokens).toEqual(tokens(7));
+		// Every step of the parent and of the coder, and one step of each commit.
+		expect(response.tokens).toEqual(tokens(llmClient.contexts.length + coder.contexts.length + 2));
+		// The coder ended only once both its commits had answered.
+		expect(answersOf(coder)).toHaveLength(2);
 		expect(events).toContainEqual({
 			type: 'subagent',
 			callId: 'call-1',
@@ -396,7 +663,7 @@ describe('agentAsTool', () => {
 		expect(failure).toMatchObject({ usageUnreported: true, tokens: undefined });
 	});
 
-	it('stops the other delegations of the step when one ends the run', async () => {
+	it('stops every agent still working when one ends the run', async () => {
 		let stoppedSignal: AbortSignal | undefined;
 		const tool = delegation({
 			createAgent: () => ({
@@ -419,7 +686,7 @@ describe('agentAsTool', () => {
 		expect(stoppedSignal?.aborted).toBe(true);
 	});
 
-	it("leaves the run's usage unknown when it stopped a delegation that had spent", async () => {
+	it("leaves the run's usage unknown when it stopped an agent that had spent", async () => {
 		let holding!: () => void;
 		const held = new Promise<void>(resolve => {
 			holding = resolve;
@@ -483,6 +750,105 @@ describe('agentAsTool', () => {
 			name: 'AbortError',
 		});
 		expect(llmClient.contexts).toHaveLength(1);
+	});
+
+	it('stops every agent when the run is cancelled while it waits, and ends once they have', async () => {
+		const controller = new AbortController();
+		const stopped: string[] = [];
+		const tool = delegation({
+			createAgent: () => ({
+				run: (task: string, options: RunOptions) =>
+					new Promise((_resolve, reject) => {
+						options.signal.addEventListener('abort', () => {
+							// It takes a moment to stop, and the run waits for it.
+							setTimeout(() => {
+								stopped.push(task);
+								reject(options.signal.reason as Error);
+							}, 5);
+						});
+					}),
+			}),
+		});
+		const { llmClient, agent } = delegatingParent(tool, 'a', 'b');
+		const running = agent.run('work', { signal: controller.signal });
+
+		await vi.waitFor(() => {
+			expect(llmClient.contexts).toHaveLength(2);
+		});
+		controller.abort();
+
+		await expect(running).rejects.toMatchObject({ name: 'AbortError' });
+		expect(stopped.sort()).toEqual(['a', 'b']);
+	});
+
+	it('never takes a check passing alike for a loop while an agent that may change files works', async () => {
+		// A check that passes again is a loop only when nothing could have changed in between.
+		const ending: CommandEnding = {
+			passed: true,
+			how: 'exited with code 0',
+			output: 'all passed',
+			fingerprint: 'all passed',
+			state: 'one',
+			changed: [],
+		};
+		const command: PreparingTool = {
+			name: 'runCommand',
+			description: 'Runs a command',
+			inputSchema: { type: 'object', properties: {}, required: [] },
+			prepare: () =>
+				Promise.resolve({ risk: 'safe', ending: () => ending, run: () => Promise.resolve('ran') }),
+		};
+		let finish!: (response: AgentResponse) => void;
+		const tool = delegation({
+			createAgent: () => ({
+				run: () =>
+					new Promise(resolve => {
+						finish = resolve;
+					}),
+			}),
+		});
+		const check = (id: string) => toolCall(id, 'runCommand', {});
+		const llmClient = new WaitingModel(
+			[
+				assistantResponse([toolCall('call-1', 'commit', { task: 'Commit' }), check('check-1')]),
+				assistantResponse([check('check-2')]),
+				assistantResponse([check('check-3')]),
+			],
+			1,
+		);
+		const running = new LLMAgent({ llmClient, tools: [tool, command] }).run('work', { signal });
+
+		await vi.waitFor(() => {
+			expect(llmClient.contexts).toHaveLength(4);
+		});
+		finish({ response: 'committed', duration: 0 });
+		await running;
+
+		const checks = llmClient.contexts
+			.at(-1)
+			?.flatMap(message => message.content)
+			.flatMap(part =>
+				part.type === 'toolResult' && part.name === 'runCommand' ? [part.output] : [],
+			);
+		expect(checks).toEqual(['ran', 'ran', 'ran']);
+	});
+
+	it('ends the run when the progress callback fails on what an agent narrates', async () => {
+		const tool = delegation({
+			createAgent: () => new LLMAgent({ llmClient: new FakeLLMClient(textResponse('committed')) }),
+		});
+		const { llmClient, agent } = delegatingParent(tool, 'Commit');
+
+		await expect(
+			agent.run('work', {
+				signal,
+				onProgress: event => {
+					if (event.type === 'subagent') throw new Error('the terminal closed');
+				},
+			}),
+		).rejects.toMatchObject({ message: 'LLM agent progress callback failed' });
+		// The parent's model never reads the answer of an agent whose narration was lost.
+		expect(llmClient.contexts.flatMap(answersIn)).toEqual([]);
 	});
 
 	it('refuses a call deeper than its maxDepth, and tells the model why', async () => {
@@ -566,11 +932,13 @@ describe('agentAsTool', () => {
 		const createAgent = vi.fn();
 
 		await expect(
-			delegation({ createAgent }).prepare({ task: 'Commit' }, signal, call),
+			delegation({ createAgent }).delegate({ task: 'Commit' }, signal, call),
 		).resolves.toMatchObject({ risk: 'mutating' });
 		await expect(
-			delegation({ createAgent, risk: 'destructive' }).prepare({ task: 'Commit' }, signal, call),
+			delegation({ createAgent, risk: 'destructive' }).delegate({ task: 'Commit' }, signal, call),
 		).resolves.toMatchObject({ risk: 'destructive' });
+		// Preparing hands nothing over.
+		expect(createAgent).not.toHaveBeenCalled();
 	});
 });
 
@@ -612,12 +980,14 @@ describe('agentAsTool over a workspace', () => {
 		const parentTools = [replaceTool(await writesOver(repo, store)), tool];
 		writeFileSync(join(repo, 'a.txt'), 'a before\n');
 		writeFileSync(join(repo, 'b.txt'), 'b before\n');
-		const llmClient = new FakeLLMClient(
-			assistantResponse([
-				toolCall('replace-a', 'replace', { path: 'a.txt', content: 'a\n' }),
-				toolCall('call-1', 'commit', { task: 'Write b' }),
-			]),
-			textResponse('parent done'),
+		const llmClient = new WaitingModel(
+			[
+				assistantResponse([
+					toolCall('replace-a', 'replace', { path: 'a.txt', content: 'a\n' }),
+					toolCall('call-1', 'commit', { task: 'Write b' }),
+				]),
+			],
+			1,
 		);
 
 		const { runId } = await new LLMAgent({ llmClient, tools: parentTools }).run('work', {

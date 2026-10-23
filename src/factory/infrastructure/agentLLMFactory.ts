@@ -559,7 +559,7 @@ const batchingReads =
 // The explorers find and the role reads, as a reader asks a librarian where a book is and then
 // reads it: their reports are where to look, not a summary to work from.
 const exploring =
-	'To find where something is in the repository, ask explorers instead of searching yourself: send `explore` the independent questions you have in one call, and each answers with the files and line ranges that hold what you asked. Then read those ranges yourself, all of them in one readFiles call.';
+	'To find where something is in the repository, ask explorers instead of searching yourself: send `explore` the independent questions you have in one call. They work in the background while you go on, and each one answers, once it finishes, with the files and line ranges that hold what you asked. Then read those ranges yourself, all of them in one readFiles call.';
 
 // Each provider's cheaper model, which only finds and reads.
 const explorerRoles = {
@@ -588,7 +588,7 @@ const repositoryGuidance: Record<CommandRole, string> = {
  * - The planner and the reviewer read: `listFiles`, `searchText`, `readFile`, `readFiles`, `showChanges`,
  *   the current task's changes as far as each may read them, and `explore`, which sends up to 4
  *   read-only explorers at once on the role's provider's cheaper model, each a new agent that
- *   starts from its question.
+ *   starts from its question and works in the background while the role goes on.
  * - The executor gets its provider's file tools (see `createFileTools`), and changes files only
  *   in a `write` root; `autoApprove` reaches only it.
  * - Each role has its own step limit: `maxSteps`, 80 for the executor and 65 for the others by

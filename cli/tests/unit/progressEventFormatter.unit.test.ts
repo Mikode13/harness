@@ -297,7 +297,95 @@ describe('ProgressEventFormatter', () => {
 			),
 		).toBe('  planner › explorer 1: add is in math.ts\n    line 3');
 		expect(formatter.format(explorer(1, { type: 'reasoning', message: 'hmm' }))).toBeUndefined();
+		// No call runs, but the explorers are still at work.
+		expect(formatter.spinnerDescription()).toBe('planner › explorer 1');
+	});
+
+	it('marks a call that sent agents, then each agent as it ends, how and after how long', () => {
+		let now = 0;
+		const formatter = new ProgressEventFormatter({ now: () => now });
+		const explore = (status: 'in_progress' | 'sent'): ProgressEvent => ({
+			type: 'tool',
+			id: 'p1',
+			name: 'explore',
+			status,
+			summary: '2 questions',
+			agent: 'planner',
+		});
+		const explorer = (subagent: number): ProgressEvent => ({
+			type: 'subagent',
+			callId: 'p1',
+			subagent,
+			name: 'explorer',
+			task: 'Where?',
+			event: { type: 'agentMessage', message: 'looking' },
+			agent: 'planner',
+		});
+		const ended = (
+			subagent: number,
+			outcome: 'answered' | 'failed' | 'stopped',
+		): ProgressEvent => ({
+			type: 'subagentEnded',
+			callId: 'p1',
+			subagent,
+			name: 'explorer',
+			outcome,
+			agent: 'planner',
+		});
+
+		formatter.format(explore('in_progress'));
+		// Sent, not done: no duration, and no tick.
+		expect(plain(formatter.format(explore('sent')))).toBe(
+			'\nplanner\n  ↗ planner | explore | 2 questions | sent',
+		);
+		formatter.format(explorer(1));
+		formatter.format(explorer(2));
+		expect(formatter.spinnerDescription()).toBe('planner › explorer 1');
+		now = 1500;
+		expect(plain(formatter.format(ended(1, 'answered')))).toBe(
+			'  ✓ planner › explorer 1 | ended · 1.5 s',
+		);
+		expect(formatter.spinnerDescription()).toBe('planner › explorer 2');
+		expect(plain(formatter.format(ended(2, 'failed')))).toBe(
+			'  ✗ planner › explorer 2 | failed · 1.5 s',
+		);
 		expect(formatter.spinnerDescription()).toBeUndefined();
+	});
+
+	it("ends a subagent's own subagent in its thread, and says when one was stopped", () => {
+		const formatter = new ProgressEventFormatter();
+		const coder = (event: ProgressEvent): ProgressEvent => ({
+			type: 'subagent',
+			callId: 'c1',
+			subagent: 1,
+			name: 'code',
+			task: 'Write it',
+			event,
+		});
+
+		formatter.format(
+			coder({
+				type: 'subagent',
+				callId: 'k1',
+				subagent: 1,
+				name: 'commit',
+				task: 'Commit',
+				event: { type: 'agentMessage', message: 'committing' },
+			}),
+		);
+		expect(
+			plain(
+				formatter.format(
+					coder({
+						type: 'subagentEnded',
+						callId: 'k1',
+						subagent: 1,
+						name: 'commit',
+						outcome: 'stopped',
+					}),
+				),
+			),
+		).toMatch(/^ {2}⊘ agent › code 1 › commit 1 \| stopped · \d+ ms$/);
 	});
 
 	it('gives each subagent a color of its own, and labels a subagent of a subagent by its path', () => {

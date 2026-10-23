@@ -188,6 +188,68 @@ function scriptClaude(...responses: AnthropicMessage[]) {
 	return create;
 }
 
+// Only an explorer's instructions say so.
+const explorerMark = 'You find things in a repository';
+
+/**
+ * Answers the roles and the explorers apart, each from its own script, told by their
+ * instructions: explorers work in the background while the role that sent them goes on. They
+ * answer only once the roles have made `rolesFirst` calls, so a role's answer that waits for them
+ * comes before their reports.
+ */
+function apart<Answer>(roles: Answer[], explorers: Answer[], rolesFirst: number) {
+	let roleCalls = 0;
+	let reached!: () => void;
+	const rolesWent = new Promise<void>(resolve => {
+		reached = resolve;
+	});
+	const next = (script: Answer[]) => script.shift() ?? Promise.reject(new Error('Not scripted'));
+	return vi.fn(async (request: unknown) => {
+		if (JSON.stringify(request).includes(explorerMark)) {
+			await rolesWent;
+			return next(explorers);
+		}
+		roleCalls++;
+		if (roleCalls >= rolesFirst) reached();
+		return next(roles);
+	});
+}
+
+function scriptOpenAIApart(roles: Response[], explorers: Response[], rolesFirst: number) {
+	const create = apart(roles, explorers, rolesFirst);
+	vi.mocked(OpenAI).mockImplementation(function () {
+		return { responses: { create } } as unknown as OpenAI;
+	});
+	return create;
+}
+
+function scriptClaudeApart(
+	roles: AnthropicMessage[],
+	explorers: AnthropicMessage[],
+	rolesFirst: number,
+) {
+	const create = apart(roles, explorers, rolesFirst);
+	vi.mocked(Anthropic).mockImplementation(function () {
+		return fakeClaudeSdk(create);
+	});
+	return create;
+}
+
+/** What a role, not an explorer, sent on its `index`th call, as text. */
+function sentByRoles(create: ReturnType<typeof vi.fn>, index: number): string {
+	const roles = create.mock.calls
+		.map(([request]) => JSON.stringify(request))
+		.filter(request => !request.includes(explorerMark));
+	return roles[index] ?? '';
+}
+
+/** What an explorer sent on its `index`th call. */
+function sentByExplorers(create: ReturnType<typeof vi.fn>, index: number): unknown {
+	return create.mock.calls
+		.map(([request]) => request as unknown)
+		.filter(request => JSON.stringify(request).includes(explorerMark))[index];
+}
+
 /** Everything one SDK was sent, as text, to find what a tool returned to the model. */
 function sent(create: ReturnType<typeof vi.fn>, index: number): string {
 	return JSON.stringify(create.mock.calls[index]?.[0]);
@@ -283,16 +345,22 @@ describe('the write tools, end to end through the public exports', () => {
 	});
 
 	it('lets the planner send an explorer, which reads on a cheaper model and reports back', async () => {
-		const openAI = scriptOpenAI(
-			// The planner explores, then plans from the report.
-			openAIResponse(call('p1', 'explore', { questions: ['What does add in src/math.ts do?'] })),
-			// The explorer reads, then reports.
-			openAIResponse(
-				call('x1', 'readFile', { path: 'src/math.ts', fromLine: null, lineCount: null }),
-			),
-			openAIResponse(text('add in src/math.ts subtracts: a - b.')),
-			openAIResponse(text('Make add add.')),
-			openAIResponse(text('Nothing to change yet.')),
+		const openAI = scriptOpenAIApart(
+			[
+				// The planner explores, waits for the report, then plans from it.
+				openAIResponse(call('p1', 'explore', { questions: ['What does add in src/math.ts do?'] })),
+				openAIResponse(text('I wait for the explorer.')),
+				openAIResponse(text('Make add add.')),
+				openAIResponse(text('Nothing to change yet.')),
+			],
+			[
+				// The explorer reads, then reports.
+				openAIResponse(
+					call('x1', 'readFile', { path: 'src/math.ts', fromLine: null, lineCount: null }),
+				),
+				openAIResponse(text('add in src/math.ts subtracts: a - b.')),
+			],
+			2,
 		);
 		scriptClaude(claudeResponse(say('{"decision":"approved"}')));
 		const events: ProgressEvent[] = [];
@@ -303,7 +371,7 @@ describe('the write tools, end to end through the public exports', () => {
 			onProgress: event => events.push(event),
 		});
 
-		const explorerRequest = openAI.mock.calls[1]?.[0] as {
+		const explorerRequest = sentByExplorers(openAI, 0) as {
 			model: string;
 			reasoning: { effort: string };
 			tools: { name?: string }[];
@@ -320,9 +388,14 @@ describe('the write tools, end to end through the public exports', () => {
 		// It starts from the question alone.
 		expect(JSON.stringify(explorerRequest.input)).toContain('What does add in src/math.ts do?');
 		expect(JSON.stringify(explorerRequest.input)).not.toContain('Fix add.');
-		// The planner reads the report, not the file.
-		expect(sent(openAI, 3)).toContain('Explorer 1: What does add in src/math.ts do?');
-		expect(sent(openAI, 3)).toContain('add in src/math.ts subtracts: a - b.');
+		// The planner's call answers at once, and the planner reads the report, not the file, once
+		// the explorer finished.
+		expect(sentByRoles(openAI, 1)).toContain('Sent to work in the background: explorer 1.');
+		expect(sentByRoles(openAI, 1)).not.toContain('subtracts');
+		expect(sentByRoles(openAI, 2)).toContain(
+			'explorer 1, sent by your call p1 with the task: What does add in src/math.ts do?',
+		);
+		expect(sentByRoles(openAI, 2)).toContain('add in src/math.ts subtracts: a - b.');
 		// The explorer's narration comes apart, stamped with the planner that sent it.
 		const explorerRead = events.find(
 			event =>
@@ -337,16 +410,20 @@ describe('the write tools, end to end through the public exports', () => {
 			task: 'What does add in src/math.ts do?',
 			agent: 'planner',
 		});
-		// Six calls, ten tokens in and five out each: the explorer's two count too.
-		expect(response.tokens).toMatchObject({ inputTokens: 60, outputTokens: 30 });
+		// Seven calls, ten tokens in and five out each: the explorer's two count too.
+		expect(response.tokens).toMatchObject({ inputTokens: 70, outputTokens: 35 });
 	});
 
 	it('hands over every run of every role and explorer, each named by its agent', async () => {
-		scriptOpenAI(
-			openAIResponse(call('p1', 'explore', { questions: ['Where is add?'] })),
-			openAIResponse(text('add is in src/math.ts.')),
-			openAIResponse(text('Make add add.')),
-			openAIResponse(text('Nothing to change yet.')),
+		scriptOpenAIApart(
+			[
+				openAIResponse(call('p1', 'explore', { questions: ['Where is add?'] })),
+				openAIResponse(text('I wait for the explorer.')),
+				openAIResponse(text('Make add add.')),
+				openAIResponse(text('Nothing to change yet.')),
+			],
+			[openAIResponse(text('add is in src/math.ts.'))],
+			2,
 		);
 		scriptClaude(claudeResponse(say('{"decision":"approved"}')));
 		const transcripts: Transcript[] = [];
@@ -373,12 +450,16 @@ describe('the write tools, end to end through the public exports', () => {
 	});
 
 	it('sends Claude Haiku 5.5, at medium effort, as the explorer of a role on Claude', async () => {
-		const claude = scriptClaude(
-			claudeResponse(use('p1', 'explore', { questions: ['Where is add?'] })),
-			claudeResponse(say('add is in src/math.ts.')),
-			claudeResponse(say('Make add add.')),
-			claudeResponse(say('Nothing to change yet.')),
-			claudeResponse(say('{"decision":"approved"}')),
+		const claude = scriptClaudeApart(
+			[
+				claudeResponse(use('p1', 'explore', { questions: ['Where is add?'] })),
+				claudeResponse(say('I wait for the explorer.')),
+				claudeResponse(say('Make add add.')),
+				claudeResponse(say('Nothing to change yet.')),
+				claudeResponse(say('{"decision":"approved"}')),
+			],
+			[claudeResponse(say('add is in src/math.ts.'))],
+			2,
 		);
 
 		const agent = await createLLMOrchestrator({
@@ -388,10 +469,10 @@ describe('the write tools, end to end through the public exports', () => {
 		});
 		await agent.run('Fix add.', { signal });
 
-		const explorerRequest = claude.mock.calls[1]?.[0] as Record<string, unknown>;
+		const explorerRequest = sentByExplorers(claude, 0) as Record<string, unknown>;
 		expect(explorerRequest.model).toBe('claude-haiku-5-5');
 		expect(explorerRequest.output_config).toEqual({ effort: 'medium' });
-		expect(sent(claude, 2)).toContain('add is in src/math.ts.');
+		expect(sentByRoles(claude, 2)).toContain('add is in src/math.ts.');
 	});
 
 	it('does the same with every role on Claude, the executor with its text editor', async () => {

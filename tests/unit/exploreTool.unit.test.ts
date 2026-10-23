@@ -42,18 +42,24 @@ function explorers(answer: (question: string, options: RunOptions) => Promise<Ag
 	return { explorer, made };
 }
 
+/** Sends the explorers, and gives what each one answers once every one has. */
 async function explore(
 	explorer: () => Agent,
 	questions: unknown,
 	call: ToolCallContext,
 	runSignal = signal,
 ) {
-	const prepared = await createExploreTool(explorer).prepare({ questions }, runSignal, call);
-	return { risk: prepared.risk, output: await prepared.run(runSignal) };
+	const prepared = await createExploreTool(explorer).delegate({ questions }, runSignal, call);
+	const sent = prepared.start(runSignal);
+	return {
+		risk: prepared.risk,
+		sent: sent.map(({ name, task }) => ({ name, task })),
+		answers: await Promise.all(sent.map(({ answer }) => answer)),
+	};
 }
 
 describe('explore', () => {
-	it('sends a new explorer for each question, all at once, and reports their answers in order', async () => {
+	it('sends a new explorer for each question, all at once, each answering when it finishes', async () => {
 		const started: string[] = [];
 		const finish: Record<string, (response: AgentResponse) => void> = {};
 		const { explorer, made } = explorers(
@@ -65,19 +71,29 @@ describe('explore', () => {
 		);
 		const { call, spent } = callContext();
 
-		const exploring = explore(explorer, ['Where is add?', 'Who calls it?'], call);
+		const prepared = await createExploreTool(explorer).delegate(
+			{ questions: ['  Where is add?', 'Who calls it?'] },
+			signal,
+			call,
+		);
+		const [first, second] = prepared.start(signal);
 		// Both run before either answers.
 		await vi.waitFor(() => {
 			expect(started).toEqual(['Where is add?', 'Who calls it?']);
 		});
 		finish['Who calls it?']?.({ response: 'main.ts calls it.', duration: 1, tokens: tokens(5) });
-		finish['Where is add?']?.({ response: 'In math.ts.', duration: 1, tokens: tokens(3) });
 
-		await expect(exploring).resolves.toEqual({
-			risk: 'safe',
-			output:
-				'Explorer 1: Where is add?\nIn math.ts.\n\nExplorer 2: Who calls it?\nmain.ts calls it.',
-		});
+		// The second answers while the first still works.
+		await expect(second?.answer).resolves.toEqual({ text: 'main.ts calls it.' });
+		expect(spent).toEqual([[tokens(5), false]]);
+		finish['Where is add?']?.({ response: 'In math.ts.', duration: 1, tokens: tokens(3) });
+		await expect(first?.answer).resolves.toEqual({ text: 'In math.ts.' });
+
+		expect(prepared.risk).toBe('safe');
+		expect([first, second].map(agent => [agent?.name, agent?.subagent, agent?.task])).toEqual([
+			['explorer', 1, 'Where is add?'],
+			['explorer', 2, 'Who calls it?'],
+		]);
 		expect(made).toHaveLength(2);
 		expect(spent).toEqual([
 			[tokens(5), false],
@@ -130,11 +146,15 @@ describe('explore', () => {
 		);
 		const { call, spent } = callContext();
 
-		const { output } = await explore(explorer, ['a', 'b'], call);
+		const { answers } = await explore(explorer, ['a', 'b'], call);
 
-		expect(output).toBe(
-			'Explorer 1: a\nfound a\n\nExplorer 2: b\nThe explorer failed: The LLM did not finish within its step limit: The model was still calling tools after 30 steps.',
-		);
+		expect(answers).toEqual([
+			{ text: 'found a' },
+			{
+				text: 'The explorer failed: The LLM did not finish within its step limit: The model was still calling tools after 30 steps.',
+				failed: true,
+			},
+		]);
 		expect(spent).toEqual([
 			[tokens(2), false],
 			[tokens(9), false],
@@ -169,11 +189,12 @@ describe('explore', () => {
 		);
 		const { call } = callContext();
 
-		const { output } = await explore(explorer, ['a', 'b'], call);
+		const { answers } = await explore(explorer, ['a', 'b'], call);
 
-		expect(output).toBe(
-			`Explorer 1: a\nIt found nothing to report.\n\nExplorer 2: b\n${'x'.repeat(16_000)}\n[The answer was cut at 16000 characters.]`,
-		);
+		expect(answers).toEqual([
+			{ text: 'It found nothing to report.' },
+			{ text: `${'x'.repeat(16_000)}\n[The answer was cut at 16000 characters.]` },
+		]);
 	});
 
 	it('ends as cancelled when the run is, whatever the explorers threw', async () => {

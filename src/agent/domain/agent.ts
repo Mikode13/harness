@@ -92,9 +92,11 @@ export type ProgressEvent =
 			error?: string;
 			/**
 			 * `in_progress` only once the call is about to run, after any approval. `denied` when
-			 * it never ran because no one allowed it, with no `in_progress` before it.
+			 * it never ran because no one allowed it, with no `in_progress` before it. `sent` when
+			 * it sent subagents to work in the background, such as an `explore` call: they go on
+			 * after it, as `subagent` events, until a `subagentEnded` for each.
 			 */
-			status: 'in_progress' | 'completed' | 'error' | 'denied';
+			status: 'in_progress' | 'completed' | 'error' | 'denied' | 'sent';
 			/**
 			 * On `completed`, for a call that changed a file through the harness's write tools: the
 			 * change as a unified diff, for the person watching. Narration only; the run's whole
@@ -135,11 +137,12 @@ export type ProgressEvent =
 			agent?: ProgressAgent;
 	  }
 	/**
-	 * An event of a subagent that a tool call started: one of the explorers an `explore` call runs
-	 * at once, or the agent a tool from `agentAsTool` delegates to. `callId` is the `id` of that
+	 * An event of a subagent that a tool call started: one of the explorers an `explore` call
+	 * sends, or the agent a tool from `agentAsTool` delegates to. `callId` is the `id` of that
 	 * call's `tool` events, and `subagent` numbers its subagents from 1, so the events of agents
-	 * running in parallel stay apart. A subagent's own subagents arrive as `subagent` events
-	 * inside this one's `event`.
+	 * running in parallel stay apart. Subagents work in the background: their events keep
+	 * arriving after the call's own `tool` events say it completed, until each one has answered.
+	 * A subagent's own subagents arrive as `subagent` events inside this one's `event`.
 	 */
 	| {
 			type: 'subagent';
@@ -150,6 +153,20 @@ export type ProgressEvent =
 			/** What the subagent was asked. */
 			task: string;
 			event: ProgressEvent;
+			agent?: ProgressAgent;
+	  }
+	/**
+	 * A subagent that a call with `status: 'sent'` sent has ended: it `answered`, it `failed` and
+	 * its answer says why, or it was `stopped` because the run ended. `callId`, `subagent` and
+	 * `name` are those of its `subagent` events. Narration only: its answer reaches the model that
+	 * sent it, not the consumer.
+	 */
+	| {
+			type: 'subagentEnded';
+			callId: string;
+			subagent: number;
+			name: string;
+			outcome: 'answered' | 'failed' | 'stopped';
 			agent?: ProgressAgent;
 	  };
 

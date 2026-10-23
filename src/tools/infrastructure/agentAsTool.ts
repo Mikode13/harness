@@ -11,9 +11,9 @@ import {
 import { isAbortError } from '#src/shared/domain/isAbortError';
 import { classifyHostFailure } from '#src/shared/domain/providerFailure';
 import type { ToolDefinition } from '#src/llm/domain/tool';
-import { type PreparingTool, RunEndingToolError } from '../domain/preparedCall.ts';
+import { type DelegatedAnswer, RunEndingToolError } from '../domain/preparedCall.ts';
 import type { ToolCallContext } from '../domain/readRegistry.ts';
-import { definePreparingTool } from './defineTool.ts';
+import { defineDelegatingTool } from './defineTool.ts';
 import { cutAnswer, failureOf, subagentOptions } from './subagents.ts';
 
 declare const delegationToolBrand: unique symbol;
@@ -52,22 +52,24 @@ export interface AgentAsToolOptions {
 }
 
 /**
- * Offers an agent to another agent as a tool. The calling model writes the task; the agent runs
- * it as part of the caller's run, and its answer is the call's result:
+ * Offers an agent to another agent as a tool. The calling model writes the task, and the call
+ * answers at once: the agent works on it in the background, as part of the caller's run, while
+ * the caller keeps working. Its answer reaches the caller's model in a message of its own once it
+ * finishes, and nothing else of its work does:
  *
  * - its changes go into the same run of the workspace's history, so one undo reverts both, and
  *   each agent keeps its own tools' access policy and its own reads;
  * - what it spends counts in the caller's `tokens`, a failed attempt included;
- * - its progress arrives as `subagent` events of the call, and a transcript it gives names the
- *   call in `delegation`;
+ * - its progress reaches the consumer as `subagent` events of the call, and a transcript it gives
+ *   names the call in `delegation`;
  * - it is asked and approved through the run's `ask` and `approve`. Delegating never grants
  *   `autoApprove`: the agent has it only if the `createAgent` option gave it.
  *
- * Calls of these tools next to each other in one step run at once, and any other call runs
- * alone. Every change and command of the run is made one at a time, so the history stays exact,
- * but agents working at once can see each other's unfinished work. An agent that fails is the
- * call's error result, for the model to act on; a cancellation, or a run's approver or asker that
- * failed inside it, ends the run.
+ * The caller's run ends only once every agent it sent has finished. Every change and command of
+ * the run is made one at a time, so the history stays exact, but agents working at once can see
+ * each other's unfinished work. An agent that fails answers with why, for the model to act on; a
+ * cancellation, or a run's approver or asker that failed inside it, ends the run and stops every
+ * agent still working.
  *
  * Only for agents on the model APIs, from `createLLMAgent`: an Agent SDK agent from the
  * `createAgent` factory runs as its own run, outside these guarantees.
@@ -86,41 +88,42 @@ export function agentAsTool({
 			`maxDepth of "${name}" must be a positive integer; got ${String(maxDepth)}`,
 		);
 	}
-	const tool: PreparingTool = {
-		...definePreparingTool({
-			name,
-			description,
-			input: z.object({
-				task: z
-					.string()
-					.describe(
-						'The whole task. The agent starts from it alone, so say what to do and what to report back.',
-					),
-			}),
-			summarize: ({ task }) => task,
-			prepare: ({ task }, _, call) => {
-				const asked = task.trim();
-				if (asked === '') return Promise.reject(new Error('The task needs some text.'));
-				if (call.depth >= maxDepth) {
-					return Promise.reject(
-						new Error(
-							`"${name}" may run at most ${String(maxDepth)} delegations deep, and this agent already runs ${String(call.depth)} deep. Do the work yourself, or answer with what you have.`,
-						),
-					);
-				}
-				return Promise.resolve({
-					risk,
-					// What the agent changes is in the history, but it may run tools of the consumer's
-					// that change what the history never sees.
-					unrecorded: true,
-					run: signal => delegate(asked, signal, call),
-				});
-			},
+	const tool = defineDelegatingTool({
+		name,
+		description,
+		input: z.object({
+			task: z
+				.string()
+				.describe(
+					'The whole task. The agent starts from it alone, so say what to do and what to report back.',
+				),
 		}),
-		parallel: true,
-	};
+		summarize: ({ task }) => task,
+		delegate: ({ task }, _, call) => {
+			const asked = task.trim();
+			if (asked === '') return Promise.reject(new Error('The task needs some text.'));
+			if (call.depth >= maxDepth) {
+				return Promise.reject(
+					new Error(
+						`"${name}" may run at most ${String(maxDepth)} delegations deep, and this agent already runs ${String(call.depth)} deep. Do the work yourself, or answer with what you have.`,
+					),
+				);
+			}
+			return Promise.resolve({
+				risk,
+				// What the agent changes is in the history, but it may run tools of the consumer's
+				// that change what the history never sees.
+				unrecorded: true,
+				start: signal => [{ name, subagent: 1, task: asked, answer: hand(asked, signal, call) }],
+			});
+		},
+	});
 
-	async function delegate(task: string, signal: AbortSignal, call: ToolCallContext) {
+	async function hand(
+		task: string,
+		signal: AbortSignal,
+		call: ToolCallContext,
+	): Promise<DelegatedAnswer> {
 		// The run's approver and asker are host code: one that fails inside the agent ends the
 		// run, not just the agent's task.
 		const failed = { host: false };
@@ -148,7 +151,7 @@ export function agentAsTool({
 		try {
 			const { response, tokens } = await agent.run(task, options);
 			call.spend(tokens, tokens === undefined);
-			return cutAnswer(response || 'It finished without an answer.');
+			return { text: cutAnswer(response || 'It finished without an answer.') };
 		} catch (error) {
 			if (isAbortError(error)) throw error;
 			const classified = error instanceof RecoverableError || error instanceof UnrecoverableError;
@@ -165,7 +168,7 @@ export function agentAsTool({
 				);
 			}
 			call.spend(error.tokens, error.usageUnreported);
-			throw new Error(`The agent failed: ${failureOf(error)}`, { cause: error });
+			return { text: `The agent failed: ${failureOf(error)}`, failed: true };
 		}
 	}
 

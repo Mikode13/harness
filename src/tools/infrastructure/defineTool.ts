@@ -2,7 +2,12 @@ import { z } from 'zod';
 import type { ToolRisk } from '#src/agent/domain/approval';
 import { InvalidAgentConfigError } from '#src/shared/domain/errors';
 import type { JSONSchema } from '#src/llm/domain/tool';
-import type { PreparedCall, PreparingTool } from '../domain/preparedCall.ts';
+import type {
+	DelegatingTool,
+	PreparedCall,
+	PreparedDelegation,
+	PreparingTool,
+} from '../domain/preparedCall.ts';
 import type { ToolCallContext } from '../domain/readRegistry.ts';
 import { type Tool } from '../domain/tool.ts';
 import { validatedSummarizer } from './validatedSummarizer.ts';
@@ -173,6 +178,46 @@ export function definePreparingTool<Schema extends z.ZodObject>({
 			const parsed = input.safeParse(raw);
 			if (!parsed.success) return Promise.reject(new Error(z.prettifyError(parsed.error)));
 			return prepare(parsed.data, signal, call);
+		},
+	};
+}
+
+/**
+ * Builds a harness tool whose calls hand tasks to agents working in the background, from a Zod
+ * schema: input that fails validation is refused before any task is handed over. Internal.
+ *
+ * @throws {InvalidAgentConfigError} when the schema falls outside what strict mode supports.
+ */
+export function defineDelegatingTool<Schema extends z.ZodObject>({
+	name,
+	description,
+	input,
+	summarize,
+	delegate,
+}: {
+	name: string;
+	description: string;
+	input: Schema;
+	summarize?: (input: z.infer<Schema>) => string;
+	delegate: (
+		input: z.infer<Schema>,
+		signal: AbortSignal,
+		call: ToolCallContext,
+	) => Promise<PreparedDelegation>;
+}): DelegatingTool {
+	return {
+		name,
+		description,
+		inputSchema: strictSchema(input, name),
+		...(summarize
+			? {
+					summarize: validatedSummarizer(input, summarize),
+				}
+			: {}),
+		delegate: (raw, signal, call) => {
+			const parsed = input.safeParse(raw);
+			if (!parsed.success) return Promise.reject(new Error(z.prettifyError(parsed.error)));
+			return delegate(parsed.data, signal, call);
 		},
 	};
 }
