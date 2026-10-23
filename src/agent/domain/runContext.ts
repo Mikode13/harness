@@ -56,3 +56,33 @@ export function runContextOf(options: RunOptions): RunContext | undefined {
 export function withRunContext(options: RunOptions, context: RunContext): RunOptions {
 	return { ...options, [runContextKey]: context } as ContextualRunOptions;
 }
+
+/**
+ * Where an agent another agent's tool started runs: the call that started it, and how many
+ * delegations deep it is, 1 for an agent the top-level agent started.
+ */
+export interface Delegation {
+	/** The name of the tool that started it, such as `explore` or a specialist's. */
+	readonly tool: string;
+	/** The `id` of that call's `tool` events. */
+	readonly callId: string;
+	/** Which of the agents that call started, from 1. */
+	readonly subagent: number;
+	readonly depth: number;
+}
+
+const delegationKey = Symbol('mikode-harness.delegation');
+
+interface DelegatedRunOptions extends RunOptions {
+	[delegationKey]?: Delegation;
+}
+
+/** The call that started the agent these options reach, if another agent's tool did. */
+export function delegationOf(options: RunOptions): Delegation | undefined {
+	return (options as DelegatedRunOptions)[delegationKey];
+}
+
+/** The same options, for an agent `delegation` started. */
+export function withDelegation(options: RunOptions, delegation: Delegation): RunOptions {
+	return { ...options, [delegationKey]: delegation } as DelegatedRunOptions;
+}

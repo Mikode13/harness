@@ -43,13 +43,15 @@ export interface RunOptions {
 	/**
 	 * Asked before a model-backed agent runs a `destructive` tool call. Without it, such a call
 	 * is denied. An agent built with `autoApprove` never asks, and the Agent SDK engines ignore
-	 * it: their own permission systems decide.
+	 * it: their own permission systems decide. Agents a delegation runs at once may call it before
+	 * an earlier call has its answer.
 	 */
 	approve?: Approver | undefined;
 	/**
 	 * Answers what a model-backed agent asks the user, through its `askUser` tool, when a
 	 * decision is the user's to make. Without it the agent has no such tool. The Agent SDK
-	 * engines ignore it.
+	 * engines ignore it. Agents a delegation runs at once may call it before an earlier call has
+	 * its answer.
 	 */
 	ask?: Asker | undefined;
 }
@@ -133,14 +135,18 @@ export type ProgressEvent =
 			agent?: ProgressAgent;
 	  }
 	/**
-	 * An event of a subagent that a tool call started, such as one of the explorers an `explore`
-	 * call runs at once. `callId` is the `id` of that call's `tool` events, and `subagent`
-	 * numbers its subagents from 1, so the events of agents running in parallel stay apart.
+	 * An event of a subagent that a tool call started: one of the explorers an `explore` call runs
+	 * at once, or the agent a tool from `agentAsTool` delegates to. `callId` is the `id` of that
+	 * call's `tool` events, and `subagent` numbers its subagents from 1, so the events of agents
+	 * running in parallel stay apart. A subagent's own subagents arrive as `subagent` events
+	 * inside this one's `event`.
 	 */
 	| {
 			type: 'subagent';
 			callId: string;
 			subagent: number;
+			/** Which agent it is: `explorer`, or the name of the tool that delegates to it. */
+			name: string;
 			/** What the subagent was asked. */
 			task: string;
 			event: ProgressEvent;

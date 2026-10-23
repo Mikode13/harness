@@ -104,6 +104,7 @@ async function call(
 			callId: 'call',
 			onProgress: () => undefined,
 			spend: () => undefined,
+			depth: 0,
 		});
 		const output = await prepared.run(runSignal);
 		await context.finish('completed');
@@ -117,6 +118,43 @@ async function call(
 // Each test opens a git repository, lists it twice and starts real processes: alone that takes
 // well under a second, but beside the whole suite running in parallel it has taken over five.
 describe('runCommand', { timeout: 20_000 }, () => {
+	it('keeps a change of the same run waiting until a running command has ended', async () => {
+		const opened = await open();
+		const tool = (await commandToolFor(opened, {
+			slow: shell('touch started && sleep 0.4'),
+		})) as PreparingTool;
+		const context = new RunContext();
+		const prepared = await tool.prepare({ command: { name: 'slow' } }, signal, {
+			run: context,
+			reads: new ReadRegistry().begin(),
+			callId: 'call',
+			onProgress: () => undefined,
+			spend: () => undefined,
+			depth: 0,
+		});
+		// Another agent of the run, with tools of its own over the same history.
+		const editor = (await open()).writes.editorFor(context);
+		const edit = await editor.prepare(
+			{ kind: 'replace', path: 'src/b.ts', content: Buffer.from('changed\n') },
+			signal,
+		);
+
+		const running = prepared.run(signal);
+		await vi.waitFor(() => {
+			expect(existsSync(join(root, 'started'))).toBe(true);
+		});
+		const applying = editor.apply(edit, signal);
+		await new Promise(resolve => setTimeout(resolve, 100));
+		expect(read('src/b.ts')).toBe('export const b = 2;\n');
+		const output = await running;
+		await applying;
+		await context.finish('completed');
+
+		// The change is not taken for the command's.
+		expect(output).not.toContain('src/b.ts');
+		expect(read('src/b.ts')).toBe('changed\n');
+	});
+
 	it('records what a formatter-like command changed, and it can be undone', async () => {
 		const opened = await open();
 		const tool = await commandToolFor(opened, {
@@ -172,6 +210,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			callId: 'call',
 			onProgress: () => undefined,
 			spend: () => undefined,
+			depth: 0,
 		});
 		expect(prepared.ending?.()).toBeUndefined();
 		const report = await prepared.run(signal).catch((error: unknown) => (error as Error).message);
@@ -562,6 +601,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 				callId: 'call',
 				onProgress: () => undefined,
 				spend: () => undefined,
+				depth: 0,
 			}),
 		).rejects.toThrow(message);
 	});
@@ -634,6 +674,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			callId: 'call',
 			onProgress: () => undefined,
 			spend: () => undefined,
+			depth: 0,
 		});
 
 		const running = prepared.run(controller.signal);
@@ -820,6 +861,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			callId: 'call',
 			onProgress: () => undefined,
 			spend: () => undefined,
+			depth: 0,
 		});
 		const stopped = prepared.run(signal);
 

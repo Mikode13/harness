@@ -23,6 +23,17 @@ export type Asker = (
 	signal: AbortSignal,
 ) => string[] | Promise<string[]>;
 
+/**
+ * The asker's answers, one non-empty string per question, or nothing: an asker is host code, so
+ * an answer of any other shape is its bug, not the model's.
+ */
+export function readAnswers(answers: unknown, questions: UserQuestion[]): string[] | undefined {
+	if (!Array.isArray(answers) || answers.length !== questions.length) return undefined;
+	return answers.every(answer => typeof answer === 'string' && answer.trim() !== '')
+		? (answers as string[])
+		: undefined;
+}
+
 /** What one run's user answered, as `rememberAnswers` keeps it. */
 export interface AnsweredQuestion {
 	question: string;

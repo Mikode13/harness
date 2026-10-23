@@ -2,6 +2,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import * as harness from '../../src/index.ts';
 import type {
 	Agent,
+	AgentAsToolOptions,
 	ApprovalDecision,
 	ApprovalRequest,
 	Asker,
@@ -21,6 +22,7 @@ import type {
 	CreateLLMOrchestratorOptions,
 	CreateOrchestratorOptions,
 	CreateWorkflowOptions,
+	DelegationTool,
 	FileTool,
 	History,
 	HistoryRun,
@@ -70,6 +72,7 @@ describe('public API', () => {
 			'UnrecoverableError',
 			'WorkspaceBusyError',
 			'WorkspaceMovedError',
+			'agentAsTool',
 			'agentModels',
 			'agentProviders',
 			'agentReasoningEfforts',
@@ -103,6 +106,7 @@ describe('public API', () => {
 		expectTypeOf<
 			[
 				Agent,
+				AgentAsToolOptions,
 				ApprovalDecision,
 				ApprovalRequest,
 				Asker,
@@ -122,6 +126,7 @@ describe('public API', () => {
 				CreateLLMOrchestratorOptions,
 				CreateOrchestratorOptions,
 				CreateWorkflowOptions<unknown, unknown>,
+				DelegationTool,
 				FileTool,
 				History,
 				HistoryRun,

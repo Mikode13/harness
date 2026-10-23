@@ -23,6 +23,11 @@ export {
 	type RoleTokens,
 } from './factory/infrastructure/agentLLMFactory.ts';
 export type { FileTool, WorkspaceOptions } from './tools/infrastructure/fileTools.ts';
+export {
+	agentAsTool,
+	type AgentAsToolOptions,
+	type DelegationTool,
+} from './tools/infrastructure/agentAsTool.ts';
 export type { WorkspaceRoot } from './tools/domain/accessPolicy.ts';
 export type {
 	CommandArgument,

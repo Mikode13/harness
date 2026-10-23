@@ -181,7 +181,12 @@ export class FileEditor {
 		});
 	}
 
-	async apply(prepared: PreparedEdit, signal: AbortSignal): Promise<void> {
+	/** Makes the change once no other write of the run is under way, so none can come between. */
+	apply(prepared: PreparedEdit, signal: AbortSignal): Promise<void> {
+		return this.session.exclusive(() => this.applyAlone(prepared, signal), signal);
+	}
+
+	private async applyAlone(prepared: PreparedEdit, signal: AbortSignal): Promise<void> {
 		const { path } = prepared;
 		signal.throwIfAborted();
 		// A Buffer's bytes cannot be frozen: copied, then checked, so what is written is what was

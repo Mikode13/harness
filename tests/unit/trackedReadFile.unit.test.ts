@@ -57,6 +57,7 @@ async function readFile(
 			callId: 'call',
 			onProgress: () => undefined,
 			spend: () => undefined,
+			depth: 0,
 		});
 		return await prepared.run(signal);
 	} catch (error) {

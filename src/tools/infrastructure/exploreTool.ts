@@ -1,25 +1,13 @@
 import { z } from 'zod';
-import type { Agent, ProgressEvent } from '#src/agent/domain/agent';
-import { withRunContext } from '#src/agent/domain/runContext';
+import type { Agent } from '#src/agent/domain/agent';
 import { RecoverableError, UnrecoverableError } from '#src/shared/domain/errors';
 import type { PreparingTool } from '../domain/preparedCall.ts';
 import type { ToolCallContext } from '../domain/readRegistry.ts';
 import { definePreparingTool } from './defineTool.ts';
+import { cutAnswer, failureOf, subagentOptions } from './subagents.ts';
 
 /** The most explorers one call sends, so a single call cannot fan out without bound. */
 export const maxExplorers = 4;
-
-// An answer is read whole, like a read, which returns at most 16 KB.
-const maxAnswerCharacters = 16_000;
-
-function cut(answer: string): string {
-	if (answer.length <= maxAnswerCharacters) return answer;
-	return `${answer.slice(0, maxAnswerCharacters)}\n[The answer was cut at ${String(maxAnswerCharacters)} characters.]`;
-}
-
-function failureOf(error: RecoverableError | UnrecoverableError): string {
-	return typeof error.cause === 'string' ? `${error.message}: ${error.cause}` : error.message;
-}
 
 /**
  * Runs one explorer per question, all at once, each a new agent that starts from its question
@@ -36,21 +24,18 @@ async function explore(
 		questions.map(async (question, index) => {
 			const subagent = index + 1;
 			const heading = `Explorer ${String(subagent)}: ${question}`;
-			const onProgress = (event: ProgressEvent) => {
-				call.onProgress({
-					type: 'subagent',
-					callId: call.callId,
-					subagent,
-					task: question,
-					event,
-				});
-			};
 			// Within the run that made the call, so the explorers' reads belong to it.
-			const options = withRunContext({ signal, onProgress }, call.run);
+			const options = subagentOptions(call, {
+				tool: 'explore',
+				name: 'explorer',
+				subagent,
+				task: question,
+				options: { signal },
+			});
 			try {
 				const { response, tokens } = await explorer().run(question, options);
 				call.spend(tokens, tokens === undefined);
-				return `${heading}\n${cut(response || 'It found nothing to report.')}`;
+				return `${heading}\n${cutAnswer(response || 'It found nothing to report.')}`;
 			} catch (error) {
 				if (!(error instanceof RecoverableError || error instanceof UnrecoverableError)) {
 					throw error;

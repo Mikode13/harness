@@ -28,6 +28,7 @@ import { OutputFingerprint, withoutColors } from './commandOutput.ts';
 import { type CommandProcessResult, runCommandProcess } from './commandProcess.ts';
 import { definePreparingTool } from './defineTool.ts';
 import type { WorkspaceWrites } from './workspaceWrites.ts';
+import type { WriteSession } from './writeSession.ts';
 
 // Only what a toolchain needs to find itself and its locale. Everything else, the provider
 // keys included, stays in this process.
@@ -141,14 +142,7 @@ export async function createCommandTool({
 		},
 	});
 
-	async function runCommand({
-		name,
-		line,
-		definition,
-		context,
-		signal,
-		ended,
-	}: {
+	interface CommandRun {
 		name: string;
 		line: CommandLine;
 		definition: CommandDefinition;
@@ -156,9 +150,19 @@ export async function createCommandTool({
 		signal: AbortSignal;
 		/** Told how the command ended, once it ran to an end and everything it changed is recorded. */
 		ended: (ending: CommandEnding) => void;
-	}): Promise<string> {
+	}
+
+	// Alone: a change another agent of the run made while it ran would be taken for its own.
+	function runCommand(run: CommandRun): Promise<string> {
+		const session = writes.sessionFor(run.context);
+		return session.exclusive(() => runCommandAlone(run, session), run.signal);
+	}
+
+	async function runCommandAlone(
+		{ name, line, definition, signal, ended }: CommandRun,
+		session: WriteSession,
+	): Promise<string> {
 		signal.throwIfAborted();
-		const session = writes.sessionFor(context);
 		const journal = await session.journalForChange();
 		let checkpoint: CommandCheckpoint;
 		try {

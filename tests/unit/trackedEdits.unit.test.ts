@@ -20,6 +20,10 @@ import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecover
 import { InvalidAgentConfigError } from '../../src/shared/domain/errors.ts';
 import type { Formatter } from '../../src/tools/domain/commands.ts';
 import type { runCommandProcess } from '../../src/tools/infrastructure/commandProcess.ts';
+import { FileFormatter } from '../../src/tools/infrastructure/fileFormatter.ts';
+import { GitIgnoreRules } from '../../src/tools/infrastructure/gitIgnoreRules.ts';
+import { RootsAccessPolicy } from '../../src/tools/infrastructure/rootsAccessPolicy.ts';
+import { WriteSession } from '../../src/tools/infrastructure/writeSession.ts';
 import { assistantResponse, textResponse, toolCall } from '../support/fakeLlmClient.ts';
 import { trackedToolsOver } from '../support/trackedTools.ts';
 
@@ -536,6 +540,44 @@ describe('formatting what an edit wrote', () => {
 			'The formatter ran past its limit of 0.2 s and was stopped, so the file may not be formatted.',
 		);
 		expect(onDisk('a.ts')).toBe('const a = 10 ;\nconst b = 2;\n');
+	});
+
+	it('formats only once no other write of the run is under way', async () => {
+		// Whether another write was still under way when the formatter ran.
+		let writing = true;
+		const ran: boolean[] = [];
+		const runProcess: typeof runCommandProcess = () => {
+			ran.push(writing);
+			return Promise.resolve({
+				outcome: 'exited',
+				exitCode: 0,
+				signal: null,
+				output: '',
+				printedBytes: 0,
+				durationMs: 1,
+				stopped: true,
+			});
+		};
+		const fileFormatter = await FileFormatter.create({
+			formatter: tidy,
+			policy: await RootsAccessPolicy.create({
+				roots: [{ path: root, access: 'write' }],
+				ignoreRules: new GitIgnoreRules(),
+			}),
+			base: root,
+			runProcess,
+		});
+		const session = new WriteSession({ store });
+		const write = session.exclusive(async () => {
+			await new Promise(resolve => setTimeout(resolve, 300));
+			writing = false;
+		}, signal);
+
+		await fileFormatter.format(join(root, 'a.ts'), session, signal);
+		await write;
+		await session.finish('completed');
+
+		expect(ran).toEqual([false]);
 	});
 
 	describe('when what the formatter did cannot be known', () => {

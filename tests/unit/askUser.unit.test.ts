@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ProgressEvent, RunOptions } from '../../src/agent/domain/agent.ts';
 import { rememberAnswers, type UserQuestion } from '../../src/agent/domain/question.ts';
-import { readAnswers, readQuestions } from '../../src/engines/domain/model/askUser.ts';
+import { readAnswers } from '../../src/agent/domain/question.ts';
+import { readQuestions } from '../../src/engines/domain/model/askUser.ts';
 import { RetryingAgent } from '../../src/retry/domain/model/retryingAgent.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import type { Tool } from '../../src/tools/domain/tool.ts';

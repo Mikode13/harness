@@ -72,7 +72,16 @@ export class FileFormatter {
 	 * @throws {EditUnconfirmedError} when what it changed could not be recorded, or it could not be
 	 * stopped. Writing stops for the run then, as after such a command.
 	 */
-	async format(
+	format(
+		absolute: string,
+		session: WriteSession,
+		signal: AbortSignal,
+	): Promise<string | undefined> {
+		// Alone, as a command runs, so no other write of the run comes between its captures.
+		return session.exclusive(() => this.formatAlone(absolute, session, signal), signal);
+	}
+
+	private async formatAlone(
 		absolute: string,
 		session: WriteSession,
 		signal: AbortSignal,

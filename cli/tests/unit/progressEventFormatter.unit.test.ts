@@ -258,7 +258,7 @@ describe('ProgressEventFormatter', () => {
 		expect(formatter.spinnerDescription()).toBeUndefined();
 	});
 
-	it('shows only the tool calls of explorers, apart, under the role that sent them', () => {
+	it("shows each subagent's calls and messages as a thread, under the role that sent it", () => {
 		let now = 0;
 		const formatter = new ProgressEventFormatter({ now: () => now });
 		const read = (status: 'in_progress' | 'completed'): ProgressEvent => ({
@@ -272,6 +272,7 @@ describe('ProgressEventFormatter', () => {
 			type: 'subagent',
 			callId: 'p1',
 			subagent,
+			name: 'explorer',
 			task: 'Where is add?',
 			event,
 			agent: 'planner',
@@ -289,9 +290,46 @@ describe('ProgressEventFormatter', () => {
 			'  ✓ planner › explorer 1 | readFile | src/math.ts | 5 ms',
 		);
 		expect(
-			formatter.format(explorer(1, { type: 'agentMessage', message: 'add is in math.ts' })),
-		).toBeUndefined();
+			plain(
+				formatter.format(
+					explorer(1, { type: 'agentMessage', message: 'add is in math.ts\nline 3' }),
+				),
+			),
+		).toBe('  planner › explorer 1: add is in math.ts\n    line 3');
+		expect(formatter.format(explorer(1, { type: 'reasoning', message: 'hmm' }))).toBeUndefined();
 		expect(formatter.spinnerDescription()).toBeUndefined();
+	});
+
+	it('gives each subagent a color of its own, and labels a subagent of a subagent by its path', () => {
+		const styled: [string, string][] = [];
+		const formatter = new ProgressEventFormatter({
+			style: (format, text) => {
+				styled.push([String(format), text]);
+				return text;
+			},
+		});
+		const message = (text: string): ProgressEvent => ({ type: 'agentMessage', message: text });
+		const coder = (event: ProgressEvent): ProgressEvent => ({
+			type: 'subagent',
+			callId: 'c1',
+			subagent: 1,
+			name: 'code',
+			task: 'Write it',
+			event,
+		});
+		const committer = (event: ProgressEvent): ProgressEvent =>
+			coder({ type: 'subagent', callId: 'k1', subagent: 1, name: 'commit', task: 'Commit', event });
+
+		expect(formatter.format(coder(message('writing')))).toBe('  agent › code 1: writing');
+		expect(formatter.format(committer(message('committed')))).toBe(
+			'  agent › code 1 › commit 1: committed',
+		);
+		expect(formatter.format(coder(message('done')))).toBe('  agent › code 1: done');
+		const colors = Object.fromEntries(styled.map(([format, text]) => [text, format]));
+		expect(colors['  agent › code 1: writing']).toBe(colors['  agent › code 1: done']);
+		expect(colors['  agent › code 1: writing']).not.toBe(
+			colors['  agent › code 1 › commit 1: committed'],
+		);
 	});
 
 	it('ignores event types and optional fields it does not know', () => {

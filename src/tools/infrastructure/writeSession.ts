@@ -23,6 +23,8 @@ export class WriteSession {
 	private journal: Promise<RunJournal> | undefined;
 	private changes = 0;
 	private stopped: string | undefined;
+	// The end of the last write waiting or running, which the next one starts after.
+	private writing: Promise<unknown> = Promise.resolve();
 
 	constructor({
 		store,
@@ -79,6 +81,28 @@ export class WriteSession {
 		return journal;
 	}
 
+	/**
+	 * Runs `write` once every write before it has ended, so agents of one run that work at once
+	 * never change files together: each change is read, recorded and made alone, and a command
+	 * runs with no other write while the files are captured around it. A cancellation stops the
+	 * wait.
+	 */
+	async exclusive<Result>(write: () => Promise<Result>, signal: AbortSignal): Promise<Result> {
+		const before = this.writing;
+		let release!: () => void;
+		this.writing = new Promise<void>(resolve => {
+			release = resolve;
+		});
+		try {
+			await untilAborted(before, signal);
+			signal.throwIfAborted();
+			return await write();
+		} finally {
+			// Released even when cancelled while waiting: the writes after it wait for those before.
+			void before.then(release, release);
+		}
+	}
+
 	/** Refuses every further write, for this reason. The first reason given is kept. */
 	stop(reason: string): void {
 		this.stopped ??= reason;
@@ -105,4 +129,17 @@ export class WriteSession {
 			if (!journal.changed) this.onDiscard?.();
 		}
 	}
+}
+
+/** Waits for `promise`, settled either way, or until `signal` aborts, whichever comes first. */
+function untilAborted(promise: Promise<unknown>, signal: AbortSignal): Promise<void> {
+	if (signal.aborted) return Promise.resolve();
+	return new Promise(resolve => {
+		const done = () => {
+			signal.removeEventListener('abort', done);
+			resolve();
+		};
+		signal.addEventListener('abort', done, { once: true });
+		promise.then(done, done);
+	});
 }

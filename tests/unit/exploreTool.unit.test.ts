@@ -26,6 +26,7 @@ function callContext() {
 		callId: 'call-7',
 		onProgress: event => events.push(event),
 		spend: (used, unreported) => spent.push([used, unreported]),
+		depth: 0,
 	};
 	return { call, events, spent };
 }
@@ -101,6 +102,7 @@ describe('explore', () => {
 				type: 'subagent',
 				callId: 'call-7',
 				subagent: 1,
+				name: 'explorer',
 				task: 'a',
 				event: { type: 'agentMessage', message: 'looking for a' },
 			},
@@ -108,6 +110,7 @@ describe('explore', () => {
 				type: 'subagent',
 				callId: 'call-7',
 				subagent: 2,
+				name: 'explorer',
 				task: 'b',
 				event: { type: 'agentMessage', message: 'looking for b' },
 			},

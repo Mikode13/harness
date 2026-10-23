@@ -13,6 +13,7 @@ import {
 	ignoreProgress,
 } from '#src/agent/domain/agent';
 import {
+	delegationOf,
 	type RunEnd,
 	RunContext,
 	runContextOf,
@@ -35,13 +36,14 @@ import { Conversation } from '#src/llm/domain/conversation';
 import type { LLMClient, LLMResponse } from '#src/llm/domain/llm';
 import type { Message, MessagePart, ToolCallPart, ToolResultPart } from '#src/llm/domain/message';
 import { asNative, nativeOf, type ToolDefinition } from '#src/llm/domain/tool';
-import type { Asker, UserQuestion } from '#src/agent/domain/question';
+import { type Asker, readAnswers, type UserQuestion } from '#src/agent/domain/question';
 import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcript';
 import {
 	type AgentTool,
 	type CommandEnding,
 	type PreparedCall,
 	prepareCall,
+	RunEndingToolError,
 	ToolExecutionError,
 } from '#src/tools/domain/preparedCall';
 import { ReadRegistry, type ToolCallContext } from '#src/tools/domain/readRegistry';
@@ -72,7 +74,6 @@ import {
 	askUserDefinition,
 	askUserName,
 	describeAnswers,
-	readAnswers,
 	readQuestions,
 	summarizeQuestions,
 } from './askUser.ts';
@@ -479,8 +480,8 @@ export class LLMAgent implements Agent {
 
 	/**
 	 * Always answers the call: a missing tool, a denied call or a failing one becomes an error
-	 * result, so the model can correct itself. Only a cancellation, or a failing approver,
-	 * escapes, whatever error the tool turned it into.
+	 * result, so the model can correct itself. Only a cancellation, a failing approver, or host
+	 * code that failed inside the call, such as an agent's approver, escapes.
 	 */
 	private async runTool(
 		call: ToolCallPart,
@@ -589,6 +590,7 @@ export class LLMAgent implements Agent {
 			};
 		} catch (error) {
 			signal.throwIfAborted();
+			if (error instanceof RunEndingToolError) throw error.failure;
 			const ending = prepared.ending?.();
 			return {
 				result: { ...result, output: describeFailure(error), isError: true },
@@ -645,7 +647,11 @@ export class LLMAgent implements Agent {
 		};
 	}
 
-	/** One at a time and in order, so their effects and their narration never interleave. */
+	/**
+	 * One at a time and in order, so their effects and their narration never interleave. Only
+	 * calls of a `parallel` tool next to each other run at once, such as agents being delegated
+	 * to, each narrated as it goes.
+	 */
 	private async runTools(
 		calls: ToolCallPart[],
 		options: RunOptions,
@@ -655,58 +661,31 @@ export class LLMAgent implements Agent {
 		throwIfProgressFailed: () => void,
 		loops: CommandLoops,
 	): Promise<{ message: Message; stopped?: UnrecoverableError }> {
-		const { signal, onProgress: callback = ignoreProgress } = options;
+		const { signal } = options;
 		const results: MessagePart[] = [];
+		// The calls before this index already ran, with the ones they ran beside.
+		let ranTo = 0;
 		for (const [index, call] of calls.entries()) {
+			if (index < ranTo) continue;
 			// A call before this one may have ignored the cancellation; this one must not start,
 			// nor be announced as running.
 			signal.throwIfAborted();
+			const together = this.parallelFrom(calls, index);
+			if (together.length > 1) {
+				results.push(...(await this.runTogether(together, options, effects, toolCall, loops)));
+				throwIfProgressFailed();
+				ranTo = index + together.length;
+				continue;
+			}
+
 			// `runTool` announces the call only once it is allowed to run, so a consumer never
 			// shows a call as running early, nor while the user is still being asked.
 			const ran = await this.runTool(call, options, effects, toolCall);
-			const { denied, diff, summary, exitCode, ending } = ran;
-			let { result } = ran;
 			// A call that failed to narrate ends the run before the next one can start.
 			throwIfProgressFailed();
-			if (ran.unrecorded) loops.unrecordedCallRan();
-			const key = callKey(call);
-			const label = summary ?? call.name;
-			const alike = ending === undefined ? undefined : loops.observe(key, ending);
-			// A command that changed what the history cannot copy hides that change from the next.
-			if (ending !== undefined && ending.state === undefined) loops.unrecordedCallRan();
-			// Narrated with it, so the person watching reads what the model is told.
-			if (alike?.times === warnAt) {
-				result = {
-					...result,
-					output: `${result.output}\n\n${loopWarning(label, alike, options.ask !== undefined && !loops.wentOn)}`,
-				};
-			}
-			if (denied) {
-				emit(
-					{
-						type: 'tool',
-						id: call.id,
-						name: call.name,
-						status: 'denied',
-						...(summary === undefined ? {} : { summary }),
-					},
-					callback,
-				);
-			}
-			// The diff of a change it made, for the person watching; only once it was made.
-			else if (diff !== undefined) {
-				emit(
-					{
-						type: 'tool',
-						id: call.id,
-						name: call.name,
-						status: 'completed',
-						diff,
-						...(summary === undefined ? {} : { summary }),
-					},
-					callback,
-				);
-			} else narrate(result, callback, summary, exitCode);
+			const settled = this.settle(call, ran, loops, options);
+			let { result } = settled;
+			const { alike, key, label } = settled;
 			// After its result is narrated, so the user is asked about the ending they have seen.
 			if (alike !== undefined && alike.times >= askAt) {
 				const decision = await this.decideOnLoop(
@@ -736,6 +715,116 @@ export class LLMAgent implements Agent {
 		}
 
 		return { message: { role: 'tool', content: results } };
+	}
+
+	/** The calls from `index` on whose tool is `parallel`, up to the first that is not. */
+	private parallelFrom(calls: ToolCallPart[], index: number): ToolCallPart[] {
+		const together: ToolCallPart[] = [];
+		for (const call of calls.slice(index)) {
+			const tool = this.tools.get(call.name);
+			if (!tool || !('parallel' in tool) || tool.parallel !== true) break;
+			together.push(call);
+		}
+		return together;
+	}
+
+	/**
+	 * Runs the calls at once, their results in the order of the calls. The first failure that
+	 * ends the run stops the others, and the run ends once every one has.
+	 */
+	private async runTogether(
+		calls: ToolCallPart[],
+		options: RunOptions,
+		effects: RunEffects,
+		toolCall: RunToolContext,
+		loops: CommandLoops,
+	): Promise<ToolResultPart[]> {
+		const stopping = new AbortController();
+		const together = { ...options, signal: AbortSignal.any([options.signal, stopping.signal]) };
+		const ended: { failure?: { error: unknown } } = {};
+		const settled = await Promise.allSettled(
+			calls.map(async call => {
+				try {
+					const ran = await this.runTool(call, together, effects, toolCall);
+					return this.settle(call, ran, loops, options).result;
+				} catch (error) {
+					ended.failure ??= { error };
+					stopping.abort();
+					throw error;
+				}
+			}),
+		);
+		// The others were stopped for it: what ended the run is the first failure, or the user.
+		options.signal.throwIfAborted();
+		if (ended.failure) {
+			const { error } = ended.failure;
+			// A call stopped on its way may have spent on the model, and a stop carries no tokens:
+			// the run's total is unknown, not short.
+			const stopped = settled.some(
+				outcome => outcome.status === 'rejected' && outcome.reason !== error,
+			);
+			throw stopped ? withSpentTokens(error, undefined, true) : error;
+		}
+		return settled.flatMap(outcome => (outcome.status === 'fulfilled' ? [outcome.value] : []));
+	}
+
+	/**
+	 * Narrates how a call ended and notes its command's ending, with the warning for the model
+	 * when that ending keeps coming back alike.
+	 */
+	private settle(
+		call: ToolCallPart,
+		ran: Awaited<ReturnType<LLMAgent['runTool']>>,
+		loops: CommandLoops,
+		{ onProgress: callback = ignoreProgress, ask }: RunOptions,
+	): {
+		result: ToolResultPart;
+		alike: ReturnType<CommandLoops['observe']> | undefined;
+		key: string;
+		label: string;
+	} {
+		const { denied, diff, summary, exitCode, ending } = ran;
+		let { result } = ran;
+		if (ran.unrecorded) loops.unrecordedCallRan();
+		const key = callKey(call);
+		const label = summary ?? call.name;
+		const alike = ending === undefined ? undefined : loops.observe(key, ending);
+		// A command that changed what the history cannot copy hides that change from the next.
+		if (ending !== undefined && ending.state === undefined) loops.unrecordedCallRan();
+		// Narrated with it, so the person watching reads what the model is told.
+		if (alike?.times === warnAt) {
+			result = {
+				...result,
+				output: `${result.output}\n\n${loopWarning(label, alike, ask !== undefined && !loops.wentOn)}`,
+			};
+		}
+		if (denied) {
+			emit(
+				{
+					type: 'tool',
+					id: call.id,
+					name: call.name,
+					status: 'denied',
+					...(summary === undefined ? {} : { summary }),
+				},
+				callback,
+			);
+		}
+		// The diff of a change it made, for the person watching; only once it was made.
+		else if (diff !== undefined) {
+			emit(
+				{
+					type: 'tool',
+					id: call.id,
+					name: call.name,
+					status: 'completed',
+					diff,
+					...(summary === undefined ? {} : { summary }),
+				},
+				callback,
+			);
+		} else narrate(result, callback, summary, exitCode);
+		return { result, alike, key, label };
 	}
 
 	/**
@@ -832,20 +921,22 @@ export class LLMAgent implements Agent {
 		try {
 			response = await this.takeSteps(prompt, options, context, seen);
 		} catch (error) {
-			await this.transcribe(seen, isAbortError(error) ? 'cancelled' : 'failed', error);
+			await this.transcribe(seen, options, isAbortError(error) ? 'cancelled' : 'failed', error);
 			throw error;
 		}
-		await this.transcribe(seen, 'completed');
+		await this.transcribe(seen, options, 'completed');
 		return response;
 	}
 
 	/** Hands the run's transcript to the consumer, whose failure is logged, not the run's. */
 	private async transcribe(
 		seen: Seen,
+		options: RunOptions,
 		outcome: Transcript['outcome'],
 		error?: unknown,
 	): Promise<void> {
 		if (!this.onTranscript) return;
+		const delegation = delegationOf(options);
 		try {
 			// A copy, so a consumer that changes it cannot change the agent's tools or conversation.
 			const content: unknown = structuredClone({
@@ -858,7 +949,19 @@ export class LLMAgent implements Agent {
 				messages: seen.messages(),
 				...(outcome === 'completed' ? {} : { error: describeFailure(error) }),
 			});
-			await this.onTranscript({ outcome, content });
+			await this.onTranscript({
+				...(delegation
+					? {
+							delegation: {
+								tool: delegation.tool,
+								callId: delegation.callId,
+								subagent: delegation.subagent,
+							},
+						}
+					: {}),
+				outcome,
+				content,
+			});
 		} catch (failure) {
 			treatErrors(
 				() => {
@@ -1051,7 +1154,15 @@ export class LLMAgent implements Agent {
 						calls,
 						options,
 						effects,
-						{ run: context, reads, onProgress, spend },
+						{
+							run: context,
+							reads,
+							onProgress,
+							spend,
+							depth: delegationOf(options)?.depth ?? 0,
+							...(options.approve ? { approve: options.approve } : {}),
+							...(options.ask ? { ask: options.ask } : {}),
+						},
 						throwIfProgressFailed,
 						loops,
 					);

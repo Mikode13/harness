@@ -84,15 +84,6 @@ export function readQuestions(input: unknown): UserQuestion[] | string {
 	return read;
 }
 
-/**
- * The asker's answers, one non-empty string per question, or nothing: an asker is host code, so
- * an answer of any other shape is its bug, not the model's.
- */
-export function readAnswers(answers: unknown, questions: UserQuestion[]): string[] | undefined {
-	if (!Array.isArray(answers) || answers.length !== questions.length) return undefined;
-	return answers.every(isText) ? answers : undefined;
-}
-
 /** What the model reads back: each question with its answer. */
 export function describeAnswers(questions: UserQuestion[], answers: string[]): string {
 	return [

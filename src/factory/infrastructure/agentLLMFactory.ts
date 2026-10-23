@@ -50,6 +50,7 @@ import {
 	stateDirectoryOf,
 	type WorkspaceOptions,
 } from '#src/tools/infrastructure/fileTools';
+import type { DelegationTool } from '#src/tools/infrastructure/agentAsTool';
 import { createExploreTool } from '#src/tools/infrastructure/exploreTool';
 import { createShowChangesTool } from '#src/tools/infrastructure/showChangesTool';
 import {
@@ -104,8 +105,11 @@ export interface CreateLLMAgentOptions {
 	reasoningEffort?: ReasoningEffort;
 	/** Sent as the model's instructions on every call. */
 	systemPrompt: string;
-	/** The tools the model may call: the consumer's own, and those of `createFileTools`. Defaults to none. */
-	tools?: (Tool | FileTool)[];
+	/**
+	 * The tools the model may call: the consumer's own, those of `createFileTools`, and agents
+	 * offered with `agentAsTool`. Defaults to none.
+	 */
+	tools?: (Tool | FileTool | DelegationTool)[];
 	/**
 	 * The folders the agent works on, the same as given to `createFileTools`. With it, the agent
 	 * follows the workspace's history: after the user undoes runs, its next run starts from the
@@ -443,7 +447,7 @@ export function createLLMAgent(
 		systemPrompt: workspace
 			? withGuidance(systemPrompt, workspaceGuidance(workspace.roots))
 			: systemPrompt,
-		// A file tool is a harness tool under its public name.
+		// A file tool or a delegation tool is a harness tool under its public name.
 		tools: tools as AgentTool[],
 		...(workspace ? { history: historyOf(workspace, logger) } : {}),
 		...(workspace && summarizeUndone ? { summarizer: summarizerFor(provider, logger) } : {}),

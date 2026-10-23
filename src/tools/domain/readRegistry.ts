@@ -1,4 +1,6 @@
 import type { ProgressEvent } from '#src/agent/domain/agent';
+import type { Approver } from '#src/agent/domain/approval';
+import type { Asker } from '#src/agent/domain/question';
 import type { RunContext } from '#src/agent/domain/runContext';
 import type { Tokens } from '#src/shared/domain/tokens';
 
@@ -90,4 +92,9 @@ export interface ToolCallContext {
 	 * came back without usage, which leaves the run's total unknown.
 	 */
 	readonly spend: (tokens: Tokens | undefined, unreported: boolean) => void;
+	/** The run's approver and asker, for an agent the call starts. */
+	readonly approve?: Approver;
+	readonly ask?: Asker;
+	/** How many delegations deep the agent that made the call runs: 0 for the top-level one. */
+	readonly depth: number;
 }
