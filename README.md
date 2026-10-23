@@ -497,11 +497,12 @@ run in `AgentResponse.runId`. Progress reports each change as a unified `diff` o
 
 For debugging, `onTranscript` receives what the model saw in each run once the run ended,
 completed, failed or cancelled. A `Transcript` has the run's `outcome`, the role it was of in
-`createLLMOrchestrator`, or `explorer`, for an agent another agent's tool started the call that
-started it in `delegation`, and a `content` of plain JSON: the instructions, the tool
-definitions, the run's messages with what the tools returned, and the error a run that did not
-complete ended with. `content` has no stable shape; read it, but do not build on it. A callback
-that fails is logged, and the run stays as it ended.
+`createLLMOrchestrator`, or `explorer`, and a `content` of plain JSON: the instructions, the
+tool definitions, the run's messages with what the tools returned, and the error a run that did
+not complete ended with. The transcript of an agent another agent handed a task to also has
+`delegation`: the tool, the call's id and the subagent's number that started it. `content`
+has no stable shape; read it, but do not build on it. A callback that fails is logged, and the
+run stays as it ended.
 
 `createLLMOrchestrator()` takes the options of `createOrchestrator()` plus `workspace`,
 `maxSteps`, `compactAt`, `commands`, `formatter`, `summarizeUndone` and `onTranscript`, and returns a promise. Every role runs on the
