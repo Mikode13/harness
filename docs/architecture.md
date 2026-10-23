@@ -354,7 +354,9 @@ result enter the conversation together, so a failed run leaves it untouched, no 
 kept without its result, and a retry of the same prompt cannot appear twice. Two failed runs are
 recorded, with their reads, so the next run can take them up: one cut by the output limit,
 whose cut answer keeps its text and reasoning without its tool calls or provider data, and one
-stopped on a command that keeps ending alike. Once a call has
+stopped on a command that keeps ending alike. Before either is recorded, the agents it sent
+stop, and a last harness message says what became of each: its answer, or that it was stopped
+before it answered. Once a call has
 reached an existing tool, a recoverable failure becomes `UnrecoverableError`: `RetryingAgent`
 would run the prompt again and repeat the tool's effects. A call to a missing tool, or a denied
 one, does not count, because nothing ran. Text and reasoning are narrated as each answer arrives, as

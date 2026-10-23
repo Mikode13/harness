@@ -1034,6 +1034,14 @@ export class LLMAgent implements Agent {
 				reads.commit();
 				if (followed) this.seenRevision = followed.latestRevision;
 			};
+			// A run kept although it failed stops its agents first, and tells the next run what
+			// became of each one, which would otherwise wait for answers that never come.
+			const keepFailed = async () => {
+				await background.stop();
+				const ended = background.takeAnswers();
+				if (ended) runMessages.push(ended);
+				remember();
+			};
 			for (let step = 1; step <= this.maxSteps; step++) {
 				// An agent at work may have narrated through a callback that failed.
 				throwIfProgressFailed();
@@ -1058,7 +1066,7 @@ export class LLMAgent implements Agent {
 					);
 					for (const part of written) narrate(part, callback);
 					if (written.length > 0) runMessages.push({ role: 'assistant', content: written });
-					remember();
+					await keepFailed();
 					throw new UnrecoverableError('The LLM stopped before completing its answer', {
 						cause:
 							'The model stopped with "truncated". The run, and what the answer held before the limit, are kept in the conversation.',
@@ -1141,7 +1149,7 @@ export class LLMAgent implements Agent {
 								...rest,
 							],
 						});
-						remember();
+						await keepFailed();
 						throw decision;
 					}
 					repeats.reset();
@@ -1170,7 +1178,7 @@ export class LLMAgent implements Agent {
 					runMessages.push(repeatedNote === undefined ? message : withNote(message, repeatedNote));
 					// Kept like a run cut by the output limit: the user may take it up.
 					if (stopped) {
-						remember();
+						await keepFailed();
 						throw stopped;
 					}
 					// What agents answered meanwhile, after the results the model is waiting for.

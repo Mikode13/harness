@@ -17,6 +17,10 @@ export function sentNote(agents: readonly Delegated[]): string {
 	return `Sent to work in the background: ${names}. Each one's answer reaches you in a message of its own once it finishes. Keep working meanwhile. When you have nothing else to do until they answer, say briefly that you are waiting, without calling a tool: the run waits for them, and you go on with their answers.`;
 }
 
+// What a model is told of an agent the end of its run stopped, in a conversation kept for the next.
+const stoppedAnswer =
+	'None: it was stopped when the run ended, before it answered. Anything it changed stays as it left it.';
+
 function shownTask(task: string): string {
 	return task.length > shownTaskCharacters ? `${task.slice(0, shownTaskCharacters)}…` : task;
 }
@@ -88,6 +92,7 @@ export class BackgroundAgents {
 						if (this.signal.aborted) {
 							ended('stopped');
 							this.unknownUsage = true;
+							this.arrive(agent, callId, stoppedAnswer);
 						} else if (error instanceof RunEndingToolError) {
 							ended('failed');
 							this.end(error.failure);
@@ -111,7 +116,10 @@ export class BackgroundAgents {
 		}
 	}
 
-	/** The message holding every answer that arrived since the last one, if any did. */
+	/**
+	 * The message holding every answer that arrived since the last one, if any did, and what
+	 * became of each agent a stop interrupted.
+	 */
 	takeAnswers(): Message | undefined {
 		if (this.arrived.length === 0) return undefined;
 		const answers = this.arrived.splice(0);

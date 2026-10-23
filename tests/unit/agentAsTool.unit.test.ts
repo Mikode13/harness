@@ -892,6 +892,42 @@ describe('agentAsTool', () => {
 		expect(checks).toEqual(['ran', 'ran', 'ran']);
 	});
 
+	it('tells the next run of an agent stopped when its run was cut and kept', async () => {
+		const tool = delegation({
+			createAgent: () => ({
+				run: (_, { signal: agentSignal }) =>
+					new Promise((_resolve, reject) => {
+						agentSignal.addEventListener('abort', () => {
+							reject(agentSignal.reason as Error);
+						});
+					}),
+			}),
+		});
+		const llmClient = new WaitingModel(
+			[
+				assistantResponse([toolCall('call-1', 'commit', { task: 'Commit' })]),
+				textResponse('partial', { stopReason: 'truncated' }),
+				textResponse('next done'),
+			],
+			0,
+		);
+		const agent = new LLMAgent({ llmClient, tools: [tool] });
+
+		await expect(agent.run('work', { signal })).rejects.toThrow(
+			'The LLM stopped before completing its answer',
+		);
+		await expect(agent.run('go on', { signal })).resolves.toMatchObject({
+			response: 'next done',
+		});
+
+		const next = llmClient.contexts.at(-1);
+		expect(answersIn(next)).toEqual([
+			'commit 1, sent by your call call-1 with the task: Commit\nIts answer:\nNone: it was stopped when the run ended, before it answered. Anything it changed stays as it left it.',
+		]);
+		// What the run wrote before the limit, then what became of its agent, then the new prompt.
+		expect(next?.slice(-3).map(message => message.role)).toEqual(['assistant', 'user', 'user']);
+	});
+
 	it('ends the run when the progress callback fails on what an agent narrates', async () => {
 		const tool = delegation({
 			createAgent: () => new LLMAgent({ llmClient: new FakeLLMClient(textResponse('committed')) }),
