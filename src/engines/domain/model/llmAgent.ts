@@ -706,8 +706,8 @@ export class LLMAgent implements Agent {
 			const ran = await this.runTool(call, options, effects, toolCall, background);
 			// A call that failed to narrate ends the run before the next one can start.
 			throwIfProgressFailed();
-			// An agent at work may have changed what the history cannot copy since the last ending.
-			if (background.unrecorded) loops.unrecordedCallRan();
+			// An agent at work since the last call may have changed what the history cannot copy.
+			if (background.mayHaveChangedUnseen()) loops.unrecordedCallRan();
 			const settled = this.settle(call, ran, loops, options);
 			let { result } = settled;
 			const { alike, key, label } = settled;

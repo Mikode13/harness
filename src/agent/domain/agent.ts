@@ -140,9 +140,10 @@ export type ProgressEvent =
 	 * An event of a subagent that a tool call started: one of the explorers an `explore` call
 	 * sends, or the agent a tool from `agentAsTool` delegates to. `callId` is the `id` of that
 	 * call's `tool` events, and `subagent` numbers its subagents from 1, so the events of agents
-	 * running in parallel stay apart. Subagents work in the background: their events keep
-	 * arriving after the call's own `tool` events say it completed, until each one has answered.
-	 * A subagent's own subagents arrive as `subagent` events inside this one's `event`.
+	 * running in parallel stay apart. Subagents work in the background: the call's own `tool`
+	 * event ends with `status: 'sent'`, and each subagent's events keep arriving after it, until
+	 * its `subagentEnded`, whether it answered, failed or was stopped. A subagent's own subagents
+	 * arrive as `subagent` events inside this one's `event`.
 	 */
 	| {
 			type: 'subagent';

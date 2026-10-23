@@ -34,6 +34,8 @@ export class BackgroundAgents {
 	private readonly arrived: string[] = [];
 	private ended: { failure: unknown } | undefined;
 	private unrecordedWorking = 0;
+	// Such an agent ended since `mayHaveChangedUnseen` was last asked.
+	private unrecordedEnded = false;
 	private woken: (() => void) | undefined;
 	/**
 	 * What some agent spent is unknown: it was stopped while it worked, or failed in a way that
@@ -54,9 +56,14 @@ export class BackgroundAgents {
 		return this.agents.size > 0;
 	}
 
-	/** Some agent is working that may change files the history does not record. */
-	get unrecorded(): boolean {
-		return this.unrecordedWorking > 0;
+	/**
+	 * Whether an agent that may change files the history does not record worked since the last
+	 * time this was asked: one is working now, or one ended meanwhile.
+	 */
+	mayHaveChangedUnseen(): boolean {
+		const worked = this.unrecordedWorking > 0 || this.unrecordedEnded;
+		this.unrecordedEnded = false;
+		return worked;
 	}
 
 	get usageUnknown(): boolean {
@@ -93,7 +100,10 @@ export class BackgroundAgents {
 					},
 				)
 				.finally(() => {
-					if (unrecorded) this.unrecordedWorking--;
+					if (unrecorded) {
+						this.unrecordedWorking--;
+						this.unrecordedEnded = true;
+					}
 					this.agents.delete(watched);
 					this.wake();
 				});

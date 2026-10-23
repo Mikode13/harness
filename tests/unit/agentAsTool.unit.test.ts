@@ -833,6 +833,65 @@ describe('agentAsTool', () => {
 		expect(checks).toEqual(['ran', 'ran', 'ran']);
 	});
 
+	it('counts what an agent that may change files did when it ended between two checks', async () => {
+		const ending: CommandEnding = {
+			passed: true,
+			how: 'exited with code 0',
+			output: 'all passed',
+			fingerprint: 'all passed',
+			state: 'one',
+			changed: [],
+		};
+		let finish!: (response: AgentResponse) => void;
+		let runs = 0;
+		const command: PreparingTool = {
+			name: 'runCommand',
+			description: 'Runs a command',
+			inputSchema: { type: 'object', properties: {}, required: [] },
+			prepare: () =>
+				Promise.resolve({
+					risk: 'safe',
+					ending: () => ending,
+					run: async () => {
+						runs++;
+						// The agent ends while the second check runs, before its ending is taken.
+						if (runs === 2) {
+							finish({ response: 'committed', duration: 0 });
+							await new Promise(resolve => setTimeout(resolve, 0));
+						}
+						return 'ran';
+					},
+				}),
+		};
+		const tool = delegation({
+			createAgent: () => ({
+				run: () =>
+					new Promise(resolve => {
+						finish = resolve;
+					}),
+			}),
+		});
+		const check = (id: string) => toolCall(id, 'runCommand', {});
+		const llmClient = new WaitingModel(
+			[
+				assistantResponse([toolCall('call-1', 'commit', { task: 'Commit' }), check('check-1')]),
+				assistantResponse([check('check-2')]),
+				assistantResponse([check('check-3')]),
+			],
+			1,
+		);
+
+		await new LLMAgent({ llmClient, tools: [tool, command] }).run('work', { signal });
+
+		const checks = llmClient.contexts
+			.at(-1)
+			?.flatMap(message => message.content)
+			.flatMap(part =>
+				part.type === 'toolResult' && part.name === 'runCommand' ? [part.output] : [],
+			);
+		expect(checks).toEqual(['ran', 'ran', 'ran']);
+	});
+
 	it('ends the run when the progress callback fails on what an agent narrates', async () => {
 		const tool = delegation({
 			createAgent: () => new LLMAgent({ llmClient: new FakeLLMClient(textResponse('committed')) }),
