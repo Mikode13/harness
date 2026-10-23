@@ -965,6 +965,27 @@ describe('createLLMOrchestrator', () => {
 		).toMatch(/^You are the planner agent[\s\S]*AGENTS\.md/);
 	});
 
+	it('tells the planner and the reviewer to answer only once every explorer has', async () => {
+		const openAICreate = openAIReplying('plan');
+		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
+
+		await (
+			await createLLMOrchestrator({ workspace, logger: createLogger() })
+		).run('ship it', {
+			signal,
+		});
+
+		// An answer while explorers work is a wait, so a plan or a decision given then is lost.
+		const planner = (requestsOf(openAICreate)[0] as unknown as { instructions: string })
+			.instructions;
+		const reviewer = (requestsOf(claudeCreate)[0] as unknown as { system: string }).system;
+		for (const prompt of [planner, reviewer]) {
+			expect(prompt).toContain(
+				'Give your final answer only once every explorer you sent has answered',
+			);
+		}
+	});
+
 	it('runs every role on Anthropic when asked to, the executor with the text editor', async () => {
 		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
 
