@@ -47,7 +47,8 @@ export type RememberableDecision =
  * Wraps `ask` so a call the user allowed with `remember` is not asked about again. `key` decides
  * what counts as the same call; it defaults to the tool's name, so "always" allows every
  * destructive call to that tool. The memory lives in the returned approver, so its lifetime is
- * the consumer's choice: one per session, one per user, or one per run.
+ * the consumer's choice: one per session, one per user, or one per run. Calls made at once are
+ * each asked; a call that waits its turn in front of it finds an "always" given meanwhile.
  */
 export function rememberApprovals(
 	ask: (

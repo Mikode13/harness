@@ -43,13 +43,15 @@ export interface RunOptions {
 	/**
 	 * Asked before a model-backed agent runs a `destructive` tool call. Without it, such a call
 	 * is denied. An agent built with `autoApprove` never asks, and the Agent SDK engines ignore
-	 * it: their own permission systems decide.
+	 * it: their own permission systems decide. Agents a delegation runs at once may call it before
+	 * an earlier call has its answer.
 	 */
 	approve?: Approver | undefined;
 	/**
 	 * Answers what a model-backed agent asks the user, through its `askUser` tool, when a
 	 * decision is the user's to make. Without it the agent has no such tool. The Agent SDK
-	 * engines ignore it.
+	 * engines ignore it. Agents a delegation runs at once may call it before an earlier call has
+	 * its answer.
 	 */
 	ask?: Asker | undefined;
 }

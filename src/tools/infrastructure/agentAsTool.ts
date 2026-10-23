@@ -61,15 +61,16 @@ export interface AgentAsToolOptions {
  * - its progress arrives as `subagent` events of the call, and a transcript it gives names the
  *   call in `delegation`;
  * - it is asked and approved through the run's `ask` and `approve`. Delegating never grants
- *   `autoApprove`: the agent has it only if `createAgent` gave it.
+ *   `autoApprove`: the agent has it only if the `createAgent` option gave it.
  *
  * Calls of these tools next to each other in one step run at once, and any other call runs
  * alone. Every change and command of the run is made one at a time, so the history stays exact,
- * but agents working at once can see each other's unfinished work. An agent that fails is the call's error result, for the model to act on; a
- * cancellation, or a run's approver or asker that failed inside it, ends the run.
+ * but agents working at once can see each other's unfinished work. An agent that fails is the
+ * call's error result, for the model to act on; a cancellation, or a run's approver or asker that
+ * failed inside it, ends the run.
  *
- * Only for agents on the model APIs, from `createLLMAgent`: an agent from `createAgent` runs as
- * its own run, outside these guarantees.
+ * Only for agents on the model APIs, from `createLLMAgent`: an Agent SDK agent from the
+ * `createAgent` factory runs as its own run, outside these guarantees.
  *
  * @throws {InvalidAgentConfigError} when `maxDepth` is not a positive integer.
  */

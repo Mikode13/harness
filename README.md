@@ -556,7 +556,7 @@ orchestrator is one run of the history, every round included.
 ### Agents that hand work to other agents
 
 `agentAsTool` offers an agent to another one as a tool. The calling model writes the task, and
-a new agent from `createAgent` runs it; its answer is the call's result. Specialists can come
+a new agent from the `createAgent` option runs it; its answer is the call's result. Specialists can come
 from a package you reuse in every project, or be written in one project:
 
 ```ts
@@ -585,9 +585,11 @@ The agent works inside the caller's run:
 - what it writes is the same run of the history, so one undo reverts both; it keeps its own
   tools' access policy, and edits only what it read itself;
 - what it spends counts in the caller's `tokens`, a failed attempt included;
-- it asks and is approved through the run's `ask` and `approve`. Delegating never grants
-  `autoApprove`; the agent has it only if `createAgent` gave it. Handing over a task asks no
-  one unless you set `risk: 'destructive'`;
+- it asks and is approved through the run's `ask` and `approve`, which agents working at once
+  may call before an earlier call has its answer; one person at one terminal needs them queued,
+  as the CLI does. Delegating never grants `autoApprove`; the agent has it only if the
+  `createAgent` option gave it. Handing over a task asks no one unless you set
+  `risk: 'destructive'`;
 - its progress arrives as `subagent` events of the call, with the tool's `name`, and its
   transcript names the call in `delegation`.
 
@@ -598,7 +600,8 @@ once can see each other's unfinished work, and a long command holds the others' 
 ends. An agent that fails
 is the call's error, for the model to act on; a cancellation, or your approver or asker failing
 inside it, ends the run. A call deeper than `maxDepth`, 2 by default, is refused. Only agents
-from `createLLMAgent` work this way: one from `createAgent` runs as a run of its own.
+from `createLLMAgent` work this way: an Agent SDK agent from the `createAgent` factory runs
+as a run of its own.
 
 ### Running the project's commands
 
