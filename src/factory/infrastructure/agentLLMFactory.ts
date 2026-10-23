@@ -559,7 +559,7 @@ const batchingReads =
 // The explorers find and the role reads, as a reader asks a librarian where a book is and then
 // reads it: their reports are where to look, not a summary to work from.
 const exploring =
-	'To find where something is in the repository, ask explorers instead of searching yourself: send `explore` the independent questions you have in one call. They work in the background while you go on, and each one answers, once it finishes, with the files and line ranges that hold what you asked. Then read those ranges yourself, all of them in one readFiles call.';
+	'To find where something is in the repository, ask explorers instead of searching yourself: send `explore` the independent questions you have in one call. They work in the background while you go on, and each one answers, once it finishes, with the files and line ranges that hold what you asked. Then read those ranges yourself, all of them in one readFiles call. Give your final answer only once every explorer you sent has answered: an answer while they work is taken as waiting for them, and only the answer you give after the last one is kept.';
 
 // Each provider's cheaper model, which only finds and reads.
 const explorerRoles = {
