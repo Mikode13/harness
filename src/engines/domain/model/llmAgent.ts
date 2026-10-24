@@ -38,6 +38,8 @@ import type { Message, MessagePart, ToolCallPart, ToolResultPart } from '#src/ll
 import { asNative, nativeOf, type ToolDefinition } from '#src/llm/domain/tool';
 import { type Asker, readAnswers, type UserQuestion } from '#src/agent/domain/question';
 import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcript';
+import { type InboxReader, readerOf } from '#src/agent/domain/inbox';
+import { OneRunAtATime } from '#src/agent/domain/oneRunAtATime';
 import {
 	type AgentTool,
 	type CommandEnding,
@@ -215,6 +217,19 @@ function withNote(message: Message, note: string): Message {
 	};
 }
 
+// What the model is told of a message from its inbox, ahead of the message itself.
+const sentByUser = 'The user sent this while you worked:';
+
+/** What the user sent since the run last looked, and the message the model reads it in. */
+function takeInbox(
+	inbox: InboxReader | undefined,
+): { texts: string[]; message: Message } | undefined {
+	const texts = inbox?.take() ?? [];
+	if (texts.length === 0) return undefined;
+	const content = [sentByUser, ...texts].map(text => ({ type: 'text' as const, text }));
+	return { texts, message: { role: 'user', content } };
+}
+
 /**
  * An agent whose conversation is owned by MiKode: every run sends the whole context to a
  * stateless `LLMClient`. Within a run the model may call the agent's tools; the agent runs them
@@ -240,6 +255,7 @@ export class LLMAgent implements Agent {
 	private seenRevision = 0;
 	// What this conversation has seen of each file, so an edit starts from a version it read.
 	private readonly reads = new ReadRegistry();
+	private readonly runs = new OneRunAtATime();
 
 	constructor({
 		llmClient,
@@ -847,8 +863,14 @@ export class LLMAgent implements Agent {
 	 * Runs inside the context of the run that reached it, or in one of its own that it ends with
 	 * the run: completed, failed or cancelled. Only a run that owns its context names the history
 	 * run it recorded, since the run is over only when that context ends.
+	 *
+	 * @throws {RunInProgressError} when another run on this agent is still working.
 	 */
-	async run(prompt: string, options: RunOptions): Promise<AgentResponse> {
+	run(prompt: string, options: RunOptions): Promise<AgentResponse> {
+		return this.runs.run(() => this.runAlone(prompt, options));
+	}
+
+	private async runAlone(prompt: string, options: RunOptions): Promise<AgentResponse> {
 		const inherited = runContextOf(options);
 		if (inherited) return this.runSteps(prompt, options, inherited);
 
@@ -972,6 +994,19 @@ export class LLMAgent implements Agent {
 		};
 		// The agents the run's calls send to work in the background.
 		const background = new BackgroundAgents(signal, onProgress);
+		const inbox = options.inbox && readerOf(options.inbox);
+		// What the user sends while the run waits for its agents is worth the model's attention.
+		const stopListening = inbox?.onMessage(() => {
+			background.interrupt();
+		});
+		// What the run read from its inbox and has not kept yet, which goes back there if the run
+		// is not kept.
+		const unkept: string[] = [];
+		const takeSent = () => {
+			const sent = takeInbox(inbox);
+			if (sent) unkept.push(...sent.texts);
+			return sent?.message;
+		};
 		const start = Date.now();
 		const runMessages: Message[] = [{ role: 'user', content: [{ type: 'text', text: prompt }] }];
 		let tokens: Tokens | undefined;
@@ -1029,6 +1064,7 @@ export class LLMAgent implements Agent {
 			// Recorded only once the run ends in a way that keeps it, so it never leaves a tool call
 			// without its result; a run that is not kept gives its note on what was undone again.
 			const remember = () => {
+				unkept.length = 0;
 				this.conversation.addRunAfter(after, runMessages, context.historyRun);
 				// With the turns that read them, and only then.
 				reads.commit();
@@ -1089,20 +1125,26 @@ export class LLMAgent implements Agent {
 				const calls = response.message.content.filter(part => part.type === 'toolCall');
 				if (calls.length === 0) {
 					// An answer given while agents work, or before the model read what they answered,
-					// is a wait: the model goes on with their answers.
+					// is a wait: the model goes on with their answers. So is one given before it read
+					// what the user sent, while a step is left to answer it; otherwise the message waits
+					// in the inbox for the next run.
+					const lastStep = step === this.maxSteps;
 					let answers = background.takeAnswers();
-					if (!answers && background.working && step < this.maxSteps) {
+					let sent = lastStep ? undefined : takeSent();
+					if (!answers && !sent && background.working && !lastStep) {
 						await background.nextAnswer();
 						throwIfProgressFailed();
 						answers = background.takeAnswers();
+						sent = takeSent();
 					}
-					if (answers || background.working) {
-						if (step === this.maxSteps) {
+					if (answers || sent || background.working) {
+						if (lastStep) {
 							throw new UnrecoverableError('The LLM did not finish within its step limit', {
 								cause: `The model was still waiting for the agents it sent after ${String(this.maxSteps)} steps.`,
 							});
 						}
 						if (answers) runMessages.push(answers);
+						if (sent) runMessages.push(sent);
 						continue;
 					}
 					remember();
@@ -1181,9 +1223,12 @@ export class LLMAgent implements Agent {
 						await keepFailed();
 						throw stopped;
 					}
-					// What agents answered meanwhile, after the results the model is waiting for.
+					// What agents answered and the user sent meanwhile, after the results the model is
+					// waiting for.
 					const answers = background.takeAnswers();
 					if (answers) runMessages.push(answers);
+					const sent = takeSent();
+					if (sent) runMessages.push(sent);
 				}
 			}
 
@@ -1194,6 +1239,8 @@ export class LLMAgent implements Agent {
 			// The run ends only after the agents still working, which stop with it: what they
 			// changed and spent is the run's.
 			await background.stop();
+			// A run not kept read nothing: what it took belongs to the next attempt or run.
+			inbox?.giveBack(unkept);
 			let failure = error;
 			if (effects.toolRan && error instanceof RecoverableError) {
 				// RetryingAgent would run the whole prompt again, and with it every tool this run
@@ -1209,6 +1256,8 @@ export class LLMAgent implements Agent {
 
 			// The run spent the tokens of every step before the one that failed.
 			throw withSpentTokens(failure, tokens, unreported || background.usageUnknown);
+		} finally {
+			stopListening?.();
 		}
 	}
 }

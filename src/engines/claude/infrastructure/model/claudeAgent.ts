@@ -31,6 +31,7 @@ import {
 } from '#src/shared/domain/providerFailure';
 import type { ILogger } from '#src/shared/domain/logger';
 import type { Tokens } from '#src/shared/domain/tokens';
+import { OneRunAtATime } from '#src/agent/domain/oneRunAtATime';
 import { isOneOf } from '#src/shared/domain/isOneOf';
 import { claudeModelIds } from '#src/llm/infrastructure/claudeModelIds';
 
@@ -194,6 +195,8 @@ export class ClaudeAgent implements Agent {
 	private reasoningEffort: ClaudeReasoningEffort;
 	private sessionId?: string;
 	private logger: ILogger;
+	// Its session goes on from one run to the next, so two at once would fork it.
+	private readonly runs = new OneRunAtATime();
 
 	// `model` and `reasoningEffort` are untyped on purpose: this adapter is the one that knows
 	// what Claude supports, so it validates them instead of trusting the caller.
@@ -225,7 +228,12 @@ export class ClaudeAgent implements Agent {
 		this.logger = logger;
 	}
 
-	async run(
+	/** @throws {RunInProgressError} when another run on it is still working. */
+	run(prompt: string, options: RunOptions): Promise<AgentResponse> {
+		return this.runs.run(() => this.runAlone(prompt, options));
+	}
+
+	private async runAlone(
 		prompt: string,
 		{ signal, onProgress: callback = ignoreProgress }: RunOptions,
 	): Promise<AgentResponse> {

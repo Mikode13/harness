@@ -3,6 +3,7 @@ import type { Query } from '@anthropic-ai/claude-agent-sdk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ClaudeAgent } from '../../src/engines/claude/infrastructure/model/claudeAgent.ts';
 import type { Agent, ProgressEvent } from '../../src/agent/domain/agent.ts';
+import { RunInProgressError } from '../../src/agent/domain/oneRunAtATime.ts';
 import {
 	InvalidAgentConfigError,
 	RecoverableError,
@@ -305,6 +306,39 @@ describe('ClaudeAgent', () => {
 		expect(logger.warn).toHaveBeenCalledWith(
 			'Claude ended a turn without a result message; its usage is unknown',
 		);
+	});
+
+	it('rejects a run while another works on its session, without sending it', async () => {
+		let open: () => void = () => undefined;
+		const opened = new Promise<void>(resolve => {
+			open = resolve;
+		});
+		const messages = stream([result('first')])[Symbol.asyncIterator]();
+		let waited = false;
+		const gated = {
+			close: vi.fn(),
+			[Symbol.asyncIterator]() {
+				return {
+					next: async () => {
+						if (!waited) {
+							waited = true;
+							await opened;
+						}
+						return messages.next();
+					},
+				};
+			},
+		} as unknown as Query;
+		vi.mocked(query).mockReturnValueOnce(gated);
+		const agent = new ClaudeAgent({ model: 'sonnet', logger: createLogger() });
+		const signal = new AbortController().signal;
+
+		const running = agent.run('first prompt', { signal });
+		await expect(agent.run('second prompt', { signal })).rejects.toBeInstanceOf(RunInProgressError);
+
+		expect(query).toHaveBeenCalledOnce();
+		open();
+		await expect(running).resolves.toMatchObject({ response: 'first' });
 	});
 
 	it('preserves session continuity and result metadata, sending the model the alias pins', async () => {

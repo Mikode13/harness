@@ -2,12 +2,14 @@ import { describe, expect, it, vi, type Mock } from 'vitest';
 import {
 	createWorkflow,
 	defineWorkflowStages,
+	Inbox,
 	isAbortError,
 	RecoverableError,
 	UnrecoverableError,
 	type Agent,
 	type AgentResponse,
 	type ProgressEvent,
+	type RunOptions,
 	type Tokens,
 	type Validator,
 	type WorkflowStage,
@@ -610,6 +612,27 @@ describe('workflow', () => {
 		expect(ofOne[0]).toBe(ofOne[1]);
 		expect(ofTwo[0]).toBe(ofTwo[1]);
 		expect(ofOne[0]).not.toBe(ofTwo[0]);
+	});
+
+	it('passes its stages no inbox, so what was sent stays for the next run', async () => {
+		const received: RunOptions[] = [];
+		const run = vi.fn<Agent['run']>((_prompt, options) => {
+			received.push(options);
+			return Promise.resolve(answer({ value: 'a' }));
+		});
+		const workflow = workflowOf(
+			'stage',
+			finalStage('stage', () => ({ run })),
+		);
+		const inbox = new Inbox();
+		inbox.send('one more thing');
+
+		await workflow.run(null, { signal, inbox });
+
+		const [options] = received;
+		expect(options?.inbox).toBeUndefined();
+		expect(options && runContextOf(options)).toBeInstanceOf(RunContext);
+		expect(inbox.close()).toEqual(['one more thing']);
 	});
 
 	it('reports its runId and closes its context only when it owns them', async () => {

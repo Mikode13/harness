@@ -65,9 +65,11 @@ describe('public API', () => {
 	it('exports exactly these values', () => {
 		expect(Object.keys(harness).sort()).toEqual([
 			'HistoryExpiredError',
+			'Inbox',
 			'InvalidAgentConfigError',
 			'NothingToMoveError',
 			'RecoverableError',
+			'RunInProgressError',
 			'UnknownRunError',
 			'UnrecoverableError',
 			'WorkspaceBusyError',

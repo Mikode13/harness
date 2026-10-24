@@ -42,8 +42,7 @@ stdout, which belongs to the consumer. Wrap each log call in `treatErrors` with
 
 **Usage accounting belongs to a `run()`, not to an instance.** The CLI keeps one
 orchestrator for a whole session, so instance-level counters report every previous run's
-tokens again — and two concurrent runs report each other's. Anything that accumulates
-per turn is created inside `run()` and passed down.
+tokens again. Anything that accumulates per turn is created inside `run()` and passed down.
 
 **`ProgressEvent` grows in minor releases.** A new event type is a `feat`; removing a type
 or changing an existing type's fields is breaking. Consumers are told to ignore types they

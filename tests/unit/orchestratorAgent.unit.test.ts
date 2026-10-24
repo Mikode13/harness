@@ -13,6 +13,8 @@ import type {
 	ProgressEvent,
 	RunOptions,
 } from '../../src/agent/domain/agent.ts';
+import { Inbox } from '../../src/agent/domain/inbox.ts';
+import { RunInProgressError } from '../../src/agent/domain/oneRunAtATime.ts';
 import { RunContext, runContextOf } from '../../src/agent/domain/runContext.ts';
 import type { Tokens } from '../../src/shared/domain/tokens.ts';
 import type { ILogger } from '../../src/shared/domain/logger.ts';
@@ -74,11 +76,13 @@ describe('OrchestratorAgent', () => {
 		const approve: NonNullable<RunOptions['approve']> = vi.fn(() => ({ approved: true }));
 		const ask: NonNullable<RunOptions['ask']> = vi.fn(() => []);
 		const futureField = { preserved: true };
+		const inbox = new Inbox();
 		const options = {
 			signal,
 			onProgress,
 			approve,
 			ask,
+			inbox,
 			futureField,
 		} as RunOptions & { futureField: typeof futureField };
 
@@ -96,11 +100,40 @@ describe('OrchestratorAgent', () => {
 			expect(roleOptions?.futureField).toBe(futureField);
 			expect(roleOptions?.onProgress).toEqual(expect.any(Function));
 			expect(roleOptions?.onProgress).not.toBe(onProgress);
+			// No role reads it: what was sent stays for the next run.
+			expect(roleOptions?.inbox).toBeUndefined();
 		}
 		// One run context for every role, so the executor's writes are one run of the history.
 		const [first, ...rest] = received.map(roleOptions => roleOptions && runContextOf(roleOptions));
 		expect(first).toBeInstanceOf(RunContext);
 		for (const context of rest) expect(context).toBe(first);
+	});
+
+	it('rejects a run while another works, before any role starts', async () => {
+		let finishPlan: (response: AgentResponse) => void = () => undefined;
+		const planner = vi.fn<Agent['run']>(
+			() =>
+				new Promise(resolve => {
+					finishPlan = resolve;
+				}),
+		);
+		const orchestrator = new OrchestratorAgent({
+			plannerAgent: { run: planner },
+			executorAgent: createFakeAgent(createResponse({ response: 'done' })).agent,
+			reviewerAgent: createFakeAgent(createResponse({ response: '{"decision":"approved"}' })).agent,
+			reviewerDecisionValidator: new ReviewerDecisionValidator(),
+			logger,
+		});
+		const signal = new AbortController().signal;
+
+		const running = orchestrator.run('ship feature', { signal });
+		await expect(orchestrator.run('ship another', { signal })).rejects.toBeInstanceOf(
+			RunInProgressError,
+		);
+
+		expect(planner).toHaveBeenCalledOnce();
+		finishPlan(createResponse({ response: 'plan' }));
+		await expect(running).resolves.toMatchObject({ response: 'All job has finished' });
 	});
 
 	it('attributes every event to its role, including rounds and reviewer retries', async () => {
@@ -777,35 +810,6 @@ describe('OrchestratorAgent', () => {
 
 			await expect(orchestrator.run('first', { signal })).resolves.toEqual(expected);
 			await expect(orchestrator.run('second', { signal })).resolves.toEqual(expected);
-		});
-
-		it('keeps two concurrent runs from counting each other', async () => {
-			const [plan1, exec1, review1] = approvingRun();
-			const [plan2, exec2, review2] = approvingRun();
-			const planner = createFakeAgent(plan1, plan2);
-			const executor = createFakeAgent(exec1, exec2);
-			const reviewer = createFakeAgent(review1, review2);
-			const orchestrator = new OrchestratorAgent({
-				plannerAgent: planner.agent,
-				executorAgent: executor.agent,
-				reviewerAgent: reviewer.agent,
-				reviewerDecisionValidator: new ReviewerDecisionValidator(),
-				logger,
-			});
-			const signal = new AbortController().signal;
-			const expected = {
-				response: 'All job has finished',
-				duration: expect.any(Number) as number,
-				tokens: usage({ inputTokens: 30, outputTokens: 6 }),
-			};
-
-			const [first, second] = await Promise.all([
-				orchestrator.run('first', { signal }),
-				orchestrator.run('second', { signal }),
-			]);
-
-			expect(first).toEqual(expected);
-			expect(second).toEqual(expected);
 		});
 
 		// The failing run still counted a planner response before it gave up.
