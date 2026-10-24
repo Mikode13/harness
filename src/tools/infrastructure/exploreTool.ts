@@ -50,7 +50,7 @@ async function explore(
 export function createExploreTool(explorer: () => Agent): DelegatingTool {
 	return defineDelegatingTool({
 		name: 'explore',
-		description: `Sends read-only explorers to find things in the repository for you, one for each question, all at once. They work in the background: keep working meanwhile, and each explorer's report reaches you in a message of its own once it finishes. Each explorer starts from nothing but its question, so make each one complete: what to find, and what to report about it, such as which files and lines implement something and how. Ask up to ${String(maxExplorers)} independent questions in one call. Each answer is an explorer's report, not the files: read a file yourself when you need its exact text.`,
+		description: `Sends read-only explorers to find things in the repository for you, one for each question, all at once. They work in the background: keep working meanwhile, and each explorer's report reaches you in a message of its own once it finishes. Give your final answer only once every explorer you sent has reported: an answer while they work is taken as waiting for them, and only the answer you give after the last report is kept. Each explorer starts from nothing but its question, so make each one complete: what to find, and what to report about it, such as which files and lines implement something and how. Ask up to ${String(maxExplorers)} independent questions in one call. Each answer is an explorer's report, not the files: read a file yourself when you need its exact text.`,
 		input: z.object({
 			questions: z.array(z.string()).describe('One complete, independent question per explorer.'),
 		}),

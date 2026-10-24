@@ -768,6 +768,7 @@ describe('createLLMOrchestrator', () => {
 	interface ToolDeclaration {
 		name?: string;
 		type?: string;
+		description?: string;
 	}
 	const declared = (request: unknown) =>
 		((request as { tools?: ToolDeclaration[] }).tools ?? []).map(tool => tool.name ?? tool.type);
@@ -965,23 +966,26 @@ describe('createLLMOrchestrator', () => {
 		).toMatch(/^You are the planner agent[\s\S]*AGENTS\.md/);
 	});
 
-	it('tells the planner and the reviewer to answer only once every explorer has', async () => {
+	it('tells the planner and the reviewer to answer only once every explorer has, whatever their prompt', async () => {
 		const openAICreate = openAIReplying('plan');
 		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
 
 		await (
-			await createLLMOrchestrator({ workspace, logger: createLogger() })
-		).run('ship it', {
-			signal,
-		});
+			await createLLMOrchestrator({
+				workspace,
+				systemPrompts: { planner: 'Plan in one line.', reviewer: 'Review strictly.' },
+				logger: createLogger(),
+			})
+		).run('ship it', { signal });
 
-		// An answer while explorers work is a wait, so a plan or a decision given then is lost.
-		const planner = (requestsOf(openAICreate)[0] as unknown as { instructions: string })
-			.instructions;
-		const reviewer = (requestsOf(claudeCreate)[0] as unknown as { system: string }).system;
-		for (const prompt of [planner, reviewer]) {
-			expect(prompt).toContain(
-				'Give your final answer only once every explorer you sent has answered',
+		// An answer while explorers work is a wait, so a plan or a decision given then is lost:
+		// the rule travels with `explore`, which a caller's own prompt does not replace.
+		const explore = (request: unknown) =>
+			((request as { tools?: ToolDeclaration[] }).tools ?? []).find(tool => tool.name === 'explore')
+				?.description;
+		for (const request of [requestsOf(openAICreate)[0], requestsOf(claudeCreate)[0]]) {
+			expect(explore(request)).toContain(
+				'Give your final answer only once every explorer you sent has reported',
 			);
 		}
 	});
