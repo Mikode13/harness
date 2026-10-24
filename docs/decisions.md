@@ -2638,6 +2638,7 @@ tags: #mikode-harness #agent-loops
 
 **Consequences:**
 
+- It ships as a `feat`: the user decided on 2026-10-25 that rejecting a second concurrent `run()` is not breaking, since two runs at once on one instance already lost a turn without a word.
 - A consumer must not run one agent instance twice at once. A factory given to `agentAsTool` that returns the same agent for every call now fails the second delegation that overlaps another, where before both continued one conversation.
 - The orchestrators never read the inbox, so injecting into the CLI's orchestrator needs a decision on the role that reads it.
 - Whether a model takes a message read mid-run as the user's latest word, and reconsiders, is for the live round.
