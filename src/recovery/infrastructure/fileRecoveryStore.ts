@@ -16,6 +16,7 @@ import type { FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { ILogger } from '#src/shared/domain/logger';
+import { FolderClaims } from './folderClaims.ts';
 import {
 	classifyHostFailure,
 	describeFailure,
@@ -251,6 +252,11 @@ export class FileRecoveryStore implements RecoveryStore {
 	private readonly directory: string;
 	private readonly keepRuns: number;
 	private readonly logger: ILogger;
+	private readonly claims: FolderClaims;
+	// What a run or a move here may write in, as real paths: claimed while it holds the workspace.
+	private readonly folders: string[];
+	// What releases the claim of each run or move holding the workspace.
+	private readonly releases = new Map<string, () => Promise<void>>();
 
 	private constructor(
 		root: string,
@@ -258,12 +264,15 @@ export class FileRecoveryStore implements RecoveryStore {
 		keepRuns: number,
 		logger: ILogger,
 		workspaceId: string,
+		{ claims, folders }: { claims: FolderClaims; folders: string[] },
 	) {
 		this.root = root;
 		this.directory = directory;
 		this.keepRuns = keepRuns;
 		this.logger = logger;
 		this.workspaceId = workspaceId;
+		this.claims = claims;
+		this.folders = folders;
 	}
 
 	static async open({
@@ -271,6 +280,7 @@ export class FileRecoveryStore implements RecoveryStore {
 		directory = defaultStateDirectory(),
 		keepRuns = defaultKeepRuns,
 		logger = new Logger(),
+		writeRoots = [],
 	}: {
 		root: string;
 		/** Defaults to the platform's state directory. */
@@ -283,6 +293,11 @@ export class FileRecoveryStore implements RecoveryStore {
 		keepRuns?: number;
 		/** Where it reports a failure it absorbs. Defaults to standard error. */
 		logger?: ILogger;
+		/**
+		 * The folders besides `root` that its runs may write in, such as the other `write` roots,
+		 * so no worktree they lie in is removed while a run writes there.
+		 */
+		writeRoots?: readonly string[];
 	}): Promise<FileRecoveryStore> {
 		if (!Number.isInteger(keepRuns) || keepRuns < 3) {
 			throw new RangeError(`keepRuns must be an integer of at least 3; got ${String(keepRuns)}`);
@@ -298,8 +313,15 @@ export class FileRecoveryStore implements RecoveryStore {
 		await makeDirectory(join(workspace, 'content'));
 		await writeDurably(join(workspace, 'workspace.json'), JSON.stringify({ root: realRoot }));
 
+		const folders = [
+			realRoot,
+			...(await Promise.all(writeRoots.map(path => realpath(path).catch(() => path)))),
+		];
 		// Real, so a state directory reached through a link is the history it holds.
-		return new FileRecoveryStore(realRoot, workspace, keepRuns, logger, await realpath(workspace));
+		return new FileRecoveryStore(realRoot, workspace, keepRuns, logger, await realpath(workspace), {
+			claims: new FolderClaims(await realpath(directory)),
+			folders,
+		});
 	}
 
 	async startRun(): Promise<RunJournal> {
@@ -477,16 +499,6 @@ export class FileRecoveryStore implements RecoveryStore {
 	}
 
 	/** Holds the workspace like a run does, then moves it to the run `resolve` picks. */
-	async hold<T>(work: () => Promise<T>): Promise<T> {
-		const holdId = `hold-${newRunId()}`;
-		try {
-			await this.lock(holdId);
-			return await work();
-		} finally {
-			await this.unlock(holdId);
-		}
-	}
-
 	private async move(
 		resolve: (history: {
 			runs: RunRecord[];
@@ -1119,6 +1131,9 @@ export class FileRecoveryStore implements RecoveryStore {
 				// Written whole before it appears, so a lock that exists always names its holder.
 				await writeDurably(path, JSON.stringify({ runId, pid: process.pid }), { exclusive: true });
 				heldHere.add(runId);
+				// Under the lock: a removal of a worktree this run may write in keeps it out. The
+				// caller unlocks when this throws.
+				this.releases.set(runId, await this.claims.claimWriting(runId, this.folders));
 				return;
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
@@ -1144,6 +1159,9 @@ export class FileRecoveryStore implements RecoveryStore {
 	private async unlock(runId: string): Promise<void> {
 		// First: the run has ended even if removing its lock fails, so that lock is stale.
 		heldHere.delete(runId);
+		const release = this.releases.get(runId);
+		this.releases.delete(runId);
+		await release?.();
 		const path = join(this.directory, 'lock');
 		// Only its own lock: one cleared as stale and taken by another run is not this run's.
 		if ((await readLock(path))?.runId === runId) await unlink(path);

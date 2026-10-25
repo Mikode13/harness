@@ -3,8 +3,7 @@ import { join, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import type { WorktreeRemoval } from '#src/agent/domain/approval';
 import { WorkspaceBusyError } from '#src/recovery/domain/recoveryStore';
-import { FileRecoveryStore } from '#src/recovery/infrastructure/fileRecoveryStore';
-import type { ILogger } from '#src/shared/domain/logger';
+import { FolderClaims } from '#src/recovery/infrastructure/folderClaims';
 import type { WorkspaceRoot } from '../domain/accessPolicy.ts';
 import type { PreparingTool } from '../domain/preparedCall.ts';
 import { definePreparingTool } from './defineTool.ts';
@@ -43,7 +42,8 @@ async function gitOutput(args: string[], cwd: string, signal: AbortSignal): Prom
 
 /**
  * What removing the worktree at `path` would lose, and a fingerprint of all it rests on: its
- * HEAD, its branch, and each file `git status` names, by size and time of change. Throws when
+ * HEAD, its branch, the commits at risk, and each file `git status` names, by size and time of
+ * change. Throws when
  * any of it cannot be read, since a removal must never be asked about with less than it loses.
  */
 async function inspect(
@@ -63,21 +63,24 @@ async function inspect(
 			signal,
 		),
 	).filter(({ code }) => code === '!!');
-	let commitsOnlyHere = 0;
+	// The commits only a detached HEAD holds, which are lost with it.
+	const atRisk: string[] = [];
 	if (branch === undefined) {
-		const count = (
+		const listed = (
 			await gitOutput(
-				['rev-list', '--count', 'HEAD', '--not', '--branches', '--tags', '--remotes'],
+				['rev-list', 'HEAD', '--not', '--branches', '--tags', '--remotes'],
 				path,
 				signal,
 			)
-		).trim();
-		if (!/^\d+$/.test(count)) {
+		)
+			.split('\n')
+			.filter(line => line !== '');
+		if (!listed.every(line => /^[0-9a-f]{40,64}$/.test(line))) {
 			throw new Error(
-				`git could not count the commits only ${path} holds, so nothing was removed: it answered "${count}".`,
+				`git could not list the commits only ${path} holds, so nothing was removed: it answered "${listed.join(' ')}".`,
 			);
 		}
-		commitsOnlyHere = Number(count);
+		atRisk.push(...listed);
 	}
 	const files = await Promise.all(
 		[...changed, ...ignored].map(async ({ code, path: file }) => {
@@ -91,9 +94,9 @@ async function inspect(
 			...(branch === undefined ? {} : { branch }),
 			uncommitted: changed.length,
 			ignored: ignored.length,
-			commitsOnlyHere,
+			commitsOnlyHere: atRisk.length,
 		},
-		fingerprint: JSON.stringify([head, branch ?? null, files.sort()]),
+		fingerprint: JSON.stringify([head, branch ?? null, atRisk, files.sort()]),
 	};
 }
 
@@ -141,22 +144,21 @@ async function removableWorktree(
  * refuses the repository's main folder, a worktree the agent works in, which holds one of its
  * roots or lies inside one, and a locked one.
  *
- * Once approved it holds the worktree's own history, as a run that writes there would, and
- * checks again that nothing it rests on changed while the user was asked; otherwise it removes
- * nothing, and the model calls it again to have the user asked anew.
+ * Once approved it claims the worktree (`FolderClaims`), so no run that may write in it starts,
+ * and removes nothing while one works; it checks again that nothing it rests on changed while
+ * the user was asked, and otherwise removes nothing, so the model calls it again to have the
+ * user asked anew.
  */
 export function createRemoveWorktreeTool({
 	base,
 	roots,
 	stateDirectory,
-	logger,
 }: {
 	/** The real path of the first root. */
 	base: string;
 	roots: readonly WorkspaceRoot[];
-	/** Where the histories are kept, the worktree's among them. */
+	/** Where the histories are kept, as a real path: their runs' claims are there. */
 	stateDirectory: string;
-	logger: ILogger;
 }): PreparingTool {
 	return definePreparingTool({
 		name: 'removeWorktree',
@@ -179,36 +181,35 @@ export function createRemoveWorktreeTool({
 				risk: 'destructive',
 				worktree: removal,
 				run: async runSignal => {
-					const history = await FileRecoveryStore.open({
-						root: target,
-						directory: stateDirectory,
-						logger,
-					});
+					let release: () => Promise<void>;
 					try {
-						await history.hold(async () => {
-							const now = await removableWorktree(target, { base, roots }, runSignal);
-							const current = await inspect(target, now.branch, runSignal);
-							if (current.fingerprint !== fingerprint) {
-								throw new Error(
-									`${target} changed since the user was asked, so nothing was removed. Call removeWorktree again to have them asked with what it holds now.`,
-								);
-							}
-							// Forced: what it holds unsaved is what the user approved losing.
-							const removed = await git(
-								['worktree', 'remove', '--force', '--', target],
-								base,
-								runSignal,
-							);
-							if (removed.exitCode !== 0) {
-								throw new Error(`git could not remove ${target}: ${removed.stderr.trim()}`);
-							}
-						});
+						release = await new FolderClaims(stateDirectory).claimRemoval(target);
 					} catch (error) {
 						if (!(error instanceof WorkspaceBusyError)) throw error;
 						throw new Error(
-							`Another run, or a move through its history, holds ${target}, so nothing was removed. Try again once it ends.`,
+							`A run, or a move through a history, may write in ${target}, so nothing was removed. Try again once it ends.`,
 							{ cause: error },
 						);
+					}
+					try {
+						const now = await removableWorktree(target, { base, roots }, runSignal);
+						const current = await inspect(target, now.branch, runSignal);
+						if (current.fingerprint !== fingerprint) {
+							throw new Error(
+								`${target} changed since the user was asked, so nothing was removed. Call removeWorktree again to have them asked with what it holds now.`,
+							);
+						}
+						// Forced: what it holds unsaved is what the user approved losing.
+						const removed = await git(
+							['worktree', 'remove', '--force', '--', target],
+							base,
+							runSignal,
+						);
+						if (removed.exitCode !== 0) {
+							throw new Error(`git could not remove ${target}: ${removed.stderr.trim()}`);
+						}
+					} finally {
+						await release();
 					}
 					return removal.branch === undefined
 						? `Removed the worktree at ${target}.`

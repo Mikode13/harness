@@ -59,30 +59,13 @@ export async function listWorktrees(cwd: string, signal?: AbortSignal): Promise<
 }
 
 /**
- * Removes what a `worktree add` that failed left behind, and only what this call can show it
- * made: the branch, which did not exist before, if it still points at `sha` and no worktree has
- * it, and the folder it made for worktrees, if it is still empty.
+ * Removes the branch this call made, once its worktree could not be added: only while it still
+ * points at `sha`, which `update-ref` checks as it deletes, and no worktree has it.
  */
-async function undoPartialAdd({
-	cwd,
-	branch,
-	ref,
-	sha,
-	made,
-}: {
-	cwd: string;
-	branch: string;
-	ref: string;
-	sha: string;
-	made: string | undefined;
-}): Promise<void> {
-	const left = await git(['rev-parse', '--verify', '--quiet', ref], cwd);
+async function removeOwnBranch(cwd: string, branch: string, sha: string): Promise<void> {
 	const worktrees = await listWorktrees(cwd).catch(() => undefined);
-	const unused = worktrees?.every(worktree => worktree.branch !== branch) ?? false;
-	if (left.exitCode === 0 && left.stdout.trim() === sha && unused) {
-		await git(['branch', '-D', branch], cwd);
-	}
-	if (made !== undefined) await rmdir(made).catch(() => undefined);
+	if (!worktrees?.every(worktree => worktree.branch !== branch)) return;
+	await git(['update-ref', '-d', `refs/heads/${branch}`, sha], cwd);
 }
 
 function failed(what: string, cause: string): UnrecoverableError {
@@ -101,7 +84,7 @@ function failed(what: string, cause: string): UnrecoverableError {
  *
  * @throws {UnrecoverableError} when `repository` is in no git repository, `branch` is not a
  * valid new branch or already exists, `from` names no commit, or the folder already exists and
- * is not empty. A failure leaves no branch or folder of its own behind.
+ * is not empty. A failure leaves no branch or folder it made behind.
  */
 export async function createWorktree({
 	repository,
@@ -167,10 +150,20 @@ export async function createWorktree({
 	}
 	// The first folder this call made, if any, which it removes again should git fail.
 	const made = path === undefined ? await mkdir(dirname(target), { recursive: true }) : undefined;
+	const removeMade = async () => {
+		if (made !== undefined) await rmdir(made).catch(() => undefined);
+	};
 
-	const added = await git(['worktree', 'add', '-b', branch, '--', target, sha], cwd);
+	// Made apart and first: git refuses a branch that exists, so the one made here is this call's.
+	const created = await git(['branch', '--no-track', branch, sha], cwd);
+	if (created.exitCode !== 0) {
+		await removeMade();
+		throw failed(`the branch "${branch}" could not be made`, firstLine(created.stderr));
+	}
+	const added = await git(['worktree', 'add', '--', target, branch], cwd);
 	if (added.exitCode !== 0) {
-		await undoPartialAdd({ cwd, branch, ref, sha, made });
+		await removeOwnBranch(cwd, branch, sha);
+		await removeMade();
 		throw failed('git refused it', firstLine(added.stderr));
 	}
 	return { path: await realpath(target), branch };

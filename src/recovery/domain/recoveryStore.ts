@@ -224,16 +224,10 @@ export interface RecoveryStore {
 	 * is the run the workspace is at, and the workspace is at the new run from then on. Runs a
 	 * dead process left `running` are settled first.
 	 *
-	 * @throws {WorkspaceBusyError} when another live run is writing to the workspace.
+	 * @throws {WorkspaceBusyError} when another live run is writing to the workspace, or a
+	 * worktree it may write in is being removed.
 	 */
 	startRun(): Promise<RunJournal>;
-	/**
-	 * Holds the workspace while `work` runs, as a run or a move does, so neither starts meanwhile,
-	 * such as while the folder is removed.
-	 *
-	 * @throws {WorkspaceBusyError} when a run or a move holds the workspace.
-	 */
-	hold<T>(work: () => Promise<T>): Promise<T>;
 	/**
 	 * Every run, oldest first, and the run the workspace is at (`head`), absent before the first.
 	 * A run still recorded as `running` whose process is gone is listed as `interrupted`.

@@ -13,7 +13,9 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApprovalRequest, Approver } from '../../src/agent/domain/approval.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
+import { WorkspaceBusyError } from '../../src/recovery/domain/recoveryStore.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
+import { FolderClaims } from '../../src/recovery/infrastructure/folderClaims.ts';
 import { createFileTools } from '../../src/factory/infrastructure/agentLLMFactory.ts';
 import { InvalidAgentConfigError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
 import type {
@@ -34,15 +36,15 @@ import {
 
 const signal = new AbortController().signal;
 
-// Lets a test have git answer `rev-list` with nothing, as when it cannot read an object.
-const revList = vi.hoisted(() => ({ empty: false }));
+// Lets a test have `rev-list` fail, as when git cannot read an object.
+const revList = vi.hoisted(() => ({ fails: false }));
 vi.mock('../../src/tools/infrastructure/worktrees.ts', async importOriginal => {
 	const actual = await importOriginal<typeof Worktrees>();
 	return {
 		...actual,
 		git: (args: string[], cwd: string, gitSignal?: AbortSignal) =>
-			revList.empty && args[0] === 'rev-list'
-				? Promise.resolve({ stdout: '', stderr: '', exitCode: 0 })
+			revList.fails && args[0] === 'rev-list'
+				? Promise.resolve({ stdout: '', stderr: 'fatal: bad object', exitCode: 128 })
 				: actual.git(args, cwd, gitSignal),
 	};
 });
@@ -165,7 +167,7 @@ describe('createWorktree', () => {
 
 const call = {} as ToolCallContext;
 
-const state = () => ({ stateDirectory: join(parent, 'state'), logger });
+const state = () => ({ stateDirectory: join(parent, 'state') });
 
 function removeTool(roots = [{ path: repository, access: 'write' as const }]): PreparingTool {
 	return createRemoveWorktreeTool({ base: repository, roots, ...state() });
@@ -222,27 +224,73 @@ describe('removeWorktree', () => {
 		const store = await FileRecoveryStore.open({ root: path, directory: join(parent, 'state') });
 		const journal = await store.startRun();
 
-		await expect(prepared.run(signal)).rejects.toThrow(
-			'Another run, or a move through its history',
-		);
+		await expect(prepared.run(signal)).rejects.toThrow('may write in');
 		expect(existsSync(path)).toBe(true);
 
 		await journal.finish('completed');
 		await expect(prepared.run(signal)).resolves.toContain('Removed the worktree');
 	});
 
-	it('prepares nothing when git cannot count the commits at risk', async () => {
+	it('prepares nothing when git cannot list the commits at risk', async () => {
 		const { path } = await createWorktree({ repository, branch: 'spike', from: 'main' });
 		git(path, 'checkout', '-q', '--detach');
-		revList.empty = true;
+		revList.fails = true;
 
 		try {
 			await expect(removeTool().prepare({ path }, signal, call)).rejects.toThrow(
-				'git could not count the commits only',
+				'git could not tell what removing',
 			);
 		} finally {
-			revList.empty = false;
+			revList.fails = false;
 		}
+	});
+
+	it('removes nothing when commits lost their other branch while the user was asked', async () => {
+		const { path } = await createWorktree({ repository, branch: 'spike', from: 'main' });
+		writeFileSync(join(path, 'spike.txt'), 'spike\n');
+		git(path, 'add', '.');
+		git(path, 'commit', '-q', '-m', 'spike');
+		git(path, 'checkout', '-q', '--detach');
+		const prepared = await removeTool().prepare({ path }, signal, call);
+		expect(prepared.worktree?.commitsOnlyHere).toBe(0);
+		git(repository, 'branch', '-D', 'spike');
+
+		await expect(prepared.run(signal)).rejects.toThrow('changed since the user was asked');
+		expect(existsSync(path)).toBe(true);
+	});
+
+	it('removes nothing while a run writes from a folder inside the worktree, or through a second root', async () => {
+		const { path } = await createWorktree({ repository, branch: 'feat', from: 'main' });
+		mkdirSync(join(path, 'src'));
+		mkdirSync(join(parent, 'other'));
+		const directory = join(parent, 'state');
+		const inside = await FileRecoveryStore.open({ root: join(path, 'src'), directory });
+		const elsewhere = await FileRecoveryStore.open({
+			root: join(parent, 'other'),
+			directory,
+			writeRoots: [path],
+		});
+
+		for (const store of [inside, elsewhere]) {
+			const prepared = await removeTool().prepare({ path }, signal, call);
+			const journal = await store.startRun();
+			await expect(prepared.run(signal)).rejects.toThrow('may write in');
+			await journal.finish('completed');
+		}
+		expect(existsSync(path)).toBe(true);
+	});
+
+	it('keeps a run from writing in a worktree being removed', async () => {
+		const { path } = await createWorktree({ repository, branch: 'feat', from: 'main' });
+		mkdirSync(join(parent, 'state'));
+		const directory = realpathSync(join(parent, 'state'));
+		const release = await new FolderClaims(directory).claimRemoval(path);
+		const store = await FileRecoveryStore.open({ root: path, directory });
+
+		await expect(store.startRun()).rejects.toThrow(WorkspaceBusyError);
+		await release();
+		const journal = await store.startRun();
+		await journal.finish('completed');
 	});
 
 	it('counts the commits only a detached HEAD holds', async () => {

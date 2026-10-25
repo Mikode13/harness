@@ -797,9 +797,10 @@ lost: `uncommitted` counts the files with changes no commit has, `ignored` the p
 `.gitignore` excludes, such as `.env` or `node_modules`, a folder once, and
 `commitsOnlyHere` the commits only a detached HEAD holds. The tool refuses the
 repository's main folder, a worktree the agent works in, and a locked one. Once
-approved, it holds the worktree's history, as a run writing there would, and removes
-nothing if another run holds it, or if the worktree changed while the user was asked:
-the model then calls it again, and the user is asked anew.
+approved, it claims the worktree, so no harness run starts writing in it, and removes
+nothing while a run may write there, from the worktree, a folder inside it or a second
+root, or if the worktree changed while the user was asked: the model then calls it
+again, and the user is asked anew.
 
 ## Tests
 

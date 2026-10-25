@@ -524,12 +524,7 @@ export async function createFileTools(
 	if (commands !== undefined) validateCommands(commands);
 	if (formatter !== undefined) validateFormatter(formatter);
 	const opened = await openWorkspace(workspace, logger, formatter ? { formatter } : {});
-	return (await executorTools(
-		provider,
-		opened,
-		commands,
-		removeWorktree ? { logger } : undefined,
-	)) as unknown as FileTool[];
+	return (await executorTools(provider, opened, commands, removeWorktree)) as unknown as FileTool[];
 }
 
 /** The executor's file tools, `runCommand` when there are commands, and `removeWorktree`. */
@@ -537,28 +532,28 @@ async function executorTools(
 	provider: AgentProvider,
 	workspace: OpenedWorkspace,
 	commands: Commands | undefined,
-	/** Given when the tools include `removeWorktree`, with where it reports what it absorbs. */
-	removeWorktree: { logger: ILogger } | undefined,
+	removeWorktree: boolean,
 ): Promise<AgentTool[]> {
 	const tools = fileToolsFor(provider, workspace);
-	if (removeWorktree) tools.push(await removeWorktreeToolFor(workspace, removeWorktree.logger));
+	if (removeWorktree) tools.push(await removeWorktreeToolFor(workspace));
 	// Every command may belong to other roles, leaving none for this one.
 	if (commands === undefined || Object.keys(commands).length === 0) return tools;
 	return [...tools, await commandToolFor(workspace, commands)];
 }
 
 /** `removeWorktree` over the repository of the first root, which must be in one. */
-async function removeWorktreeToolFor(
-	{ base, roots, stateDirectory }: OpenedWorkspace,
-	logger: ILogger,
-): Promise<AgentTool> {
+async function removeWorktreeToolFor({
+	base,
+	roots,
+	stateDirectory,
+}: OpenedWorkspace): Promise<AgentTool> {
 	// Checked now: a tool that could never work is a setup error, not a first-call one.
 	await listWorktrees(base).catch(() => {
 		throw new InvalidAgentConfigError(
 			`removeWorktree needs a first root in a git repository; ${base} is in none`,
 		);
 	});
-	return createRemoveWorktreeTool({ base, roots, stateDirectory, logger });
+	return createRemoveWorktreeTool({ base, roots, stateDirectory });
 }
 
 /** What an explorer finds and reads with: no edits, no changes, no commands. */
@@ -719,7 +714,7 @@ export async function createLLMOrchestrator({
 		executor.provider,
 		opened,
 		commands && commandsFor(commands, 'executor'),
-		removeWorktree ? { logger } : undefined,
+		removeWorktree,
 	);
 	// The executor and the reviewer are told whether the tests were run, which only an executor
 	// with a command can do.

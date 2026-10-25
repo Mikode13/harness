@@ -99,7 +99,14 @@ export async function openStore(
 	const [first] = workspace.roots;
 	if (!first) throw new InvalidAgentConfigError('A workspace needs at least one root');
 	try {
-		return await FileRecoveryStore.open({ root: resolve(first.path), directory, logger });
+		return await FileRecoveryStore.open({
+			root: resolve(first.path),
+			directory,
+			logger,
+			writeRoots: workspace.roots
+				.filter(({ access }) => access === 'write')
+				.map(({ path }) => resolve(path)),
+		});
 	} catch (error) {
 		throw new UnrecoverableError('The workspace history could not be opened', {
 			cause: describeFailure(error),
