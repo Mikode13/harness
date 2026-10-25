@@ -39,6 +39,7 @@ import type {
 	RunOptions,
 	RunStatus,
 	SecretRules,
+	Session,
 	StepContext,
 	TextMatch,
 	Tokens,
@@ -57,6 +58,7 @@ import type {
 	Workspace,
 	WorkspaceOptions,
 	WorkspaceRoot,
+	WorktreeRemoval,
 } from '../../src/index.ts';
 
 // Everything src/index.ts exports is public: removing an export is a breaking change, and
@@ -65,9 +67,11 @@ describe('public API', () => {
 	it('exports exactly these values', () => {
 		expect(Object.keys(harness).sort()).toEqual([
 			'HistoryExpiredError',
+			'Inbox',
 			'InvalidAgentConfigError',
 			'NothingToMoveError',
 			'RecoverableError',
+			'RunInProgressError',
 			'UnknownRunError',
 			'UnrecoverableError',
 			'WorkspaceBusyError',
@@ -85,6 +89,7 @@ describe('public API', () => {
 			'createWorkflow',
 			'createWorkspace',
 			'createWorkspaceTools',
+			'createWorktree',
 			'defineTool',
 			'defineWorkflowStages',
 			'historyStart',
@@ -143,6 +148,7 @@ describe('public API', () => {
 				RunOptions,
 				RunStatus,
 				SecretRules,
+				Session,
 				StepContext,
 				TextMatch,
 				Tokens,
@@ -161,6 +167,7 @@ describe('public API', () => {
 				Workspace,
 				WorkspaceOptions,
 				WorkspaceRoot,
+				WorktreeRemoval,
 			]
 		>().not.toBeNever();
 

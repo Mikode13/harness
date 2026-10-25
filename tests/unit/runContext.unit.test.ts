@@ -5,7 +5,7 @@ const signal = new AbortController().signal;
 
 describe('RunContext', () => {
 	it('ends everything registered, in order, with how the run ended', async () => {
-		const context = new RunContext();
+		const context = new RunContext({ id: 'test-session' });
 		const ends: string[] = [];
 		context.onFinish(end => Promise.resolve(void ends.push(`first ${end}`)));
 		context.onFinish(end => Promise.resolve(void ends.push(`second ${end}`)));
@@ -16,7 +16,7 @@ describe('RunContext', () => {
 	});
 
 	it('ends the rest when one fails, then throws the first failure', async () => {
-		const context = new RunContext();
+		const context = new RunContext({ id: 'test-session' });
 		const last = vi.fn(() => Promise.resolve());
 		context.onFinish(() => Promise.reject(new Error('first')));
 		context.onFinish(() => Promise.reject(new Error('second')));
@@ -27,7 +27,7 @@ describe('RunContext', () => {
 	});
 
 	it('ends each thing once, however often it is finished', async () => {
-		const context = new RunContext();
+		const context = new RunContext({ id: 'test-session' });
 		const finisher = vi.fn(() => Promise.resolve());
 		context.onFinish(finisher);
 
@@ -41,7 +41,7 @@ describe('RunContext', () => {
 describe('withRunContext', () => {
 	it('carries the context without changing the options it was given', () => {
 		const options = { signal };
-		const context = new RunContext();
+		const context = new RunContext({ id: 'test-session' });
 
 		const carried = withRunContext(options, context);
 
@@ -51,7 +51,7 @@ describe('withRunContext', () => {
 
 	// A consumer that logs or copies its options never meets the context.
 	it('keeps the context out of sight of anything that lists or serializes the options', () => {
-		const carried = withRunContext({ signal }, new RunContext());
+		const carried = withRunContext({ signal }, new RunContext({ id: 'test-session' }));
 
 		expect(Object.keys(carried)).toEqual(['signal']);
 		expect(JSON.stringify({ ...carried, signal: undefined })).toBe('{}');

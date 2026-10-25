@@ -60,6 +60,8 @@ export interface OpenedWorkspace {
 	readonly writable: boolean;
 	/** The real path of the first root. */
 	readonly base: string;
+	/** Where the history is kept, as a real path. */
+	readonly stateDirectory: string;
 	/** What a command's checkpoint captures and compares: see `CoveredFiles`. */
 	readonly covered: CoveredFiles;
 }
@@ -97,7 +99,14 @@ export async function openStore(
 	const [first] = workspace.roots;
 	if (!first) throw new InvalidAgentConfigError('A workspace needs at least one root');
 	try {
-		return await FileRecoveryStore.open({ root: resolve(first.path), directory, logger });
+		return await FileRecoveryStore.open({
+			root: resolve(first.path),
+			directory,
+			logger,
+			writeRoots: workspace.roots
+				.filter(({ access }) => access === 'write')
+				.map(({ path }) => resolve(path)),
+		});
 	} catch (error) {
 		throw new UnrecoverableError('The workspace history could not be opened', {
 			cause: describeFailure(error),
@@ -150,6 +159,7 @@ export async function openWorkspace(
 		}),
 		writable: roots.some(({ access }) => access === 'write'),
 		base: root,
+		stateDirectory,
 		covered: coveredFiles(roots, policy, logger),
 	};
 }

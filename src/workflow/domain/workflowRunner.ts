@@ -1,4 +1,5 @@
 import type { Agent, AgentResponse, ProgressEvent, RunOptions } from '#src/agent/domain/agent';
+import { newSession, sessionOf } from '#src/agent/domain/session';
 import {
 	RunContext,
 	runContextOf,
@@ -114,8 +115,10 @@ export class WorkflowRunner<Input, Result> implements Workflow<Input, Result> {
 		// Per invocation, not per instance: one workflow can serve several runs at once.
 		const totals: Totals = { tokens: undefined, unreported: false };
 		const stages: WorkflowStageReport[] = [];
+		// Per run, like the agents its stages create: each run is a conversation of its own.
+		const session = sessionOf(options) ?? newSession();
 		const inherited = runContextOf(options);
-		const context = inherited ?? new RunContext();
+		const context = inherited ?? new RunContext(session);
 		let end: RunEnd = 'failed';
 		let outcome: { status: 'completed' | 'stopped'; result: Result };
 
@@ -144,6 +147,7 @@ export class WorkflowRunner<Input, Result> implements Workflow<Input, Result> {
 			duration: (Date.now() - start) / 1000,
 			stages,
 			...(!inherited && runId ? { runId } : {}),
+			session: { ...session },
 		};
 	}
 
@@ -293,7 +297,9 @@ export class WorkflowRunner<Input, Result> implements Workflow<Input, Result> {
 		options: RunOptions,
 	): Promise<AgentResponse> {
 		try {
-			return await agent.run(prompt, options);
+			// No stage reads the inbox, as no role of an orchestrator does: what was sent stays for
+			// the next run.
+			return await agent.run(prompt, { ...options, inbox: undefined });
 		} catch (error) {
 			// Whatever the agent threw once the run was cancelled, the run ends as cancelled.
 			options.signal.throwIfAborted();

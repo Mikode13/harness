@@ -1,4 +1,4 @@
-import type { CommandLine, ToolRisk } from '#src/agent/domain/approval';
+import type { CommandLine, ToolRisk, WorktreeRemoval } from '#src/agent/domain/approval';
 import type { ToolDefinition } from '#src/llm/domain/tool';
 import type { ToolCallContext } from './readRegistry.ts';
 import type { Tool, ToolSummarizer } from './tool.ts';
@@ -35,6 +35,8 @@ export interface PreparedCall {
 	readonly diff?: string;
 	/** For a call that runs a configured command, what it will run, fixed when prepared. */
 	readonly command?: CommandLine;
+	/** For a call that removes a worktree, which one and what is lost with it, when prepared. */
+	readonly worktree?: WorktreeRemoval;
 	/**
 	 * For a call that runs a configured command, how it ended once it has. `undefined` before it
 	 * runs, and when it never did.

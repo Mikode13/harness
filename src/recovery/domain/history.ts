@@ -1,3 +1,4 @@
+import type { Session } from '#src/shared/domain/session';
 import { changedFiles, displayPath, showChanges } from './runChanges.ts';
 import type { MoveOptions, RecoveryStore, Revision, RunStatus } from './recoveryStore.ts';
 import { HistoryExpiredError } from './runTree.ts';
@@ -20,6 +21,12 @@ export interface HistoryRun {
 	 * real path of a file outside it. A host decides whether to show them.
 	 */
 	files: string[];
+	/**
+	 * The session it came from, so a host can warn before undoing another session's run. Absent
+	 * for a run recorded before runs recorded one. A run retention chained into this one keeps
+	 * no session of its own.
+	 */
+	session?: Session;
 }
 
 /** One move of the workspace through its history. */
@@ -66,7 +73,7 @@ export interface History {
 	 * host that showed the user what a move will do passes where the workspace was, so a run that
 	 * ended meanwhile cannot make it do something else.
 	 *
-	 * @throws {WorkspaceBusyError} when a run or another move holds the workspace.
+	 * @throws {WorkspaceBusyError} when a run, another move or the removal of its worktree holds the workspace.
 	 * @throws {WorkspaceMovedError} when the workspace is not at `from`.
 	 * @throws {UnknownRunError} when `target` is not in the history.
 	 * @throws {HistoryExpiredError} when retention chained `target` into a later run.
@@ -76,7 +83,7 @@ export interface History {
 	 * Moves the workspace to the run before the one it is at.
 	 *
 	 * @throws {NothingToMoveError} at the start of the history.
-	 * @throws {WorkspaceBusyError} when a run or another move holds the workspace.
+	 * @throws {WorkspaceBusyError} when a run, another move or the removal of its worktree holds the workspace.
 	 * @throws {WorkspaceMovedError} when the workspace is not at `from`.
 	 */
 	undo(options?: MoveOptions): Promise<Move>;
@@ -85,7 +92,7 @@ export interface History {
 	 * branch.
 	 *
 	 * @throws {NothingToMoveError} when no run follows the one it is at.
-	 * @throws {WorkspaceBusyError} when a run or another move holds the workspace.
+	 * @throws {WorkspaceBusyError} when a run, another move or the removal of its worktree holds the workspace.
 	 * @throws {WorkspaceMovedError} when the workspace is not at `from`.
 	 */
 	redo(options?: MoveOptions): Promise<Move>;
@@ -124,6 +131,7 @@ export class StoreHistory implements History {
 				startedAt: record.startedAt,
 				...(record.finishedAt ? { finishedAt: record.finishedAt } : {}),
 				files: [...new Set(files)].map(path => displayPath(record.root, path)),
+				...(record.session ? { session: { ...record.session } } : {}),
 			});
 		}
 		return { ...(head ? { head } : {}), runs: listed };

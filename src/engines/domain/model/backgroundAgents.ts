@@ -41,6 +41,8 @@ export class BackgroundAgents {
 	// Such an agent ended since `mayHaveChangedUnseen` was last asked.
 	private unrecordedEnded = false;
 	private woken: (() => void) | undefined;
+	// How many times `interrupt` was called, so a wait sees one made since it began.
+	private interrupts = 0;
 	/**
 	 * What some agent spent is unknown: it was stopped while it worked, or failed in a way that
 	 * carries no usage.
@@ -131,11 +133,12 @@ export class BackgroundAgents {
 	}
 
 	/**
-	 * Waits until an answer arrives, while agents are working. Rejects as cancelled when the run
-	 * is cancelled meanwhile, and with the failure that ended it.
+	 * Waits until an answer arrives, or `interrupt` is called, while agents are working. Rejects
+	 * as cancelled when the run is cancelled meanwhile, and with the failure that ended it.
 	 */
 	async nextAnswer(): Promise<void> {
-		while (this.arrived.length === 0 && this.agents.size > 0) {
+		const interrupts = this.interrupts;
+		while (this.arrived.length === 0 && this.agents.size > 0 && this.interrupts === interrupts) {
 			this.throwIfEnded();
 			this.signal.throwIfAborted();
 			await new Promise<void>(resolve => {
@@ -175,6 +178,12 @@ export class BackgroundAgents {
 	private end(failure: unknown): void {
 		this.ended ??= { failure };
 		this.stopping.abort();
+	}
+
+	/** Ends the wait in progress, if any, without an answer: something else needs the model. */
+	interrupt(): void {
+		this.interrupts++;
+		this.wake();
 	}
 
 	private wake(): void {

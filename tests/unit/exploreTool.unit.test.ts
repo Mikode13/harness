@@ -21,7 +21,7 @@ function callContext() {
 	const events: ProgressEvent[] = [];
 	const spent: [Tokens | undefined, boolean][] = [];
 	const call: ToolCallContext = {
-		run: new RunContext(),
+		run: new RunContext({ id: 'test-session' }),
 		reads: new ReadRegistry().begin(),
 		callId: 'call-7',
 		onProgress: event => events.push(event),

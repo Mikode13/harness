@@ -55,12 +55,15 @@ export {
 	type RunOptions,
 } from './agent/domain/agent.ts';
 export type { Transcript, TranscriptCallback } from './agent/domain/transcript.ts';
+export { Inbox } from './agent/domain/inbox.ts';
+export { RunInProgressError } from './agent/domain/oneRunAtATime.ts';
 export {
 	InvalidAgentConfigError,
 	RecoverableError,
 	UnrecoverableError,
 } from './shared/domain/errors.ts';
 export { isAbortError } from './shared/domain/isAbortError.ts';
+export type { Session } from './shared/domain/session.ts';
 export type { Tokens } from './shared/domain/tokens.ts';
 export {
 	rememberApprovals,
@@ -70,6 +73,7 @@ export {
 	type CommandLine,
 	type RememberableDecision,
 	type ToolRisk,
+	type WorktreeRemoval,
 } from './agent/domain/approval.ts';
 export type { Asker, QuestionOption, UserQuestion } from './agent/domain/question.ts';
 export type { JSONSchema, ToolDefinition } from './llm/domain/tool.ts';
@@ -79,6 +83,7 @@ export { defineTool } from './tools/infrastructure/defineTool.ts';
 export { createWorkspace } from './tools/infrastructure/createWorkspace.ts';
 export { createWorkspaceTools } from './tools/infrastructure/workspaceTools.ts';
 export { createHistory } from './recovery/infrastructure/createHistory.ts';
+export { createWorktree } from './tools/infrastructure/worktrees.ts';
 export type { History, HistoryRun, Move } from './recovery/domain/history.ts';
 export {
 	historyStart,

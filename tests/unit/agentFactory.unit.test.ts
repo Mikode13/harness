@@ -1263,6 +1263,17 @@ describe('createLLMOrchestrator', () => {
 	});
 });
 
+/** A tool of the consumer's own, which changes nothing. */
+function consumerTool() {
+	return defineTool({
+		name: 'note',
+		description: 'Notes something',
+		input: z.object({}),
+		risk: 'safe',
+		execute: () => Promise.resolve('noted'),
+	});
+}
+
 describe('createFileTools, and createLLMAgent over a workspace', () => {
 	let parent: string;
 	let repo: string;
@@ -1336,7 +1347,7 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 		const formatter = { executable: 'sh', args: ['-c', 'printf "formatted\\n" > "$1"', 'sh'] };
 		const tools = await createFileTools('openai', workspace, { formatter, logger: createLogger() });
 		const patch = tools.find(tool => tool.name === 'apply_patch') as unknown as PreparingTool;
-		const run = new RunContext();
+		const run = new RunContext({ id: 'test-session' });
 
 		const prepared = await patch.prepare(
 			{ type: 'create_file', path: 'a.txt', diff: '+written' },
@@ -1399,7 +1410,7 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 							{ type: 'create_file', path, diff: '+written' },
 							signal,
 							{
-								run: runContextOf(options) ?? new RunContext(),
+								run: runContextOf(options) ?? new RunContext({ id: 'test-session' }),
 								reads: new ReadRegistry().begin(),
 								callId: path,
 								onProgress: () => undefined,
@@ -1457,14 +1468,76 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 		expect(existsSync(join(repo, 'b.txt'))).toBe(false);
 	});
 
+	it('keeps a set of tools that may write elsewhere out of a run another set started', async () => {
+		const other = join(parent, 'other');
+		mkdirSync(other);
+		const logger = createLogger();
+		const narrow = await createFileTools('openai', workspace, { logger });
+		const wide = await createFileTools(
+			'openai',
+			{ ...workspace, roots: [...workspace.roots, { path: other, access: 'write' }] },
+			{ logger },
+		);
+		const run = new RunContext({ id: 'test-session' });
+		const create = (tools: FileTool[], path: string) =>
+			(tools.find(tool => tool.name === 'apply_patch') as unknown as PreparingTool).prepare(
+				{ type: 'create_file', path, diff: '+written' },
+				signal,
+				{
+					run,
+					reads: new ReadRegistry().begin(),
+					callId: path,
+					onProgress: () => undefined,
+					spend: () => undefined,
+					depth: 0,
+				},
+			);
+
+		await (await create(narrow, 'a.txt')).run(signal);
+
+		await expect(create(wide, 'b.txt')).rejects.toThrow(
+			`tools that may also write in ${realpathSync(other)} cannot join it, so nothing was changed`,
+		);
+		// Within the folders the run claims, a set of tools joins it.
+		await expect((await create(narrow, 'c.txt')).run(signal)).resolves.toContain('Created c.txt');
+		expect(existsSync(join(repo, 'b.txt'))).toBe(false);
+		await run.finish('completed');
+	});
+
 	it('refuses a workspace with no root when the agent is built', () => {
 		expect(() =>
 			createLLMAgent('openai', {
 				systemPrompt: '',
 				workspace: { roots: [] },
+				tools: [consumerTool()],
 				logger: createLogger(),
 			}),
-		).toThrow(InvalidAgentConfigError);
+		).toThrow('A workspace needs at least one root');
+	});
+
+	it('refuses a workspace given with no tools, and builds one given only the consumer’s own', () => {
+		for (const tools of [undefined, []]) {
+			expect(() =>
+				createLLMAgent('openai', {
+					systemPrompt: '',
+					workspace,
+					...(tools ? { tools } : {}),
+					logger: createLogger(),
+				}),
+			).toThrow('An agent given a workspace needs tools to work on it');
+		}
+		expect(() =>
+			createLLMAgent('openai', {
+				systemPrompt: '',
+				workspace,
+				tools: [consumerTool()],
+				logger: createLogger(),
+			}),
+		).not.toThrow();
+		// Without a workspace, an agent works from its prompt alone.
+		expect(() =>
+			createLLMAgent('openai', { systemPrompt: 'Classify it.', logger: createLogger() }),
+		).not.toThrow();
 	});
 
 	it('tries the history again on the next run after it could not be opened', async () => {
@@ -1475,6 +1548,7 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 		const agent = createLLMAgent('openai', {
 			systemPrompt: '',
 			workspace: { ...workspace, stateDirectory },
+			tools: [consumerTool()],
 			logger: createLogger(),
 		});
 		await expect(agent.run('first', { signal })).rejects.toBeInstanceOf(UnrecoverableError);
@@ -1490,6 +1564,7 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 		await createLLMAgent('openai', {
 			systemPrompt: 'You fix bugs.',
 			workspace,
+			tools: [consumerTool()],
 			logger: createLogger(),
 		}).run('fix it', { signal });
 

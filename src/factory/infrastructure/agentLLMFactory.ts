@@ -53,6 +53,8 @@ import {
 import type { DelegationTool } from '#src/tools/infrastructure/agentAsTool';
 import { createExploreTool } from '#src/tools/infrastructure/exploreTool';
 import { createShowChangesTool } from '#src/tools/infrastructure/showChangesTool';
+import { createRemoveWorktreeTool } from '#src/tools/infrastructure/removeWorktreeTool';
+import { listWorktrees } from '#src/tools/infrastructure/worktrees';
 import {
 	createTrackedReadFile,
 	createTrackedReadFiles,
@@ -114,7 +116,8 @@ export interface CreateLLMAgentOptions {
 	 * The folders the agent works on, the same as given to `createFileTools`. With it, the agent
 	 * follows the workspace's history: after the user undoes runs, its next run starts from the
 	 * conversation as it was, and is told what was undone. The system prompt is followed by the
-	 * roots and how to name a file in them.
+	 * roots and how to name a file in them. It gives no tools: pass those of `createFileTools`
+	 * in `tools`, and an agent given a workspace and no tools is refused.
 	 */
 	workspace?: WorkspaceOptions;
 	/**
@@ -247,6 +250,11 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	 * ended, for debugging. Each transcript names its role. See `Transcript`.
 	 */
 	onTranscript?: TranscriptCallback;
+	/**
+	 * Gives the executor `removeWorktree`, which removes a worktree of the repository the first
+	 * root is in when the user asks. See `createFileTools`.
+	 */
+	removeWorktree?: boolean;
 }
 
 const defaultLLMAgentModels = {
@@ -420,7 +428,7 @@ function buildLLMAgent(
  * `destructive` one runs only when the run's `approve` allows it, or with `autoApprove`.
  *
  * @throws {InvalidAgentConfigError} for an unknown provider, a model or reasoning effort its
- * client does not support, or two tools that share a name.
+ * client does not support, two tools that share a name, or a workspace given with no tools.
  * @throws {UnrecoverableError} when the client cannot be set up, for example because
  * `OPENAI_API_KEY` is missing. The Anthropic SDK resolves credentials lazily, so a missing
  * `ANTHROPIC_API_KEY` fails the first run instead, with an `UnrecoverableError`.
@@ -441,6 +449,13 @@ export function createLLMAgent(
 		onTranscript,
 	}: CreateLLMAgentOptions,
 ): Agent {
+	// Told where to work with nothing to work with, the model would only pretend: it writes its
+	// tool calls as text, and the run returns them as its answer.
+	if (workspace && tools.length === 0) {
+		throw new InvalidAgentConfigError(
+			'An agent given a workspace needs tools to work on it: pass those of createFileTools in `tools`',
+		);
+	}
 	return buildLLMAgent(provider, {
 		model,
 		reasoningEffort,
@@ -486,9 +501,15 @@ export function createLLMAgent(
  * in the history. When it fails, the file stays as the edit wrote it, and the model is told
  * why. Not supported on Windows yet.
  *
+ * With `removeWorktree`, they include `removeWorktree`, which removes a git worktree of the
+ * repository the first root is in, when the user asks: its folder and every file in it, never
+ * its branch. Each call asks the approver, whose request's `worktree` says what is lost:
+ * changes no commit has, and the commits only a detached HEAD holds. It refuses the main folder
+ * and a worktree the agent works in. See `createWorktree`.
+ *
  * @throws {InvalidAgentConfigError} for an unknown provider, a workspace with no root, or an
  * invalid command or formatter, including one whose `cwd` is not in a `write` root, or any on
- * Windows.
+ * Windows, or `removeWorktree` with a first root in no git repository.
  * @throws {UnrecoverableError} when no program can read the first root.
  */
 export async function createFileTools(
@@ -498,26 +519,49 @@ export async function createFileTools(
 		logger = new Logger(),
 		commands,
 		formatter,
-	}: { logger?: ILogger; commands?: Commands; formatter?: Formatter } = {},
+		removeWorktree = false,
+	}: {
+		logger?: ILogger;
+		commands?: Commands;
+		formatter?: Formatter;
+		removeWorktree?: boolean;
+	} = {},
 ): Promise<FileTool[]> {
 	// Reachable from untyped input.
 	if (!isAgentProvider(provider)) throw unknownProvider(provider);
 	if (commands !== undefined) validateCommands(commands);
 	if (formatter !== undefined) validateFormatter(formatter);
 	const opened = await openWorkspace(workspace, logger, formatter ? { formatter } : {});
-	return (await executorTools(provider, opened, commands)) as unknown as FileTool[];
+	return (await executorTools(provider, opened, commands, removeWorktree)) as unknown as FileTool[];
 }
 
-/** The executor's file tools, and `runCommand` when there are commands. */
+/** The executor's file tools, `runCommand` when there are commands, and `removeWorktree`. */
 async function executorTools(
 	provider: AgentProvider,
 	workspace: OpenedWorkspace,
 	commands: Commands | undefined,
+	removeWorktree: boolean,
 ): Promise<AgentTool[]> {
 	const tools = fileToolsFor(provider, workspace);
+	if (removeWorktree) tools.push(await removeWorktreeToolFor(workspace));
 	// Every command may belong to other roles, leaving none for this one.
 	if (commands === undefined || Object.keys(commands).length === 0) return tools;
 	return [...tools, await commandToolFor(workspace, commands)];
+}
+
+/** `removeWorktree` over the repository of the first root, which must be in one. */
+async function removeWorktreeToolFor({
+	base,
+	roots,
+	stateDirectory,
+}: OpenedWorkspace): Promise<AgentTool> {
+	// Checked now: a tool that could never work is a setup error, not a first-call one.
+	await listWorktrees(base).catch((error: unknown) => {
+		throw new InvalidAgentConfigError(
+			`removeWorktree needs a first root in a git repository, and git 2.36 or later; with ${base}, ${error instanceof Error ? error.message : String(error)}`,
+		);
+	});
+	return createRemoveWorktreeTool({ base, roots, stateDirectory });
 }
 
 /** What an explorer finds and reads with: no edits, no changes, no commands. */
@@ -620,6 +664,7 @@ export async function createLLMOrchestrator({
 	summarizeUndone = true,
 	logger = new Logger(),
 	onTranscript,
+	removeWorktree = false,
 }: CreateLLMOrchestratorOptions = {}): Promise<Agent> {
 	const roles = orchestratorRolesFor(provider);
 	const steps = perRole('maxSteps', maxSteps, defaultRoleSteps, {
@@ -677,6 +722,7 @@ export async function createLLMOrchestrator({
 		executor.provider,
 		opened,
 		commands && commandsFor(commands, 'executor'),
+		removeWorktree,
 	);
 	// The executor and the reviewer are told whether the tests were run, which only an executor
 	// with a command can do.

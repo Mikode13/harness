@@ -121,6 +121,8 @@ export async function createCommandTool({
 				cwd: command.cwd,
 			});
 
+			// Now, so a set of tools that cannot join the run's writes is refused before the user is asked.
+			writes.sessionFor(run);
 			let ending: CommandEnding | undefined;
 			return {
 				// A command can change anything its user can: it is always asked about.

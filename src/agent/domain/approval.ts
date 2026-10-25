@@ -14,6 +14,25 @@ export interface CommandLine {
 	cwd: string;
 }
 
+/** A worktree a tool call will remove, and what is lost with it. */
+export interface WorktreeRemoval {
+	/** Its folder, as a real path. */
+	path: string;
+	/** The branch it has checked out, which stays with its commits; absent when detached. */
+	branch?: string;
+	/** How many files hold changes no commit has, untracked ones included: they are lost. */
+	uncommitted: number;
+	/**
+	 * How many paths `.gitignore` excludes, such as `.env` or `node_modules`, a folder excluded
+	 * whole counting once: they are lost too. Such a folder is never looked into, so what is
+	 * written in it while the user is asked goes with it unannounced; a host's question says so
+	 * when there are any.
+	 */
+	ignored: number;
+	/** With a detached HEAD, how many of its commits no branch, tag or remote holds: lost too. */
+	commitsOnlyHere: number;
+}
+
 /** A tool call waiting for someone to allow it. */
 export interface ApprovalRequest {
 	tool: string;
@@ -22,6 +41,8 @@ export interface ApprovalRequest {
 	risk: ToolRisk;
 	/** For a call that runs a configured command: the program, worked out from the input. */
 	command?: CommandLine;
+	/** For a call that removes a worktree: which one, and what is lost with it. */
+	worktree?: WorktreeRemoval;
 }
 
 /** A denial's `reason` reaches the model, so it can try something else. */

@@ -22,6 +22,8 @@ import {
 	withRunContext,
 } from '#src/agent/domain/runContext';
 import { isAbortError } from '#src/shared/domain/isAbortError';
+import { OneRunAtATime } from '#src/agent/domain/oneRunAtATime';
+import { newSession, sessionOf } from '#src/agent/domain/session';
 
 // Each role's standing instructions, kept apart from the data of a round so an agent with a
 // system prompt can hold them there instead of receiving them again in every prompt. An agent
@@ -157,6 +159,9 @@ export class OrchestratorAgent implements Agent {
 	private reviewerDecisionValidator: Validator<ReviewerDecision>;
 	private maxAttempts: number;
 	private logger: ILogger;
+	private readonly runs = new OneRunAtATime();
+	// The session its runs belong to when their options name none.
+	private readonly session = newSession();
 
 	constructor({
 		plannerAgent,
@@ -189,13 +194,21 @@ export class OrchestratorAgent implements Agent {
 	 * Every role, round and retry of one run shares one run context, so what the executor writes
 	 * is one run of the workspace's history, and the planner's and reviewer's turns are tied to
 	 * it. The orchestrator ends that context with the run, unless an outer agent owns it.
+	 *
+	 * @throws {RunInProgressError} when another run on it is still working, before any role
+	 * starts.
 	 */
-	async run(prompt: string, options: RunOptions): Promise<AgentResponse> {
+	run(prompt: string, options: RunOptions): Promise<AgentResponse> {
+		return this.runs.run(() => this.runAlone(prompt, options));
+	}
+
+	private async runAlone(prompt: string, options: RunOptions): Promise<AgentResponse> {
 		const start = Date.now();
 		// Per invocation, not per instance: the CLI keeps one orchestrator for a whole session.
 		const totals: RunTotals = { tokens: undefined, unreported: false };
+		const session = sessionOf(options) ?? this.session;
 		const inherited = runContextOf(options);
-		const context = inherited ?? new RunContext();
+		const context = inherited ?? new RunContext(session);
 		let end: RunEnd = 'failed';
 
 		try {
@@ -217,6 +230,8 @@ export class OrchestratorAgent implements Agent {
 			// The whole run's wall clock, so it matches what the consumer waited.
 			duration: (Date.now() - start) / 1000,
 			...(!inherited && runId ? { runId } : {}),
+			// A copy: a consumer changing it must not change what later runs record.
+			session: { ...session },
 		};
 	}
 
@@ -350,12 +365,15 @@ export class OrchestratorAgent implements Agent {
 
 	/**
 	 * Keep the options object extensible and the private run context intact while making the
-	 * orchestrator's attribution authoritative over anything a nested agent supplied.
+	 * orchestrator's attribution authoritative over anything a nested agent supplied. No role
+	 * reads the inbox, which only a single model-backed agent reads: what was sent stays for the
+	 * next run.
 	 */
 	private optionsForRole(options: RunOptions, agent: ProgressAgent): RunOptions {
 		const onProgress = options.onProgress;
 		return {
 			...options,
+			inbox: undefined,
 			onProgress: onProgress
 				? (event: ProgressEvent) => {
 						treatErrors(

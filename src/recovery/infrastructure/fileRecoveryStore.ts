@@ -1,3 +1,4 @@
+import type { Session } from '#src/shared/domain/session';
 import { createHash, randomBytes } from 'node:crypto';
 import {
 	link,
@@ -14,8 +15,9 @@ import {
 } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, sep } from 'node:path';
 import type { ILogger } from '#src/shared/domain/logger';
+import { FolderClaims } from './folderClaims.ts';
 import {
 	classifyHostFailure,
 	describeFailure,
@@ -42,7 +44,13 @@ import {
 	WorkspaceMovedError,
 } from '../domain/recoveryStore.ts';
 import { chainEntries, nextPruneStep } from '../domain/retention.ts';
-import { HistoryExpiredError, redoTarget, route, UnknownRunError } from '../domain/runTree.ts';
+import {
+	HistoryExpiredError,
+	redoTarget,
+	type Route,
+	route,
+	UnknownRunError,
+} from '../domain/runTree.ts';
 import {
 	currentState,
 	hasRealParents,
@@ -247,10 +255,14 @@ async function storeContent(
  */
 export class FileRecoveryStore implements RecoveryStore {
 	readonly workspaceId: string;
+	readonly writeFolders: readonly string[];
 	private readonly root: string;
 	private readonly directory: string;
 	private readonly keepRuns: number;
 	private readonly logger: ILogger;
+	private readonly claims: FolderClaims;
+	// What releases the claim of each run or move holding the workspace.
+	private readonly releases = new Map<string, () => Promise<void>>();
 
 	private constructor(
 		root: string,
@@ -258,12 +270,15 @@ export class FileRecoveryStore implements RecoveryStore {
 		keepRuns: number,
 		logger: ILogger,
 		workspaceId: string,
+		{ claims, folders }: { claims: FolderClaims; folders: string[] },
 	) {
 		this.root = root;
 		this.directory = directory;
 		this.keepRuns = keepRuns;
 		this.logger = logger;
 		this.workspaceId = workspaceId;
+		this.claims = claims;
+		this.writeFolders = folders;
 	}
 
 	static async open({
@@ -271,6 +286,7 @@ export class FileRecoveryStore implements RecoveryStore {
 		directory = defaultStateDirectory(),
 		keepRuns = defaultKeepRuns,
 		logger = new Logger(),
+		writeRoots = [],
 	}: {
 		root: string;
 		/** Defaults to the platform's state directory. */
@@ -283,6 +299,11 @@ export class FileRecoveryStore implements RecoveryStore {
 		keepRuns?: number;
 		/** Where it reports a failure it absorbs. Defaults to standard error. */
 		logger?: ILogger;
+		/**
+		 * The folders besides `root` that its runs may write in, such as the other `write` roots,
+		 * so no worktree they lie in is removed while a run writes there.
+		 */
+		writeRoots?: readonly string[];
 	}): Promise<FileRecoveryStore> {
 		if (!Number.isInteger(keepRuns) || keepRuns < 3) {
 			throw new RangeError(`keepRuns must be an integer of at least 3; got ${String(keepRuns)}`);
@@ -298,11 +319,18 @@ export class FileRecoveryStore implements RecoveryStore {
 		await makeDirectory(join(workspace, 'content'));
 		await writeDurably(join(workspace, 'workspace.json'), JSON.stringify({ root: realRoot }));
 
+		const folders = [
+			realRoot,
+			...(await Promise.all(writeRoots.map(path => realpath(path).catch(() => path)))),
+		];
 		// Real, so a state directory reached through a link is the history it holds.
-		return new FileRecoveryStore(realRoot, workspace, keepRuns, logger, await realpath(workspace));
+		return new FileRecoveryStore(realRoot, workspace, keepRuns, logger, await realpath(workspace), {
+			claims: new FolderClaims(await realpath(directory)),
+			folders,
+		});
 	}
 
-	async startRun(): Promise<RunJournal> {
+	async startRun({ session }: { session?: Session } = {}): Promise<RunJournal> {
 		const runId = newRunId();
 		try {
 			// Inside, because taking the lock can fail after publishing it. Unlocking removes only a
@@ -325,6 +353,7 @@ export class FileRecoveryStore implements RecoveryStore {
 				startedAt: new Date().toISOString(),
 				status: 'running',
 				pid: process.pid,
+				...(session ? { session } : {}),
 			};
 			await writeDurably(join(runDirectory, 'run.json'), JSON.stringify(record));
 			// After the record, so the head never names a run that does not exist.
@@ -536,6 +565,38 @@ export class FileRecoveryStore implements RecoveryStore {
 	 */
 	private async takeSteps(head: Head, runs: RunRecord[], pending: PendingMove): Promise<Revision> {
 		const { undo, redo } = route(runs, head.runId, pending.to);
+		const release = await this.claimFiles([...undo, ...redo]);
+		try {
+			return await this.stepAlong(head, runs, pending, { undo, redo });
+		} finally {
+			await release();
+		}
+	}
+
+	/**
+	 * Claims each file the runs on a route changed outside the folders this store claims: a run
+	 * may have written in a folder this store was not opened with, such as a second root a history
+	 * reopened by its first root alone does not know. A worktree holding one is not removed while
+	 * the move writes there.
+	 */
+	private async claimFiles(runIds: readonly string[]): Promise<() => Promise<void>> {
+		const outside = new Set<string>();
+		for (const runId of runIds) {
+			const { entries } = await this.readRun(runId);
+			for (const { path } of fileChanges(entries, true)) {
+				if (!this.writeFolders.some(folder => within(path, folder))) outside.add(path);
+			}
+		}
+		if (outside.size === 0) return () => Promise.resolve();
+		return this.claims.claimWriting(`files-${newRunId()}`, [...outside]);
+	}
+
+	private async stepAlong(
+		head: Head,
+		runs: RunRecord[],
+		pending: PendingMove,
+		{ undo, redo }: Route,
+	): Promise<Revision> {
 		const parents = new Map(runs.map(run => [run.runId, run.parentRunId]));
 		let reached = head.runId;
 		const save = () =>
@@ -1109,6 +1170,9 @@ export class FileRecoveryStore implements RecoveryStore {
 				// Written whole before it appears, so a lock that exists always names its holder.
 				await writeDurably(path, JSON.stringify({ runId, pid: process.pid }), { exclusive: true });
 				heldHere.add(runId);
+				// Under the lock: a removal of a worktree this run may write in keeps it out. The
+				// caller unlocks when this throws.
+				this.releases.set(runId, await this.claims.claimWriting(runId, this.writeFolders));
 				return;
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
@@ -1134,6 +1198,9 @@ export class FileRecoveryStore implements RecoveryStore {
 	private async unlock(runId: string): Promise<void> {
 		// First: the run has ended even if removing its lock fails, so that lock is stale.
 		heldHere.delete(runId);
+		const release = this.releases.get(runId);
+		this.releases.delete(runId);
+		await release?.();
 		const path = join(this.directory, 'lock');
 		// Only its own lock: one cleared as stale and taken by another run is not this run's.
 		if ((await readLock(path))?.runId === runId) await unlink(path);
@@ -1225,6 +1292,10 @@ async function readLock(path: string): Promise<{ runId: string; pid?: number } |
 		// Not JSON: named below as unknown.
 	}
 	return { runId: 'unknown' };
+}
+
+function within(path: string, folder: string): boolean {
+	return path === folder || path.startsWith(`${folder}${sep}`);
 }
 
 function contentPath(contentDirectory: string, hash: string): string {

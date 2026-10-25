@@ -3,6 +3,7 @@ import type { Thread, ThreadEvent, ThreadItem, Usage } from '@openai/codex-sdk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CodexAgent } from '../../src/engines/codex/infrastructure/model/codexAgent.ts';
 import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
+import { RunInProgressError } from '../../src/agent/domain/oneRunAtATime.ts';
 import {
 	InvalidAgentConfigError,
 	RecoverableError,
@@ -76,8 +77,12 @@ describe('CodexAgent', () => {
 			reasoningEffort: 'low',
 		});
 
-		await agent.run('first prompt', { signal, onProgress: firstCallback });
-		await agent.run('second prompt', { signal, onProgress: secondCallback });
+		const first = await agent.run('first prompt', { signal, onProgress: firstCallback });
+		const second = await agent.run('second prompt', {
+			signal,
+			onProgress: secondCallback,
+			session: { id: 'api-1' },
+		});
 
 		expect(Codex).toHaveBeenCalledOnce();
 		expect(startThread).toHaveBeenCalledOnce();
@@ -91,6 +96,34 @@ describe('CodexAgent', () => {
 		expect(runStreamed).toHaveBeenNthCalledWith(2, 'second prompt', { signal });
 		expect(firstCallback).toHaveBeenCalledWith({ type: 'agentMessage', message: 'first' });
 		expect(secondCallback).toHaveBeenCalledWith({ type: 'agentMessage', message: 'first' });
+		// Its own session, not the thread's, unless the run names one.
+		expect(first.session?.id).toMatch(/^[a-z]+-[a-z]+-\d{4}$/);
+		expect(second.session).toEqual({ id: 'api-1' });
+	});
+
+	it('rejects a run while another works on its thread, without sending it', async () => {
+		const { runStreamed } = createSdk();
+		let startTurn: (turn: ReturnType<typeof streamedTurn>) => void = () => undefined;
+		runStreamed.mockImplementationOnce(
+			() =>
+				new Promise(resolve => {
+					startTurn = resolve;
+				}),
+		);
+		const agent = new CodexAgent({ model: 'gpt-5.6-luna', logger: createLogger() });
+		const signal = new AbortController().signal;
+
+		const running = agent.run('first prompt', { signal });
+		await expect(agent.run('second prompt', { signal })).rejects.toBeInstanceOf(RunInProgressError);
+
+		expect(runStreamed).toHaveBeenCalledOnce();
+		startTurn(
+			streamedTurn([
+				completed({ id: 'message-1', text: 'first', type: 'agent_message' }),
+				{ type: 'turn.completed', usage: usage() },
+			]),
+		);
+		await expect(running).resolves.toMatchObject({ response: 'first' });
 	});
 
 	it('keeps command execution restrictions enabled by default', () => {
@@ -173,6 +206,7 @@ describe('CodexAgent', () => {
 			response: 'hello\ngoodbye',
 			tokens: { inputTokens: 15, outputTokens: 34, readCacheTokens: 80, writtenCacheTokens: 5 },
 			duration: 2.25,
+			session: { id: expect.stringMatching(/^[a-z]+-[a-z]+-\d{4}$/) as string },
 		});
 		expect(start).toHaveBeenCalledTimes(2);
 	});

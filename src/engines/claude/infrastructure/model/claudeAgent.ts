@@ -31,6 +31,8 @@ import {
 } from '#src/shared/domain/providerFailure';
 import type { ILogger } from '#src/shared/domain/logger';
 import type { Tokens } from '#src/shared/domain/tokens';
+import { OneRunAtATime } from '#src/agent/domain/oneRunAtATime';
+import { newSession, sessionOf } from '#src/agent/domain/session';
 import { isOneOf } from '#src/shared/domain/isOneOf';
 import { claudeModelIds } from '#src/llm/infrastructure/claudeModelIds';
 
@@ -192,8 +194,12 @@ export class ClaudeAgent implements Agent {
 	private model: ClaudeModel;
 	private autoApprove: boolean;
 	private reasoningEffort: ClaudeReasoningEffort;
-	private sessionId?: string;
+	// The SDK's own session, which its runs resume; not the consumer's `Session`.
+	private providerSessionId?: string;
+	private readonly session = newSession();
 	private logger: ILogger;
+	// Its session goes on from one run to the next, so two at once would fork it.
+	private readonly runs = new OneRunAtATime();
 
 	// `model` and `reasoningEffort` are untyped on purpose: this adapter is the one that knows
 	// what Claude supports, so it validates them instead of trusting the caller.
@@ -225,10 +231,14 @@ export class ClaudeAgent implements Agent {
 		this.logger = logger;
 	}
 
-	async run(
-		prompt: string,
-		{ signal, onProgress: callback = ignoreProgress }: RunOptions,
-	): Promise<AgentResponse> {
+	/** @throws {RunInProgressError} when another run on it is still working. */
+	run(prompt: string, options: RunOptions): Promise<AgentResponse> {
+		return this.runs.run(() => this.runAlone(prompt, options));
+	}
+
+	private async runAlone(prompt: string, options: RunOptions): Promise<AgentResponse> {
+		const { signal, onProgress: callback = ignoreProgress } = options;
+		const session = sessionOf(options) ?? this.session;
 		signal.throwIfAborted();
 		const start = Date.now();
 
@@ -242,7 +252,7 @@ export class ClaudeAgent implements Agent {
 					model: claudeModelIds[this.model],
 					maxTurns: 3,
 					cwd: process.cwd(),
-					resume: this.sessionId,
+					resume: this.providerSessionId,
 					...(this.autoApprove
 						? {
 								permissionMode: 'bypassPermissions' as const,
@@ -261,7 +271,10 @@ export class ClaudeAgent implements Agent {
 		signal.addEventListener('abort', closeStream, { once: true });
 
 		try {
-			return await this.parseResponse(stream, signal, callback, start);
+			return {
+				...(await this.parseResponse(stream, signal, callback, start)),
+				session: { ...session },
+			};
 		} finally {
 			signal.removeEventListener('abort', closeStream);
 		}
@@ -285,7 +298,7 @@ export class ClaudeAgent implements Agent {
 			const messages = classifiedProviderStream(stream, 'Claude stream ended unexpectedly');
 
 			for await (const message of messages) {
-				this.sessionId ??= message.session_id;
+				this.providerSessionId ??= message.session_id;
 
 				try {
 					switch (message.type) {

@@ -2610,3 +2610,130 @@ tags: #mikode-harness #agent-loops #tool-use
 - A run that ends waits for its agents to stop: an agent that ignores its cancellation keeps the run from ending.
 - An agent's answer reaches the model as a `user` message. Both APIs accept it after the tool results; Claude joins it to their user turn.
 - Saving a run's conversation (#111, #136) must keep each agent's conversation too, tied to its call; a run with agents still working is no safe point to save.
+
+## An agent takes one run at a time, and reads what the user sends meanwhile
+
+tags: #mikode-harness #agent-loops
+
+**Decision:** an agent instance takes one run at a time, and a model-backed run reads what the consumer sends to it while it works. The rules:
+
+- **A second run is rejected.** `LLMAgent`, both Agent SDK engines and `OrchestratorAgent` reject a `run()` that starts while another works on them with `RunInProgressError`, an `UnrecoverableError`, before it sends anything. The orchestrator checks before any role starts, so a second run never stops halfway.
+- **The queue is the consumer's.** What the user sends while a run works waits for that run to end and becomes the next turn. The NestJS API (#111) keeps that queue, and every consumer goes through it, the CLI's single-shot mode included.
+- **A message the user wants read at once goes through an `Inbox`,** passed in `RunOptions.inbox`, as the TUI would with Ctrl+Enter. `send` returns false once the inbox is closed, and `close` returns every message the run did not keep, which the API queues as the next turn.
+- **It is read once the step in progress ends.** Neither a model call nor a tool is cut. The messages go to the model after that step's tool results and agents' answers, in a `user` message that says the user sent them while the agent worked. An answer given before the model read one is a step, not the end of the run.
+- **It wakes a run that waits for its agents,** and the model reconsiders with it while they keep working.
+- **What the run does not keep stays the next run's.** The last step reads nothing, since no step is left to answer it. A run that ends before it is kept gives back what it read, so a retried attempt reads it again, or `close` returns it.
+- **Only `LLMAgent` reads it.** The Agent SDK engines ignore it, the orchestrator passes it to no role, and a workflow to no stage.
+
+**Context:** #28 covers several runs on one project. A consumer that keeps one agent per chat, such as a TUI or the API holding one per session, gets a second message while the first run works: the user types another in the same chat, or writes from the phone while a run the CLI started works. Before this, both runs started from the same turn of the conversation, and the one that finished last silently dropped the other. On 2026-10-24 the user noted that two messages never arrive truly at once: a second one arrives while a run works, so it is queued, or read at once when the user asks. The user decided: the queue in the API, a second `run()` rejected, an inbox passed to `run()`, read after the step in progress, waking a wait, on `LLMAgent` only.
+
+**Alternatives considered:**
+
+- **Queueing in the harness,** with a second `run()` waiting for the first. Every consumer would have it for free, but the user put the queue in the API, which every consumer goes through, so the harness rejects instead.
+- **Branches made explicit,** two runs working at once as branches of the conversation, the consumer choosing one. The most complex, and someone must merge or choose them.
+- **A method on the agent,** such as `agent.send(text)`. Simpler, but tied to the instance, not to one run. The user chose the inbox passed to `run()`, which belongs to that run and shows in the call.
+- **Cutting the model call in progress** and sending it again with the message. Faster to react, but it pays for the call it drops and must handle a half answer. The user chose to wait for the step to end.
+- **Reading the inbox in the orchestrator,** in the role at work or always in the executor, or in a workflow's stage at work. Left out: which role or stage should read it is a decision of its own.
+- **Leaving concurrent runs as they were.** A turn is lost without a word.
+
+**Consequences:**
+
+- It ships as a `feat`: the user decided on 2026-10-25 that rejecting a second concurrent `run()` is not breaking, since two runs at once on one instance already lost a turn without a word.
+- A consumer must not run one agent instance twice at once. A factory given to `agentAsTool` that returns the same agent for every call now fails the second delegation that overlaps another, where before both continued one conversation.
+- The orchestrators never read the inbox, so injecting into the CLI's orchestrator needs a decision on the role that reads it.
+- Whether a model takes a message read mid-run as the user's latest word, and reconsiders, is for the live round.
+
+## A consumer asks for a worktree, and an agent removes one only when the user asks
+
+tags: #mikode-harness #workspaces
+
+**Decision:** the harness creates a git worktree only when a consumer asks, and never removes one on its own. The rules:
+
+- **The consumer asks with `createWorktree`,** a function of its own: `{ repository, branch, from, path? }` gives back the worktree's real `path` and its `branch`. The consumer gives the path as an agent's root, and can keep it, as the API keeps it with a session, to build the agent again later.
+- **On a new branch,** whose name the consumer always gives, started at `from`, which is resolved to a commit first. The folder must not exist or be empty, checked before git runs: git makes the branch before it refuses a folder. The branch is made on its own first, with `git branch`, which refuses one that exists, so the branch is this call's; the worktree is added on it after. A failure deletes that branch only at `from`, which `update-ref` checks as it deletes, and only when no worktree has it, and removes the folder for worktrees it made, when empty.
+- **Beside the main folder by default,** in `../<repository>-worktrees/<branch>`, any `/` in the branch made a `-`, or where `path` says.
+- **The harness never removes one.** The user cleans them up, or asks an agent to.
+- **An agent removes one through `removeWorktree`,** given only when the consumer asks, with `removeWorktree: true` in `createFileTools`, or in `createLLMOrchestrator` for the executor. It removes the folder and every file in it, and never the branch, which keeps its commits.
+- **Every call asks the approver,** since it is `destructive`. The request's `worktree`, a typed `WorktreeRemoval`, says what is lost: how many files hold changes no commit has, how many paths `.gitignore` excludes (a folder once), and, with a detached HEAD, how many commits no branch, tag or remote holds. A consumer can decide on it, such as always refusing when something would be lost. What git cannot tell is never taken for nothing: the call is not prepared.
+- **What was approved is what is removed.** Once approved, the tool claims the worktree's folder (`FolderClaims`), and checks again the worktree, its HEAD, its branch, the commits at risk and each file `git status` names, by size and time of change; if any changed while the user was asked, it removes nothing, and the model calls it again to have the user asked with what it holds now.
+- **No run writes in a worktree being removed.** Every run, and every move through a history, claims the folders it may write, its first root and its other `write` roots, while it holds its workspace, in the state directory's `claims/`. The removal claims the worktree. Each writes its claim before it reads the others', so of two that start at once one sees the other: a removal finds a live claim on a folder that overlaps the worktree and removes nothing, and a run finds the removal's and does not start, with `WorkspaceBusyError`. A claim whose process died, or that this process no longer holds, is not live, and is cleared.
+- **A move claims the files it writes** outside the folders its store claims, read from the journal of every run on its route, so an undo or a redo through a history reopened by its first root alone keeps out of a worktree being removed too.
+- **In one run, the tools that write to one history may write only where the first set may.** The run claims the folders of the set that started its session; a set built apart that may write elsewhere is refused before the user is asked, and the model is told it is a limit of the harness.
+- **A claim that cannot be read refuses the claim being made,** except one gone meanwhile, and a claim being made is released whatever fails after it was published.
+- **The rules are written for consumers,** in the README's "Rules for runs that share a folder", and every refusal names its rule, so the model can tell the user why it cannot go on.
+- **It refuses** the repository's main folder, a worktree the agent works in (one that holds one of its roots or lies inside one), and a locked worktree.
+- **Worktrees need git 2.36 or later,** checked before anything else, since an older git rejects the `-z` of `git worktree list --porcelain -z`. An older git is named in the error, not read as a folder in no repository.
+
+**Context:** #28. Runs that only read never hold the workspace, so several chats can talk or plan on one folder at once without a worktree; two runs that write there take turns. On 2026-10-24 the user decided that a worktree is the consumer's to ask for, since it is often not needed, and that the harness leaves removing them to the user. Later the user added that an agent should remove one when the user asks, with confirmation. On 2026-10-25 the user chose the function, the default folder, a new branch with a name the consumer gives, removing the worktree only, a typed field for the approver, and the tool given only on request. The review of #145 found that an approval could go stale while the user was asked, that ignored files were lost unannounced, that a failed count read as none, and that a failed creation left its branch; the user chose a separate `ignored` count and holding the worktree's history while it is removed. The second review found that the history held was only the worktree's, not a run's whose first root lies inside it, and that the commits at risk were not compared; the user chose a claim on the folder that every run checks, over holding each history found inside, which misses a second root and one made meanwhile, and over leaving the case documented. It also found that what is written inside an ignored folder while the user is asked is not compared, since the folder is never looked into; the user judged it acceptable, since such content, like `node_modules` or a build, can mostly be rebuilt, and chose a warning in the question and in the tool's answer to the model over walking ignored folders or claiming the worktree while the user is asked. The third review found that a run's claim held only the folders of the first set of tools, so a second set with another `write` root, or a move through a history reopened without the run's other roots, wrote unclaimed; that an unreadable claim was taken for a released one; and that a claim whose check failed stayed published. The user judged two runs working on one folder a misuse rather than something the harness must prevent, asked for the limits to be written as rules every consumer can read and every refusal to name, and chose claiming each file a move writes and refusing a set of tools that writes elsewhere, over a claim that grows with each set and over a claim per file. The review of #150 found that `-z` needs git 2.36, so an older git, such as Ubuntu 22.04's 2.34, read as no repository; the user chose requiring 2.36.
+
+**Alternatives considered:**
+
+- **A workspace option,** such as `workspace: { worktree: { from } }`, the agent creating it when built. One step less, but tied to the instance, and building an agent would touch the disk.
+- **The harness's state directory, or only where the consumer says,** for the default folder. The first hides the worktrees the user cleans up; the second makes every consumer decide.
+- **A detached HEAD.** No branch to name, but commits made there are easily lost.
+- **Removing the branch too,** when no other branch holds its commits. Tidier, but deleting a branch is riskier, even approved.
+- **A generic `warnings` field on `ApprovalRequest`,** any tool's free text. Reusable, but a consumer cannot decide on it.
+- **The tool for every agent that writes in a repository.** Available without setup, but every such agent would see a destructive tool in every call.
+- **A default branch name,** such as `worktree-20261025-0230`. Easier, but the names say nothing when the user cleans up.
+- **Walking ignored folders** to compare what is in them. Complete, but a `node_modules` holds tens of thousands of files, read twice per removal.
+- **A run's claim that grows** with the folders of each set of tools that joins it. Allows any mix of `write` roots, but a claim that changes mid-run can refuse a write after others were made.
+- **A claim per file** each change makes. Exact, but it writes to `claims/` on every change, and a command, whose files are known only after it ran, still needs its roots claimed.
+- **Reading `git worktree list --porcelain` without `-z`,** one field per line. Works on any git with worktrees, but a path holding a newline is misread as two fields, and the tool could act on the wrong folder.
+- **`-z` where git has it, lines where it does not.** Every git works, but two parsers to keep, and the older one has the misreading above.
+- **Claiming the worktree while the user is asked,** from the moment the call is prepared. No harness run could change it meanwhile, but every chat working there would wait on the answer, even one that ends in a denial, and prepared calls would need a release for a call that never runs.
+
+**Consequences:**
+
+- Worktrees pile up until the user removes them, and so do their branches, and the history each one kept under the state directory.
+- `ApprovalRequest` and the internal `PreparedCall` gain an optional `worktree`. A consumer's approver that shows only `tool`, `input` and `command` still works, without saying what is lost.
+- `removeWorktree` needs the first root in a git repository, checked when the tools are created. It reaches a folder outside the agent's roots, which no other harness tool does: the approval is the guard.
+- The claims see only runs that keep their history in the same state directory, the default, and no editor or person: what they write after the last check is lost with the folder.
+- What is written inside an ignored folder between the question and the removal is lost unannounced, beyond the warning; a change of the folder's own entries still changes its time of change, and the user is asked again.
+- Two sets of tools built apart with different `write` roots cannot write in one run to one history; the orchestrator's roles share one workspace and are not affected.
+- A worktree inside a writing run's root, or holding one, overlaps it, so a run writing in the main folder blocks removing a worktree placed inside it. The default folder is beside it, so they do not overlap.
+
+## A run belongs to a session, which the history records
+
+tags: #mikode-harness #api-design #workspaces
+
+**Decision:** every run belongs to a `Session`, `{ id, name? }`, which each run that writes records in the workspace's history. The rules:
+
+- **The consumer names it in `RunOptions.session`,** such as the API's session id with a name to show. Without one, the run belongs to the agent's own session, the same for each of its runs.
+- **The harness makes one for every agent,** with an id a person can read and say, an adjective, an animal and four digits, such as `smart-hawk-4821`. It serves as the name too: a session without a name is shown by its id. A workflow makes one per run, since each run creates its stages' agents anew.
+- **The response returns it,** in `AgentResponse.session` and `WorkflowResult.session`, so a consumer that rebuilds its agent, as the API may per request, passes it back to stay in the same session.
+- **An agent another agent started belongs to the outer run's session,** whatever its options say: roles, stages and delegated agents.
+- **`HistoryRun.session` names it,** so a host can warn before a move: "the last change is from session «fix README typo»; undo it anyway?". The move itself does not change, and `from` still guards it. A run recorded before this has none, and a run retention chained into another keeps none of its own.
+- **A session that is not an object, has a blank id, or has a name that is not text,** rejects the run with an `UnrecoverableError` before anything runs. A blank name is taken as none, as the user chose on 2026-10-25, so a host shows the id.
+- **`sessionId` is ours; a provider's is `providerSessionId`.** The Claude Agent SDK's session and Codex's thread stay inside their engine and are never exposed; if one ever must be, it is named `providerSessionId`.
+
+**Context:** #28. A folder's history is one, so in one folder two sessions that write share it, and an undo from either moves back the folder's last run, whoever made it. On 2026-10-24 the user chose to record the session a run came from, with an id of the agent's own by default and one the consumer may pass with a name. On 2026-10-25 the user chose to return it in the response, so a host learns the default one, and an id a person can read, like `smart-hawk-4821`, over a UUID; it is the API's session id, which will also find a session's runs when the API restores sessions. The user named the field `session`, and named a provider's session `providerSessionId`.
+
+**Alternatives considered:**
+
+- **`chat` or `conversation`** for the field. `chat` matches no harness term but the API calls it a session; `conversation` is what `LLMAgent` owns, but an Agent SDK engine keeps none in the harness.
+- **A UUID by default.** Unique beyond doubt, but it says nothing to the person reading the warning.
+- **The first line of the agent's first prompt as the default name.** Readable, but it writes the user's words into the history, and a first message does not always describe the session.
+- **Not returning the default session.** No field more, but a host could not tell its own session from another's.
+
+**Consequences:**
+
+- `RunOptions.session`, `AgentResponse.session`, `WorkflowResult.session`, `HistoryRun.session` and the `Session` type ship as a `feat`; the response fields are optional, so an `Agent` a consumer writes still compiles.
+- A default id lives as long as the agent: after a restart, a consumer that did not keep it gets another. There are about 100 million of them (110 adjectives, 104 animals, 9,000 numbers), so two sessions in one workspace's history share an id only by rare chance; a consumer that needs ids unique everywhere passes its own.
+- Restoring a session's conversation is not part of this: `LLMAgent` keeps its messages in memory, so the id finds a session's runs, not what was said.
+
+## An agent given a workspace needs tools
+
+tags: #mikode-harness #api-design
+
+**Decision:** `createLLMAgent` refuses a `workspace` given with no tools, with an `InvalidAgentConfigError` when the agent is built. A workspace with only the consumer's own tools is built, and an agent with neither works from its prompt alone, as the README's workflow does.
+
+**Context:** #148. The live run of #28's scenario first passed `workspace` without `tools`, and the agents had none: Claude Haiku wrote a tool call as text, which the run returned as its answer, and nothing warned. The README's worktree example had the same mistake. On 2026-10-25 the user decided that an agent told where to work with nothing to work with makes no sense, that tools of the consumer's own are enough, since the agent still follows the history, and that an agent with neither stays allowed.
+
+**Alternatives considered:**
+
+- **Giving the file tools from `workspace` alone.** No trap, but `createLLMAgent` is synchronous and `createFileTools` is not, and a consumer could no longer choose the tools.
+- **Requiring file tools whenever there is a workspace.** Stricter, but it refuses an agent that only follows the history with tools of its own.
+- **Refusing every agent with no tools.** It refuses one that works from its prompt, such as a classifier or a reviewer whose input is the text it reviews.
+- **A warning in the log.** Nothing breaks, but the run still returns a pretended tool call as its answer.
+
+**Consequences:** it ships as a `feat`, since nobody uses the harness yet. A tool list built empty by mistake is refused too.

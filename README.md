@@ -446,6 +446,54 @@ it to correct. An asker that throws, or does not answer each question with some 
 ends the run with an `UnrecoverableError`. The Agent SDK engines ignore `ask`, and
 `createLLMOrchestrator` passes it to every role.
 
+### One run at a time, and what the user sends meanwhile
+
+An agent continues one conversation, so it takes one run at a time: a `run()` that starts
+while another run on the same agent works rejects with `RunInProgressError`, an
+`UnrecoverableError`, and changes nothing. Queue what the user sends meanwhile, and run it
+once the run in progress ends. For one chat, keep one agent; for another chat, create another.
+
+A message the user wants read at once goes to the run in progress through an `Inbox`:
+
+```ts
+import { Inbox } from '@mikode13/harness';
+
+const inbox = new Inbox();
+const running = agent.run('Add the export button', { signal, inbox });
+// Later, while it works:
+inbox.send('Make it a dropdown too');
+await running;
+// What the run did not keep, such as a message sent after its final answer, is the next turn's.
+const unread = inbox.close();
+```
+
+`createLLMAgent` reads what was sent once the step in progress ends, without cutting a model
+call or a tool, as a message from the user. It also reads it while it waits for agents working
+in the background, so the model can reconsider at once. The Agent SDK engines, the
+orchestrators and the workflows never read it, so `close()` returns everything sent to them. Neither does a
+run's last step, which has no step left to answer it. A run that fails before it is kept gives
+back what it read: a retried attempt reads it again, or `close()` returns it.
+
+### Sessions
+
+Every run belongs to a session. Name it in `RunOptions.session`, such as your API's session
+id with a name to show; without one, the run belongs to the agent's own session, which the
+harness makes for each agent with an id a person can read, such as `smart-hawk-4821`.
+`AgentResponse.session` returns the session the run belonged to, so a consumer that builds
+its agent again passes it back to stay in the same session:
+
+```ts
+const first = await agent.run('Add the export button', { signal });
+// Later, maybe with an agent built again:
+await other.run('Make it a dropdown too', { signal, session: first.session });
+```
+
+An agent another agent started belongs to the outer run's session, and a workflow makes a
+new one for each run that names none. A session without a `name`, or with a blank one, is shown by its `id`. Each
+run that writes records its session in the workspace's history, as `HistoryRun.session`, so
+a host can say whose change an undo takes back. It is the harness's session, not a
+provider's, which stays inside its engine.
+
 ### Agents that change files
 
 `createFileTools` gives an agent the file tools of its provider, over the folders you
@@ -474,6 +522,11 @@ const agent = createLLMAgent('openai', {
 	workspace,
 });
 ```
+
+`workspace` gives no tools: it tells the agent where it works and has it follow the
+history. An agent given a workspace and no tools at all is refused with an
+`InvalidAgentConfigError`; one with only tools of your own is built, and one with neither
+works from its prompt alone.
 
 Every tool goes through one access policy:
 
@@ -699,12 +752,13 @@ await history.redo();
 await history.goTo(historyStart); // as it was before the agent's first run
 ```
 
-`list()` gives every run kept, oldest first, with its parent, status and the files it
-changed, and the run the workspace is at (`head`), absent at the start. Runs form a tree:
-going back and writing again starts a new branch, and `goTo` reaches the old one. `redo`
-returns towards where the workspace was most recently. A run's `runId` is in its
-`AgentResponse` when it changed a file, and a run that failed or was cancelled after
-writing is still listed, with that status. A run that changed nothing is not kept.
+`list()` gives every run kept, oldest first, with its parent, status, the files it changed
+and the session it came from, and the run the workspace is at (`head`), absent at the
+start. Runs form a tree: going back and writing again starts a new branch, and `goTo`
+reaches the old one. `redo` returns towards where the workspace was most recently. A
+run's `runId` is in its `AgentResponse` when it changed a file, and a run that failed or
+was cancelled after writing is still listed, with that status. A run that changed nothing
+is not kept.
 
 A move writes a file only if it still holds what the history expects. A file you
 changed since is left as it is and named in the move's `conflicts`, and the move is
@@ -735,6 +789,84 @@ the error's `keptIn` names the run that now holds its changes, and that run's
 The history is not version control. It holds only what the harness's own tools wrote:
 not your edits, not other programs', and not the Agent SDK engines' changes. The lock
 keeps a second harness run out, but not an editor.
+
+### Working apart in a worktree
+
+Runs that only read never hold the workspace, so several chats can read and plan in one
+folder at once. Only one run at a time writes there. For runs that write side by side,
+give each its own git worktree: a folder of its own, with a history of its own.
+
+```ts
+import { createFileTools, createWorktree, type WorkspaceOptions } from '@mikode13/harness';
+
+const { path } = await createWorktree({
+	repository: process.cwd(),
+	branch: 'feat/export-button',
+	from: 'main',
+});
+const workspace: WorkspaceOptions = { roots: [{ path, access: 'write' }] };
+const agent = createLLMAgent('openai', {
+	systemPrompt: 'You build the export button, with a test for it.',
+	tools: await createFileTools('openai', workspace),
+	workspace,
+});
+```
+
+The worktree checks out `branch`, a new branch started at `from`. Without `path` it goes
+beside the repository's main folder, in `../<repository>-worktrees/<branch>`, with any
+`/` in the branch made a `-`. It fails with an `UnrecoverableError` when the branch
+exists or is not a valid name, `from` names no commit, or the folder exists and is not
+empty. A failure leaves no branch or folder of its own behind.
+
+Worktrees need git 2.36 or later, the first whose `worktree list` can name a folder whose
+path holds a newline. With an older git, `createWorktree` fails with an
+`UnrecoverableError`, and `removeWorktree: true` fails with an `InvalidAgentConfigError`
+when the tools are created; both name the version found.
+
+The harness never removes a worktree. An agent given `removeWorktree: true`, in
+`createFileTools` or `createLLMOrchestrator` for its executor, can remove one when the
+user asks. It removes the folder and every file in it, never the branch, which keeps
+its commits. Each call asks the approver, and the request's `worktree` says what is
+lost: `uncommitted` counts the files with changes no commit has, `ignored` the paths
+`.gitignore` excludes, such as `.env` or `node_modules`, a folder once, and
+`commitsOnlyHere` the commits only a detached HEAD holds. An ignored folder is never
+looked into, so what is written in it while the user is asked goes too: when `ignored`
+is not zero, say so in the question. The tool's answer tells the model the same. The
+tool refuses the repository's main folder, a worktree the agent works in, and a locked
+one. Once approved, it claims the worktree, so no harness run starts writing in it,
+and removes nothing while a run may write there, from the worktree, a folder inside it
+or a second root, or if the worktree changed while the user was asked: the model then
+calls it again, and the user is asked anew.
+
+### Rules for runs that share a folder
+
+The harness coordinates its own runs on one folder by these rules. Each refusal says which
+rule stopped it, worded so the model can tell the user why it cannot go on.
+
+1. **An agent takes one run at a time.** A second `run()` on a busy agent rejects with
+   `RunInProgressError`. Queue the message, or send it to the run in progress through
+   its `Inbox`.
+2. **Reading never waits.** Any number of runs read and plan in one folder at once.
+3. **One run at a time writes to a workspace.** A run holds its workspace from its first
+   write until it ends, and so does an undo, a redo or a `goTo`. Meanwhile another run's
+   write is refused and the model is told why, and a move rejects with
+   `WorkspaceBusyError`. For runs that write side by side, give each its own worktree.
+4. **No worktree is removed while a harness run may write in it,** from the worktree, from
+   a folder inside it, or through a second root, and no run starts writing in a worktree
+   being removed. An undo or redo protects every file it writes, wherever it is, even
+   when the history was opened by its first root alone.
+5. **In one run, every set of tools that writes to one history may write only where the
+   first set may.** A run claims the folders of the tools that wrote first; tools built
+   apart, with another `write` root, are refused, and the model is told why. Give every
+   set the same `write` roots, or build the widest first.
+6. **What is removed is what was approved.** If a worktree changed while the user was
+   asked, nothing is removed, and the user is asked again. The inside of a folder
+   `.gitignore` excludes whole is not watched (rule 7).
+7. **The harness sees only its own runs** that keep their history in the same state
+   directory. An editor, a terminal, another program, an Agent SDK engine or a history
+   kept elsewhere is not held back by any of these rules, and the inside of an ignored
+   folder is never looked into. Writing by hand in a folder an agent is writing in can
+   overwrite either side; keeping them apart is up to whoever does it.
 
 ## Tests
 
