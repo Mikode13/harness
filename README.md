@@ -523,6 +523,11 @@ const agent = createLLMAgent('openai', {
 });
 ```
 
+`workspace` gives no tools: it tells the agent where it works and has it follow the
+history. An agent given a workspace and no tools at all is refused with an
+`InvalidAgentConfigError`; one with only tools of your own is built, and one with neither
+works from its prompt alone.
+
 Every tool goes through one access policy:
 
 - it refuses a path outside the roots;

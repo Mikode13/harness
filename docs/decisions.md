@@ -2717,3 +2717,20 @@ tags: #mikode-harness #api-design #workspaces
 - `RunOptions.session`, `AgentResponse.session`, `WorkflowResult.session`, `HistoryRun.session` and the `Session` type ship as a `feat`; the response fields are optional, so an `Agent` a consumer writes still compiles.
 - A default id lives as long as the agent: after a restart, a consumer that did not keep it gets another. There are about 100 million of them (110 adjectives, 104 animals, 9,000 numbers), so two sessions in one workspace's history share an id only by rare chance; a consumer that needs ids unique everywhere passes its own.
 - Restoring a session's conversation is not part of this: `LLMAgent` keeps its messages in memory, so the id finds a session's runs, not what was said.
+
+## An agent given a workspace needs tools
+
+tags: #mikode-harness #api-design
+
+**Decision:** `createLLMAgent` refuses a `workspace` given with no tools, with an `InvalidAgentConfigError` when the agent is built. A workspace with only the consumer's own tools is built, and an agent with neither works from its prompt alone, as the README's workflow does.
+
+**Context:** #148. The live run of #28's scenario first passed `workspace` without `tools`, and the agents had none: Claude Haiku wrote a tool call as text, which the run returned as its answer, and nothing warned. The README's worktree example had the same mistake. On 2026-10-25 the user decided that an agent told where to work with nothing to work with makes no sense, that tools of the consumer's own are enough, since the agent still follows the history, and that an agent with neither stays allowed.
+
+**Alternatives considered:**
+
+- **Giving the file tools from `workspace` alone.** No trap, but `createLLMAgent` is synchronous and `createFileTools` is not, and a consumer could no longer choose the tools.
+- **Requiring file tools whenever there is a workspace.** Stricter, but it refuses an agent that only follows the history with tools of its own.
+- **Refusing every agent with no tools.** It refuses one that works from its prompt, such as a classifier or a reviewer whose input is the text it reviews.
+- **A warning in the log.** Nothing breaks, but the run still returns a pretended tool call as its answer.
+
+**Consequences:** it ships as a `feat`, since nobody uses the harness yet. A tool list built empty by mistake is refused too.

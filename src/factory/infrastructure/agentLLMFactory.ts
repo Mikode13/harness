@@ -116,7 +116,8 @@ export interface CreateLLMAgentOptions {
 	 * The folders the agent works on, the same as given to `createFileTools`. With it, the agent
 	 * follows the workspace's history: after the user undoes runs, its next run starts from the
 	 * conversation as it was, and is told what was undone. The system prompt is followed by the
-	 * roots and how to name a file in them.
+	 * roots and how to name a file in them. It gives no tools: pass those of `createFileTools`
+	 * in `tools`, and an agent given a workspace and no tools is refused.
 	 */
 	workspace?: WorkspaceOptions;
 	/**
@@ -427,7 +428,7 @@ function buildLLMAgent(
  * `destructive` one runs only when the run's `approve` allows it, or with `autoApprove`.
  *
  * @throws {InvalidAgentConfigError} for an unknown provider, a model or reasoning effort its
- * client does not support, or two tools that share a name.
+ * client does not support, two tools that share a name, or a workspace given with no tools.
  * @throws {UnrecoverableError} when the client cannot be set up, for example because
  * `OPENAI_API_KEY` is missing. The Anthropic SDK resolves credentials lazily, so a missing
  * `ANTHROPIC_API_KEY` fails the first run instead, with an `UnrecoverableError`.
@@ -448,6 +449,13 @@ export function createLLMAgent(
 		onTranscript,
 	}: CreateLLMAgentOptions,
 ): Agent {
+	// Told where to work with nothing to work with, the model would only pretend: it writes its
+	// tool calls as text, and the run returns them as its answer.
+	if (workspace && tools.length === 0) {
+		throw new InvalidAgentConfigError(
+			'An agent given a workspace needs tools to work on it: pass those of createFileTools in `tools`',
+		);
+	}
 	return buildLLMAgent(provider, {
 		model,
 		reasoningEffort,
