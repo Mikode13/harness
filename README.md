@@ -795,12 +795,14 @@ user asks. It removes the folder and every file in it, never the branch, which k
 its commits. Each call asks the approver, and the request's `worktree` says what is
 lost: `uncommitted` counts the files with changes no commit has, `ignored` the paths
 `.gitignore` excludes, such as `.env` or `node_modules`, a folder once, and
-`commitsOnlyHere` the commits only a detached HEAD holds. The tool refuses the
-repository's main folder, a worktree the agent works in, and a locked one. Once
-approved, it claims the worktree, so no harness run starts writing in it, and removes
-nothing while a run may write there, from the worktree, a folder inside it or a second
-root, or if the worktree changed while the user was asked: the model then calls it
-again, and the user is asked anew.
+`commitsOnlyHere` the commits only a detached HEAD holds. An ignored folder is never
+looked into, so what is written in it while the user is asked goes too: when `ignored`
+is not zero, say so in the question. The tool's answer tells the model the same. The
+tool refuses the repository's main folder, a worktree the agent works in, and a locked
+one. Once approved, it claims the worktree, so no harness run starts writing in it,
+and removes nothing while a run may write there, from the worktree, a folder inside it
+or a second root, or if the worktree changed while the user was asked: the model then
+calls it again, and the user is asked anew.
 
 ## Tests
 

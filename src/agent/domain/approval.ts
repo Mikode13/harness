@@ -24,7 +24,9 @@ export interface WorktreeRemoval {
 	uncommitted: number;
 	/**
 	 * How many paths `.gitignore` excludes, such as `.env` or `node_modules`, a folder excluded
-	 * whole counting once: they are lost too.
+	 * whole counting once: they are lost too. Such a folder is never looked into, so what is
+	 * written in it while the user is asked goes with it unannounced; a host's question says so
+	 * when there are any.
 	 */
 	ignored: number;
 	/** With a detached HEAD, how many of its commits no branch, tag or remote holds: lost too. */

@@ -205,6 +205,9 @@ describe('removeWorktree', () => {
 		const prepared = await removeTool().prepare({ path }, signal, call);
 
 		expect(prepared.worktree).toMatchObject({ uncommitted: 0, ignored: 2 });
+		await expect(prepared.run(signal)).resolves.toContain(
+			'It held 2 paths .gitignore excludes, removed whole without looking into them',
+		);
 	});
 
 	it('removes nothing when the worktree changed while the user was asked', async () => {

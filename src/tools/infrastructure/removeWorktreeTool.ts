@@ -147,7 +147,8 @@ async function removableWorktree(
  * Once approved it claims the worktree (`FolderClaims`), so no run that may write in it starts,
  * and removes nothing while one works; it checks again that nothing it rests on changed while
  * the user was asked, and otherwise removes nothing, so the model calls it again to have the
- * user asked anew.
+ * user asked anew. A folder `.gitignore` excludes whole is checked as a folder, never looked
+ * into, and its result tells the model so.
  */
 export function createRemoveWorktreeTool({
 	base,
@@ -211,9 +212,17 @@ export function createRemoveWorktreeTool({
 					} finally {
 						await release();
 					}
-					return removal.branch === undefined
-						? `Removed the worktree at ${target}.`
-						: `Removed the worktree at ${target}. Its branch ${removal.branch} stays, with its commits.`;
+					const done = `Removed the worktree at ${target}.`;
+					const kept =
+						removal.branch === undefined
+							? ''
+							: ` Its branch ${removal.branch} stays, with its commits.`;
+					// Told to the model, which may have to mention it: an ignored folder went unchecked.
+					const ignored =
+						removal.ignored === 0
+							? ''
+							: ` It held ${String(removal.ignored)} ${removal.ignored === 1 ? 'path' : 'paths'} .gitignore excludes, removed whole without looking into them, so anything written in them while the user was asked went too.`;
+					return `${done}${kept}${ignored}`;
 				},
 			};
 		},
