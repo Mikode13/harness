@@ -14,7 +14,7 @@ import {
 } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, sep } from 'node:path';
 import type { ILogger } from '#src/shared/domain/logger';
 import { FolderClaims } from './folderClaims.ts';
 import {
@@ -43,7 +43,13 @@ import {
 	WorkspaceMovedError,
 } from '../domain/recoveryStore.ts';
 import { chainEntries, nextPruneStep } from '../domain/retention.ts';
-import { HistoryExpiredError, redoTarget, route, UnknownRunError } from '../domain/runTree.ts';
+import {
+	HistoryExpiredError,
+	redoTarget,
+	type Route,
+	route,
+	UnknownRunError,
+} from '../domain/runTree.ts';
 import {
 	currentState,
 	hasRealParents,
@@ -248,13 +254,12 @@ async function storeContent(
  */
 export class FileRecoveryStore implements RecoveryStore {
 	readonly workspaceId: string;
+	readonly writeFolders: readonly string[];
 	private readonly root: string;
 	private readonly directory: string;
 	private readonly keepRuns: number;
 	private readonly logger: ILogger;
 	private readonly claims: FolderClaims;
-	// What a run or a move here may write in, as real paths: claimed while it holds the workspace.
-	private readonly folders: string[];
 	// What releases the claim of each run or move holding the workspace.
 	private readonly releases = new Map<string, () => Promise<void>>();
 
@@ -272,7 +277,7 @@ export class FileRecoveryStore implements RecoveryStore {
 		this.logger = logger;
 		this.workspaceId = workspaceId;
 		this.claims = claims;
-		this.folders = folders;
+		this.writeFolders = folders;
 	}
 
 	static async open({
@@ -558,6 +563,38 @@ export class FileRecoveryStore implements RecoveryStore {
 	 */
 	private async takeSteps(head: Head, runs: RunRecord[], pending: PendingMove): Promise<Revision> {
 		const { undo, redo } = route(runs, head.runId, pending.to);
+		const release = await this.claimFiles([...undo, ...redo]);
+		try {
+			return await this.stepAlong(head, runs, pending, { undo, redo });
+		} finally {
+			await release();
+		}
+	}
+
+	/**
+	 * Claims each file the runs on a route changed outside the folders this store claims: a run
+	 * may have written in a folder this store was not opened with, such as a second root a history
+	 * reopened by its first root alone does not know. A worktree holding one is not removed while
+	 * the move writes there.
+	 */
+	private async claimFiles(runIds: readonly string[]): Promise<() => Promise<void>> {
+		const outside = new Set<string>();
+		for (const runId of runIds) {
+			const { entries } = await this.readRun(runId);
+			for (const { path } of fileChanges(entries, true)) {
+				if (!this.writeFolders.some(folder => within(path, folder))) outside.add(path);
+			}
+		}
+		if (outside.size === 0) return () => Promise.resolve();
+		return this.claims.claimWriting(`files-${newRunId()}`, [...outside]);
+	}
+
+	private async stepAlong(
+		head: Head,
+		runs: RunRecord[],
+		pending: PendingMove,
+		{ undo, redo }: Route,
+	): Promise<Revision> {
 		const parents = new Map(runs.map(run => [run.runId, run.parentRunId]));
 		let reached = head.runId;
 		const save = () =>
@@ -1133,7 +1170,7 @@ export class FileRecoveryStore implements RecoveryStore {
 				heldHere.add(runId);
 				// Under the lock: a removal of a worktree this run may write in keeps it out. The
 				// caller unlocks when this throws.
-				this.releases.set(runId, await this.claims.claimWriting(runId, this.folders));
+				this.releases.set(runId, await this.claims.claimWriting(runId, this.writeFolders));
 				return;
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
@@ -1253,6 +1290,10 @@ async function readLock(path: string): Promise<{ runId: string; pid?: number } |
 		// Not JSON: named below as unknown.
 	}
 	return { runId: 'unknown' };
+}
+
+function within(path: string, folder: string): boolean {
+	return path === folder || path.startsWith(`${folder}${sep}`);
 }
 
 function contentPath(contentDirectory: string, hash: string): string {

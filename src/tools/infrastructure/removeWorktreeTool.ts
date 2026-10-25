@@ -188,7 +188,7 @@ export function createRemoveWorktreeTool({
 					} catch (error) {
 						if (!(error instanceof WorkspaceBusyError)) throw error;
 						throw new Error(
-							`A run, or a move through a history, may write in ${target}, so nothing was removed. Try again once it ends.`,
+							`A run, or a move through a history, may write in ${target}, so nothing was removed. The harness removes no worktree a run may write in; tell the user, and try again once it ends.`,
 							{ cause: error },
 						);
 					}

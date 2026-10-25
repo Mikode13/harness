@@ -804,6 +804,36 @@ and removes nothing while a run may write there, from the worktree, a folder ins
 or a second root, or if the worktree changed while the user was asked: the model then
 calls it again, and the user is asked anew.
 
+### Rules for runs that share a folder
+
+The harness coordinates its own runs on one folder by these rules. Each refusal says which
+rule stopped it, worded so the model can tell the user why it cannot go on.
+
+1. **An agent takes one run at a time.** A second `run()` on a busy agent rejects with
+   `RunInProgressError`. Queue the message, or send it to the run in progress through
+   its `Inbox`.
+2. **Reading never waits.** Any number of runs read and plan in one folder at once.
+3. **One run at a time writes to a workspace.** A run holds its workspace from its first
+   write until it ends, and so does an undo, a redo or a `goTo`. Meanwhile another run's
+   write is refused and the model is told why, and a move rejects with
+   `WorkspaceBusyError`. For runs that write side by side, give each its own worktree.
+4. **No worktree is removed while a harness run may write in it,** from the worktree, from
+   a folder inside it, or through a second root, and no run starts writing in a worktree
+   being removed. An undo or redo protects every file it writes, wherever it is, even
+   when the history was opened by its first root alone.
+5. **In one run, every set of tools that writes to one history may write only where the
+   first set may.** A run claims the folders of the tools that wrote first; tools built
+   apart, with another `write` root, are refused, and the model is told why. Give every
+   set the same `write` roots, or build the widest first.
+6. **What is removed is what was approved.** If a worktree changed while the user was
+   asked, nothing is removed, and the user is asked again. The inside of a folder
+   `.gitignore` excludes whole is not watched (rule 7).
+7. **The harness sees only its own runs** that keep their history in the same state
+   directory. An editor, a terminal, another program, an Agent SDK engine or a history
+   kept elsewhere is not held back by any of these rules, and the inside of an ignored
+   folder is never looked into. Writing by hand in a folder an agent is writing in can
+   overwrite either side; keeping them apart is up to whoever does it.
+
 ## Tests
 
 `pnpm test` runs the unit suite against deterministic fakes; it never contacts a

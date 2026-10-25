@@ -12,6 +12,23 @@ interface Claim {
 // The claims this process holds, so one left by a run of this process that ended is seen as gone.
 const claimedHere = new Set<string>();
 
+/** A claim as read from disk. Throws for one that is not a claim: it may still be live. */
+function parseClaim(name: string, text: string): Claim {
+	try {
+		const { pid, folders } = JSON.parse(text) as { pid?: unknown; folders?: unknown };
+		if (
+			Number.isInteger(pid) &&
+			Array.isArray(folders) &&
+			folders.every(folder => typeof folder === 'string')
+		) {
+			return { pid: pid as number, folders };
+		}
+	} catch {
+		// Not JSON: refused below like any other unreadable claim.
+	}
+	throw new Error(`The claim ${name} cannot be read, so whether it is live cannot be told`);
+}
+
 function overlap(a: string, b: string): boolean {
 	return a === b || a.startsWith(`${b}${sep}`) || b.startsWith(`${a}${sep}`);
 }
@@ -81,7 +98,15 @@ export class FolderClaims {
 			});
 		};
 
-		const holder = await this.liveHolder(against, folders);
+		let holder: string | undefined;
+		try {
+			holder = await this.liveHolder(against, folders);
+		} catch (error) {
+			// Published, so it must go however reading the others failed, or it would hold the folders
+			// until this process ends. The failure is what the caller needs to see.
+			await release().catch(() => undefined);
+			throw error;
+		}
 		if (holder !== undefined) {
 			await release();
 			throw new WorkspaceBusyError(holder);
@@ -96,12 +121,13 @@ export class FolderClaims {
 	): Promise<string | undefined> {
 		for (const name of await readdir(this.directory)) {
 			if (!name.startsWith(`${kind}-`) || !name.endsWith('.json')) continue;
-			const claim = await readFile(join(this.directory, name), 'utf8').then(
-				text => JSON.parse(text) as Claim,
-				// Released meanwhile.
-				() => undefined,
-			);
-			if (!claim) continue;
+			const text = await readFile(join(this.directory, name), 'utf8').catch((error: unknown) => {
+				// Released meanwhile. Any other failure leaves a claim unread, which may be live.
+				if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+				throw error;
+			});
+			if (text === undefined) continue;
+			const claim = parseClaim(name, text);
 			const live = claim.pid === process.pid ? claimedHere.has(name) : isAlive(claim.pid);
 			if (!live) {
 				// Left by a run whose process died, or that ended without releasing it.

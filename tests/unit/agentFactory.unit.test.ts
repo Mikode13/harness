@@ -1457,6 +1457,42 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 		expect(existsSync(join(repo, 'b.txt'))).toBe(false);
 	});
 
+	it('keeps a set of tools that may write elsewhere out of a run another set started', async () => {
+		const other = join(parent, 'other');
+		mkdirSync(other);
+		const logger = createLogger();
+		const narrow = await createFileTools('openai', workspace, { logger });
+		const wide = await createFileTools(
+			'openai',
+			{ ...workspace, roots: [...workspace.roots, { path: other, access: 'write' }] },
+			{ logger },
+		);
+		const run = new RunContext();
+		const create = (tools: FileTool[], path: string) =>
+			(tools.find(tool => tool.name === 'apply_patch') as unknown as PreparingTool).prepare(
+				{ type: 'create_file', path, diff: '+written' },
+				signal,
+				{
+					run,
+					reads: new ReadRegistry().begin(),
+					callId: path,
+					onProgress: () => undefined,
+					spend: () => undefined,
+					depth: 0,
+				},
+			);
+
+		await (await create(narrow, 'a.txt')).run(signal);
+
+		await expect(create(wide, 'b.txt')).rejects.toThrow(
+			`tools that may also write in ${realpathSync(other)} cannot join it, so nothing was changed`,
+		);
+		// Within the folders the run claims, a set of tools joins it.
+		await expect((await create(narrow, 'c.txt')).run(signal)).resolves.toContain('Created c.txt');
+		expect(existsSync(join(repo, 'b.txt'))).toBe(false);
+		await run.finish('completed');
+	});
+
 	it('refuses a workspace with no root when the agent is built', () => {
 		expect(() =>
 			createLLMAgent('openai', {

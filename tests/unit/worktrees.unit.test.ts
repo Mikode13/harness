@@ -15,7 +15,10 @@ import type { ApprovalRequest, Approver } from '../../src/agent/domain/approval.
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import { WorkspaceBusyError } from '../../src/recovery/domain/recoveryStore.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
+import { createHistory } from '../../src/recovery/infrastructure/createHistory.ts';
 import { FolderClaims } from '../../src/recovery/infrastructure/folderClaims.ts';
+import { RunContext } from '../../src/agent/domain/runContext.ts';
+import { ReadRegistry } from '../../src/tools/domain/readRegistry.ts';
 import { createFileTools } from '../../src/factory/infrastructure/agentLLMFactory.ts';
 import { InvalidAgentConfigError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
 import type {
@@ -394,6 +397,85 @@ describe('removeWorktree', () => {
 			expect.any(AbortSignal),
 		);
 		expect(existsSync(path)).toBe(true);
+	});
+});
+
+describe('a move through a history', () => {
+	it('keeps out of a worktree being removed, though the history was reopened without it', async () => {
+		const { path } = await createWorktree({ repository, branch: 'feat', from: 'main' });
+		const stateDirectory = join(parent, 'state');
+		const tools = await createFileTools(
+			'openai',
+			{
+				roots: [
+					{ path: repository, access: 'write' },
+					{ path, access: 'write' },
+				],
+				stateDirectory,
+			},
+			{ logger },
+		);
+		const patch = tools.find(tool => tool.name === 'apply_patch') as unknown as PreparingTool;
+		const run = new RunContext();
+		const prepared = await patch.prepare(
+			{ type: 'create_file', path: join(path, 'new.txt'), diff: '+written' },
+			signal,
+			{
+				run,
+				reads: new ReadRegistry().begin(),
+				callId: 'create',
+				onProgress: () => undefined,
+				spend: () => undefined,
+				depth: 0,
+			},
+		);
+		await prepared.run(signal);
+		await run.finish('completed');
+		// Reopened by its first root alone, it does not know the worktree is one of the run's roots.
+		const history = await createHistory({ root: repository, stateDirectory });
+		const release = await new FolderClaims(realpathSync(stateDirectory)).claimRemoval(path);
+
+		await expect(history.undo()).rejects.toThrow(WorkspaceBusyError);
+		expect(existsSync(join(path, 'new.txt'))).toBe(true);
+		await release();
+		await expect(history.undo()).resolves.toMatchObject({ complete: true });
+		expect(existsSync(join(path, 'new.txt'))).toBe(false);
+	});
+});
+
+describe('FolderClaims', () => {
+	const claimsOf = () => {
+		mkdirSync(join(parent, 'state', 'claims'), { recursive: true });
+		return {
+			claims: new FolderClaims(realpathSync(join(parent, 'state'))),
+			other: join(parent, 'state', 'claims', 'writing-other.json'),
+		};
+	};
+
+	it('claims nothing while a claim it cannot read may be live', async () => {
+		const { claims, other } = claimsOf();
+		writeFileSync(other, JSON.stringify({ pid: 1, folders: [repository] }));
+		chmodSync(other, 0o000);
+
+		try {
+			await expect(claims.claimRemoval(repository)).rejects.toThrow();
+		} finally {
+			chmodSync(other, 0o600);
+		}
+	});
+
+	it('leaves no claim behind when reading the others fails', async () => {
+		const { claims } = claimsOf();
+		const removal = join(parent, 'state', 'claims', 'removal-other.json');
+		writeFileSync(removal, 'not json');
+
+		await expect(claims.claimWriting('run', [repository])).rejects.toThrow(
+			'The claim removal-other.json cannot be read',
+		);
+		rmSync(removal);
+		// A writing claim left behind would be live, as this process's, and keep the removal out.
+		const release = await claims.claimRemoval(repository);
+		await release();
 	});
 });
 
