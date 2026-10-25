@@ -94,6 +94,13 @@ describe('Inbox', () => {
 		expect(() => inbox.send(' \n')).toThrow(RangeError);
 		expect(inbox.close()).toEqual([]);
 	});
+
+	it('takes nothing once closed, whatever the text', () => {
+		const inbox = new Inbox();
+		inbox.close();
+
+		expect(inbox.send('')).toBe(false);
+	});
 });
 
 describe('LLMAgent with an inbox', () => {

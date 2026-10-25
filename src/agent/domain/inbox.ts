@@ -13,14 +13,16 @@ export class Inbox {
 	}
 
 	/**
-	 * Sends a message to the run. False once the inbox is closed: no run will read it.
+	 * Sends a message to the run. False once the inbox is closed, whatever the text: no run will
+	 * read it.
 	 *
-	 * @throws {RangeError} when `text` holds nothing but whitespace, which a provider may refuse.
+	 * @throws {RangeError} when the inbox is open and `text` holds nothing but whitespace, which a
+	 * provider may refuse.
 	 */
 	send(text: string): boolean {
-		if (text.trim() === '') throw new RangeError('A message to a run needs some text');
 		const state = stateOf(this);
 		if (state.closed) return false;
+		if (text.trim() === '') throw new RangeError('A message to a run needs some text');
 		state.waiting.push(text);
 		for (const listener of state.listeners) listener();
 		return true;
