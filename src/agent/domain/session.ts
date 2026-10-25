@@ -53,15 +53,20 @@ export function newSession(): Session {
  * The session a run belongs to: the outer run's, for an agent another agent started, or the one
  * its options name. Absent when neither gives one, and the agent uses its own.
  *
- * @throws {UnrecoverableError} when the options name a session with no id, or a name that is not
- * text.
+ * @throws {UnrecoverableError} when the options name a session that is not an object, has no
+ * id, or has a name that is not text.
  */
 export function sessionOf(options: RunOptions): Session | undefined {
 	const inherited = runContextOf(options)?.session;
 	if (inherited) return inherited;
-	const { session } = options;
-	if (session === undefined) return undefined;
 	// Read without trusting its type, as a JavaScript consumer can pass anything.
+	const { session } = options as { session?: unknown };
+	if (session === undefined) return undefined;
+	if (typeof session !== 'object' || session === null) {
+		throw new UnrecoverableError('The run was given a session that is not an object', {
+			cause: 'RunOptions.session, when given, is { id, name? }.',
+		});
+	}
 	const { id, name } = session as { id?: unknown; name?: unknown };
 	if (typeof id !== 'string' || id.trim() === '') {
 		throw new UnrecoverableError('The run was given a session without an id', {

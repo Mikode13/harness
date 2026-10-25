@@ -79,7 +79,7 @@ describe('a run’s session', () => {
 		expect(second.session?.id).toBe(id);
 	});
 
-	it('refuses a session without an id, or with a name that is not text, before anything runs', async () => {
+	it('refuses a session that is not an object, has no id, or a name that is not text, before anything runs', async () => {
 		const llmClient = new FakeLLMClient(textResponse('never'));
 		const agent = new LLMAgent({ llmClient });
 
@@ -89,6 +89,9 @@ describe('a run’s session', () => {
 		await expect(
 			agent.run('go', { signal, session: { id: 'api-1', name: 7 } as unknown as Session }),
 		).rejects.toThrow('a session whose name is not text');
+		await expect(agent.run('go', { signal, session: null as unknown as Session })).rejects.toThrow(
+			'a session that is not an object',
+		);
 		expect(llmClient.contexts).toEqual([]);
 	});
 
@@ -133,6 +136,9 @@ describe('a run’s session', () => {
 		expect(first.session?.id).toMatch(readable);
 		expect(second.session).not.toEqual(first.session);
 		expect(named.session).toEqual({ id: 'api-7' });
+		await expect(
+			workflow.run(null, { signal, session: null as unknown as Session }),
+		).rejects.toThrow(UnrecoverableError);
 		// Each stage's agent answers with the workflow run's session.
 		expect(seen).toEqual([first.session, second.session, named.session]);
 	});
