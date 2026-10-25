@@ -66,7 +66,7 @@ export class WriteSession {
 			this.journal = undefined;
 			if (error instanceof WorkspaceBusyError) {
 				throw new EditRefusedError(
-					'Another run, or a move through its history, holds this workspace, so nothing was changed',
+					'Another run, a move through its history, or the removal of its worktree holds this workspace, so nothing was changed. The harness lets one run at a time write to a workspace; tell the user, who can wait for it to end or give this chat a worktree of its own.',
 					{
 						cause: error,
 					},

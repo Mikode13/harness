@@ -57,6 +57,7 @@ import type {
 	Workspace,
 	WorkspaceOptions,
 	WorkspaceRoot,
+	WorktreeRemoval,
 } from '../../src/index.ts';
 
 // Everything src/index.ts exports is public: removing an export is a breaking change, and
@@ -87,6 +88,7 @@ describe('public API', () => {
 			'createWorkflow',
 			'createWorkspace',
 			'createWorkspaceTools',
+			'createWorktree',
 			'defineTool',
 			'defineWorkflowStages',
 			'historyStart',
@@ -163,6 +165,7 @@ describe('public API', () => {
 				Workspace,
 				WorkspaceOptions,
 				WorkspaceRoot,
+				WorktreeRemoval,
 			]
 		>().not.toBeNever();
 

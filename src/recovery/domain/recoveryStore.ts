@@ -220,11 +220,18 @@ export interface RecoveryStore {
 	 */
 	readonly workspaceId: string;
 	/**
+	 * What its runs may write in, as real paths: its root and the other folders it was opened
+	 * with. A run claims them while it holds the workspace, so no worktree they lie in is removed
+	 * meanwhile.
+	 */
+	readonly writeFolders: readonly string[];
+	/**
 	 * Starts recording a run and holds the workspace for it until `finish`. The new run's parent
 	 * is the run the workspace is at, and the workspace is at the new run from then on. Runs a
 	 * dead process left `running` are settled first.
 	 *
-	 * @throws {WorkspaceBusyError} when another live run is writing to the workspace.
+	 * @throws {WorkspaceBusyError} when another live run is writing to the workspace, or a
+	 * worktree it may write in is being removed.
 	 */
 	startRun(): Promise<RunJournal>;
 	/**

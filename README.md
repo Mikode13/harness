@@ -764,6 +764,76 @@ The history is not version control. It holds only what the harness's own tools w
 not your edits, not other programs', and not the Agent SDK engines' changes. The lock
 keeps a second harness run out, but not an editor.
 
+### Working apart in a worktree
+
+Runs that only read never hold the workspace, so several chats can read and plan in one
+folder at once. Only one run at a time writes there. For runs that write side by side,
+give each its own git worktree: a folder of its own, with a history of its own.
+
+```ts
+import { createWorktree } from '@mikode13/harness';
+
+const { path } = await createWorktree({
+	repository: process.cwd(),
+	branch: 'feat/export-button',
+	from: 'main',
+});
+const agent = createLLMAgent('openai', {
+	workspace: { roots: [{ path, access: 'write' }] },
+});
+```
+
+The worktree checks out `branch`, a new branch started at `from`. Without `path` it goes
+beside the repository's main folder, in `../<repository>-worktrees/<branch>`, with any
+`/` in the branch made a `-`. It fails with an `UnrecoverableError` when the branch
+exists or is not a valid name, `from` names no commit, or the folder exists and is not
+empty. A failure leaves no branch or folder of its own behind.
+
+The harness never removes a worktree. An agent given `removeWorktree: true`, in
+`createFileTools` or `createLLMOrchestrator` for its executor, can remove one when the
+user asks. It removes the folder and every file in it, never the branch, which keeps
+its commits. Each call asks the approver, and the request's `worktree` says what is
+lost: `uncommitted` counts the files with changes no commit has, `ignored` the paths
+`.gitignore` excludes, such as `.env` or `node_modules`, a folder once, and
+`commitsOnlyHere` the commits only a detached HEAD holds. An ignored folder is never
+looked into, so what is written in it while the user is asked goes too: when `ignored`
+is not zero, say so in the question. The tool's answer tells the model the same. The
+tool refuses the repository's main folder, a worktree the agent works in, and a locked
+one. Once approved, it claims the worktree, so no harness run starts writing in it,
+and removes nothing while a run may write there, from the worktree, a folder inside it
+or a second root, or if the worktree changed while the user was asked: the model then
+calls it again, and the user is asked anew.
+
+### Rules for runs that share a folder
+
+The harness coordinates its own runs on one folder by these rules. Each refusal says which
+rule stopped it, worded so the model can tell the user why it cannot go on.
+
+1. **An agent takes one run at a time.** A second `run()` on a busy agent rejects with
+   `RunInProgressError`. Queue the message, or send it to the run in progress through
+   its `Inbox`.
+2. **Reading never waits.** Any number of runs read and plan in one folder at once.
+3. **One run at a time writes to a workspace.** A run holds its workspace from its first
+   write until it ends, and so does an undo, a redo or a `goTo`. Meanwhile another run's
+   write is refused and the model is told why, and a move rejects with
+   `WorkspaceBusyError`. For runs that write side by side, give each its own worktree.
+4. **No worktree is removed while a harness run may write in it,** from the worktree, from
+   a folder inside it, or through a second root, and no run starts writing in a worktree
+   being removed. An undo or redo protects every file it writes, wherever it is, even
+   when the history was opened by its first root alone.
+5. **In one run, every set of tools that writes to one history may write only where the
+   first set may.** A run claims the folders of the tools that wrote first; tools built
+   apart, with another `write` root, are refused, and the model is told why. Give every
+   set the same `write` roots, or build the widest first.
+6. **What is removed is what was approved.** If a worktree changed while the user was
+   asked, nothing is removed, and the user is asked again. The inside of a folder
+   `.gitignore` excludes whole is not watched (rule 7).
+7. **The harness sees only its own runs** that keep their history in the same state
+   directory. An editor, a terminal, another program, an Agent SDK engine or a history
+   kept elsewhere is not held back by any of these rules, and the inside of an ignored
+   folder is never looked into. Writing by hand in a folder an agent is writing in can
+   overwrite either side; keeping them apart is up to whoever does it.
+
 ## Tests
 
 `pnpm test` runs the unit suite against deterministic fakes; it never contacts a

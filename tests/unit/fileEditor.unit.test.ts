@@ -551,7 +551,9 @@ describe('WriteSession', () => {
 			change({ kind: 'create', path: 'h.ts', content: text('h') }, second),
 		);
 
-		expect(error.message).toContain('Another run, or a move through its history, holds');
+		expect(error.message).toContain(
+			'Another run, a move through its history, or the removal of its worktree holds',
+		);
 		expect(existsSync(file('h.ts'))).toBe(false);
 	});
 

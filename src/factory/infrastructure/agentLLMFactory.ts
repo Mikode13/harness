@@ -53,6 +53,8 @@ import {
 import type { DelegationTool } from '#src/tools/infrastructure/agentAsTool';
 import { createExploreTool } from '#src/tools/infrastructure/exploreTool';
 import { createShowChangesTool } from '#src/tools/infrastructure/showChangesTool';
+import { createRemoveWorktreeTool } from '#src/tools/infrastructure/removeWorktreeTool';
+import { listWorktrees } from '#src/tools/infrastructure/worktrees';
 import {
 	createTrackedReadFile,
 	createTrackedReadFiles,
@@ -247,6 +249,11 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	 * ended, for debugging. Each transcript names its role. See `Transcript`.
 	 */
 	onTranscript?: TranscriptCallback;
+	/**
+	 * Gives the executor `removeWorktree`, which removes a worktree of the repository the first
+	 * root is in when the user asks. See `createFileTools`.
+	 */
+	removeWorktree?: boolean;
 }
 
 const defaultLLMAgentModels = {
@@ -486,9 +493,15 @@ export function createLLMAgent(
  * in the history. When it fails, the file stays as the edit wrote it, and the model is told
  * why. Not supported on Windows yet.
  *
+ * With `removeWorktree`, they include `removeWorktree`, which removes a git worktree of the
+ * repository the first root is in, when the user asks: its folder and every file in it, never
+ * its branch. Each call asks the approver, whose request's `worktree` says what is lost:
+ * changes no commit has, and the commits only a detached HEAD holds. It refuses the main folder
+ * and a worktree the agent works in. See `createWorktree`.
+ *
  * @throws {InvalidAgentConfigError} for an unknown provider, a workspace with no root, or an
  * invalid command or formatter, including one whose `cwd` is not in a `write` root, or any on
- * Windows.
+ * Windows, or `removeWorktree` with a first root in no git repository.
  * @throws {UnrecoverableError} when no program can read the first root.
  */
 export async function createFileTools(
@@ -498,26 +511,49 @@ export async function createFileTools(
 		logger = new Logger(),
 		commands,
 		formatter,
-	}: { logger?: ILogger; commands?: Commands; formatter?: Formatter } = {},
+		removeWorktree = false,
+	}: {
+		logger?: ILogger;
+		commands?: Commands;
+		formatter?: Formatter;
+		removeWorktree?: boolean;
+	} = {},
 ): Promise<FileTool[]> {
 	// Reachable from untyped input.
 	if (!isAgentProvider(provider)) throw unknownProvider(provider);
 	if (commands !== undefined) validateCommands(commands);
 	if (formatter !== undefined) validateFormatter(formatter);
 	const opened = await openWorkspace(workspace, logger, formatter ? { formatter } : {});
-	return (await executorTools(provider, opened, commands)) as unknown as FileTool[];
+	return (await executorTools(provider, opened, commands, removeWorktree)) as unknown as FileTool[];
 }
 
-/** The executor's file tools, and `runCommand` when there are commands. */
+/** The executor's file tools, `runCommand` when there are commands, and `removeWorktree`. */
 async function executorTools(
 	provider: AgentProvider,
 	workspace: OpenedWorkspace,
 	commands: Commands | undefined,
+	removeWorktree: boolean,
 ): Promise<AgentTool[]> {
 	const tools = fileToolsFor(provider, workspace);
+	if (removeWorktree) tools.push(await removeWorktreeToolFor(workspace));
 	// Every command may belong to other roles, leaving none for this one.
 	if (commands === undefined || Object.keys(commands).length === 0) return tools;
 	return [...tools, await commandToolFor(workspace, commands)];
+}
+
+/** `removeWorktree` over the repository of the first root, which must be in one. */
+async function removeWorktreeToolFor({
+	base,
+	roots,
+	stateDirectory,
+}: OpenedWorkspace): Promise<AgentTool> {
+	// Checked now: a tool that could never work is a setup error, not a first-call one.
+	await listWorktrees(base).catch(() => {
+		throw new InvalidAgentConfigError(
+			`removeWorktree needs a first root in a git repository; ${base} is in none`,
+		);
+	});
+	return createRemoveWorktreeTool({ base, roots, stateDirectory });
 }
 
 /** What an explorer finds and reads with: no edits, no changes, no commands. */
@@ -620,6 +656,7 @@ export async function createLLMOrchestrator({
 	summarizeUndone = true,
 	logger = new Logger(),
 	onTranscript,
+	removeWorktree = false,
 }: CreateLLMOrchestratorOptions = {}): Promise<Agent> {
 	const roles = orchestratorRolesFor(provider);
 	const steps = perRole('maxSteps', maxSteps, defaultRoleSteps, {
@@ -677,6 +714,7 @@ export async function createLLMOrchestrator({
 		executor.provider,
 		opened,
 		commands && commandsFor(commands, 'executor'),
+		removeWorktree,
 	);
 	// The executor and the reviewer are told whether the tests were run, which only an executor
 	// with a command can do.
