@@ -15,6 +15,32 @@ function firstLine(text: string): string {
 	return text.trim().split('\n')[0] ?? '';
 }
 
+// The first git whose `worktree list` takes `-z`, without which a path holding a newline is
+// misread.
+const oldestGit = [2, 36] as const;
+
+/**
+ * Whether `git version` names a git new enough for worktrees: `git version 2.39.3 (Apple
+ * Git-146)` is, `git version 2.34.1` is not. An answer it cannot read is not.
+ */
+export function supportsWorktrees(versionOutput: string): boolean {
+	const match = /^git version (\d+)\.(\d+)/.exec(versionOutput.trim());
+	if (!match) return false;
+	const [major, minor] = [Number(match[1]), Number(match[2])];
+	return major > oldestGit[0] || (major === oldestGit[0] && minor >= oldestGit[1]);
+}
+
+/** Throws, naming the version found, unless this machine's git is new enough for worktrees. */
+async function checkGit(cwd: string, signal?: AbortSignal): Promise<void> {
+	const { stdout, stderr, exitCode } = await git(['version'], cwd, signal);
+	if (exitCode !== 0) throw new Error(`git could not be run: ${firstLine(stderr)}`);
+	if (!supportsWorktrees(stdout)) {
+		throw new Error(
+			`worktrees need git ${oldestGit.join('.')} or later, and this machine has ${firstLine(stdout) || 'an unknown version'}`,
+		);
+	}
+}
+
 /** One worktree of a repository, as `git worktree list` gives it. */
 export interface ListedWorktree {
 	/** Its folder, as a real path. */
@@ -27,9 +53,10 @@ export interface ListedWorktree {
 /**
  * Every worktree of the repository `cwd` belongs to, the main folder first.
  *
- * @throws {Error} when `cwd` is in no git repository.
+ * @throws {Error} when git is older than 2.36, or `cwd` is in no git repository.
  */
 export async function listWorktrees(cwd: string, signal?: AbortSignal): Promise<ListedWorktree[]> {
+	await checkGit(cwd, signal);
 	const { stdout, stderr, exitCode } = await git(
 		['worktree', 'list', '--porcelain', '-z'],
 		cwd,
@@ -82,9 +109,10 @@ function failed(what: string, cause: string): UnrecoverableError {
  * from the working directory. The harness never removes it; the user does, or an agent given
  * `removeWorktree` when the user asks it to.
  *
- * @throws {UnrecoverableError} when `repository` is in no git repository, `branch` is not a
- * valid new branch or already exists, `from` names no commit, or the folder already exists and
- * is not empty. A failure leaves no branch or folder it made behind.
+ * @throws {UnrecoverableError} when git is older than 2.36, `repository` is in no git
+ * repository, `branch` is not a valid new branch or already exists, `from` names no commit, or
+ * the folder already exists and is not empty. A failure leaves no branch or folder it made
+ * behind.
  */
 export async function createWorktree({
 	repository,
@@ -102,6 +130,10 @@ export async function createWorktree({
 	path?: string;
 }): Promise<{ path: string; branch: string }> {
 	const cwd = resolve(repository);
+	// First: an older git could make the branch and then fail to list the worktrees.
+	await checkGit(cwd).catch((error: unknown) => {
+		throw failed(error instanceof Error ? error.message : String(error), 'Update git.');
+	});
 	const valid = await git(['check-ref-format', '--branch', branch], cwd);
 	if (valid.exitCode !== 0) {
 		throw failed(
@@ -130,7 +162,8 @@ export async function createWorktree({
 	let target: string;
 	if (path === undefined) {
 		const [main] = await listWorktrees(cwd).catch((error: unknown) => {
-			throw failed(`${cwd} is in no git repository`, String(error));
+			// git's own words: no repository is one cause among others.
+			throw failed(error instanceof Error ? error.message : String(error), `In ${cwd}.`);
 		});
 		if (!main) throw failed(`${cwd} is in no git repository`, 'git listed no worktree.');
 		target = join(

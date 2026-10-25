@@ -556,9 +556,9 @@ async function removeWorktreeToolFor({
 	stateDirectory,
 }: OpenedWorkspace): Promise<AgentTool> {
 	// Checked now: a tool that could never work is a setup error, not a first-call one.
-	await listWorktrees(base).catch(() => {
+	await listWorktrees(base).catch((error: unknown) => {
 		throw new InvalidAgentConfigError(
-			`removeWorktree needs a first root in a git repository; ${base} is in none`,
+			`removeWorktree needs a first root in a git repository, and git 2.36 or later; with ${base}, ${error instanceof Error ? error.message : String(error)}`,
 		);
 	});
 	return createRemoveWorktreeTool({ base, roots, stateDirectory });

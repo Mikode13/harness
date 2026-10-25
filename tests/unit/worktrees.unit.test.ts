@@ -28,7 +28,8 @@ import type {
 } from '../../src/tools/domain/preparedCall.ts';
 import type { ToolCallContext } from '../../src/tools/domain/readRegistry.ts';
 import { createRemoveWorktreeTool } from '../../src/tools/infrastructure/removeWorktreeTool.ts';
-import { createWorktree } from '../../src/tools/infrastructure/worktrees.ts';
+import { createWorktree, supportsWorktrees } from '../../src/tools/infrastructure/worktrees.ts';
+import type * as RunProcess from '../../src/tools/infrastructure/runProcess.ts';
 import type * as Worktrees from '../../src/tools/infrastructure/worktrees.ts';
 import {
 	assistantResponse,
@@ -49,6 +50,18 @@ vi.mock('../../src/tools/infrastructure/worktrees.ts', async importOriginal => {
 			revList.fails && args[0] === 'rev-list'
 				? Promise.resolve({ stdout: '', stderr: 'fatal: bad object', exitCode: 128 })
 				: actual.git(args, cwd, gitSignal),
+	};
+});
+// Lets a test have `git version` answer as Ubuntu 22.04's git does.
+const oldGit = vi.hoisted(() => ({ on: false }));
+vi.mock('../../src/tools/infrastructure/runProcess.ts', async importOriginal => {
+	const actual = await importOriginal<typeof RunProcess>();
+	return {
+		...actual,
+		runProcess: (...[command, args, options]: Parameters<typeof actual.runProcess>) =>
+			oldGit.on && args.includes('version')
+				? Promise.resolve({ stdout: 'git version 2.34.1\n', stderr: '', exitCode: 0 })
+				: actual.runProcess(command, args, options),
 	};
 });
 const logger = { warn: vi.fn() };
@@ -81,11 +94,41 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	oldGit.on = false;
 	rmSync(parent, { recursive: true, force: true });
 });
 
 const branches = (cwd: string) =>
 	git(cwd, 'branch', '--format=%(refname:short)').trim().split('\n').sort();
+
+describe('supportsWorktrees', () => {
+	it('takes git 2.36 or later, and nothing it cannot read', () => {
+		expect(supportsWorktrees('git version 2.36.0\n')).toBe(true);
+		expect(supportsWorktrees('git version 2.39.3 (Apple Git-146)')).toBe(true);
+		expect(supportsWorktrees('git version 2.47.1.windows.1')).toBe(true);
+		expect(supportsWorktrees('git version 3.0.0')).toBe(true);
+		// Ubuntu 22.04's, whose `worktree list` has no `-z`.
+		expect(supportsWorktrees('git version 2.34.1')).toBe(false);
+		expect(supportsWorktrees('git version 1.99.0')).toBe(false);
+		expect(supportsWorktrees('something else')).toBe(false);
+	});
+
+	it('refuses an older git by name, before git makes a branch', async () => {
+		oldGit.on = true;
+		const workspace = {
+			roots: [{ path: repository, access: 'write' as const }],
+			stateDirectory: join(parent, 'state'),
+		};
+
+		const creating = createWorktree({ repository, branch: 'feat/export', from: 'main' });
+		await expect(creating).rejects.toThrow(UnrecoverableError);
+		await expect(creating).rejects.toThrow('this machine has git version 2.34.1');
+		await expect(
+			createFileTools('openai', workspace, { removeWorktree: true, logger }),
+		).rejects.toThrow(InvalidAgentConfigError);
+		expect(branches(repository)).toEqual(['main']);
+	});
+});
 
 describe('createWorktree', () => {
 	it('checks out a new branch from the revision, beside the main folder by default', async () => {

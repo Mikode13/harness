@@ -818,6 +818,11 @@ beside the repository's main folder, in `../<repository>-worktrees/<branch>`, wi
 exists or is not a valid name, `from` names no commit, or the folder exists and is not
 empty. A failure leaves no branch or folder of its own behind.
 
+Worktrees need git 2.36 or later, the first whose `worktree list` can name a folder whose
+path holds a newline. With an older git, `createWorktree` fails with an
+`UnrecoverableError`, and `removeWorktree: true` fails with an `InvalidAgentConfigError`
+when the tools are created; both name the version found.
+
 The harness never removes a worktree. An agent given `removeWorktree: true`, in
 `createFileTools` or `createLLMOrchestrator` for its executor, can remove one when the
 user asks. It removes the folder and every file in it, never the branch, which keeps
