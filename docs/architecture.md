@@ -232,7 +232,7 @@ context server-side. `LLMAgent` is the exception: it keeps its own
 `Conversation` in process and sends the whole context on every call, so the model behind it
 holds no state. Its adapters are `OpenAILLMClient`, on the OpenAI Responses API with
 `store: false`, and `ClaudeLLMClient`, on the Anthropic Messages API. `createLLMAgent` builds one of them and the agent together for a provider, wrapped in retry
-like every other agent, with the tools it is given. With a `workspace` it also follows the
+like every other agent, with the tools it is given, and refuses a `workspace` given with none. With a `workspace` it also follows the
 workspace's history, with a summary of what was undone from the provider's cheap model, and its
 system prompt is followed by the roots. `createFileTools` builds the file tools of a provider
 over a workspace (`openWorkspace`, then `fileToolsFor`): one access policy, one recovery store

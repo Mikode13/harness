@@ -1263,6 +1263,17 @@ describe('createLLMOrchestrator', () => {
 	});
 });
 
+/** A tool of the consumer's own, which changes nothing. */
+function consumerTool() {
+	return defineTool({
+		name: 'note',
+		description: 'Notes something',
+		input: z.object({}),
+		risk: 'safe',
+		execute: () => Promise.resolve('noted'),
+	});
+}
+
 describe('createFileTools, and createLLMAgent over a workspace', () => {
 	let parent: string;
 	let repo: string;
@@ -1498,9 +1509,35 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 			createLLMAgent('openai', {
 				systemPrompt: '',
 				workspace: { roots: [] },
+				tools: [consumerTool()],
 				logger: createLogger(),
 			}),
-		).toThrow(InvalidAgentConfigError);
+		).toThrow('A workspace needs at least one root');
+	});
+
+	it('refuses a workspace given with no tools, and builds one given only the consumer’s own', () => {
+		for (const tools of [undefined, []]) {
+			expect(() =>
+				createLLMAgent('openai', {
+					systemPrompt: '',
+					workspace,
+					...(tools ? { tools } : {}),
+					logger: createLogger(),
+				}),
+			).toThrow('An agent given a workspace needs tools to work on it');
+		}
+		expect(() =>
+			createLLMAgent('openai', {
+				systemPrompt: '',
+				workspace,
+				tools: [consumerTool()],
+				logger: createLogger(),
+			}),
+		).not.toThrow();
+		// Without a workspace, an agent works from its prompt alone.
+		expect(() =>
+			createLLMAgent('openai', { systemPrompt: 'Classify it.', logger: createLogger() }),
+		).not.toThrow();
 	});
 
 	it('tries the history again on the next run after it could not be opened', async () => {
@@ -1511,6 +1548,7 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 		const agent = createLLMAgent('openai', {
 			systemPrompt: '',
 			workspace: { ...workspace, stateDirectory },
+			tools: [consumerTool()],
 			logger: createLogger(),
 		});
 		await expect(agent.run('first', { signal })).rejects.toBeInstanceOf(UnrecoverableError);
@@ -1526,6 +1564,7 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 		await createLLMAgent('openai', {
 			systemPrompt: 'You fix bugs.',
 			workspace,
+			tools: [consumerTool()],
 			logger: createLogger(),
 		}).run('fix it', { signal });
 

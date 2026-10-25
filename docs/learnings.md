@@ -611,4 +611,5 @@ most of them read from the cache, and under 500 output tokens, cents at most.
 - **What it means:** `workspace` says where the agent works; its file tools come from
   `createFileTools`, passed in `tools`, as the README shows. Nothing warns of a workspace given
   without them.
-- **What changed:** nothing yet; whether to warn is the user's to decide.
+- **What changed:** "An agent given a workspace needs tools" in decisions.md: such an agent is
+  now refused when it is built (#148).
