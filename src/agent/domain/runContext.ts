@@ -1,4 +1,5 @@
 import type { RunOptions } from './agent.ts';
+import type { Session } from '#src/shared/domain/session';
 
 export type RunEnd = 'completed' | 'failed' | 'cancelled';
 
@@ -13,11 +14,18 @@ export type RunEnd = 'completed' | 'failed' | 'cancelled';
 export class RunContext {
 	private readonly finishers: ((end: RunEnd) => Promise<void>)[] = [];
 
+	/** The session the run belongs to, which every agent inside it answers with. */
+	readonly session: Session;
+
 	/**
 	 * The run the workspace's history recorded for this run, once it first wrote. The object is
 	 * shared, not copied: a turn recorded before the first write still learns its run.
 	 */
 	readonly historyRun: { runId?: string } = {};
+
+	constructor(session: Session) {
+		this.session = session;
+	}
 
 	/** Ends something the run started, when the run ends. */
 	onFinish(finisher: (end: RunEnd) => Promise<void>): void {

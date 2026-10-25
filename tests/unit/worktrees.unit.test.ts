@@ -416,7 +416,7 @@ describe('a move through a history', () => {
 			{ logger },
 		);
 		const patch = tools.find(tool => tool.name === 'apply_patch') as unknown as PreparingTool;
-		const run = new RunContext();
+		const run = new RunContext({ id: 'test-session' });
 		const prepared = await patch.prepare(
 			{ type: 'create_file', path: join(path, 'new.txt'), diff: '+written' },
 			signal,

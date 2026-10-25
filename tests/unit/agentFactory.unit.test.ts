@@ -1336,7 +1336,7 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 		const formatter = { executable: 'sh', args: ['-c', 'printf "formatted\\n" > "$1"', 'sh'] };
 		const tools = await createFileTools('openai', workspace, { formatter, logger: createLogger() });
 		const patch = tools.find(tool => tool.name === 'apply_patch') as unknown as PreparingTool;
-		const run = new RunContext();
+		const run = new RunContext({ id: 'test-session' });
 
 		const prepared = await patch.prepare(
 			{ type: 'create_file', path: 'a.txt', diff: '+written' },
@@ -1399,7 +1399,7 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 							{ type: 'create_file', path, diff: '+written' },
 							signal,
 							{
-								run: runContextOf(options) ?? new RunContext(),
+								run: runContextOf(options) ?? new RunContext({ id: 'test-session' }),
 								reads: new ReadRegistry().begin(),
 								callId: path,
 								onProgress: () => undefined,
@@ -1467,7 +1467,7 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 			{ ...workspace, roots: [...workspace.roots, { path: other, access: 'write' }] },
 			{ logger },
 		);
-		const run = new RunContext();
+		const run = new RunContext({ id: 'test-session' });
 		const create = (tools: FileTool[], path: string) =>
 			(tools.find(tool => tool.name === 'apply_patch') as unknown as PreparingTool).prepare(
 				{ type: 'create_file', path, diff: '+written' },

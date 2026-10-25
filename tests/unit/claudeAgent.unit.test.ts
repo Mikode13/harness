@@ -201,6 +201,7 @@ describe('ClaudeAgent', () => {
 			response: 'final answer',
 			tokens: { inputTokens: 11, outputTokens: 7, readCacheTokens: 5, writtenCacheTokens: 3 },
 			duration: 2.5,
+			session: { id: expect.stringMatching(/^[a-z]+-[a-z]+-\d{4}$/) as string },
 		});
 	});
 

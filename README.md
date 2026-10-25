@@ -474,6 +474,26 @@ orchestrators and the workflows never read it, so `close()` returns everything s
 run's last step, which has no step left to answer it. A run that fails before it is kept gives
 back what it read: a retried attempt reads it again, or `close()` returns it.
 
+### Sessions
+
+Every run belongs to a session. Name it in `RunOptions.session`, such as your API's session
+id with a name to show; without one, the run belongs to the agent's own session, which the
+harness makes for each agent with an id a person can read, such as `smart-hawk-4821`.
+`AgentResponse.session` returns the session the run belonged to, so a consumer that builds
+its agent again passes it back to stay in the same session:
+
+```ts
+const first = await agent.run('Add the export button', { signal });
+// Later, maybe with an agent built again:
+await other.run('Make it a dropdown too', { signal, session: first.session });
+```
+
+An agent another agent started belongs to the outer run's session, and a workflow makes a
+new one for each run that names none. A session without a `name` is shown by its `id`. Each
+run that writes records its session in the workspace's history, as `HistoryRun.session`, so
+a host can say whose change an undo takes back. It is the harness's session, not a
+provider's, which stays inside its engine.
+
 ### Agents that change files
 
 `createFileTools` gives an agent the file tools of its provider, over the folders you
@@ -727,12 +747,13 @@ await history.redo();
 await history.goTo(historyStart); // as it was before the agent's first run
 ```
 
-`list()` gives every run kept, oldest first, with its parent, status and the files it
-changed, and the run the workspace is at (`head`), absent at the start. Runs form a tree:
-going back and writing again starts a new branch, and `goTo` reaches the old one. `redo`
-returns towards where the workspace was most recently. A run's `runId` is in its
-`AgentResponse` when it changed a file, and a run that failed or was cancelled after
-writing is still listed, with that status. A run that changed nothing is not kept.
+`list()` gives every run kept, oldest first, with its parent, status, the files it changed
+and the session it came from, and the run the workspace is at (`head`), absent at the
+start. Runs form a tree: going back and writing again starts a new branch, and `goTo`
+reaches the old one. `redo` returns towards where the workspace was most recently. A
+run's `runId` is in its `AgentResponse` when it changed a file, and a run that failed or
+was cancelled after writing is still listed, with that status. A run that changed nothing
+is not kept.
 
 A move writes a file only if it still holds what the history expects. A file you
 changed since is left as it is and named in the move's `conflicts`, and the move is

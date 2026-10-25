@@ -41,7 +41,12 @@ describe('LLMAgent', () => {
 		const response = await new LLMAgent({ llmClient }).run('ping', { signal });
 
 		expect(llmClient.contexts).toEqual([[userMessage('ping')]]);
-		expect(response).toEqual({ response: 'pong', tokens: usage, duration: 2.5 });
+		expect(response).toEqual({
+			response: 'pong',
+			tokens: usage,
+			duration: 2.5,
+			session: { id: expect.stringMatching(/^[a-z]+-[a-z]+-\d{4}$/) as string },
+		});
 	});
 
 	it('sends each run the exchanges of the previous ones', async () => {

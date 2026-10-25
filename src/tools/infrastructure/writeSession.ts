@@ -1,3 +1,4 @@
+import type { Session } from '#src/shared/domain/session';
 import {
 	type RecoveryStore,
 	type RunJournal,
@@ -20,6 +21,7 @@ export class WriteSession {
 	private readonly maxChanges: number;
 	private readonly onStart: ((runId: string) => void) | undefined;
 	private readonly onDiscard: (() => void) | undefined;
+	private readonly session: Session | undefined;
 	private journal: Promise<RunJournal> | undefined;
 	private changes = 0;
 	private stopped: string | undefined;
@@ -31,6 +33,7 @@ export class WriteSession {
 		maxChanges = defaultMaxChanges,
 		onStart,
 		onDiscard,
+		session,
 	}: {
 		store: RecoveryStore;
 		maxChanges?: number;
@@ -38,11 +41,14 @@ export class WriteSession {
 		onStart?: (runId: string) => void;
 		/** Told when the run ended having changed nothing, so the history no longer has it. */
 		onDiscard?: () => void;
+		/** The session the run belongs to, recorded with it. */
+		session?: Session;
 	}) {
 		this.store = store;
 		this.maxChanges = maxChanges;
 		this.onStart = onStart;
 		this.onDiscard = onDiscard;
+		this.session = session;
 	}
 
 	/** The journal for one more change, counted against the run's limit. */
@@ -54,10 +60,12 @@ export class WriteSession {
 			);
 		}
 
-		this.journal ??= this.store.startRun().then(started => {
-			this.onStart?.(started.runId);
-			return started;
-		});
+		this.journal ??= this.store
+			.startRun(this.session ? { session: this.session } : {})
+			.then(started => {
+				this.onStart?.(started.runId);
+				return started;
+			});
 		let journal: RunJournal;
 		try {
 			journal = await this.journal;

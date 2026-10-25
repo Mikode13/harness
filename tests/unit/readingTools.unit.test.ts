@@ -170,14 +170,14 @@ describe('showChanges for the planner and the reviewer', () => {
 	});
 
 	it('says when the task has changed nothing yet', async () => {
-		await expect(showChanges(new RunContext())).resolves.toBe(
+		await expect(showChanges(new RunContext({ id: 'test-session' }))).resolves.toBe(
 			'Nothing has been changed in this task yet.',
 		);
 	});
 
 	it("shows the current run's changes it may read, and only counts the others", async () => {
 		const store = await FileRecoveryStore.open({ root, directory: join(parent, 'state') });
-		const context = new RunContext();
+		const context = new RunContext({ id: 'test-session' });
 		context.historyRun.runId = await recordRun(store, root, [
 			['src/a.ts', 'export const token = "changed";\n'],
 			['.envrc', 'export TOKEN=leaked\n'],
@@ -196,7 +196,7 @@ describe('showChanges for the planner and the reviewer', () => {
 		['an operational policy failure', new Error('git failed')],
 	])('propagates %s while deciding which changes may be shown', async (_, failure) => {
 		const store = await FileRecoveryStore.open({ root, directory: join(parent, 'state') });
-		const context = new RunContext();
+		const context = new RunContext({ id: 'test-session' });
 		context.historyRun.runId = await recordRun(store, root, [
 			['src/a.ts', 'export const token = "changed";\n'],
 		]);

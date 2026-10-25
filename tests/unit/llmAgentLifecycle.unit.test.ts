@@ -312,7 +312,7 @@ describe('LLMAgent and the run context', () => {
 	it('runs inside a context it was given, without ending it', async () => {
 		const ends: RunEnd[] = [];
 		const contexts: RunContext[] = [];
-		const context = new RunContext();
+		const context = new RunContext({ id: 'test-session' });
 		const tool = finishingTool(ends, contexts);
 		const options = withRunContext({ signal }, context);
 

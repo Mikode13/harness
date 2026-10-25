@@ -1,4 +1,5 @@
 import type { Agent, RunOptions } from '#src/agent/domain/agent';
+import type { Session } from '#src/shared/domain/session';
 import type { ILogger } from '#src/shared/domain/logger';
 import type { Tokens } from '#src/shared/domain/tokens';
 import type { Validator } from '#src/shared/domain/validator';
@@ -100,6 +101,8 @@ export interface WorkflowResult<Result> {
 	/** Seconds. */
 	duration: number;
 	runId?: string;
+	/** The session the run belonged to: the one `RunOptions.session` gave, or a new one. */
+	session?: Session;
 	/** One report per stage run, in order: what each stage received, answered and chose. */
 	stages: readonly WorkflowStageReport[];
 }
