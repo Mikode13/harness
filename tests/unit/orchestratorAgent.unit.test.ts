@@ -233,6 +233,7 @@ describe('OrchestratorAgent', () => {
 		).resolves.toEqual({
 			response: 'All job has finished',
 			duration: expect.any(Number) as number,
+			session: { id: expect.stringMatching(/^[a-z]+-[a-z]+-\d{4}$/) as string },
 			tokens: usage({
 				inputTokens: 15,
 				outputTokens: 18,
@@ -338,6 +339,7 @@ describe('OrchestratorAgent', () => {
 		).resolves.toEqual({
 			response: 'All job has finished',
 			duration: expect.any(Number) as number,
+			session: { id: expect.stringMatching(/^[a-z]+-[a-z]+-\d{4}$/) as string },
 			tokens: usage({ inputTokens: 6, outputTokens: 6 }),
 		});
 
@@ -805,6 +807,7 @@ describe('OrchestratorAgent', () => {
 			const expected = {
 				response: 'All job has finished',
 				duration: expect.any(Number) as number,
+				session: { id: expect.stringMatching(/^[a-z]+-[a-z]+-\d{4}$/) as string },
 				tokens: usage({ inputTokens: 30, outputTokens: 6 }),
 			};
 
@@ -847,6 +850,7 @@ describe('OrchestratorAgent', () => {
 			await expect(orchestrator.run('second', { signal })).resolves.toEqual({
 				response: 'All job has finished',
 				duration: expect.any(Number) as number,
+				session: { id: expect.stringMatching(/^[a-z]+-[a-z]+-\d{4}$/) as string },
 				tokens: usage({ inputTokens: 30, outputTokens: 6 }),
 			});
 		});

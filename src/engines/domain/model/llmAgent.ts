@@ -40,6 +40,7 @@ import { type Asker, readAnswers, type UserQuestion } from '#src/agent/domain/qu
 import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcript';
 import { type InboxReader, readerOf } from '#src/agent/domain/inbox';
 import { OneRunAtATime } from '#src/agent/domain/oneRunAtATime';
+import { newSession, sessionOf } from '#src/agent/domain/session';
 import {
 	type AgentTool,
 	type CommandEnding,
@@ -256,6 +257,8 @@ export class LLMAgent implements Agent {
 	// What this conversation has seen of each file, so an edit starts from a version it read.
 	private readonly reads = new ReadRegistry();
 	private readonly runs = new OneRunAtATime();
+	// The session its runs belong to when their options name none.
+	private readonly session = newSession();
 
 	constructor({
 		llmClient,
@@ -873,10 +876,14 @@ export class LLMAgent implements Agent {
 	}
 
 	private async runAlone(prompt: string, options: RunOptions): Promise<AgentResponse> {
+		const session = sessionOf(options) ?? this.session;
+		// Returned as copies: a consumer changing one must not change what later runs record.
 		const inherited = runContextOf(options);
-		if (inherited) return this.runSteps(prompt, options, inherited);
+		if (inherited) {
+			return { ...(await this.runSteps(prompt, options, inherited)), session: { ...session } };
+		}
 
-		const context = new RunContext();
+		const context = new RunContext(session);
 		let end: RunEnd = 'failed';
 		let response: AgentResponse;
 		try {
@@ -890,7 +897,7 @@ export class LLMAgent implements Agent {
 		}
 		// Read once the run ended: a run that changed nothing left the history then.
 		const { runId } = context.historyRun;
-		return runId ? { ...response, runId } : response;
+		return { ...response, ...(runId ? { runId } : {}), session: { ...session } };
 	}
 
 	/**

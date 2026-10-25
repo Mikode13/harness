@@ -93,7 +93,7 @@ async function call(
 	tool: PreparingTool,
 	input: unknown,
 	{
-		context = new RunContext(),
+		context = new RunContext({ id: 'test-session' }),
 		runSignal = signal,
 	}: { context?: RunContext; runSignal?: AbortSignal } = {},
 ): Promise<{ output?: string; error?: unknown; context: RunContext }> {
@@ -123,7 +123,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		const tool = (await commandToolFor(opened, {
 			slow: shell('touch started && sleep 0.4'),
 		})) as PreparingTool;
-		const context = new RunContext();
+		const context = new RunContext({ id: 'test-session' });
 		const prepared = await tool.prepare({ command: { name: 'slow' } }, signal, {
 			run: context,
 			reads: new ReadRegistry().begin(),
@@ -226,7 +226,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			other: shell('echo "2 failed"; exit 1'),
 			passing: shell('echo "1 failed"'),
 		})) as PreparingTool;
-		const context = new RunContext();
+		const context = new RunContext({ id: 'test-session' });
 
 		const first = await runIn(tool, context, 'test');
 		const second = await runIn(tool, context, 'test');
@@ -261,7 +261,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 				String.raw`printf '✓ a.test.ts (3 tests) 9ms\n   Duration  0.4 s (setup 9ms)\nexpected 1s, received 3s\n'`,
 			),
 		})) as PreparingTool;
-		const context = new RunContext();
+		const context = new RunContext({ id: 'test-session' });
 
 		const slow = await runIn(tool, context, 'slow');
 		const fast = await runIn(tool, context, 'fast');
@@ -282,7 +282,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			first: shell(`echo "error in a.ts"; echo ${end}; exit 1`, { outputBytes: 100 }),
 			second: shell(`echo "error in b.ts"; echo ${end}; exit 1`, { outputBytes: 100 }),
 		})) as PreparingTool;
-		const context = new RunContext();
+		const context = new RunContext({ id: 'test-session' });
 
 		const first = await runIn(tool, context, 'first');
 		const second = await runIn(tool, context, 'second');
@@ -300,7 +300,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			undo: shell("printf 'export const a = 1 ;\\n' > src/a.ts"),
 			ignored: shell('mkdir -p node_modules && echo x > node_modules/out.js'),
 		})) as PreparingTool;
-		const context = new RunContext();
+		const context = new RunContext({ id: 'test-session' });
 
 		const before = await runIn(tool, context, 'check');
 		await runIn(tool, context, 'change');
@@ -323,7 +323,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		const tool = (await commandToolFor(opened, {
 			swap: shell('rm src/b.ts && mkdir src/b.ts'),
 		})) as PreparingTool;
-		const context = new RunContext();
+		const context = new RunContext({ id: 'test-session' });
 
 		const swap = await runIn(tool, context, 'swap');
 		await context.finish('completed');
@@ -386,7 +386,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			),
 			{ supportsNative: () => true },
 		);
-		const context = new RunContext();
+		const context = new RunContext({ id: 'test-session' });
 
 		await expect(
 			new LLMAgent({ llmClient, tools: [check, editor], autoApprove: true }).run(
@@ -596,7 +596,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 
 		await expect(
 			tool.prepare({ command: { name: 'list', paths: [path] } }, signal, {
-				run: new RunContext(),
+				run: new RunContext({ id: 'test-session' }),
 				reads: new ReadRegistry().begin(),
 				callId: 'call',
 				onProgress: () => undefined,
@@ -667,7 +667,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			slow: shell('echo half > src/a.ts; echo started > started; sleep 30'),
 		})) as PreparingTool;
 		const controller = new AbortController();
-		const context = new RunContext();
+		const context = new RunContext({ id: 'test-session' });
 		const prepared = await tool.prepare({ command: { name: 'slow' } }, signal, {
 			run: context,
 			reads: new ReadRegistry().begin(),
@@ -854,7 +854,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 				return { ...result, outcome: 'timedOut', stopped: false };
 			},
 		});
-		const context = new RunContext();
+		const context = new RunContext({ id: 'test-session' });
 		const prepared = await tool.prepare({ command: { name: 'stuck' } }, signal, {
 			run: context,
 			reads: new ReadRegistry().begin(),

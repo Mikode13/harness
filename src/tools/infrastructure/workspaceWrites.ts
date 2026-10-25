@@ -78,6 +78,7 @@ export class WorkspaceWrites {
 		}
 		const session = new WriteSession({
 			store: this.store,
+			session: context.session,
 			// So every turn of the run, in every role, can be tied to what it wrote.
 			onStart: runId => {
 				context.historyRun.runId = runId;

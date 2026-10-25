@@ -31,6 +31,7 @@ import {
 import type { ILogger } from '#src/shared/domain/logger';
 import type { Tokens } from '#src/shared/domain/tokens';
 import { OneRunAtATime } from '#src/agent/domain/oneRunAtATime';
+import { newSession, sessionOf } from '#src/agent/domain/session';
 import { isOneOf } from '#src/shared/domain/isOneOf';
 
 // The SDK types `model` as a plain string, so this list is maintained by hand.
@@ -113,6 +114,7 @@ function toTokens(usage: Usage): Tokens {
 export class CodexAgent implements Agent {
 	private thread: Thread;
 	private logger: ILogger;
+	private readonly session = newSession();
 	// Its thread goes on from one run to the next, so two at once would fork it.
 	private readonly runs = new OneRunAtATime();
 
@@ -173,10 +175,9 @@ export class CodexAgent implements Agent {
 		return this.runs.run(() => this.runAlone(prompt, options));
 	}
 
-	private async runAlone(
-		prompt: string,
-		{ signal, onProgress: callback = ignoreProgress }: RunOptions,
-	): Promise<AgentResponse> {
+	private async runAlone(prompt: string, options: RunOptions): Promise<AgentResponse> {
+		const { signal, onProgress: callback = ignoreProgress } = options;
+		const session = sessionOf(options) ?? this.session;
 		const start = Date.now();
 		let turn: StreamedTurn;
 
@@ -186,7 +187,7 @@ export class CodexAgent implements Agent {
 			throw classifyProviderFailure(error, 'Codex refused the request');
 		}
 
-		return await this.parseResponse(turn, callback, start);
+		return { ...(await this.parseResponse(turn, callback, start)), session: { ...session } };
 	}
 
 	private async parseResponse(

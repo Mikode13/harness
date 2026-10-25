@@ -63,6 +63,7 @@ export {
 	UnrecoverableError,
 } from './shared/domain/errors.ts';
 export { isAbortError } from './shared/domain/isAbortError.ts';
+export type { Session } from './shared/domain/session.ts';
 export type { Tokens } from './shared/domain/tokens.ts';
 export {
 	rememberApprovals,

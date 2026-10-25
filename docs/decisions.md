@@ -2688,3 +2688,32 @@ tags: #mikode-harness #workspaces
 - What is written inside an ignored folder between the question and the removal is lost unannounced, beyond the warning; a change of the folder's own entries still changes its time of change, and the user is asked again.
 - Two sets of tools built apart with different `write` roots cannot write in one run to one history; the orchestrator's roles share one workspace and are not affected.
 - A worktree inside a writing run's root, or holding one, overlaps it, so a run writing in the main folder blocks removing a worktree placed inside it. The default folder is beside it, so they do not overlap.
+
+## A run belongs to a session, which the history records
+
+tags: #mikode-harness #api-design #workspaces
+
+**Decision:** every run belongs to a `Session`, `{ id, name? }`, which each run that writes records in the workspace's history. The rules:
+
+- **The consumer names it in `RunOptions.session`,** such as the API's session id with a name to show. Without one, the run belongs to the agent's own session, the same for each of its runs.
+- **The harness makes one for every agent,** with an id a person can read and say, an adjective, an animal and four digits, such as `smart-hawk-4821`. It serves as the name too: a session without a name is shown by its id. A workflow makes one per run, since each run creates its stages' agents anew.
+- **The response returns it,** in `AgentResponse.session` and `WorkflowResult.session`, so a consumer that rebuilds its agent, as the API may per request, passes it back to stay in the same session.
+- **An agent another agent started belongs to the outer run's session,** whatever its options say: roles, stages and delegated agents.
+- **`HistoryRun.session` names it,** so a host can warn before a move: "the last change is from session «fix README typo»; undo it anyway?". The move itself does not change, and `from` still guards it. A run recorded before this has none, and a run retention chained into another keeps none of its own.
+- **A session that is not an object, has a blank id, or has a name that is not text,** rejects the run with an `UnrecoverableError` before anything runs. A blank name is taken as none, as the user chose on 2026-10-25, so a host shows the id.
+- **`sessionId` is ours; a provider's is `providerSessionId`.** The Claude Agent SDK's session and Codex's thread stay inside their engine and are never exposed; if one ever must be, it is named `providerSessionId`.
+
+**Context:** #28. A folder's history is one, so in one folder two sessions that write share it, and an undo from either moves back the folder's last run, whoever made it. On 2026-10-24 the user chose to record the session a run came from, with an id of the agent's own by default and one the consumer may pass with a name. On 2026-10-25 the user chose to return it in the response, so a host learns the default one, and an id a person can read, like `smart-hawk-4821`, over a UUID; it is the API's session id, which will also find a session's runs when the API restores sessions. The user named the field `session`, and named a provider's session `providerSessionId`.
+
+**Alternatives considered:**
+
+- **`chat` or `conversation`** for the field. `chat` matches no harness term but the API calls it a session; `conversation` is what `LLMAgent` owns, but an Agent SDK engine keeps none in the harness.
+- **A UUID by default.** Unique beyond doubt, but it says nothing to the person reading the warning.
+- **The first line of the agent's first prompt as the default name.** Readable, but it writes the user's words into the history, and a first message does not always describe the session.
+- **Not returning the default session.** No field more, but a host could not tell its own session from another's.
+
+**Consequences:**
+
+- `RunOptions.session`, `AgentResponse.session`, `WorkflowResult.session`, `HistoryRun.session` and the `Session` type ship as a `feat`; the response fields are optional, so an `Agent` a consumer writes still compiles.
+- A default id lives as long as the agent: after a restart, a consumer that did not keep it gets another. There are about 100 million of them (110 adjectives, 104 animals, 9,000 numbers), so two sessions in one workspace's history share an id only by rare chance; a consumer that needs ids unique everywhere passes its own.
+- Restoring a session's conversation is not part of this: `LLMAgent` keeps its messages in memory, so the id finds a session's runs, not what was said.

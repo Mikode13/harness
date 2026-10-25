@@ -1,3 +1,5 @@
+import type { Session } from '#src/shared/domain/session';
+
 /**
  * What one path held at one moment: nothing, or a regular file with this content and mode.
  * `hash` names the content in the store, so the bytes themselves never travel in a record.
@@ -95,6 +97,8 @@ export interface RunRecord {
 	unsettled?: true;
 	/** The process that ran it, so a run whose process died can be told from a live one. */
 	pid: number;
+	/** The session it came from. Absent for a run recorded before runs recorded one. */
+	session?: Session;
 }
 
 /**
@@ -233,7 +237,7 @@ export interface RecoveryStore {
 	 * @throws {WorkspaceBusyError} when another live run is writing to the workspace, or a
 	 * worktree it may write in is being removed.
 	 */
-	startRun(): Promise<RunJournal>;
+	startRun(options?: { session?: Session }): Promise<RunJournal>;
 	/**
 	 * Every run, oldest first, and the run the workspace is at (`head`), absent before the first.
 	 * A run still recorded as `running` whose process is gone is listed as `interrupted`.

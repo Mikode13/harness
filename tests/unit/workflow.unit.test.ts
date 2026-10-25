@@ -653,7 +653,10 @@ describe('workflow', () => {
 		expect(finished).toHaveBeenCalledWith('completed');
 
 		finished.mockClear();
-		const inherited = await workflow.run(null, withRunContext({ signal }, new RunContext()));
+		const inherited = await workflow.run(
+			null,
+			withRunContext({ signal }, new RunContext({ id: 'test-session' })),
+		);
 		expect(inherited).not.toHaveProperty('runId');
 		expect(finished).not.toHaveBeenCalled();
 	});

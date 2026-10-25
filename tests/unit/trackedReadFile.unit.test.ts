@@ -52,7 +52,7 @@ async function readFile(
 ): Promise<string> {
 	try {
 		const prepared = await tool.prepare({ path, fromLine, lineCount }, signal, {
-			run: new RunContext(),
+			run: new RunContext({ id: 'test-session' }),
 			reads,
 			callId: 'call',
 			onProgress: () => undefined,

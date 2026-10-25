@@ -1,3 +1,4 @@
+import type { Session } from '#src/shared/domain/session';
 import { changedFiles, displayPath, showChanges } from './runChanges.ts';
 import type { MoveOptions, RecoveryStore, Revision, RunStatus } from './recoveryStore.ts';
 import { HistoryExpiredError } from './runTree.ts';
@@ -20,6 +21,12 @@ export interface HistoryRun {
 	 * real path of a file outside it. A host decides whether to show them.
 	 */
 	files: string[];
+	/**
+	 * The session it came from, so a host can warn before undoing another session's run. Absent
+	 * for a run recorded before runs recorded one. A run retention chained into this one keeps
+	 * no session of its own.
+	 */
+	session?: Session;
 }
 
 /** One move of the workspace through its history. */
@@ -124,6 +131,7 @@ export class StoreHistory implements History {
 				startedAt: record.startedAt,
 				...(record.finishedAt ? { finishedAt: record.finishedAt } : {}),
 				files: [...new Set(files)].map(path => displayPath(record.root, path)),
+				...(record.session ? { session: { ...record.session } } : {}),
 			});
 		}
 		return { ...(head ? { head } : {}), runs: listed };

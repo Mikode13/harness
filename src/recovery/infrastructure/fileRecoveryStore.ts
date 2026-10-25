@@ -1,3 +1,4 @@
+import type { Session } from '#src/shared/domain/session';
 import { createHash, randomBytes } from 'node:crypto';
 import {
 	link,
@@ -329,7 +330,7 @@ export class FileRecoveryStore implements RecoveryStore {
 		});
 	}
 
-	async startRun(): Promise<RunJournal> {
+	async startRun({ session }: { session?: Session } = {}): Promise<RunJournal> {
 		const runId = newRunId();
 		try {
 			// Inside, because taking the lock can fail after publishing it. Unlocking removes only a
@@ -352,6 +353,7 @@ export class FileRecoveryStore implements RecoveryStore {
 				startedAt: new Date().toISOString(),
 				status: 'running',
 				pid: process.pid,
+				...(session ? { session } : {}),
 			};
 			await writeDurably(join(runDirectory, 'run.json'), JSON.stringify(record));
 			// After the record, so the head never names a run that does not exist.

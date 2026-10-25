@@ -2,6 +2,7 @@ import type { Tokens } from '#src/shared/domain/tokens';
 import type { Approver } from './approval.ts';
 import type { Inbox } from './inbox.ts';
 import type { Asker } from './question.ts';
+import type { Session } from '#src/shared/domain/session';
 
 /**
  * How a run ended when it did not fail. Every token a run spends travels with its end: here
@@ -23,6 +24,12 @@ export interface AgentResponse {
 	 * the history does not record.
 	 */
 	runId?: string;
+	/**
+	 * The session the run belonged to: the one `RunOptions.session` gave, or the agent's own,
+	 * which the harness creates for each agent. Pass it to later runs, on this agent or one built
+	 * again, to keep them in the same session. Every agent the harness builds sets it.
+	 */
+	session?: Session;
 }
 
 export type Callback = (item: ProgressEvent) => void;
@@ -62,6 +69,12 @@ export interface RunOptions {
 	 * `Inbox.close` returns everything sent to them.
 	 */
 	inbox?: Inbox | undefined;
+	/**
+	 * The session this run belongs to, such as the API's, recorded with each run that writes.
+	 * Without it, the run belongs to the agent's own session, the same for each of its runs, which
+	 * `AgentResponse.session` returns. An agent another agent started belongs to the outer run's.
+	 */
+	session?: Session | undefined;
 }
 
 /** The `onProgress` of a run that gave none. */
