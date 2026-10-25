@@ -489,7 +489,7 @@ await other.run('Make it a dropdown too', { signal, session: first.session });
 ```
 
 An agent another agent started belongs to the outer run's session, and a workflow makes a
-new one for each run that names none. A session without a `name` is shown by its `id`. Each
+new one for each run that names none. A session without a `name`, or with a blank one, is shown by its `id`. Each
 run that writes records its session in the workspace's history, as `HistoryRun.session`, so
 a host can say whose change an undo takes back. It is the harness's session, not a
 provider's, which stays inside its engine.

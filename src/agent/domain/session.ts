@@ -73,6 +73,7 @@ export function sessionOf(options: RunOptions): Session | undefined {
 			cause: 'RunOptions.session.name, when given, is a string.',
 		});
 	}
-	// A copy, so a consumer changing its object later changes nothing recorded.
-	return name === undefined ? { id } : { id, name };
+	// A copy, so a consumer changing its object later changes nothing recorded. A blank name is
+	// none: a host shows the id instead.
+	return name === undefined || name.trim() === '' ? { id } : { id, name };
 }

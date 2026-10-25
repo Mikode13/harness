@@ -7,6 +7,6 @@
 export interface Session {
 	/** What tells it apart. Stays the same across the session's runs. */
 	id: string;
-	/** What a host shows for it. Without one, a host shows its `id`. */
+	/** What a host shows for it. Without one, or with a blank one, a host shows its `id`. */
 	name?: string;
 }

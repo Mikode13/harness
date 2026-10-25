@@ -59,6 +59,15 @@ describe('a run’s session', () => {
 		expect(own.session?.id).toMatch(readable);
 	});
 
+	it('drops a blank name, so a host shows the id', async () => {
+		const response = await agentAnswering('done').run('go', {
+			signal,
+			session: { id: 'api-3', name: '  ' },
+		});
+
+		expect(response.session).toEqual({ id: 'api-3' });
+	});
+
 	it('answers with a copy, so changing it changes nothing the agent keeps', async () => {
 		const agent = agentAnswering('one', 'two');
 
