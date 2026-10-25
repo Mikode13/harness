@@ -466,6 +466,7 @@ export class LLMAgent implements Agent {
 		const { risk } = prepared;
 		if (this.autoApprove || risk !== 'destructive') return undefined;
 		const command = 'command' in prepared ? prepared.command : undefined;
+		const worktree = 'worktree' in prepared ? prepared.worktree : undefined;
 
 		const retry = 'Do not retry the same call; choose another way, or ask the user.';
 		if (!approve) {
@@ -484,6 +485,7 @@ export class LLMAgent implements Agent {
 				risk,
 				// A copy too: the approver must not be able to change what runs.
 				...(command ? { command: structuredClone(command) } : {}),
+				...(worktree ? { worktree: structuredClone(worktree) } : {}),
 			};
 			decision = readDecision(await approve(request, signal));
 		} catch (error) {

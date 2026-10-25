@@ -764,6 +764,38 @@ The history is not version control. It holds only what the harness's own tools w
 not your edits, not other programs', and not the Agent SDK engines' changes. The lock
 keeps a second harness run out, but not an editor.
 
+### Working apart in a worktree
+
+Runs that only read never hold the workspace, so several chats can read and plan in one
+folder at once. Only one run at a time writes there. For runs that write side by side,
+give each its own git worktree: a folder of its own, with a history of its own.
+
+```ts
+import { createWorktree } from '@mikode13/harness';
+
+const { path } = await createWorktree({
+	repository: process.cwd(),
+	branch: 'feat/export-button',
+	from: 'main',
+});
+const agent = createLLMAgent('openai', {
+	workspace: { roots: [{ path, access: 'write' }] },
+});
+```
+
+The worktree checks out `branch`, a new branch started at `from`. Without `path` it goes
+beside the repository's main folder, in `../<repository>-worktrees/<branch>`, with any
+`/` in the branch made a `-`. It fails with an `UnrecoverableError` when the branch
+exists or is not a valid name, `from` names no commit, or the folder exists.
+
+The harness never removes a worktree. An agent given `removeWorktree: true`, in
+`createFileTools` or `createLLMOrchestrator` for its executor, can remove one when the
+user asks. It removes the folder and every file in it, never the branch, which keeps
+its commits. Each call asks the approver, and the request's `worktree` says what is
+lost: `uncommitted` counts the files with changes no commit has, and `commitsOnlyHere`
+the commits only a detached HEAD holds. The tool refuses the repository's main folder,
+a worktree the agent works in, and a locked one.
+
 ## Tests
 
 `pnpm test` runs the unit suite against deterministic fakes; it never contacts a

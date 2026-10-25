@@ -2642,3 +2642,35 @@ tags: #mikode-harness #agent-loops
 - A consumer must not run one agent instance twice at once. A factory given to `agentAsTool` that returns the same agent for every call now fails the second delegation that overlaps another, where before both continued one conversation.
 - The orchestrators never read the inbox, so injecting into the CLI's orchestrator needs a decision on the role that reads it.
 - Whether a model takes a message read mid-run as the user's latest word, and reconsiders, is for the live round.
+
+## A consumer asks for a worktree, and an agent removes one only when the user asks
+
+tags: #mikode-harness #workspaces
+
+**Decision:** the harness creates a git worktree only when a consumer asks, and never removes one on its own. The rules:
+
+- **The consumer asks with `createWorktree`,** a function of its own: `{ repository, branch, from, path? }` gives back the worktree's real `path` and its `branch`. The consumer gives the path as an agent's root, and can keep it, as the API keeps it with a session, to build the agent again later.
+- **On a new branch,** whose name the consumer always gives, started at `from`, which is resolved to a commit first.
+- **Beside the main folder by default,** in `../<repository>-worktrees/<branch>`, any `/` in the branch made a `-`, or where `path` says.
+- **The harness never removes one.** The user cleans them up, or asks an agent to.
+- **An agent removes one through `removeWorktree`,** given only when the consumer asks, with `removeWorktree: true` in `createFileTools`, or in `createLLMOrchestrator` for the executor. It removes the folder and every file in it, and never the branch, which keeps its commits.
+- **Every call asks the approver,** since it is `destructive`. The request's `worktree`, a typed `WorktreeRemoval`, says what is lost: how many files hold changes no commit has, and, with a detached HEAD, how many commits no branch, tag or remote holds. A consumer can decide on it, such as always refusing when something would be lost.
+- **It refuses** the repository's main folder, a worktree the agent works in (one that holds one of its roots or lies inside one), and a locked worktree.
+
+**Context:** #28. Runs that only read never hold the workspace, so several chats can talk or plan on one folder at once without a worktree; two runs that write there take turns. On 2026-10-24 the user decided that a worktree is the consumer's to ask for, since it is often not needed, and that the harness leaves removing them to the user. Later the user added that an agent should remove one when the user asks, with confirmation. On 2026-10-25 the user chose the function, the default folder, a new branch with a name the consumer gives, removing the worktree only, a typed field for the approver, and the tool given only on request.
+
+**Alternatives considered:**
+
+- **A workspace option,** such as `workspace: { worktree: { from } }`, the agent creating it when built. One step less, but tied to the instance, and building an agent would touch the disk.
+- **The harness's state directory, or only where the consumer says,** for the default folder. The first hides the worktrees the user cleans up; the second makes every consumer decide.
+- **A detached HEAD.** No branch to name, but commits made there are easily lost.
+- **Removing the branch too,** when no other branch holds its commits. Tidier, but deleting a branch is riskier, even approved.
+- **A generic `warnings` field on `ApprovalRequest`,** any tool's free text. Reusable, but a consumer cannot decide on it.
+- **The tool for every agent that writes in a repository.** Available without setup, but every such agent would see a destructive tool in every call.
+- **A default branch name,** such as `worktree-20261025-0230`. Easier, but the names say nothing when the user cleans up.
+
+**Consequences:**
+
+- Worktrees pile up until the user removes them, and so do their branches, and the history each one kept under the state directory.
+- `ApprovalRequest` and the internal `PreparedCall` gain an optional `worktree`. A consumer's approver that shows only `tool`, `input` and `command` still works, without saying what is lost.
+- `removeWorktree` needs the first root in a git repository, checked when the tools are created. It reaches a folder outside the agent's roots, which no other harness tool does: the approval is the guard.
