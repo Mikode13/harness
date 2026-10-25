@@ -577,3 +577,38 @@ as in the morning, and the tree passed `check` and its 1098 tests. The results a
   - It is one run, and the cost fell little: the failures were a small part of it.
 - **What changed:** "An edit shows the lines the formatter rewrote, and has the file read again"
   in decisions.md, not measured.
+
+## Three overlapping runs on Claude Haiku (2026-10-25)
+
+The validation scenario of #28 ran once live, on the integration branch at `a0308b3`, with the
+user's approval: three `createLLMAgent` runs at once on `haiku` with `low` effort and at most 8
+steps, each in its own session, over two throwaway repositories. A simple agent read one, an
+agent with an `agentAsTool` researcher asked about the same one and was cancelled at its first
+`subagent` event, and an unrelated agent wrote a file in the other. The simple run was sent an
+`Inbox` message once it started working. The three runs together spent about 8,000 input tokens,
+most of them read from the cache, and under 500 output tokens, cents at most.
+
+### Runs kept apart, and a message sent mid-run was followed
+
+- **What happened:** the simple run summarized its README and ended with the word the message
+  sent mid-run asked for ("PINEAPPLE"), and its inbox was left empty. The parent was cancelled
+  at 10.7 s, while the other two still worked; they ended at 13.9 s and 16.9 s. The unrelated
+  run wrote `NOTES.md`, and the history listed that run with its session.
+- **Evidence:** each run's callback narrated only its own tools (`readFile`; `researcher`;
+  `str_replace_based_edit_tool`), neither answer mentioned the other repository, and each run
+  reported its own usage and the session it was given.
+- **What it means:** what the offline scenario proves held with a real model, once. Whether a
+  model follows a message read while it waits for agents in the background is still for the
+  live round.
+- **What changed:** nothing; the offline scenario is in `tests/unit/overlappingRuns.unit.test.ts`.
+
+### A workspace without file tools gives the model no tools
+
+- **What happened:** the first attempt passed `workspace` to `createLLMAgent` and no `tools`.
+  The agents had no tool at all: the simple one wrote a call to a `read` tool as text, which
+  the run returned as its answer, and the unrelated one said it could not write.
+- **Evidence:** 210 and 218 input tokens per run, no tool events, and no history.
+- **What it means:** `workspace` says where the agent works; its file tools come from
+  `createFileTools`, passed in `tools`, as the README shows. Nothing warns of a workspace given
+  without them.
+- **What changed:** nothing yet; whether to warn is the user's to decide.
