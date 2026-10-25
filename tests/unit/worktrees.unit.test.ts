@@ -1,10 +1,19 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApprovalRequest, Approver } from '../../src/agent/domain/approval.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
+import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
 import { createFileTools } from '../../src/factory/infrastructure/agentLLMFactory.ts';
 import { InvalidAgentConfigError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
 import type {
@@ -15,6 +24,7 @@ import type {
 import type { ToolCallContext } from '../../src/tools/domain/readRegistry.ts';
 import { createRemoveWorktreeTool } from '../../src/tools/infrastructure/removeWorktreeTool.ts';
 import { createWorktree } from '../../src/tools/infrastructure/worktrees.ts';
+import type * as Worktrees from '../../src/tools/infrastructure/worktrees.ts';
 import {
 	assistantResponse,
 	FakeLLMClient,
@@ -23,6 +33,19 @@ import {
 } from '../support/fakeLlmClient.ts';
 
 const signal = new AbortController().signal;
+
+// Lets a test have git answer `rev-list` with nothing, as when it cannot read an object.
+const revList = vi.hoisted(() => ({ empty: false }));
+vi.mock('../../src/tools/infrastructure/worktrees.ts', async importOriginal => {
+	const actual = await importOriginal<typeof Worktrees>();
+	return {
+		...actual,
+		git: (args: string[], cwd: string, gitSignal?: AbortSignal) =>
+			revList.empty && args[0] === 'rev-list'
+				? Promise.resolve({ stdout: '', stderr: '', exitCode: 0 })
+				: actual.git(args, cwd, gitSignal),
+	};
+});
 const logger = { warn: vi.fn() };
 
 let parent: string;
@@ -104,6 +127,32 @@ describe('createWorktree', () => {
 		expect(branches(repository)).toEqual(['main']);
 	});
 
+	it('refuses a folder that holds files, before it makes the branch', async () => {
+		const path = join(parent, 'full');
+		mkdirSync(path);
+		writeFileSync(join(path, 'a.txt'), 'a\n');
+
+		await expect(createWorktree({ repository, branch: 'new', from: 'main', path })).rejects.toThrow(
+			'already exists',
+		);
+		expect(branches(repository)).toEqual(['main']);
+	});
+
+	it('leaves no branch or folder of its own when git fails', async () => {
+		const locked = join(parent, 'locked');
+		mkdirSync(locked);
+		chmodSync(locked, 0o555);
+
+		try {
+			await expect(
+				createWorktree({ repository, branch: 'new', from: 'main', path: join(locked, 'x') }),
+			).rejects.toThrow('git refused it');
+		} finally {
+			chmodSync(locked, 0o755);
+		}
+		expect(branches(repository)).toEqual(['main']);
+	});
+
 	it('refuses a folder in no repository', async () => {
 		const plain = join(parent, 'plain');
 		mkdirSync(plain);
@@ -116,8 +165,10 @@ describe('createWorktree', () => {
 
 const call = {} as ToolCallContext;
 
+const state = () => ({ stateDirectory: join(parent, 'state'), logger });
+
 function removeTool(roots = [{ path: repository, access: 'write' as const }]): PreparingTool {
-	return createRemoveWorktreeTool({ base: repository, roots });
+	return createRemoveWorktreeTool({ base: repository, roots, ...state() });
 }
 
 describe('removeWorktree', () => {
@@ -130,13 +181,68 @@ describe('removeWorktree', () => {
 
 		expect(prepared).toMatchObject({
 			risk: 'destructive',
-			worktree: { path, branch: 'feat/export', uncommitted: 2, commitsOnlyHere: 0 },
+			worktree: { path, branch: 'feat/export', uncommitted: 2, ignored: 0, commitsOnlyHere: 0 },
 		});
 		await expect(prepared.run(signal)).resolves.toBe(
 			`Removed the worktree at ${path}. Its branch feat/export stays, with its commits.`,
 		);
 		expect(existsSync(path)).toBe(false);
 		expect(branches(repository)).toEqual(['feat/export', 'main']);
+	});
+
+	it('counts what .gitignore excludes, a folder once', async () => {
+		writeFileSync(join(repository, '.gitignore'), '.env\nnode_modules/\n');
+		git(repository, 'add', '.');
+		git(repository, 'commit', '-q', '-m', 'ignore');
+		const { path } = await createWorktree({ repository, branch: 'feat', from: 'main' });
+		writeFileSync(join(path, '.env'), 'KEY=1\n');
+		mkdirSync(join(path, 'node_modules', 'pkg'), { recursive: true });
+		writeFileSync(join(path, 'node_modules', 'pkg', 'a.js'), '');
+		writeFileSync(join(path, 'node_modules', 'pkg', 'b.js'), '');
+
+		const prepared = await removeTool().prepare({ path }, signal, call);
+
+		expect(prepared.worktree).toMatchObject({ uncommitted: 0, ignored: 2 });
+	});
+
+	it('removes nothing when the worktree changed while the user was asked', async () => {
+		const { path } = await createWorktree({ repository, branch: 'feat', from: 'main' });
+		const prepared = await removeTool().prepare({ path }, signal, call);
+		writeFileSync(join(path, 'late.txt'), 'written meanwhile\n');
+
+		await expect(prepared.run(signal)).rejects.toThrow(
+			'changed since the user was asked, so nothing was removed',
+		);
+		expect(existsSync(join(path, 'late.txt'))).toBe(true);
+	});
+
+	it('removes nothing while another run writes in the worktree', async () => {
+		const { path } = await createWorktree({ repository, branch: 'feat', from: 'main' });
+		const prepared = await removeTool().prepare({ path }, signal, call);
+		const store = await FileRecoveryStore.open({ root: path, directory: join(parent, 'state') });
+		const journal = await store.startRun();
+
+		await expect(prepared.run(signal)).rejects.toThrow(
+			'Another run, or a move through its history',
+		);
+		expect(existsSync(path)).toBe(true);
+
+		await journal.finish('completed');
+		await expect(prepared.run(signal)).resolves.toContain('Removed the worktree');
+	});
+
+	it('prepares nothing when git cannot count the commits at risk', async () => {
+		const { path } = await createWorktree({ repository, branch: 'spike', from: 'main' });
+		git(path, 'checkout', '-q', '--detach');
+		revList.empty = true;
+
+		try {
+			await expect(removeTool().prepare({ path }, signal, call)).rejects.toThrow(
+				'git could not count the commits only',
+			);
+		} finally {
+			revList.empty = false;
+		}
 	});
 
 	it('counts the commits only a detached HEAD holds', async () => {
@@ -148,7 +254,7 @@ describe('removeWorktree', () => {
 
 		const prepared: PreparedCall = await removeTool().prepare({ path }, signal, call);
 
-		expect(prepared.worktree).toEqual({ path, uncommitted: 0, commitsOnlyHere: 1 });
+		expect(prepared.worktree).toEqual({ path, uncommitted: 0, ignored: 0, commitsOnlyHere: 1 });
 	});
 
 	it('finds a worktree from a path relative to the first root', async () => {
@@ -179,6 +285,7 @@ describe('removeWorktree', () => {
 		const tool = createRemoveWorktreeTool({
 			base: path,
 			roots: [{ path: join(path, 'src'), access: 'write' }],
+			...state(),
 		});
 
 		await expect(tool.prepare({ path }, signal, call)).rejects.toThrow('You work in');
@@ -192,6 +299,7 @@ describe('removeWorktree', () => {
 		const tool = createRemoveWorktreeTool({
 			base: repository,
 			roots: [{ path: '.', access: 'write' }],
+			...state(),
 		});
 
 		await expect(tool.prepare({ path }, signal, call)).rejects.toThrow('You work in');
@@ -218,7 +326,8 @@ describe('removeWorktree', () => {
 			textResponse('kept'),
 		);
 		const agent = new LLMAgent({
-			llmClient, // Only this one: the fake client cannot declare the native edit tools.
+			llmClient,
+			// Only this one: the fake client cannot declare the native edit tools.
 			tools: tools.filter(tool => tool.name === 'removeWorktree') as unknown as AgentTool[],
 		});
 
@@ -229,7 +338,7 @@ describe('removeWorktree', () => {
 				tool: 'removeWorktree',
 				input: { path },
 				risk: 'destructive',
-				worktree: { path, branch: 'feat', uncommitted: 0, commitsOnlyHere: 0 },
+				worktree: { path, branch: 'feat', uncommitted: 0, ignored: 0, commitsOnlyHere: 0 },
 			} satisfies ApprovalRequest,
 			expect.any(AbortSignal),
 		);

@@ -477,6 +477,16 @@ export class FileRecoveryStore implements RecoveryStore {
 	}
 
 	/** Holds the workspace like a run does, then moves it to the run `resolve` picks. */
+	async hold<T>(work: () => Promise<T>): Promise<T> {
+		const holdId = `hold-${newRunId()}`;
+		try {
+			await this.lock(holdId);
+			return await work();
+		} finally {
+			await this.unlock(holdId);
+		}
+	}
+
 	private async move(
 		resolve: (history: {
 			runs: RunRecord[];

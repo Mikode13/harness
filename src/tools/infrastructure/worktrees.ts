@@ -1,4 +1,4 @@
-import { mkdir, realpath } from 'node:fs/promises';
+import { mkdir, readdir, realpath, rmdir } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { UnrecoverableError } from '#src/shared/domain/errors';
 import { runProcess } from './runProcess.ts';
@@ -58,6 +58,33 @@ export async function listWorktrees(cwd: string, signal?: AbortSignal): Promise<
 	);
 }
 
+/**
+ * Removes what a `worktree add` that failed left behind, and only what this call can show it
+ * made: the branch, which did not exist before, if it still points at `sha` and no worktree has
+ * it, and the folder it made for worktrees, if it is still empty.
+ */
+async function undoPartialAdd({
+	cwd,
+	branch,
+	ref,
+	sha,
+	made,
+}: {
+	cwd: string;
+	branch: string;
+	ref: string;
+	sha: string;
+	made: string | undefined;
+}): Promise<void> {
+	const left = await git(['rev-parse', '--verify', '--quiet', ref], cwd);
+	const worktrees = await listWorktrees(cwd).catch(() => undefined);
+	const unused = worktrees?.every(worktree => worktree.branch !== branch) ?? false;
+	if (left.exitCode === 0 && left.stdout.trim() === sha && unused) {
+		await git(['branch', '-D', branch], cwd);
+	}
+	if (made !== undefined) await rmdir(made).catch(() => undefined);
+}
+
 function failed(what: string, cause: string): UnrecoverableError {
 	return new UnrecoverableError(`The worktree could not be created: ${what}`, { cause });
 }
@@ -73,7 +100,8 @@ function failed(what: string, cause: string): UnrecoverableError {
  * `removeWorktree` when the user asks it to.
  *
  * @throws {UnrecoverableError} when `repository` is in no git repository, `branch` is not a
- * valid new branch or already exists, `from` names no commit, or the folder already exists.
+ * valid new branch or already exists, `from` names no commit, or the folder already exists and
+ * is not empty. A failure leaves no branch or folder of its own behind.
  */
 export async function createWorktree({
 	repository,
@@ -110,6 +138,12 @@ export async function createWorktree({
 		);
 	}
 
+	const sha = commit.stdout.trim();
+	const ref = `refs/heads/${branch}`;
+	if ((await git(['show-ref', '--verify', '--quiet', ref], cwd)).exitCode === 0) {
+		throw failed(`the branch "${branch}" already exists`, 'Name a new branch.');
+	}
+
 	let target: string;
 	if (path === undefined) {
 		const [main] = await listWorktrees(cwd).catch((error: unknown) => {
@@ -121,15 +155,23 @@ export async function createWorktree({
 			`${basename(main.path)}-worktrees`,
 			branch.replaceAll('/', '-'),
 		);
-		await mkdir(dirname(target), { recursive: true });
 	} else {
 		target = resolve(path);
 	}
-
-	const added = await git(
-		['worktree', 'add', '-b', branch, '--', target, commit.stdout.trim()],
-		cwd,
+	// git takes an empty folder, but would create the branch before refusing a full one.
+	const held = await readdir(target).catch((error: unknown) =>
+		(error as NodeJS.ErrnoException).code === 'ENOENT' ? [] : undefined,
 	);
-	if (added.exitCode !== 0) throw failed(`git refused it`, firstLine(added.stderr));
+	if (held === undefined || held.length > 0) {
+		throw failed(`${target} already exists`, 'Give the worktree a folder that does not.');
+	}
+	// The first folder this call made, if any, which it removes again should git fail.
+	const made = path === undefined ? await mkdir(dirname(target), { recursive: true }) : undefined;
+
+	const added = await git(['worktree', 'add', '-b', branch, '--', target, sha], cwd);
+	if (added.exitCode !== 0) {
+		await undoPartialAdd({ cwd, branch, ref, sha, made });
+		throw failed('git refused it', firstLine(added.stderr));
+	}
 	return { path: await realpath(target), branch };
 }

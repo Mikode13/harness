@@ -786,15 +786,20 @@ const agent = createLLMAgent('openai', {
 The worktree checks out `branch`, a new branch started at `from`. Without `path` it goes
 beside the repository's main folder, in `../<repository>-worktrees/<branch>`, with any
 `/` in the branch made a `-`. It fails with an `UnrecoverableError` when the branch
-exists or is not a valid name, `from` names no commit, or the folder exists.
+exists or is not a valid name, `from` names no commit, or the folder exists and is not
+empty. A failure leaves no branch or folder of its own behind.
 
 The harness never removes a worktree. An agent given `removeWorktree: true`, in
 `createFileTools` or `createLLMOrchestrator` for its executor, can remove one when the
 user asks. It removes the folder and every file in it, never the branch, which keeps
 its commits. Each call asks the approver, and the request's `worktree` says what is
-lost: `uncommitted` counts the files with changes no commit has, and `commitsOnlyHere`
-the commits only a detached HEAD holds. The tool refuses the repository's main folder,
-a worktree the agent works in, and a locked one.
+lost: `uncommitted` counts the files with changes no commit has, `ignored` the paths
+`.gitignore` excludes, such as `.env` or `node_modules`, a folder once, and
+`commitsOnlyHere` the commits only a detached HEAD holds. The tool refuses the
+repository's main folder, a worktree the agent works in, and a locked one. Once
+approved, it holds the worktree's history, as a run writing there would, and removes
+nothing if another run holds it, or if the worktree changed while the user was asked:
+the model then calls it again, and the user is asked anew.
 
 ## Tests
 

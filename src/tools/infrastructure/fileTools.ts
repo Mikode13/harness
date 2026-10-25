@@ -60,6 +60,8 @@ export interface OpenedWorkspace {
 	readonly writable: boolean;
 	/** The real path of the first root. */
 	readonly base: string;
+	/** Where the history is kept, as a real path. */
+	readonly stateDirectory: string;
 	/** What a command's checkpoint captures and compares: see `CoveredFiles`. */
 	readonly covered: CoveredFiles;
 }
@@ -150,6 +152,7 @@ export async function openWorkspace(
 		}),
 		writable: roots.some(({ access }) => access === 'write'),
 		base: root,
+		stateDirectory,
 		covered: coveredFiles(roots, policy, logger),
 	};
 }

@@ -22,6 +22,11 @@ export interface WorktreeRemoval {
 	branch?: string;
 	/** How many files hold changes no commit has, untracked ones included: they are lost. */
 	uncommitted: number;
+	/**
+	 * How many paths `.gitignore` excludes, such as `.env` or `node_modules`, a folder excluded
+	 * whole counting once: they are lost too.
+	 */
+	ignored: number;
 	/** With a detached HEAD, how many of its commits no branch, tag or remote holds: lost too. */
 	commitsOnlyHere: number;
 }
