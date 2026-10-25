@@ -1003,7 +1003,8 @@ export class LLMAgent implements Agent {
 		};
 		// The agents the run's calls send to work in the background.
 		const background = new BackgroundAgents(signal, onProgress);
-		const inbox = options.inbox && readerOf(options.inbox);
+		// Checked whatever it is, as a JavaScript consumer can pass anything.
+		const inbox = options.inbox === undefined ? undefined : readerOf(options.inbox);
 		// What the user sends while the run waits for its agents is worth the model's attention.
 		const stopListening = inbox?.onMessage(() => {
 			background.interrupt();

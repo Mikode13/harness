@@ -104,6 +104,21 @@ describe('Inbox', () => {
 });
 
 describe('LLMAgent with an inbox', () => {
+	it('refuses something that is not an Inbox with a classified error, before any model call', async () => {
+		const model = new ScriptedModel(() => textResponse('never'));
+		const agent = new LLMAgent({ llmClient: model });
+
+		for (const inbox of [{ send: () => true }, null]) {
+			await expect(agent.run('go', { signal, inbox: inbox as unknown as Inbox })).rejects.toThrow(
+				UnrecoverableError,
+			);
+		}
+		await expect(agent.run('go', { signal, inbox: {} as unknown as Inbox })).rejects.toThrow(
+			'an inbox that is not an Inbox',
+		);
+		expect(model.contexts).toEqual([]);
+	});
+
 	it('reads what the user sent during a step after its tool results, and goes on', async () => {
 		const inbox = new Inbox();
 		const llmClient = new ScriptedModel(

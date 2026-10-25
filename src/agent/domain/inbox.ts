@@ -1,3 +1,5 @@
+import { UnrecoverableError } from '#src/shared/domain/errors';
+
 /**
  * Messages a consumer sends to a run while it works, such as what the user typed meanwhile and
  * asked to have read at once. A model-backed agent reads them once the step in progress ends,
@@ -66,8 +68,20 @@ export interface InboxReader {
 	onMessage(listener: () => void): () => void;
 }
 
-export function readerOf(inbox: Inbox): InboxReader {
-	const state = stateOf(inbox);
+/**
+ * How a run reads `inbox`, which comes untyped from a consumer's options.
+ *
+ * @throws {UnrecoverableError} for anything that is not an `Inbox` of this package, such as a
+ * plain object, or one made by another copy of the package.
+ */
+export function readerOf(inbox: unknown): InboxReader {
+	const state =
+		typeof inbox === 'object' && inbox !== null ? states.get(inbox as Inbox) : undefined;
+	if (!state) {
+		throw new UnrecoverableError('The run was given an inbox that is not an Inbox', {
+			cause: 'RunOptions.inbox, when given, is an Inbox this package made.',
+		});
+	}
 	return {
 		take: () => state.waiting.splice(0),
 		giveBack: messages => {
