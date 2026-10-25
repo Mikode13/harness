@@ -1,5 +1,6 @@
 import type { Tokens } from '#src/shared/domain/tokens';
 import type { Approver } from './approval.ts';
+import type { Inbox } from './inbox.ts';
 import type { Asker } from './question.ts';
 
 /**
@@ -28,9 +29,9 @@ export type Callback = (item: ProgressEvent) => void;
 
 /**
  * What a run needs besides its prompt. InstructedAgent passes it on whole. OrchestratorAgent
- * copies its own enumerable fields and replaces only `onProgress` per role; RetryingAgent does
- * the same for a run with `ask`, replacing only `ask`. A field must therefore be an own
- * enumerable one to reach every agent.
+ * copies its own enumerable fields, replaces `onProgress` per role and drops `inbox`;
+ * RetryingAgent does the same for a run with `ask`, replacing only `ask`. A field must therefore
+ * be an own enumerable one to reach every agent.
  */
 export interface RunOptions {
 	/**
@@ -54,6 +55,13 @@ export interface RunOptions {
 	 * its answer.
 	 */
 	ask?: Asker | undefined;
+	/**
+	 * Messages sent to the run while it works. A model-backed agent reads them once the step in
+	 * progress ends, as a message from the user, and wakes for them while it waits for agents in
+	 * the background. The Agent SDK engines, the orchestrators and the workflows ignore it, so
+	 * `Inbox.close` returns everything sent to them.
+	 */
+	inbox?: Inbox | undefined;
 }
 
 /** The `onProgress` of a run that gave none. */

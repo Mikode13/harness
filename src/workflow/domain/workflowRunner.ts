@@ -293,7 +293,9 @@ export class WorkflowRunner<Input, Result> implements Workflow<Input, Result> {
 		options: RunOptions,
 	): Promise<AgentResponse> {
 		try {
-			return await agent.run(prompt, options);
+			// No stage reads the inbox, as no role of an orchestrator does: what was sent stays for
+			// the next run.
+			return await agent.run(prompt, { ...options, inbox: undefined });
 		} catch (error) {
 			// Whatever the agent threw once the run was cancelled, the run ends as cancelled.
 			options.signal.throwIfAborted();

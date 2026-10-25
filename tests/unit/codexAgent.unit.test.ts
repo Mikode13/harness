@@ -3,6 +3,7 @@ import type { Thread, ThreadEvent, ThreadItem, Usage } from '@openai/codex-sdk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CodexAgent } from '../../src/engines/codex/infrastructure/model/codexAgent.ts';
 import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
+import { RunInProgressError } from '../../src/agent/domain/oneRunAtATime.ts';
 import {
 	InvalidAgentConfigError,
 	RecoverableError,
@@ -91,6 +92,31 @@ describe('CodexAgent', () => {
 		expect(runStreamed).toHaveBeenNthCalledWith(2, 'second prompt', { signal });
 		expect(firstCallback).toHaveBeenCalledWith({ type: 'agentMessage', message: 'first' });
 		expect(secondCallback).toHaveBeenCalledWith({ type: 'agentMessage', message: 'first' });
+	});
+
+	it('rejects a run while another works on its thread, without sending it', async () => {
+		const { runStreamed } = createSdk();
+		let startTurn: (turn: ReturnType<typeof streamedTurn>) => void = () => undefined;
+		runStreamed.mockImplementationOnce(
+			() =>
+				new Promise(resolve => {
+					startTurn = resolve;
+				}),
+		);
+		const agent = new CodexAgent({ model: 'gpt-5.6-luna', logger: createLogger() });
+		const signal = new AbortController().signal;
+
+		const running = agent.run('first prompt', { signal });
+		await expect(agent.run('second prompt', { signal })).rejects.toBeInstanceOf(RunInProgressError);
+
+		expect(runStreamed).toHaveBeenCalledOnce();
+		startTurn(
+			streamedTurn([
+				completed({ id: 'message-1', text: 'first', type: 'agent_message' }),
+				{ type: 'turn.completed', usage: usage() },
+			]),
+		);
+		await expect(running).resolves.toMatchObject({ response: 'first' });
 	});
 
 	it('keeps command execution restrictions enabled by default', () => {

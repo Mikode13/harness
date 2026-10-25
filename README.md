@@ -446,6 +446,34 @@ it to correct. An asker that throws, or does not answer each question with some 
 ends the run with an `UnrecoverableError`. The Agent SDK engines ignore `ask`, and
 `createLLMOrchestrator` passes it to every role.
 
+### One run at a time, and what the user sends meanwhile
+
+An agent continues one conversation, so it takes one run at a time: a `run()` that starts
+while another run on the same agent works rejects with `RunInProgressError`, an
+`UnrecoverableError`, and changes nothing. Queue what the user sends meanwhile, and run it
+once the run in progress ends. For one chat, keep one agent; for another chat, create another.
+
+A message the user wants read at once goes to the run in progress through an `Inbox`:
+
+```ts
+import { Inbox } from '@mikode13/harness';
+
+const inbox = new Inbox();
+const running = agent.run('Add the export button', { signal, inbox });
+// Later, while it works:
+inbox.send('Make it a dropdown too');
+await running;
+// What the run did not keep, such as a message sent after its final answer, is the next turn's.
+const unread = inbox.close();
+```
+
+`createLLMAgent` reads what was sent once the step in progress ends, without cutting a model
+call or a tool, as a message from the user. It also reads it while it waits for agents working
+in the background, so the model can reconsider at once. The Agent SDK engines, the
+orchestrators and the workflows never read it, so `close()` returns everything sent to them. Neither does a
+run's last step, which has no step left to answer it. A run that fails before it is kept gives
+back what it read: a retried attempt reads it again, or `close()` returns it.
+
 ### Agents that change files
 
 `createFileTools` gives an agent the file tools of its provider, over the folders you

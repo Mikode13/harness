@@ -2610,3 +2610,35 @@ tags: #mikode-harness #agent-loops #tool-use
 - A run that ends waits for its agents to stop: an agent that ignores its cancellation keeps the run from ending.
 - An agent's answer reaches the model as a `user` message. Both APIs accept it after the tool results; Claude joins it to their user turn.
 - Saving a run's conversation (#111, #136) must keep each agent's conversation too, tied to its call; a run with agents still working is no safe point to save.
+
+## An agent takes one run at a time, and reads what the user sends meanwhile
+
+tags: #mikode-harness #agent-loops
+
+**Decision:** an agent instance takes one run at a time, and a model-backed run reads what the consumer sends to it while it works. The rules:
+
+- **A second run is rejected.** `LLMAgent`, both Agent SDK engines and `OrchestratorAgent` reject a `run()` that starts while another works on them with `RunInProgressError`, an `UnrecoverableError`, before it sends anything. The orchestrator checks before any role starts, so a second run never stops halfway.
+- **The queue is the consumer's.** What the user sends while a run works waits for that run to end and becomes the next turn. The NestJS API (#111) keeps that queue, and every consumer goes through it, the CLI's single-shot mode included.
+- **A message the user wants read at once goes through an `Inbox`,** passed in `RunOptions.inbox`, as the TUI would with Ctrl+Enter. `send` returns false once the inbox is closed, and `close` returns every message the run did not keep, which the API queues as the next turn.
+- **It is read once the step in progress ends.** Neither a model call nor a tool is cut. The messages go to the model after that step's tool results and agents' answers, in a `user` message that says the user sent them while the agent worked. An answer given before the model read one is a step, not the end of the run.
+- **It wakes a run that waits for its agents,** and the model reconsiders with it while they keep working.
+- **What the run does not keep stays the next run's.** The last step reads nothing, since no step is left to answer it. A run that ends before it is kept gives back what it read, so a retried attempt reads it again, or `close` returns it.
+- **Only `LLMAgent` reads it.** The Agent SDK engines ignore it, the orchestrator passes it to no role, and a workflow to no stage.
+
+**Context:** #28 covers several runs on one project. A consumer that keeps one agent per chat, such as a TUI or the API holding one per session, gets a second message while the first run works: the user types another in the same chat, or writes from the phone while a run the CLI started works. Before this, both runs started from the same turn of the conversation, and the one that finished last silently dropped the other. On 2026-10-24 the user noted that two messages never arrive truly at once: a second one arrives while a run works, so it is queued, or read at once when the user asks. The user decided: the queue in the API, a second `run()` rejected, an inbox passed to `run()`, read after the step in progress, waking a wait, on `LLMAgent` only.
+
+**Alternatives considered:**
+
+- **Queueing in the harness,** with a second `run()` waiting for the first. Every consumer would have it for free, but the user put the queue in the API, which every consumer goes through, so the harness rejects instead.
+- **Branches made explicit,** two runs working at once as branches of the conversation, the consumer choosing one. The most complex, and someone must merge or choose them.
+- **A method on the agent,** such as `agent.send(text)`. Simpler, but tied to the instance, not to one run. The user chose the inbox passed to `run()`, which belongs to that run and shows in the call.
+- **Cutting the model call in progress** and sending it again with the message. Faster to react, but it pays for the call it drops and must handle a half answer. The user chose to wait for the step to end.
+- **Reading the inbox in the orchestrator,** in the role at work or always in the executor, or in a workflow's stage at work. Left out: which role or stage should read it is a decision of its own.
+- **Leaving concurrent runs as they were.** A turn is lost without a word.
+
+**Consequences:**
+
+- It ships as a `feat`: the user decided on 2026-10-25 that rejecting a second concurrent `run()` is not breaking, since two runs at once on one instance already lost a turn without a word.
+- A consumer must not run one agent instance twice at once. A factory given to `agentAsTool` that returns the same agent for every call now fails the second delegation that overlaps another, where before both continued one conversation.
+- The orchestrators never read the inbox, so injecting into the CLI's orchestrator needs a decision on the role that reads it.
+- Whether a model takes a message read mid-run as the user's latest word, and reconsiders, is for the live round.
