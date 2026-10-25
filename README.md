@@ -792,15 +792,18 @@ folder at once. Only one run at a time writes there. For runs that write side by
 give each its own git worktree: a folder of its own, with a history of its own.
 
 ```ts
-import { createWorktree } from '@mikode13/harness';
+import { createFileTools, createWorktree, type WorkspaceOptions } from '@mikode13/harness';
 
 const { path } = await createWorktree({
 	repository: process.cwd(),
 	branch: 'feat/export-button',
 	from: 'main',
 });
+const workspace: WorkspaceOptions = { roots: [{ path, access: 'write' }] };
 const agent = createLLMAgent('openai', {
-	workspace: { roots: [{ path, access: 'write' }] },
+	systemPrompt: 'You build the export button, with a test for it.',
+	tools: await createFileTools('openai', workspace),
+	workspace,
 });
 ```
 
