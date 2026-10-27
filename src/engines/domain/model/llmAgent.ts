@@ -252,6 +252,7 @@ export class LLMAgent implements Agent {
 	private readonly history: HistoryReader | undefined;
 	private readonly summarizer: LLMClient | undefined;
 	private readonly onTranscript: TranscriptCallback | undefined;
+	private readonly writeRoots: readonly string[] | undefined;
 	// The latest move through the history this conversation has followed.
 	private seenRevision = 0;
 	// What this conversation has seen of each file, so an edit starts from a version it read.
@@ -270,6 +271,7 @@ export class LLMAgent implements Agent {
 		history,
 		summarizer,
 		onTranscript,
+		writeRoots,
 	}: {
 		llmClient: LLMClient;
 		messages?: Message[];
@@ -293,6 +295,11 @@ export class LLMAgent implements Agent {
 		summarizer?: LLMClient;
 		/** Receives what the model saw in each run, once the run ended. */
 		onTranscript?: TranscriptCallback;
+		/**
+		 * The `write` roots of the agent's workspace: an agent it delegates to writes only within
+		 * them. Empty when it only reads; without it, it sets no limit of its own.
+		 */
+		writeRoots?: readonly string[];
 	}) {
 		if (!Number.isInteger(maxSteps) || maxSteps < 1) {
 			throw new InvalidAgentConfigError(
@@ -308,6 +315,7 @@ export class LLMAgent implements Agent {
 		this.history = history;
 		this.summarizer = summarizer;
 		this.onTranscript = onTranscript;
+		this.writeRoots = writeRoots;
 		this.tools = new Map(tools.map(tool => [tool.name, tool]));
 		if (this.tools.size !== tools.length) {
 			// The model calls tools by name, so a second one with the same name could never run.
@@ -989,6 +997,7 @@ export class LLMAgent implements Agent {
 		seen: Seen,
 	): Promise<AgentResponse> {
 		const { signal, onProgress: callback = ignoreProgress } = options;
+		const delegation = delegationOf(options);
 		// A tool narrates through this without ever failing: a failing callback would reach
 		// only the tool, which turns any failure into a result for the model. The run ends on
 		// it once that tool returns.
@@ -1219,7 +1228,9 @@ export class LLMAgent implements Agent {
 							reads,
 							onProgress,
 							spend,
-							depth: delegationOf(options)?.depth ?? 0,
+							depth: delegation?.depth ?? 0,
+							...(delegation?.writeCeiling ? { writeCeiling: delegation.writeCeiling } : {}),
+							...(this.writeRoots ? { agentWriteRoots: this.writeRoots } : {}),
 							...(options.approve ? { approve: options.approve } : {}),
 							...(options.ask ? { ask: options.ask } : {}),
 						},

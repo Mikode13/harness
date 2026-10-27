@@ -158,6 +158,9 @@ export type RoleSteps = Partial<Record<OrchestratorRole, number>>;
 /** A number of tokens per role of `createLLMOrchestrator`; a role left out keeps its default. */
 export type RoleTokens = Partial<Record<OrchestratorRole, number>>;
 
+/** The consumer's agents, from `agentAsTool`, that each role of `createLLMOrchestrator` may call. */
+export type RoleAgents = Partial<Record<OrchestratorRole, DelegationTool[]>>;
+
 // The same three roles a command can be given to.
 type OrchestratorRole = CommandRole;
 
@@ -255,6 +258,12 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	 * root is in when the user asks. See `createFileTools`.
 	 */
 	removeWorktree?: boolean;
+	/**
+	 * The consumer's agents, from `agentAsTool`, that each role may hand a task to, beside its own
+	 * tools: the planner and the reviewer keep their explorers. An agent never writes more than
+	 * the role that calls it, so only the executor's may write, within the `write` roots.
+	 */
+	agents?: RoleAgents;
 }
 
 const defaultLLMAgentModels = {
@@ -383,6 +392,7 @@ function buildLLMAgent(
 		autoApprove,
 		logger,
 		onTranscript,
+		writeRoots,
 	}: {
 		model?: AgentModel;
 		reasoningEffort?: ReasoningEffort;
@@ -395,6 +405,8 @@ function buildLLMAgent(
 		autoApprove?: boolean;
 		logger: ILogger;
 		onTranscript?: TranscriptCallback | undefined;
+		/** See `LLMAgent`: where an agent it delegates to may write. */
+		writeRoots?: readonly string[];
 	},
 ): Agent {
 	const llmClient = llmClientFor(provider, {
@@ -415,6 +427,7 @@ function buildLLMAgent(
 			...(summarizer ? { summarizer } : {}),
 			...(maxSteps === undefined ? {} : { maxSteps }),
 			...(onTranscript ? { onTranscript } : {}),
+			...(writeRoots ? { writeRoots } : {}),
 		}),
 		logger,
 		noteFailures: false,
@@ -471,7 +484,13 @@ export function createLLMAgent(
 		autoApprove,
 		logger,
 		onTranscript,
+		// An agent it delegates to writes only where its workspace lets it.
+		...(workspace ? { writeRoots: writeRootsOf(workspace.roots) } : {}),
 	});
+}
+
+function writeRootsOf(roots: readonly WorkspaceRoot[]): string[] {
+	return roots.filter(({ access }) => access === 'write').map(({ path }) => path);
 }
 
 /**
@@ -562,6 +581,36 @@ async function removeWorktreeToolFor({
 		);
 	});
 	return createRemoveWorktreeTool({ base, roots, stateDirectory });
+}
+
+/**
+ * Each role's agents from `agentAsTool`, as the harness's tools.
+ *
+ * @throws {InvalidAgentConfigError} for a role that does not exist, or a role's agents that are
+ * not a list.
+ */
+function roleAgents(agents: unknown): Record<OrchestratorRole, AgentTool[]> {
+	// Untyped input, such as the CLI's configuration file, can hold anything here.
+	if (typeof agents !== 'object' || agents === null || Array.isArray(agents)) {
+		throw new InvalidAgentConfigError(
+			'agents must be an object of agentAsTool tools per role, such as { executor: [committer] }',
+		);
+	}
+	const byRole: Record<OrchestratorRole, AgentTool[]> = { planner: [], executor: [], reviewer: [] };
+	for (const [role, tools] of Object.entries(agents)) {
+		if (!(role in byRole)) {
+			throw new InvalidAgentConfigError(
+				`agents names "${role}", which is not a role; expected one of: ${Object.keys(byRole).join(', ')}`,
+			);
+		}
+		if (tools === undefined) continue;
+		if (!Array.isArray(tools)) {
+			throw new InvalidAgentConfigError(`agents.${role} must be a list of agentAsTool tools`);
+		}
+		// A delegation tool is a harness tool under its public name.
+		byRole[role as OrchestratorRole] = tools as AgentTool[];
+	}
+	return byRole;
 }
 
 /** What an explorer finds and reads with: no edits, no changes, no commands. */
@@ -665,8 +714,10 @@ export async function createLLMOrchestrator({
 	logger = new Logger(),
 	onTranscript,
 	removeWorktree = false,
+	agents = {},
 }: CreateLLMOrchestratorOptions = {}): Promise<Agent> {
 	const roles = orchestratorRolesFor(provider);
+	const agentsOf = roleAgents(agents);
 	const steps = perRole('maxSteps', maxSteps, defaultRoleSteps, {
 		unit: 'steps',
 		example: '{ "executor": 120 }',
@@ -711,10 +762,15 @@ export async function createLLMOrchestrator({
 			model,
 			reasoningEffort,
 			systemPrompt,
-			tools: await readingTools(opened, role, commands, explorer(provider)),
+			tools: [
+				...(await readingTools(opened, role, commands, explorer(provider))),
+				...agentsOf[role],
+			],
 			maxSteps: steps[role],
 			compactAt: compaction[role],
 			onTranscript: transcriptsOf(role),
+			// It only reads, so the agents it calls only read too.
+			writeRoots: [],
 			...shared,
 		});
 	const { executor } = roles;
@@ -742,11 +798,12 @@ export async function createLLMOrchestrator({
 				systemPrompts.executor,
 				executorRuns ? executorInstructions : executorInstructionsWithoutCommands,
 			),
-			tools: executorToolset,
+			tools: [...executorToolset, ...agentsOf.executor],
 			maxSteps: steps.executor,
 			compactAt: compaction.executor,
 			autoApprove,
 			onTranscript: transcriptsOf('executor'),
+			writeRoots: writeRootsOf(workspace.roots),
 			...shared,
 		}),
 		reviewerAgent: await reader(

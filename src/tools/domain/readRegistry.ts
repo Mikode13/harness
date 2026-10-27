@@ -97,4 +97,15 @@ export interface ToolCallContext {
 	readonly ask?: Asker;
 	/** How many delegations deep the agent that made the call runs: 0 for the top-level one. */
 	readonly depth: number;
+	/**
+	 * The folders the call may write in, as real paths, set by the agents that delegated to the
+	 * one that made it: empty when it may write nowhere, absent when none set a limit.
+	 */
+	readonly writeCeiling?: readonly string[];
+	/**
+	 * The `write` roots of the workspace of the agent that made the call, as it was given them:
+	 * an agent the call starts writes only within them. Empty when it only reads, absent when it
+	 * has no workspace.
+	 */
+	readonly agentWriteRoots?: readonly string[];
 }

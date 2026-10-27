@@ -7,6 +7,7 @@ import { FolderClaims } from '#src/recovery/infrastructure/folderClaims';
 import type { WorkspaceRoot } from '../domain/accessPolicy.ts';
 import type { PreparingTool } from '../domain/preparedCall.ts';
 import { definePreparingTool } from './defineTool.ts';
+import { ceilingRefusal } from './writeCeiling.ts';
 import { git, listWorktrees } from './worktrees.ts';
 
 function within(path: string, folder: string): boolean {
@@ -171,11 +172,15 @@ export function createRemoveWorktreeTool({
 				.describe('The folder of the worktree, absolute or relative to the first root.'),
 		}),
 		summarize: ({ path }) => path,
-		prepare: async ({ path }, signal) => {
+		prepare: async ({ path }, signal, { writeCeiling }) => {
 			const asked = resolve(base, path);
 			const target = await realpath(asked).catch(() => {
 				throw new Error(`There is no folder at ${asked}.`);
 			});
+			// Removing it writes there, which an agent another agent started may do only where that
+			// agent may.
+			const refusal = ceilingRefusal([target], writeCeiling);
+			if (refusal !== undefined) throw new Error(refusal);
 			const worktree = await removableWorktree(target, { base, roots }, signal);
 			const { removal, fingerprint } = await inspect(target, worktree.branch, signal);
 			return {

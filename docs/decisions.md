@@ -2737,3 +2737,34 @@ tags: #mikode-harness #api-design
 - **A warning in the log.** Nothing breaks, but the run still returns a pretended tool call as its answer.
 
 **Consequences:** it ships as a `feat`, since nobody uses the harness yet. A tool list built empty by mistake is refused too.
+
+## A delegated agent never writes more than the agent that called it, and each orchestrator role takes the consumer's agents
+
+tags: #mikode-harness #agent-loops #tool-use #api-design #security
+
+**Decision:**
+
+- **Each role of `createLLMOrchestrator` takes the consumer's agents,** from `agentAsTool`, through `agents: { planner?, executor?, reviewer? }`, beside its own tools. The planner and the reviewer keep their explorers: a consumer adds agents, and cannot remove them.
+- **A delegated agent never writes more than the agent that called it.** The limit comes from the calling agent's `workspace`: only within its `write` roots, and nowhere when it has none, as for the planner and the reviewer; a calling agent with no workspace, such as a coordinator that only hands out tasks, sets no limit of its own. A limit passes down: each agent's is the narrower of its caller's and its caller's `write` roots, as real paths.
+- **Checked when a call is prepared,** before anyone is asked: an edit, a command or `removeWorktree` from a set of tools that may write outside the limit is refused, and the model is told why. A command counts as a write, since what it changes is recorded in the history; the check is per set of tools, as the rule that a run's sets of tools write only where the first may.
+- **Depth counts from the role,** which is level 0: executor → specialist → committer is 2 levels, within the default `maxDepth`.
+
+**Context:** #138. Its first implementation (#141) gave `createLLMAgent` agents as tools; the criterion of a planner delegating to an explorer and a coding specialist remained, inside the orchestrator, whose roles took no agents of the consumer. On 2026-10-27 the user chose to reuse permissions rather than classify agents: a reviewer that cannot write should not have an agent that writes. A committer after the reviewer's approval, the case that seemed to need one, belongs to #140, whose undo policy its commits must follow. The user preferred deducing the limit from the workspace over a `role` field, since the workspace already declares what an agent may write. A workflow is not an agent and never delegates: its stages' agents do, so the same rule holds there.
+
+**Alternatives considered:**
+
+- **Only the executor takes agents.** Simpler, but the planner could not consult a specialist.
+- **Any role takes any agent.** What the issue's criterion literally asks, but an agent that writes, called by the planner or the reviewer, breaks the rule that only the executor changes files.
+- **Read-only roles take only agents that do not write.** It keeps that rule, but the harness would have to tell what an agent does, and an agent declares no such thing.
+- **A `role` field on an agent,** whose `orchestrator` value skips the limit. Explicit, but it duplicates what the workspace says and can contradict it.
+- **A general limit, an agent with no workspace included.** It refuses a coordinator with no tools that hands a task to a coding specialist, which works today.
+- **A check per path instead of per set of tools.** A specialist built over a broader workspace could still write inside the limit, but a command's paths are known only after it ran.
+- **Counting the orchestrator as a level of depth.** It measures how deep a chain goes, but `maxDepth` would mean different things in and out of the orchestrator.
+
+**Consequences:**
+
+- An agent that only reads and delegated to one that writes now sees its writes refused. It ships as a `feat`, since nobody uses the harness yet.
+- A specialist whose tools may write beyond the caller's `write` roots cannot write at all under it, even inside them: give it a workspace within the caller's.
+- A specialist under the planner or the reviewer cannot run a command, even one that only reads, such as the tests.
+- A limit is compared as real paths: two spellings of one folder are one folder.
+- The shared budget of the issue's criteria is #137's.

@@ -65,6 +65,7 @@ import {
 	type OpenAIModel,
 	type OpenAIReasoningEffort,
 } from '../../src/llm/infrastructure/openAILLMClient.ts';
+import { agentAsTool } from '../../src/tools/infrastructure/agentAsTool.ts';
 import { defineTool } from '../../src/tools/infrastructure/defineTool.ts';
 import type { FileTool, WorkspaceOptions } from '../../src/tools/infrastructure/fileTools.ts';
 import { RunContext, runContextOf } from '../../src/agent/domain/runContext.ts';
@@ -818,6 +819,56 @@ describe('createLLMOrchestrator', () => {
 			'apply_patch',
 		]);
 		expect(declared(requestsOf(claudeCreate)[0])).toEqual(reading);
+	});
+
+	it("gives each role the consumer's agents beside its own tools", async () => {
+		const openAICreate = openAIReplying('plan');
+		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
+		const agent = (name: string) =>
+			agentAsTool({
+				name,
+				description: `The ${name}`,
+				createAgent: () => {
+					throw new Error('never called');
+				},
+			});
+
+		await (
+			await createLLMOrchestrator({
+				workspace,
+				agents: { planner: [agent('specialist')], executor: [agent('committer')] },
+				logger: createLogger(),
+			})
+		).run('ship it', { signal });
+
+		const reading = ['listFiles', 'searchText', 'readFile', 'readFiles', 'showChanges', 'explore'];
+		expect(declared(requestsOf(openAICreate)[0])).toEqual([...reading, 'specialist']);
+		expect(declared(requestsOf(openAICreate)[1])).toEqual([
+			'listFiles',
+			'searchText',
+			'readFile',
+			'readFiles',
+			'apply_patch',
+			'committer',
+		]);
+		expect(declared(requestsOf(claudeCreate)[0])).toEqual(reading);
+	});
+
+	it('refuses agents for a role that does not exist, or not given as a list', async () => {
+		const misnamed = createLLMOrchestrator({
+			workspace,
+			agents: { tester: [] } as never,
+			logger: createLogger(),
+		});
+		await expect(misnamed).rejects.toThrow(InvalidAgentConfigError);
+		await expect(misnamed).rejects.toThrow('"tester", which is not a role');
+		await expect(
+			createLLMOrchestrator({
+				workspace,
+				agents: { executor: {} } as never,
+				logger: createLogger(),
+			}),
+		).rejects.toThrow('agents.executor must be a list');
 	});
 
 	it('gives only the executor the configured commands', async () => {

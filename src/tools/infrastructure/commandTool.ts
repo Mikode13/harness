@@ -102,10 +102,13 @@ export async function createCommandTool({
 			// use a tool outside LLMAgent. This description never uses the resolved cwd.
 			return definition ? visibleCommand(definition, values) : name;
 		},
-		prepare: async ({ command: { name, ...values } }, signal, { run }) => {
+		prepare: async ({ command: { name, ...values } }, signal, call) => {
+			const { run } = call;
 			const command = resolved.get(name);
 			// The schema allows only the configured names.
 			if (!command) throw new Error(`There is no command named "${name}"`);
+			// A command can change anything in the write roots.
+			await writes.checkCeiling(call);
 			const paramValues: Record<string, ParameterValue> = {};
 			for (const parameter of parametersOf(command.definition)) {
 				const value =

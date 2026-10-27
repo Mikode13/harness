@@ -156,6 +156,7 @@ export async function openWorkspace(
 			policy,
 			store,
 			...(fileFormatter ? { formatter: fileFormatter } : {}),
+			writeRoots: roots.filter(({ access }) => access === 'write').map(({ path }) => resolve(path)),
 		}),
 		writable: roots.some(({ access }) => access === 'write'),
 		base: root,

@@ -71,6 +71,7 @@ export async function prepareTrackedEdit(
 	call: ToolCallContext,
 ): Promise<PreparedCall> {
 	const { run, reads } = call;
+	await writes.checkCeiling(call);
 	const editor = writes.editorFor(run);
 	const { path } = request;
 
