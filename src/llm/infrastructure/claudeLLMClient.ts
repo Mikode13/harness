@@ -447,6 +447,13 @@ export class ClaudeLLMClient implements LLMClient {
 		// Compacting now is compacting at the least threshold Anthropic takes, which a context
 		// too large for the model has long passed.
 		const trigger = compactAt === 'now' ? minCompactAt : compactAt;
+		// The latest compaction carries everything before it, which Anthropic would only ignore.
+		const messages = sentContext(context, claudeSource);
+		// A compaction sent back needs the beta as much as one asked for, even with compaction off,
+		// as after a context that no longer fit was compacted once.
+		const first = messages[0]?.content[0];
+		const compacted =
+			trigger !== undefined || (first?.type === 'compaction' && first.source === claudeSource);
 		let response: AnthropicMessage;
 		let stream: BetaMessageStream | undefined;
 		// What each compaction streamed of its summary, by block index, its missing parts left out.
@@ -462,11 +469,10 @@ export class ClaudeLLMClient implements LLMClient {
 					// keep nothing: this keeps the system prompt cached across it. The API rejects an
 					// empty text block, and an empty prompt has nothing to cache.
 					system:
-						trigger === undefined || this.systemPrompt === ''
+						!compacted || this.systemPrompt === ''
 							? this.systemPrompt
 							: [{ type: 'text', text: this.systemPrompt, cache_control: { type: 'ephemeral' } }],
-					// The latest compaction carries everything before it, which Anthropic would only ignore.
-					messages: sentContext(context, claudeSource).flatMap(toClaudeInput),
+					messages: messages.flatMap(toClaudeInput),
 					// Left out when empty, so a request without tools stays as it always was.
 					...(tools.length > 0 && { tools: tools.map(toClaudeTool) }),
 					thinking: { type: 'adaptive', display: 'summarized' },
@@ -474,9 +480,9 @@ export class ClaudeLLMClient implements LLMClient {
 					// Anthropic caches only on request. This marks the last block, so the next call
 					// reads everything before it from the cache instead of paying for it again.
 					cache_control: { type: 'ephemeral' },
+					...(compacted && { betas: [compactionBeta] }),
 					// Anthropic compacts inside the call that passes it, and answers with the compaction first.
 					...(trigger !== undefined && {
-						betas: [compactionBeta],
 						context_management: {
 							edits: [
 								{
