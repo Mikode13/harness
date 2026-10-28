@@ -2795,5 +2795,6 @@ tags: #mikode-harness #llm #cost #api-design
 **Consequences:**
 
 - A Claude agent now marks its system prompt for the cache on every call, since it compacts by default.
+- The Claude client sends the compaction beta whenever the context it sends starts with a compaction of its own, not only when it asks for one: a context compacted once with compaction off goes on under it. Found by the Codex review of #153.
 - Forcing a compaction at the least threshold is not yet measured live: whether a provider compacts a context already past its window, and whether OpenAI accepts a threshold of 50,000, are questions for the live round.
 - It ships as a `feat`, since nobody uses the harness yet.

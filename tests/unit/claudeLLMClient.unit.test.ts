@@ -11,6 +11,7 @@ import {
 } from '../../src/shared/domain/errors.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import { MaxContextError } from '../../src/llm/domain/errors.ts';
+import type { Message } from '../../src/llm/domain/message.ts';
 import { ClaudeLLMClient } from '../../src/llm/infrastructure/claudeLLMClient.ts';
 import { toolCall, toolMessage, toolResult, userMessage } from '../support/fakeLlmClient.ts';
 import { fakeClaudeSdk } from '../support/fakeClaudeSdk.ts';
@@ -937,6 +938,52 @@ describe('ClaudeLLMClient compaction', () => {
 		}).send({ context: [userMessage('prompt')], tools: [], compactAt: 150_000 }, signal);
 
 		expect(create.mock.calls[0]?.[0]).toMatchObject({ system: '', betas: ['compact-2026-01-12'] });
+	});
+
+	it('sends a compaction back under its beta without compactAt, and asks for no other', async () => {
+		const { create } = createSdk(response(), response());
+		const client = createClient();
+		const compactedBy = (source: string): Message => ({
+			role: 'assistant',
+			content: [
+				{
+					type: 'compaction',
+					source,
+					data: { type: 'compaction', content: '<summary>before</summary>' },
+				},
+				{ type: 'text', text: 'continued' },
+			],
+		});
+
+		// As after a context that no longer fit was compacted once, with compaction off.
+		await client.send(
+			{
+				context: [userMessage('long task'), compactedBy('claude'), userMessage('next')],
+				tools: [],
+			},
+			signal,
+		);
+		await client.send(
+			{
+				context: [userMessage('long task'), compactedBy('openai'), userMessage('next')],
+				tools: [],
+			},
+			signal,
+		);
+
+		const [replayed, foreign] = create.mock.calls.map(call => call[0] as Record<string, unknown>);
+		expect(replayed).toMatchObject({
+			betas: ['compact-2026-01-12'],
+			messages: [
+				{
+					role: 'assistant',
+					content: [{ type: 'compaction' }, { type: 'text', text: 'continued' }],
+				},
+				{ role: 'user', content: [{ type: 'text', text: 'next' }] },
+			],
+		});
+		expect(replayed).not.toHaveProperty('context_management');
+		expect(foreign).not.toHaveProperty('betas');
 	});
 
 	it('sends the stable request without compactAt', async () => {
