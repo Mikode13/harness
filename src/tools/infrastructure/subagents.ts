@@ -29,6 +29,7 @@ export function subagentOptions(
 		subagent,
 		task,
 		options,
+		writeCeiling,
 	}: {
 		tool: string;
 		name: string;
@@ -36,6 +37,8 @@ export function subagentOptions(
 		task: string;
 		/** What else it runs with, such as its signal. */
 		options: RunOptions;
+		/** Where it may write, as real paths; see `delegateCeiling`. */
+		writeCeiling: readonly string[] | undefined;
 	},
 ): RunOptions {
 	const onProgress = (event: ProgressEvent) => {
@@ -46,5 +49,6 @@ export function subagentOptions(
 		callId: call.callId,
 		subagent,
 		depth: call.depth + 1,
+		...(writeCeiling ? { writeCeiling } : {}),
 	});
 }

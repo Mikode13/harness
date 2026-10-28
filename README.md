@@ -558,7 +558,8 @@ has no stable shape; read it, but do not build on it. A callback that fails is l
 run stays as it ended.
 
 `createLLMOrchestrator()` takes the options of `createOrchestrator()` plus `workspace`,
-`maxSteps`, `compactAt`, `commands`, `formatter`, `summarizeUndone` and `onTranscript`, and returns a promise. Every role runs on the
+`maxSteps`, `compactAt`, `commands`, `formatter`, `summarizeUndone`, `onTranscript`,
+`removeWorktree` and `agents`, and returns a promise. Every role runs on the
 model APIs:
 
 - the planner and the reviewer read, with a `showChanges` tool that gives the current task's
@@ -572,7 +573,15 @@ model APIs:
   `subagent` events;
 - the executor gets its provider's file tools. `autoApprove` reaches only the executor;
 - each role gets the commands whose `roles` name it; a command names only the executor unless
-  it says otherwise.
+  it says otherwise;
+- each role gets the agents `agents` gives it, from `agentAsTool`, beside its own tools: the
+  planner and the reviewer keep their explorers. They only read, so their agents only read too;
+  the executor's may write within the `write` roots.
+
+```ts
+// Each from agentAsTool, as in "Agents that hand work to other agents" below.
+createLLMOrchestrator({ workspace, agents: { planner: [architect], executor: [commit] } });
+```
 
 Each role's run stops after a number of calls to the model: 80 for the executor and 65 for
 the planner and the reviewer by default. `maxSteps` changes it, as one number for every role
@@ -641,6 +650,11 @@ The agent works inside the caller's run:
 
 - what it writes is the same run of the history, so one undo reverts both; it keeps its own
   tools' access policy, and edits only what it read itself;
+- it never writes more than the agent that called it: only within the `write` roots of that
+  agent's `workspace`, and nowhere when that workspace only reads. A calling agent with no
+  `workspace`, such as a coordinator that only hands out tasks, sets no limit of its own. Its
+  tools that may write elsewhere, a command included, are refused before anyone is asked, and
+  the model is told why;
 - what it spends counts in the caller's `tokens`, a failed attempt included;
 - it asks and is approved through the run's `ask` and `approve`, which agents working at once
   may call before an earlier call has its answer; one person at one terminal needs them queued,

@@ -1126,4 +1126,76 @@ describe('agentAsTool over a workspace', () => {
 		expect(read('shared.txt')).toBe('original\n');
 		expect(read('x.txt')).toBe('x before\n');
 	});
+
+	it('never lets an agent write more than the agent that called it', async () => {
+		const store = await FileRecoveryStore.open({ root: repo, directory: join(parent, 'state') });
+		const writes = await writesOver(repo, store);
+		const childModel = new FakeLLMClient(
+			assistantResponse([toolCall('replace-1', 'replace', { path: 'shared.txt', content: 'b\n' })]),
+			textResponse('could not write'),
+		);
+		const tool = delegation({
+			createAgent: () => new LLMAgent({ llmClient: childModel, tools: [replaceTool(writes)] }),
+		});
+		const llmClient = new WaitingModel(
+			[assistantResponse([toolCall('call-1', 'commit', { task: 'Write shared' })])],
+			1,
+		);
+		// A caller whose workspace only reads, as the planner and the reviewer.
+		const reader = new LLMAgent({ llmClient, tools: [tool], writeRoots: [] });
+
+		await reader.run('work', { signal });
+
+		expect(read('shared.txt')).toBe('original\n');
+		expect(JSON.stringify(childModel.contexts[1])).toContain(
+			'the agent that handed you this task only reads',
+		);
+		expect(answersOf(llmClient)).toEqual([expect.stringContaining('could not write')]);
+	});
+
+	it('hands each agent the narrower of its caller’s limit and its caller’s write roots', async () => {
+		const seen: (readonly string[] | undefined)[] = [];
+		const capture: PreparingTool = {
+			name: 'capture',
+			description: 'Notes where it may write',
+			inputSchema: { type: 'object', properties: {}, required: [] },
+			prepare: (_input, _signal, call) => {
+				seen.push(call.writeCeiling);
+				return Promise.resolve({ risk: 'safe', run: () => Promise.resolve('noted') });
+			},
+		};
+		const capturing = () =>
+			new LLMAgent({
+				llmClient: new FakeLLMClient(
+					assistantResponse([toolCall('capture-1', 'capture')]),
+					textResponse('noted'),
+				),
+				tools: [capture],
+			});
+		// A middle agent that writes only in src, calling one that captures.
+		const middle = () =>
+			new LLMAgent({
+				llmClient: new WaitingModel(
+					[assistantResponse([toolCall('inner-1', 'inner', { task: 'Capture' })])],
+					1,
+				),
+				tools: [delegation({ name: 'inner', createAgent: capturing })],
+				writeRoots: [join(repo, 'src')],
+			});
+		const top = (writeRoots: readonly string[] | undefined, createAgent: () => LLMAgent) =>
+			new LLMAgent({
+				llmClient: new WaitingModel(
+					[assistantResponse([toolCall('call-1', 'commit', { task: 'Go' })])],
+					1,
+				),
+				tools: [delegation({ createAgent })],
+				...(writeRoots ? { writeRoots } : {}),
+			});
+
+		await top(undefined, capturing).run('no workspace', { signal });
+		await top([repo], capturing).run('a workspace', { signal });
+		await top([repo], middle).run('nested', { signal });
+
+		expect(seen).toEqual([undefined, [repo], [join(repo, 'src')]]);
+	});
 });
