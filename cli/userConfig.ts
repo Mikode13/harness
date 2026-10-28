@@ -9,8 +9,11 @@ export interface RepositoryConfig {
 	commands?: Commands;
 	/** The step limit of every role, or of each. */
 	maxSteps?: number | RoleSteps;
-	/** The input tokens at which the provider compacts every role's conversation, or each one's. */
-	compactAt?: number | RoleTokens;
+	/**
+	 * The tokens of context at which the provider compacts every role's, or each one's, or
+	 * `false` for never.
+	 */
+	compactAt?: number | false | RoleTokens;
 	/** What the executor's edits run on each file they write. */
 	formatter?: Formatter;
 }

@@ -704,29 +704,35 @@ describe('OpenAILLMClient compaction', () => {
 		vi.clearAllMocks();
 	});
 
-	const compactingClient = (compactAt: number) =>
+	const compactingClient = () =>
 		new OpenAILLMClient({
 			model: 'gpt-5.6-luna',
-			compactAt,
 			systemPrompt: 'Be brief.',
 			logger: { warn: vi.fn() },
 		});
 
-	it('asks OpenAI to compact at compactAt, and never without it', async () => {
-		const { create } = createSdk(response(), response());
+	it('asks OpenAI to compact at compactAt, now at a low threshold, and never without it', async () => {
+		const { create } = createSdk(response(), response(), response());
+		const client = compactingClient();
 
-		await compactingClient(200_000).send({ context: [userMessage('prompt')], tools: [] }, signal);
-		await createClient().send({ context: [userMessage('prompt')], tools: [] }, signal);
+		await client.send({ context: [userMessage('prompt')], tools: [], compactAt: 200_000 }, signal);
+		await client.send({ context: [userMessage('prompt')], tools: [], compactAt: 'now' }, signal);
+		await client.send({ context: [userMessage('prompt')], tools: [] }, signal);
 
 		expect(create.mock.calls[0]?.[0]).toMatchObject({
 			context_management: [{ type: 'compaction', compact_threshold: 200_000 }],
 		});
-		expect(create.mock.calls[1]?.[0]).not.toHaveProperty('context_management');
+		expect(create.mock.calls[1]?.[0]).toMatchObject({
+			context_management: [{ type: 'compaction', compact_threshold: 50_000 }],
+		});
+		expect(create.mock.calls[2]?.[0]).not.toHaveProperty('context_management');
 	});
 
-	it.each([0, -1, 1.5, Number.NaN])('rejects compactAt %s before building the SDK', compactAt => {
-		expect(() => compactingClient(compactAt)).toThrow(InvalidAgentConfigError);
-		expect(OpenAI).not.toHaveBeenCalled();
+	it.each([0, -1, 1.5, Number.NaN])('refuses compactAt %s', compactAt => {
+		createSdk();
+		expect(() => {
+			compactingClient().checkCompactAt(compactAt);
+		}).toThrow(InvalidAgentConfigError);
 	});
 
 	it('keeps the compaction OpenAI returns, and sends from it on, leaving out what it replaced', async () => {
@@ -739,10 +745,12 @@ describe('OpenAILLMClient compaction', () => {
 			response({ output: [compaction, message({ text: 'continued' })] }),
 			response(),
 		);
-		const client = compactingClient(64_000);
+		const client = compactingClient();
 		const context = [userMessage('long task')];
 
-		const answer = await client.send({ context, tools: [] }, signal);
+		const answer = await client.send({ context, tools: [], compactAt: 64_000 }, signal);
+		// OpenAI reports the call that compacted with its whole input.
+		expect(answer.compactedContextTokens).toBe(100);
 		expect(answer.message.content).toEqual([
 			{
 				type: 'compaction',

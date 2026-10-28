@@ -270,6 +270,21 @@ function toTokens(usage: Usage | undefined, logger: ILogger): Tokens | undefined
 }
 
 /**
+ * How many tokens of context the call compacted, when it did: what its compaction iteration read,
+ * since Anthropic bills a compaction as a call of its own over the context before it.
+ */
+function compactedContext(usage: Usage | undefined): { compactedContextTokens?: number } {
+	const compaction = usage?.iterations?.find(iteration => iteration.type === 'compaction');
+	if (!compaction) return {};
+	return {
+		compactedContextTokens:
+			compaction.input_tokens +
+			compaction.cache_read_input_tokens +
+			compaction.cache_creation_input_tokens,
+	};
+}
+
+/**
  * @param summaries each compaction's summary as it was streamed, by the index of its block. The
  * SDK joins a delta that carries none as the text "null", so the final message cannot tell.
  */
@@ -298,6 +313,7 @@ function toLLMResponse(
 			},
 			usage,
 			stopReason: toStopReason(response),
+			...compactedContext(response.usage),
 		};
 	} catch (error) {
 		// The call was billed whether the response failed or a logger did while mapping it, and
@@ -362,7 +378,6 @@ export class ClaudeLLMClient implements LLMClient {
 	private readonly client: Anthropic;
 	private readonly model: (typeof claudeModelIds)[ClaudeLLMModel];
 	private readonly reasoningEffort: ClaudeLLMReasoningEffort;
-	private readonly compactAt: number | undefined;
 	readonly systemPrompt: string;
 	readonly providerDataSource = claudeSource;
 	private readonly logger: ILogger;
@@ -372,14 +387,11 @@ export class ClaudeLLMClient implements LLMClient {
 	constructor({
 		model,
 		reasoningEffort,
-		compactAt,
 		systemPrompt,
 		logger,
 	}: {
 		model: string;
 		reasoningEffort?: string;
-		/** The input tokens at which Anthropic compacts the context on its side. Without it, never. */
-		compactAt?: number | undefined;
 		systemPrompt: string;
 		logger: ILogger;
 	}) {
@@ -394,12 +406,6 @@ export class ClaudeLLMClient implements LLMClient {
 				`"${effort}" is not a Claude API reasoning effort; expected one of: ${claudeLLMReasoningEfforts.join(', ')}`,
 			);
 		}
-		if (compactAt !== undefined && !(Number.isInteger(compactAt) && compactAt >= minCompactAt)) {
-			throw new InvalidAgentConfigError(
-				`compactAt must be a whole number of tokens of at least ${String(minCompactAt)} on Claude, not ${String(compactAt)}`,
-			);
-		}
-
 		try {
 			// The SDK's default retries stay on, as OpenAI's do. See "The provider SDKs keep their
 			// transport retries under RetryingAgent" in decisions.md.
@@ -414,7 +420,6 @@ export class ClaudeLLMClient implements LLMClient {
 
 		this.model = claudeModelIds[model];
 		this.reasoningEffort = effort;
-		this.compactAt = compactAt;
 		this.systemPrompt = systemPrompt;
 		this.logger = logger;
 	}
@@ -423,10 +428,25 @@ export class ClaudeLLMClient implements LLMClient {
 		return tool === 'textEditor';
 	}
 
+	checkCompactAt(compactAt: number): void {
+		if (!(Number.isInteger(compactAt) && compactAt >= minCompactAt)) {
+			throw new InvalidAgentConfigError(
+				`compactAt must be a whole number of tokens of at least ${String(minCompactAt)} on Claude, not ${String(compactAt)}`,
+			);
+		}
+	}
+
 	async send(
-		{ context, tools }: { context: Message[]; tools: ToolDefinition[] },
+		{
+			context,
+			tools,
+			compactAt,
+		}: { context: Message[]; tools: ToolDefinition[]; compactAt?: number | 'now' | undefined },
 		signal: AbortSignal,
 	): Promise<LLMResponse> {
+		// Compacting now is compacting at the least threshold Anthropic takes, which a context
+		// too large for the model has long passed.
+		const trigger = compactAt === 'now' ? minCompactAt : compactAt;
 		let response: AnthropicMessage;
 		let stream: BetaMessageStream | undefined;
 		// What each compaction streamed of its summary, by block index, its missing parts left out.
@@ -442,7 +462,7 @@ export class ClaudeLLMClient implements LLMClient {
 					// keep nothing: this keeps the system prompt cached across it. The API rejects an
 					// empty text block, and an empty prompt has nothing to cache.
 					system:
-						this.compactAt === undefined || this.systemPrompt === ''
+						trigger === undefined || this.systemPrompt === ''
 							? this.systemPrompt
 							: [{ type: 'text', text: this.systemPrompt, cache_control: { type: 'ephemeral' } }],
 					// The latest compaction carries everything before it, which Anthropic would only ignore.
@@ -455,13 +475,13 @@ export class ClaudeLLMClient implements LLMClient {
 					// reads everything before it from the cache instead of paying for it again.
 					cache_control: { type: 'ephemeral' },
 					// Anthropic compacts inside the call that passes it, and answers with the compaction first.
-					...(this.compactAt !== undefined && {
+					...(trigger !== undefined && {
 						betas: [compactionBeta],
 						context_management: {
 							edits: [
 								{
 									type: 'compact_20260112',
-									trigger: { type: 'input_tokens', value: this.compactAt },
+									trigger: { type: 'input_tokens', value: trigger },
 								},
 							],
 						},

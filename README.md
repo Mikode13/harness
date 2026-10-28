@@ -603,17 +603,23 @@ once, **Stop** ends it, and words of your own reach the model. A run stopped thi
 `ask` to ask, fails with `UnrecoverableError`, and is kept in the conversation with its changes,
 so your next prompt continues from it.
 
-No conversation is compacted unless you ask. `compactAt` is the number of input tokens at
-which the provider compacts it on its side, replacing the turns before that call with its own
-summary, which only its model reads back; the conversation keeps every original turn. The
-call that compacts can lose its cache, as it did on OpenAI, so set it well above what a task
-needs. Like
-`maxSteps`, it is one number for every role or per role, and `createLLMAgent` takes one. On
-Anthropic it must be at least 50,000:
+Each agent's context is compacted once it passes its model's threshold: 450,000 tokens for
+Claude Opus, Fable and Sonnet and GPT astra, sol and terra, and 125,000 for Claude Haiku and
+GPT luna. The provider compacts it on its side, inside the call that passes the threshold,
+replacing the turns before that call with its own summary, which only its model reads back; the
+conversation keeps every original turn. The call that compacts can lose its cache, as it did on
+OpenAI, so keep the threshold well above what a task needs. `compactAt` changes it: like
+`maxSteps`, one number for every role or per role, and `createLLMAgent` takes one; on Anthropic
+it must be at least 50,000. `false` turns compaction off:
 
 ```ts
 createLLMOrchestrator({ workspace, compactAt: { executor: 200_000 } });
 ```
+
+Either way, a context that no longer fits the model is compacted once and the call tried again;
+when it still does not fit, the run fails with `UnrecoverableError`. A `compaction` event, after
+the `step` of the call that compacted, says who compacted, why, and how many tokens of context
+it compacted.
 
 Without `workspace` it works on the current directory, read only. One run of the
 orchestrator is one run of the history, every round included.

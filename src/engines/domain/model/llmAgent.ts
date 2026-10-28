@@ -33,6 +33,7 @@ import {
 	treatErrors,
 } from '#src/shared/domain/providerFailure';
 import { Conversation } from '#src/llm/domain/conversation';
+import { MaxContextError } from '#src/llm/domain/errors';
 import type { LLMClient, LLMResponse } from '#src/llm/domain/llm';
 import type { Message, MessagePart, ToolCallPart, ToolResultPart } from '#src/llm/domain/message';
 import { asNative, nativeOf, type ToolDefinition } from '#src/llm/domain/tool';
@@ -75,6 +76,7 @@ import {
 	warnAt,
 } from './commandLoops.ts';
 import { BackgroundAgents, sentNote } from './backgroundAgents.ts';
+import { compactionOff, type Compactor } from './compactor.ts';
 import { measureContext } from './stepContext.ts';
 import {
 	askUserDefinition,
@@ -253,6 +255,7 @@ export class LLMAgent implements Agent {
 	private readonly summarizer: LLMClient | undefined;
 	private readonly onTranscript: TranscriptCallback | undefined;
 	private readonly writeRoots: readonly string[] | undefined;
+	private readonly compactor: Compactor;
 	// The latest move through the history this conversation has followed.
 	private seenRevision = 0;
 	// What this conversation has seen of each file, so an edit starts from a version it read.
@@ -272,6 +275,7 @@ export class LLMAgent implements Agent {
 		summarizer,
 		onTranscript,
 		writeRoots,
+		compactor = compactionOff,
 	}: {
 		llmClient: LLMClient;
 		messages?: Message[];
@@ -300,11 +304,19 @@ export class LLMAgent implements Agent {
 		 * them. Empty when it only reads; without it, it sets no limit of its own.
 		 */
 		writeRoots?: readonly string[];
+		/** How the context is compacted. Defaults to off: only a context that no longer fits is. */
+		compactor?: Compactor;
 	}) {
 		if (!Number.isInteger(maxSteps) || maxSteps < 1) {
 			throw new InvalidAgentConfigError(
 				`maxSteps must be a positive integer; got ${String(maxSteps)}`,
 			);
+		}
+		if (compactor.at !== undefined) {
+			if (!llmClient.checkCompactAt) {
+				throw new InvalidAgentConfigError('This model client cannot compact; leave compactAt out');
+			}
+			llmClient.checkCompactAt(compactor.at);
 		}
 
 		this.llmClient = llmClient;
@@ -316,6 +328,7 @@ export class LLMAgent implements Agent {
 		this.summarizer = summarizer;
 		this.onTranscript = onTranscript;
 		this.writeRoots = writeRoots;
+		this.compactor = compactor;
 		this.tools = new Map(tools.map(tool => [tool.name, tool]));
 		if (this.tools.size !== tools.length) {
 			// The model calls tools by name, so a second one with the same name could never run.
@@ -404,6 +417,18 @@ export class LLMAgent implements Agent {
 		);
 	}
 
+	private warnContextOutgrown(): void {
+		treatErrors(
+			() => {
+				this.logger?.warn(
+					'The context no longer fits the model; the next call compacts it and tries again',
+				);
+			},
+			classifyHostFailure,
+			'LLM agent logger failed',
+		);
+	}
+
 	private async llmCall(
 		runMessages: Message[],
 		after: number | undefined,
@@ -412,13 +437,20 @@ export class LLMAgent implements Agent {
 			step,
 			callback,
 			tools,
-		}: { signal: AbortSignal; step: number; callback: Callback; tools: ToolDefinition[] },
+			compactAt,
+		}: {
+			signal: AbortSignal;
+			step: number;
+			callback: Callback;
+			tools: ToolDefinition[];
+			compactAt: number | 'now' | undefined;
+		},
 	): Promise<{ response: LLMResponse; context: Message[] }> {
 		// Sent as a copy, so what the run records is what the agent built, whatever the client does.
 		const context = [...this.conversation.contextAfter(after), ...structuredClone(runMessages)];
 		let response: LLMResponse;
 		try {
-			response = await this.llmClient.send({ context, tools }, signal);
+			response = await this.llmClient.send({ context, tools, compactAt }, signal);
 		} catch (error) {
 			const failure = classifyProviderFailure(error, 'The LLM call failed');
 			// A client turns some answers into errors, such as a stop at the context window. The
@@ -1097,20 +1129,58 @@ export class LLMAgent implements Agent {
 				if (ended) runMessages.push(ended);
 				remember();
 			};
+			// Whether the context outgrew the model at the last call, so this one compacts it first.
+			let outgrown = false;
 			for (let step = 1; step <= this.maxSteps; step++) {
 				// An agent at work may have narrated through a callback that failed.
 				throwIfProgressFailed();
-				const { response, context: sent } = await this.llmCall(runMessages, after, {
-					signal,
-					step,
-					callback,
-					tools,
-				});
+				let called: Awaited<ReturnType<typeof this.llmCall>>;
+				try {
+					called = await this.llmCall(runMessages, after, {
+						signal,
+						step,
+						callback,
+						tools,
+						compactAt: outgrown ? 'now' : this.compactor.at,
+					});
+				} catch (error) {
+					// Compacted once and tried again, even with compaction off: a second time in a row,
+					// a client that cannot compact, or no step left to try ends the run.
+					if (
+						!(error instanceof MaxContextError) ||
+						outgrown ||
+						!this.llmClient.checkCompactAt ||
+						step === this.maxSteps
+					) {
+						throw error;
+					}
+					// Billed, and already narrated as a step.
+					tokens = addTokens(tokens, error.tokens);
+					unreported ||= error.usageUnreported;
+					this.warnContextOutgrown();
+					outgrown = true;
+					continue;
+				}
+				const { response, context: sent } = called;
 				tokens = addTokens(tokens, response.usage);
 				unreported ||= !response.usage;
 				// After the tokens are counted, so a throwing callback still reports them, and for an
 				// unusable answer too: the call was sent, and billed.
 				this.narrateStep(step, response.usage, { context: sent, tools }, callback);
+				if (response.message.content.some(part => part.type === 'compaction')) {
+					emit(
+						{
+							type: 'compaction',
+							by: this.compactor.by,
+							reason: outgrown ? 'maxContext' : 'threshold',
+							...(response.compactedContextTokens === undefined
+								? {}
+								: { contextTokens: response.compactedContextTokens }),
+						},
+						callback,
+					);
+				}
+				outgrown = false;
 				throwIfProgressFailed();
 				if (response.stopReason === 'truncated') {
 					// What it wrote before the output limit, kept with the run so the next run can
