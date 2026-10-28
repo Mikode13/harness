@@ -272,6 +272,44 @@ describe('LLMAgent with the recent compactor', () => {
 		expect(response.tokens?.inputTokens).toBe(50 + 150 + 160 + 1);
 	});
 
+	it("keeps in the run's transcript the messages a summary replaced, and the summary", async () => {
+		const transcripts: unknown[] = [];
+		const llmClient = new FakeLLMClient(
+			assistantResponse(answer('call-1', 'Madrid').content, { usage: usage(50) }),
+			assistantResponse(answer('call-2', 'Paris').content, { usage: usage(150) }),
+			textResponse('Madrid is sunny; Paris was asked.'),
+			textResponse('Both are sunny.'),
+		);
+
+		await new LLMAgent({
+			llmClient,
+			tools: [weather],
+			compactor: { by: 'harness', at: 100, keptSteps: 1 },
+			onTranscript: transcript => {
+				transcripts.push(transcript.content);
+			},
+		}).run('task', { signal });
+
+		expect(transcripts).toMatchObject([
+			{
+				messages: [
+					userMessage('task'),
+					answer('call-1', 'Madrid'),
+					weatherOf('call-1', 'Madrid'),
+					answer('call-2', 'Paris'),
+					weatherOf('call-2', 'Paris'),
+					{
+						role: 'user',
+						content: [{ type: 'contextSummary', summary: 'Madrid is sunny; Paris was asked.' }],
+					},
+					textResponse('Both are sunny.').message,
+				],
+			},
+		]);
+		// Without the copies of what it kept, already above it.
+		expect(JSON.stringify(transcripts)).not.toContain('"kept"');
+	});
+
 	it('goes on whole when the summary fails, and does not ask again in the same run', async () => {
 		const logger = { warn: vi.fn() };
 		const llmClient = new FakeLLMClient(

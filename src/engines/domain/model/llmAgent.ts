@@ -142,6 +142,21 @@ interface RunEffects {
 }
 
 /** What a run has shown the model, for its transcript. */
+/**
+ * `message` with each summary in it reduced to its text: what a summary kept is in the
+ * conversation before it already.
+ */
+function withoutKeptCopies(
+	message: Message,
+): Message | { role: Message['role']; content: unknown[] } {
+	return {
+		role: message.role,
+		content: message.content.map(part =>
+			part.type === 'contextSummary' ? { type: part.type, summary: part.summary } : part,
+		),
+	};
+}
+
 interface Seen {
 	messages: () => Message[];
 	tools: ToolDefinition[];
@@ -1141,7 +1156,7 @@ export class LLMAgent implements Agent {
 					description,
 					inputSchema,
 				})),
-				messages: seen.messages(),
+				messages: seen.messages().map(withoutKeptCopies),
 				...(outcome === 'completed' ? {} : { error: describeFailure(error) }),
 			});
 			await this.onTranscript({
@@ -1219,9 +1234,9 @@ export class LLMAgent implements Agent {
 		// The context's size as this run knows it, the agent's once the run is kept: a run that
 		// is not kept leaves the conversation, and so its size, as they were.
 		let contextTokens = this.contextTokens;
-		// What the model has seen so far, whichever turn the run ends up following.
-		seen.messages = () =>
-			compactedContext([...this.conversation.contextAfter(after), ...runMessages]);
+		// What the model has seen so far, whichever turn the run ends up following: every message,
+		// those a summary replaced too, for a person debugging the run.
+		seen.messages = () => [...this.conversation.contextAfter(after), ...runMessages];
 
 		try {
 			if (this.history) {
