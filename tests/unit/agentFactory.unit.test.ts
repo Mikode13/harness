@@ -862,6 +862,14 @@ describe('createLLMOrchestrator', () => {
 		});
 		await expect(misnamed).rejects.toThrow(InvalidAgentConfigError);
 		await expect(misnamed).rejects.toThrow('"tester", which is not a role');
+		// A name every object inherits is not a role either.
+		await expect(
+			createLLMOrchestrator({
+				workspace,
+				agents: { constructor: [] } as never,
+				logger: createLogger(),
+			}),
+		).rejects.toThrow('"constructor", which is not a role');
 		await expect(
 			createLLMOrchestrator({
 				workspace,

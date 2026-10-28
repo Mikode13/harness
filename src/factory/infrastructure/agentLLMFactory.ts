@@ -598,7 +598,7 @@ function roleAgents(agents: unknown): Record<OrchestratorRole, AgentTool[]> {
 	}
 	const byRole: Record<OrchestratorRole, AgentTool[]> = { planner: [], executor: [], reviewer: [] };
 	for (const [role, tools] of Object.entries(agents)) {
-		if (!(role in byRole)) {
+		if (!Object.hasOwn(byRole, role)) {
 			throw new InvalidAgentConfigError(
 				`agents names "${role}", which is not a role; expected one of: ${Object.keys(byRole).join(', ')}`,
 			);
