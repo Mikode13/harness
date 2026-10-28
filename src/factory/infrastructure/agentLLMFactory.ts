@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 import type { Agent } from '#src/agent/domain/agent';
 import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcript';
 import type { HistoryReader } from '#src/engines/domain/model/historyFollower';
-import { compactionOff, type Compactor } from '#src/engines/domain/model/compactor';
+import { type Compactor, recentKeptSteps } from '#src/engines/domain/model/compactor';
 import { LLMAgent } from '#src/engines/domain/model/llmAgent';
 import type { LLMClient } from '#src/llm/domain/llm';
 import {
@@ -144,6 +144,14 @@ export interface CreateLLMAgentOptions {
 	 */
 	compactAt?: number | false;
 	/**
+	 * Who compacts the context once it passes `compactAt`. `provider`, the default, has the
+	 * model's provider compact it on its side. `recent` has the agent's own model summarize it
+	 * before the next call, from its provider's cache, and keeps the run's prompt and the run's
+	 * last 10 answers, each with its tool results, word for word after the summary, without
+	 * their signed reasoning. Earlier runs are always summarized.
+	 */
+	compaction?: CompactionMode;
+	/**
 	 * Runs every tool call without asking, `destructive` ones included, for CI where no one can
 	 * answer. Without it, a `destructive` call goes to the run's `approve`, or is denied.
 	 */
@@ -156,6 +164,11 @@ export interface CreateLLMAgentOptions {
 	 */
 	onTranscript?: TranscriptCallback;
 }
+
+/** Who compacts an agent's context; see `CreateLLMAgentOptions.compaction`. */
+export type CompactionMode = 'provider' | 'recent';
+
+const compactionModes = ['provider', 'recent'] as const satisfies readonly CompactionMode[];
 
 /** A limit per role of `createLLMOrchestrator`; a role left out keeps its default. */
 export type RoleSteps = Partial<Record<OrchestratorRole, number>>;
@@ -238,6 +251,8 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	 * off for every role.
 	 */
 	compactAt?: number | false | RoleTokens;
+	/** Who compacts every agent's context, as `CreateLLMAgentOptions.compaction`. */
+	compaction?: CompactionMode;
 	/**
 	 * Commands the roles may run, such as the project's tests, through `runCommand`. Each goes to
 	 * the roles its `roles` names, the executor by default. See `createFileTools`. Each needs a
@@ -291,14 +306,30 @@ const compactionThresholds: Record<ClaudeLLMModel | OpenAIModel, number> = {
 };
 
 /**
- * The provider's compactor for an agent on `model`: at `compactAt`, at the model's threshold
- * without it, or off with `false`.
+ * The compactor `mode` names for an agent on `model`: at `compactAt`, at the model's threshold
+ * without it, or off with `false`, when only a context that no longer fits is compacted.
+ *
+ * @throws {InvalidAgentConfigError} for a mode that does not exist, from untyped input.
  */
-function compactorFor(model: AgentModel, compactAt: number | false | undefined): Compactor {
-	if (compactAt === false) return compactionOff;
+function compactorFor(
+	model: AgentModel,
+	compactAt: number | false | undefined,
+	mode: CompactionMode = 'provider',
+): Compactor {
+	// Checked whatever it is, as untyped input can hold anything here.
+	if (typeof mode !== 'string' || !isOneOf(compactionModes, mode)) {
+		throw new InvalidAgentConfigError(
+			`compaction must be one of: ${compactionModes.join(', ')}; got ${String(mode)}`,
+		);
+	}
 	// A model with no threshold was already refused by its client.
-	const at = compactAt ?? (compactionThresholds as Partial<Record<string, number>>)[model];
-	return { by: 'provider', at };
+	const at =
+		compactAt === false
+			? undefined
+			: (compactAt ?? (compactionThresholds as Partial<Record<string, number>>)[model]);
+	return mode === 'recent'
+		? { by: 'harness', at, keptSteps: recentKeptSteps }
+		: { by: 'provider', at };
 }
 
 function defaultModelOf(provider: AgentProvider): AgentModel {
@@ -426,6 +457,7 @@ function buildLLMAgent(
 		summarizer,
 		maxSteps,
 		compactAt,
+		compaction,
 		autoApprove,
 		logger,
 		onTranscript,
@@ -440,6 +472,7 @@ function buildLLMAgent(
 		maxSteps?: number;
 		/** See `CreateLLMAgentOptions.compactAt`. */
 		compactAt?: number | false | undefined;
+		compaction?: CompactionMode | undefined;
 		autoApprove?: boolean;
 		logger: ILogger;
 		onTranscript?: TranscriptCallback | undefined;
@@ -466,7 +499,7 @@ function buildLLMAgent(
 			...(maxSteps === undefined ? {} : { maxSteps }),
 			...(onTranscript ? { onTranscript } : {}),
 			...(writeRoots ? { writeRoots } : {}),
-			compactor: compactorFor(chosen, compactAt),
+			compactor: compactorFor(chosen, compactAt, compaction),
 		}),
 		logger,
 		noteFailures: false,
@@ -496,6 +529,7 @@ export function createLLMAgent(
 		summarizeUndone = true,
 		maxSteps,
 		compactAt,
+		compaction,
 		autoApprove,
 		logger = new Logger(),
 		onTranscript,
@@ -520,6 +554,7 @@ export function createLLMAgent(
 		...(workspace && summarizeUndone ? { summarizer: summarizerFor(provider, logger) } : {}),
 		maxSteps,
 		compactAt,
+		compaction,
 		autoApprove,
 		logger,
 		onTranscript,
@@ -747,6 +782,7 @@ export async function createLLMOrchestrator({
 	workspace = { roots: [{ path: process.cwd(), access: 'read' }] },
 	maxSteps,
 	compactAt,
+	compaction: compactionMode,
 	commands,
 	formatter,
 	summarizeUndone = true,
@@ -772,7 +808,12 @@ export async function createLLMOrchestrator({
 	const opened = await openWorkspace(workspace, logger, formatter ? { formatter } : {});
 	const guidance = workspaceGuidance(workspace.roots);
 	const summarizer = summarizeUndone ? summarizerFor(roles.planner.provider, logger) : undefined;
-	const shared = { history: opened.store, ...(summarizer ? { summarizer } : {}), logger };
+	const shared = {
+		history: opened.store,
+		...(summarizer ? { summarizer } : {}),
+		compaction: compactionMode,
+		logger,
+	};
 	// A caller's own prompt replaces our instructions and guidance, not the workspace: the model
 	// needs the roots to name a file, as `createLLMAgent` gives them.
 	const prompt = (role: CommandRole, own: string | undefined, instructions: string) =>
@@ -792,6 +833,7 @@ export async function createLLMOrchestrator({
 			systemPrompt: withGuidance(explorerInstructions, guidance),
 			tools: explorerToolset,
 			maxSteps: explorerSteps,
+			compaction: compactionMode,
 			logger,
 			onTranscript: transcriptsOf('explorer'),
 		});

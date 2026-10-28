@@ -134,6 +134,9 @@ function toOpenAIItems(
 			return part.source === openAISource ? [part.data as ResponseCompactionItemParam] : [];
 		case 'reasoning':
 			return [];
+		case 'contextSummary':
+			// Never sent: the agent sends the context derived from it.
+			return [];
 	}
 }
 
