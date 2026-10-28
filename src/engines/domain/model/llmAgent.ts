@@ -1331,6 +1331,8 @@ export class LLMAgent implements Agent {
 					} else {
 						summaryFailed = compaction.called;
 					}
+					// An agent at work may have ended the run while the summary was written.
+					throwIfProgressFailed();
 				}
 				let called: Awaited<ReturnType<typeof this.llmCall>>;
 				try {

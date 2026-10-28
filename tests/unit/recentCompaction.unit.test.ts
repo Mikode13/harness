@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
+import type { LLMClient } from '../../src/llm/domain/llm.ts';
+import { agentAsTool } from '../../src/tools/infrastructure/agentAsTool.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import { messagesAsText, recentCut } from '../../src/engines/domain/model/recentCompaction.ts';
 import { MaxContextError } from '../../src/llm/domain/errors.ts';
@@ -465,6 +467,55 @@ describe('LLMAgent with the recent compactor', () => {
 		expect(logger.warn).toHaveBeenCalledWith(
 			'The context could not be compacted: the model has not answered yet, so there is nothing to summarize',
 		);
+	});
+
+	it('ends the run as soon as the summary is written when an agent at work ended it meanwhile', async () => {
+		let openGate: (value: undefined) => void = () => undefined;
+		const gate = new Promise<undefined>(resolve => {
+			openGate = resolve;
+		});
+		// The delegated agent answers only once the summary is being written.
+		const childClient: LLMClient = {
+			send: async () => {
+				await gate;
+				return textResponse('committed');
+			},
+		};
+		const commit = agentAsTool({
+			name: 'commit',
+			description: 'Commits the work',
+			createAgent: () => new LLMAgent({ llmClient: childClient }),
+		});
+		const sent: Message[][] = [];
+		const parentClient: LLMClient = {
+			send: async ({ context }) => {
+				sent.push(context);
+				if (sent.length === 1) {
+					return assistantResponse([toolCall('call-1', 'commit', { task: 'Commit' })], {
+						usage: usage(150),
+					});
+				}
+				// The summary: the agent's narration fails while it is written.
+				openGate(undefined);
+				await new Promise(resolve => setTimeout(resolve, 10));
+				return textResponse('Commit was asked.');
+			},
+		};
+
+		await expect(
+			new LLMAgent({
+				llmClient: parentClient,
+				tools: [commit as never],
+				compactor: { by: 'harness', at: 100, keptSteps: 1 },
+			}).run('work', {
+				signal,
+				onProgress: event => {
+					if (event.type === 'subagent') throw new Error('the terminal closed');
+				},
+			}),
+		).rejects.toMatchObject({ message: 'LLM agent progress callback failed' });
+		// No call follows the summary.
+		expect(sent).toHaveLength(2);
 	});
 
 	it('fails when a context that no longer fits cannot be summarized', async () => {
