@@ -192,6 +192,19 @@ function openAIReplying(text: string) {
 	return create;
 }
 
+/** The request each call to a faked SDK client was made with, in order. */
+const requestsOf = (create: { mock: { calls: unknown[][] } }) =>
+	create.mock.calls.map(call => call[0] as Record<string, unknown>);
+
+/**
+ * The system prompt of a Claude request, which a compacting client sends as a block marked for
+ * the cache.
+ */
+function claudeSystem(request: Record<string, unknown> | undefined): string {
+	const system = (request as { system?: string | { text: string }[] } | undefined)?.system;
+	return typeof system === 'string' ? system : (system?.map(block => block.text).join('') ?? '');
+}
+
 function claudeAPIReplying(text: string) {
 	const create = vi.fn(() =>
 		Promise.resolve({
@@ -435,6 +448,50 @@ describe('createLLMAgent', () => {
 		);
 	});
 
+	it.each([
+		['anthropic', 'sonnet', 450_000],
+		['anthropic', 'haiku', 125_000],
+		['openai', 'gpt-5.6-terra', 450_000],
+		['openai', 'gpt-5.6-luna', 125_000],
+	] as const)(
+		'has the provider compact a %s %s agent at its threshold by default',
+		async (provider, model, threshold) => {
+			const openAICreate = openAIReplying('hi');
+			const claudeCreate = claudeAPIReplying('hi');
+
+			await createLLMAgent(provider, {
+				model,
+				systemPrompt: 'Be brief.',
+				logger: createLogger(),
+			}).run('prompt', { signal });
+
+			const [request] = requestsOf(provider === 'openai' ? openAICreate : claudeCreate);
+			expect(request).toMatchObject(
+				provider === 'openai'
+					? { context_management: [{ type: 'compaction', compact_threshold: threshold }] }
+					: {
+							context_management: {
+								edits: [
+									{ type: 'compact_20260112', trigger: { type: 'input_tokens', value: threshold } },
+								],
+							},
+						},
+			);
+		},
+	);
+
+	it('never has the provider compact with compactAt false', async () => {
+		const create = openAIReplying('hi');
+
+		await createLLMAgent('openai', {
+			systemPrompt: 'Be brief.',
+			compactAt: false,
+			logger: createLogger(),
+		}).run('prompt', { signal });
+
+		expect(requestsOf(create)[0]).not.toHaveProperty('context_management');
+	});
+
 	it('has the provider compact at compactAt', async () => {
 		const create = openAIReplying('hi');
 
@@ -527,7 +584,8 @@ describe('createLLMAgent', () => {
 		expect(create).toHaveBeenCalledWith(
 			expect.objectContaining({
 				model: 'claude-sonnet-5-5',
-				system: 'Be brief.',
+				// Marked for the cache, which a compaction would otherwise leave empty.
+				system: [{ type: 'text', text: 'Be brief.', cache_control: { type: 'ephemeral' } }],
 				output_config: { effort: 'high' },
 			}),
 			{ signal },
@@ -762,10 +820,6 @@ describe('createLLMOrchestrator', () => {
 		rmSync(parent, { recursive: true, force: true });
 	});
 
-	/** The request each call to a faked SDK client was made with, in order. */
-	const requestsOf = (create: { mock: { calls: unknown[][] } }) =>
-		create.mock.calls.map(call => call[0] as Record<string, unknown>);
-
 	interface ToolDeclaration {
 		name?: string;
 		type?: string;
@@ -950,7 +1004,7 @@ describe('createLLMOrchestrator', () => {
 		}[];
 		expect(planner?.instructions).toMatch(/^You are the planner agent/);
 		expect(executor?.instructions).toMatch(/^You are the executor agent/);
-		const reviewer = requestsOf(claudeCreate)[0] as unknown as { system: string };
+		const reviewer = { system: claudeSystem(requestsOf(claudeCreate)[0]) };
 		expect(reviewer.system).toMatch(/^You are the reviewer agent/);
 		for (const prompt of [planner?.instructions, executor?.instructions, reviewer.system]) {
 			expect(prompt).toContain(`The workspace:\n- ${repo}\n`);
@@ -990,7 +1044,7 @@ describe('createLLMOrchestrator', () => {
 
 			const executor = (requestsOf(openAICreate)[1] as unknown as { instructions: string })
 				.instructions;
-			const reviewer = (requestsOf(claudeCreate)[0] as unknown as { system: string }).system;
+			const reviewer = claudeSystem(requestsOf(claudeCreate)[0]);
 			expect(executor).toMatch(executorSays);
 			expect(reviewer).toMatch(reviewerSays);
 			// Each version leaves out the other's promise.
@@ -1014,7 +1068,7 @@ describe('createLLMOrchestrator', () => {
 		).run('ship it', { signal });
 
 		// Word for word, then the workspace, which the model needs to name a file; not our guidance.
-		const reviewer = (requestsOf(claudeCreate)[0] as unknown as { system: string }).system;
+		const reviewer = claudeSystem(requestsOf(claudeCreate)[0]);
 		const executor = (requestsOf(openAICreate)[1] as unknown as { instructions: string })
 			.instructions;
 		expect(reviewer).toMatch(/^Review strictly\.\n\nThe workspace:\n/);
@@ -1260,7 +1314,7 @@ describe('createLLMOrchestrator', () => {
 		);
 	});
 
-	it('has each role compact at its own compactAt, and no role without one', async () => {
+	it("has each role compact at its own compactAt, and the others at their model's threshold", async () => {
 		const openAICreate = openAIReplying('plan');
 		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
 
@@ -1273,7 +1327,9 @@ describe('createLLMOrchestrator', () => {
 		).run('ship it', { signal });
 
 		const [planner, executor] = requestsOf(openAICreate);
-		expect(planner).not.toHaveProperty('context_management');
+		expect(planner).toMatchObject({
+			context_management: [{ type: 'compaction', compact_threshold: 450_000 }],
+		});
 		expect(executor).toMatchObject({
 			context_management: [{ type: 'compaction', compact_threshold: 200_000 }],
 		});
@@ -1285,6 +1341,19 @@ describe('createLLMOrchestrator', () => {
 			}),
 			{ signal },
 		);
+	});
+
+	it('has no role compact with compactAt false', async () => {
+		const openAICreate = openAIReplying('plan');
+		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
+
+		await (
+			await createLLMOrchestrator({ workspace, compactAt: false, logger: createLogger() })
+		).run('ship it', { signal });
+
+		for (const request of [...requestsOf(openAICreate), ...requestsOf(claudeCreate)]) {
+			expect(request).not.toHaveProperty('context_management');
+		}
 	});
 
 	it('refuses a compaction for a role that does not exist', async () => {

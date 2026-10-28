@@ -867,6 +867,7 @@ describe('ClaudeLLMClient', () => {
 				outputTokens: 3_520,
 			},
 			stopReason: 'completed',
+			compactedContextTokens: 185_000,
 		});
 	});
 
@@ -906,13 +907,16 @@ describe('ClaudeLLMClient compaction', () => {
 		vi.clearAllMocks();
 	});
 
-	const compactingClient = (compactAt: number, model = 'sonnet') =>
-		new ClaudeLLMClient({ model, compactAt, systemPrompt: 'Be brief.', logger: { warn: vi.fn() } });
+	const compactingClient = (model = 'sonnet') =>
+		new ClaudeLLMClient({ model, systemPrompt: 'Be brief.', logger: { warn: vi.fn() } });
 
 	it('asks Claude to compact at compactAt, keeping the system prompt cached across it', async () => {
 		const { create } = createSdk(response());
 
-		await compactingClient(150_000).send({ context: [userMessage('prompt')], tools: [] }, signal);
+		await compactingClient().send(
+			{ context: [userMessage('prompt')], tools: [], compactAt: 150_000 },
+			signal,
+		);
 
 		expect(create.mock.calls[0]?.[0]).toMatchObject({
 			betas: ['compact-2026-01-12'],
@@ -928,10 +932,9 @@ describe('ClaudeLLMClient compaction', () => {
 
 		await new ClaudeLLMClient({
 			model: 'sonnet',
-			compactAt: 150_000,
 			systemPrompt: '',
 			logger: { warn: vi.fn() },
-		}).send({ context: [userMessage('prompt')], tools: [] }, signal);
+		}).send({ context: [userMessage('prompt')], tools: [], compactAt: 150_000 }, signal);
 
 		expect(create.mock.calls[0]?.[0]).toMatchObject({ system: '', betas: ['compact-2026-01-12'] });
 	});
@@ -948,18 +951,39 @@ describe('ClaudeLLMClient compaction', () => {
 	});
 
 	it.each([49_999, 1.5e5 + 0.5, Number.NaN])(
-		'rejects compactAt %s, below what Claude accepts, before building the SDK',
+		'refuses compactAt %s, below what Claude accepts',
 		compactAt => {
-			expect(() => compactingClient(compactAt)).toThrow(InvalidAgentConfigError);
-			expect(Anthropic).not.toHaveBeenCalled();
+			createSdk();
+			expect(() => {
+				compactingClient().checkCompactAt(compactAt);
+			}).toThrow(InvalidAgentConfigError);
+			expect(() => {
+				compactingClient().checkCompactAt(50_000);
+			}).not.toThrow();
 		},
 	);
+
+	it('compacts now at the least threshold Claude accepts', async () => {
+		const { create } = createSdk(response());
+
+		await compactingClient().send(
+			{ context: [userMessage('prompt')], tools: [], compactAt: 'now' },
+			signal,
+		);
+
+		expect(create.mock.calls[0]?.[0]).toMatchObject({
+			betas: ['compact-2026-01-12'],
+			context_management: {
+				edits: [{ type: 'compact_20260112', trigger: { type: 'input_tokens', value: 50_000 } }],
+			},
+		});
+	});
 
 	it('asks Haiku 5.5 to compact too', async () => {
 		const { create } = createSdk(response());
 
-		await compactingClient(150_000, 'haiku').send(
-			{ context: [userMessage('prompt')], tools: [] },
+		await compactingClient('haiku').send(
+			{ context: [userMessage('prompt')], tools: [], compactAt: 150_000 },
 			signal,
 		);
 
@@ -979,10 +1003,10 @@ describe('ClaudeLLMClient compaction', () => {
 			response({ content: [compaction, text('continued')] }),
 			response(),
 		);
-		const client = compactingClient(150_000);
+		const client = compactingClient();
 		const context = [userMessage('long task')];
 
-		const answer = await client.send({ context, tools: [] }, signal);
+		const answer = await client.send({ context, tools: [], compactAt: 150_000 }, signal);
 		expect(answer.message.content[0]).toEqual({
 			type: 'compaction',
 			source: 'claude',
@@ -1025,15 +1049,10 @@ describe('ClaudeLLMClient compaction', () => {
 		} as unknown as ContentBlock;
 		const { create } = createSdk(response({ content: [failed, text('continued')] }), response());
 		const logger = { warn: vi.fn() };
-		const client = new ClaudeLLMClient({
-			model: 'sonnet',
-			compactAt: 150_000,
-			systemPrompt: 'Be brief.',
-			logger,
-		});
+		const client = new ClaudeLLMClient({ model: 'sonnet', systemPrompt: 'Be brief.', logger });
 		const context = [userMessage('long task')];
 
-		const answer = await client.send({ context, tools: [] }, signal);
+		const answer = await client.send({ context, tools: [], compactAt: 150_000 }, signal);
 		expect(answer.message.content).toEqual([{ type: 'text', text: 'continued' }]);
 		expect(logger.warn).toHaveBeenCalledWith(
 			'Claude could not compact the conversation; it is sent whole until Claude compacts it',
@@ -1068,11 +1087,11 @@ describe('ClaudeLLMClient compaction', () => {
 			response({ content: [failed, text('second')] }),
 			response(),
 		);
-		const client = compactingClient(150_000);
+		const client = compactingClient();
 		let context = [userMessage('long task')];
 
 		for (const next of ['more', 'last']) {
-			const answer = await client.send({ context, tools: [] }, signal);
+			const answer = await client.send({ context, tools: [], compactAt: 150_000 }, signal);
 			context = [...context, answer.message, userMessage(next)];
 		}
 		await client.send({ context, tools: [] }, signal);
@@ -1093,7 +1112,7 @@ describe('ClaudeLLMClient compaction', () => {
 		});
 	});
 
-	it('counts the compaction in the tokens, which Claude leaves out of its totals', async () => {
+	it('counts the compaction in the tokens, which Claude leaves out of its totals, and reports the context it compacted', async () => {
 		createSdk(
 			response({
 				usage: {
@@ -1121,8 +1140,8 @@ describe('ClaudeLLMClient compaction', () => {
 			}),
 		);
 
-		const answer = await compactingClient(150_000).send(
-			{ context: [userMessage('prompt')], tools: [] },
+		const answer = await compactingClient().send(
+			{ context: [userMessage('prompt')], tools: [], compactAt: 150_000 },
 			signal,
 		);
 
@@ -1132,5 +1151,6 @@ describe('ClaudeLLMClient compaction', () => {
 			writtenCacheTokens: 2_000,
 			outputTokens: 4_500,
 		});
+		expect(answer.compactedContextTokens).toBe(185_000);
 	});
 });

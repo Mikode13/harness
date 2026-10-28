@@ -245,6 +245,10 @@ function unmapped(item: ResponseOutputItem, logger: ILogger): MessagePart[] {
 	return [];
 }
 
+// The threshold that compacts a context now: far below what any of its models holds, so a
+// context that no longer fits has long passed it.
+const compactNowAt = 50_000;
+
 function toStopReason(response: Response): StopReason {
 	if (response.status === 'incomplete') {
 		return response.incomplete_details?.reason === 'content_filter' ? 'refused' : 'truncated';
@@ -306,6 +310,10 @@ function toLLMResponse(
 			},
 			usage,
 			stopReason: toStopReason(response),
+			// OpenAI reports the call that compacted with its whole input, the context before it.
+			...(response.usage && response.output.some(item => item.type === 'compaction')
+				? { compactedContextTokens: response.usage.input_tokens }
+				: {}),
 		};
 	} catch (error) {
 		// The call was billed whether the response failed or a logger did while mapping it, and
@@ -343,7 +351,6 @@ export class OpenAILLMClient implements LLMClient {
 	private readonly client: OpenAI;
 	private readonly model: OpenAIModel;
 	private readonly reasoningEffort: OpenAIReasoningEffort;
-	private readonly compactAt: number | undefined;
 	readonly systemPrompt: string;
 	readonly providerDataSource = openAISource;
 	private readonly logger: ILogger;
@@ -353,14 +360,11 @@ export class OpenAILLMClient implements LLMClient {
 	constructor({
 		model,
 		reasoningEffort = 'high',
-		compactAt,
 		systemPrompt,
 		logger,
 	}: {
 		model: string;
 		reasoningEffort?: string;
-		/** The input tokens at which OpenAI compacts the context on its side. Without it, never. */
-		compactAt?: number | undefined;
 		systemPrompt: string;
 		logger: ILogger;
 	}) {
@@ -374,12 +378,6 @@ export class OpenAILLMClient implements LLMClient {
 				`"${reasoningEffort}" is not an OpenAI reasoning effort; expected one of: ${openAIReasoningEfforts.join(', ')}`,
 			);
 		}
-		if (compactAt !== undefined && !(Number.isInteger(compactAt) && compactAt > 0)) {
-			throw new InvalidAgentConfigError(
-				`compactAt must be a positive whole number of tokens, not ${String(compactAt)}`,
-			);
-		}
-
 		try {
 			// The SDK's default retries stay on: they back off and honour `Retry-After`, which
 			// `RetryingAgent` does not. See "The provider SDKs keep their transport retries" in decisions.md.
@@ -393,7 +391,6 @@ export class OpenAILLMClient implements LLMClient {
 
 		this.model = model;
 		this.reasoningEffort = reasoningEffort;
-		this.compactAt = compactAt;
 		this.systemPrompt = systemPrompt;
 		this.logger = logger;
 	}
@@ -402,10 +399,23 @@ export class OpenAILLMClient implements LLMClient {
 		return tool === 'applyPatch';
 	}
 
+	checkCompactAt(compactAt: number): void {
+		if (!(Number.isInteger(compactAt) && compactAt > 0)) {
+			throw new InvalidAgentConfigError(
+				`compactAt must be a positive whole number of tokens, not ${String(compactAt)}`,
+			);
+		}
+	}
+
 	async send(
-		{ context, tools }: { context: Message[]; tools: ToolDefinition[] },
+		{
+			context,
+			tools,
+			compactAt,
+		}: { context: Message[]; tools: ToolDefinition[]; compactAt?: number | 'now' | undefined },
 		signal: AbortSignal,
 	): Promise<LLMResponse> {
+		const threshold = compactAt === 'now' ? compactNowAt : compactAt;
 		let response: Response;
 		const applyPatch = applyPatchName(tools);
 
@@ -421,8 +431,8 @@ export class OpenAILLMClient implements LLMClient {
 					// Left out when empty, so a request without tools stays as it always was.
 					...(tools.length > 0 && { tools: tools.map(toOpenAITool) }),
 					// OpenAI compacts inside the call that passes it, and answers with the compaction first.
-					...(this.compactAt !== undefined && {
-						context_management: [{ type: 'compaction', compact_threshold: this.compactAt }],
+					...(threshold !== undefined && {
+						context_management: [{ type: 'compaction', compact_threshold: threshold }],
 					}),
 					store: false,
 					reasoning: { effort: this.reasoningEffort, summary: 'concise' },

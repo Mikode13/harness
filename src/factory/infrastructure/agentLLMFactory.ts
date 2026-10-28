@@ -2,15 +2,18 @@ import { resolve } from 'node:path';
 import type { Agent } from '#src/agent/domain/agent';
 import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcript';
 import type { HistoryReader } from '#src/engines/domain/model/historyFollower';
+import { compactionOff, type Compactor } from '#src/engines/domain/model/compactor';
 import { LLMAgent } from '#src/engines/domain/model/llmAgent';
 import type { LLMClient } from '#src/llm/domain/llm';
 import {
 	ClaudeLLMClient,
+	type ClaudeLLMModel,
 	claudeLLMModels,
 	claudeLLMReasoningEfforts,
 } from '#src/llm/infrastructure/claudeLLMClient';
 import {
 	OpenAILLMClient,
+	type OpenAIModel,
 	openAIModels,
 	openAIReasoningEfforts,
 } from '#src/llm/infrastructure/openAILLMClient';
@@ -132,12 +135,14 @@ export interface CreateLLMAgentOptions {
 	 */
 	maxSteps?: number;
 	/**
-	 * The input tokens at which the provider compacts the conversation on its side: it replaces
-	 * every turn before that call with its own summary, which only its model reads back. The
-	 * conversation keeps every original turn. Without it, the conversation is never compacted.
-	 * At least 50,000 on Anthropic.
+	 * The tokens of context at which the provider compacts it on its side: it replaces every turn
+	 * before that call with its own summary, which only its model reads back. The conversation
+	 * keeps every original turn. Defaults to the model's threshold: 450,000 for Claude Opus,
+	 * Fable and Sonnet and GPT astra, sol and terra, and 125,000 for Claude Haiku and GPT luna.
+	 * `false` turns compaction off. Either way, a context that no longer fits the model is
+	 * compacted once, and the call tried again. At least 50,000 on Anthropic.
 	 */
-	compactAt?: number;
+	compactAt?: number | false;
 	/**
 	 * Runs every tool call without asking, `destructive` ones included, for CI where no one can
 	 * answer. Without it, a `destructive` call goes to the run's `approve`, or is denied.
@@ -171,7 +176,7 @@ const defaultRoleSteps: Record<OrchestratorRole, number> = {
 	reviewer: 65,
 };
 
-// No role compacts unless asked to.
+// Each role compacts at its model's threshold unless told otherwise.
 const defaultRoleCompaction: Record<OrchestratorRole, number | undefined> = {
 	planner: undefined,
 	executor: undefined,
@@ -227,11 +232,12 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	 */
 	maxSteps?: number | RoleSteps;
 	/**
-	 * The input tokens at which each role's provider compacts its conversation, as
-	 * `CreateLLMAgentOptions.compactAt`: one number for every role, or a number per role. Without
-	 * it, no role compacts.
+	 * The tokens of context at which each role's provider compacts it, as
+	 * `CreateLLMAgentOptions.compactAt`: one number for every role, or a number per role. A role
+	 * left out compacts at its model's threshold, as do the explorers. `false` turns compaction
+	 * off for every role.
 	 */
-	compactAt?: number | RoleTokens;
+	compactAt?: number | false | RoleTokens;
 	/**
 	 * Commands the roles may run, such as the project's tests, through `runCommand`. Each goes to
 	 * the roles its `roles` names, the executor by default. See `createFileTools`. Each needs a
@@ -271,6 +277,41 @@ const defaultLLMAgentModels = {
 	openai: 'gpt-5.6-luna',
 } as const satisfies Record<AgentProvider, AgentModel>;
 
+// The tokens of context at which each model compacts by default, the small ones sooner. The
+// margins are wide on purpose: compacting at 64k cleared file reads the executor then read again.
+const compactionThresholds: Record<ClaudeLLMModel | OpenAIModel, number> = {
+	opus: 450_000,
+	fable: 450_000,
+	sonnet: 450_000,
+	haiku: 125_000,
+	'gpt-6-astra': 450_000,
+	'gpt-5.6-sol': 450_000,
+	'gpt-5.6-terra': 450_000,
+	'gpt-5.6-luna': 125_000,
+};
+
+/**
+ * The provider's compactor for an agent on `model`: at `compactAt`, at the model's threshold
+ * without it, or off with `false`.
+ */
+function compactorFor(model: AgentModel, compactAt: number | false | undefined): Compactor {
+	if (compactAt === false) return compactionOff;
+	// A model with no threshold was already refused by its client.
+	const at = compactAt ?? (compactionThresholds as Partial<Record<string, number>>)[model];
+	return { by: 'provider', at };
+}
+
+function defaultModelOf(provider: AgentProvider): AgentModel {
+	switch (provider) {
+		case 'anthropic':
+		case 'openai':
+			return defaultLLMAgentModels[provider];
+		default:
+			// Reachable from untyped input.
+			throw unknownProvider(provider);
+	}
+}
+
 function unknownProvider(provider: never): InvalidAgentConfigError {
 	return new InvalidAgentConfigError(
 		`"${String(provider)}" is not an agent provider; expected one of: ${agentProviders.join(', ')}`,
@@ -282,13 +323,11 @@ function llmClientFor(
 	{
 		model,
 		reasoningEffort,
-		compactAt,
 		systemPrompt,
 		logger,
 	}: {
-		model?: AgentModel;
+		model: AgentModel;
 		reasoningEffort?: ReasoningEffort;
-		compactAt?: number | undefined;
 		systemPrompt: string;
 		logger: ILogger;
 	},
@@ -296,17 +335,15 @@ function llmClientFor(
 	switch (provider) {
 		case 'anthropic':
 			return new ClaudeLLMClient({
-				model: model ?? defaultLLMAgentModels.anthropic,
+				model,
 				reasoningEffort,
-				compactAt,
 				systemPrompt,
 				logger,
 			});
 		case 'openai':
 			return new OpenAILLMClient({
-				model: model ?? defaultLLMAgentModels.openai,
+				model,
 				reasoningEffort,
-				compactAt,
 				systemPrompt,
 				logger,
 			});
@@ -401,7 +438,8 @@ function buildLLMAgent(
 		history?: HistoryReader;
 		summarizer?: LLMClient;
 		maxSteps?: number;
-		compactAt?: number | undefined;
+		/** See `CreateLLMAgentOptions.compactAt`. */
+		compactAt?: number | false | undefined;
 		autoApprove?: boolean;
 		logger: ILogger;
 		onTranscript?: TranscriptCallback | undefined;
@@ -409,10 +447,10 @@ function buildLLMAgent(
 		writeRoots?: readonly string[];
 	},
 ): Agent {
+	const chosen = model ?? defaultModelOf(provider);
 	const llmClient = llmClientFor(provider, {
-		model,
+		model: chosen,
 		reasoningEffort,
-		compactAt,
 		systemPrompt,
 		logger,
 	});
@@ -428,6 +466,7 @@ function buildLLMAgent(
 			...(maxSteps === undefined ? {} : { maxSteps }),
 			...(onTranscript ? { onTranscript } : {}),
 			...(writeRoots ? { writeRoots } : {}),
+			compactor: compactorFor(chosen, compactAt),
 		}),
 		logger,
 		noteFailures: false,
@@ -722,10 +761,13 @@ export async function createLLMOrchestrator({
 		unit: 'steps',
 		example: '{ "executor": 120 }',
 	});
-	const compaction = perRole('compactAt', compactAt, defaultRoleCompaction, {
-		unit: 'tokens',
-		example: '{ "executor": 200000 }',
-	});
+	const compaction: Record<OrchestratorRole, number | false | undefined> =
+		compactAt === false
+			? { planner: false, executor: false, reviewer: false }
+			: perRole('compactAt', compactAt, defaultRoleCompaction, {
+					unit: 'tokens',
+					example: '{ "executor": 200000 }',
+				});
 	if (formatter !== undefined) validateFormatter(formatter);
 	const opened = await openWorkspace(workspace, logger, formatter ? { formatter } : {});
 	const guidance = workspaceGuidance(workspace.roots);

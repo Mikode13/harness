@@ -2018,6 +2018,8 @@ tags: #mikode-harness #llm #cost
 
 partially superseded by: "Claude's aliases name the 5.5 models on both paths, and Haiku executes on Anthropic" (below) — `haiku` names Claude Haiku 5.5, which compacts, so its client no longer refuses `compactAt`.
 
+partially superseded by: "Compaction is on by default, at a threshold per model, and a context that no longer fits is compacted once" (below) — compaction is no longer off by default, and the threshold travels with each call.
+
 **Decision:**
 
 - **Compaction is the provider's own.** With `compactAt`, the OpenAI client sends `context_management` with a `compaction` threshold, and the Claude client the `compact_20260112` edit under the `compact-2026-01-12` beta. The provider compacts inside the call that passes the threshold and answers with its summary first. The harness never removes or rewrites a part of the context itself.
@@ -2768,3 +2770,30 @@ tags: #mikode-harness #agent-loops #tool-use #api-design #security
 - A specialist under the planner or the reviewer cannot run a command, even one that only reads, such as the tests.
 - A limit is compared as real paths: two spellings of one folder are one folder.
 - The shared budget of the issue's criteria is #137's.
+
+## Compaction is on by default, at a threshold per model, and a context that no longer fits is compacted once
+
+tags: #mikode-harness #llm #cost #api-design
+
+**Decision:**
+
+- **On by default, at a threshold per model:** 450,000 tokens of context for Claude Opus, Fable and Sonnet and GPT astra, sol and terra, and 125,000 for Claude Haiku and GPT luna. `compactAt` changes it, per agent or per role, and `false` turns compaction off. The explorers compact at their model's threshold.
+- **A `Compactor` port on `LLMAgent`, internal for now,** with one mode today: the provider's, which gives its threshold to every call. The client no longer holds a threshold: `send` takes `compactAt`, a number or `now`, and a client that can compact checks a threshold with `checkCompactAt`. A compactor of the harness's own, which compacts in `LLMAgent` before the call, is the second mode (#48's next pull requests).
+- **A context that no longer fits is compacted once,** even with compaction off: after a `MaxContextError`, the next step sends the call again with `compactAt: 'now'`, the least threshold the provider takes, and a warning is logged. A second one in a row, a client that cannot compact, or no step left ends the run. The failed call counts in the run's tokens.
+- **A `compaction` event** follows the `step` of the call that compacted, with `by` (`provider` or `harness`), `reason` (`threshold` or `maxContext`), and `contextTokens`, the context compacted as the provider reported it: Claude's compaction iteration, or OpenAI's whole input of the call that compacted.
+
+**Context:** #48, decided with the user on 2026-10-26, 2026-10-27 and 2026-10-28. The user's rule: about 40% of a large model's window is the sweet spot, so about 450k on the large models, and a small model compacts sooner, at 125k. The margins are wide on purpose: what went wrong in #107 was compacting, at 64k, file reads the executor then read again. The conversation is never compacted, only the context sent to the model, so what a consumer stores keeps every part (#111). The port stays internal until the harness's own compactors have used it, and may shrink to choosing a mode.
+
+**Alternatives considered:**
+
+- **Off by default,** as decided on 2026-10-17. Nothing changes for a run that never grows, but one that does fails at the window instead of going on.
+- **A port only for the harness's own compactors,** with the provider's left in the client as before. Simpler today, but two mechanisms the consumer would see apart.
+- **A `compaction: { at, by } | false` option.** It groups the threshold and the compactor, but removes `compactAt`.
+- **Failing at once when compaction is off.** It does exactly what was asked, but loses the run.
+- **An event with only its type, or without the tokens.** It could never break, but a consumer could not tell who compacted, why, or how much.
+
+**Consequences:**
+
+- A Claude agent now marks its system prompt for the cache on every call, since it compacts by default.
+- Forcing a compaction at the least threshold is not yet measured live: whether a provider compacts a context already past its window, and whether OpenAI accepts a threshold of 50,000, are questions for the live round.
+- It ships as a `feat`, since nobody uses the harness yet.
