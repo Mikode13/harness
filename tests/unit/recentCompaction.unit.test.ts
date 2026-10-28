@@ -307,6 +307,45 @@ describe('LLMAgent with the recent compactor', () => {
 		]);
 	});
 
+	it("keeps the summary's tokens when the logger throws on its failure", async () => {
+		const logger = {
+			warn: () => {
+				throw new Error('log failed');
+			},
+		};
+		const refused = (llmClient: FakeLLMClient) =>
+			new LLMAgent({
+				llmClient,
+				tools: [weather],
+				logger,
+				compactor: { by: 'harness', at: 100, keptSteps: 1 },
+			}).run('task', { signal });
+
+		await expect(
+			refused(
+				new FakeLLMClient(
+					assistantResponse(answer('call-1', 'Madrid').content, { usage: usage(50) }),
+					assistantResponse(answer('call-2', 'Paris').content, { usage: usage(150) }),
+					textResponse('', { usage: usage(160) }),
+				),
+			),
+		).rejects.toMatchObject({
+			message: 'LLM agent logger failed',
+			tokens: { inputTokens: 360 },
+			usageUnreported: false,
+		});
+		await expect(
+			refused(
+				new FakeLLMClient(
+					assistantResponse(answer('call-1', 'Madrid').content, { usage: usage(50) }),
+					assistantResponse(answer('call-2', 'Paris').content, { usage: usage(150) }),
+					textResponse('', { usage: null }),
+				),
+			),
+			// A total with an unreported call is unknown, never a subtotal.
+		).rejects.toMatchObject({ tokens: undefined, usageUnreported: true });
+	});
+
 	it('fails when a context that no longer fits cannot be summarized', async () => {
 		const llmClient = new FakeLLMClient(
 			assistantResponse(answer('call-1', 'Madrid').content),

@@ -464,6 +464,21 @@ export class LLMAgent implements Agent {
 	}
 
 	/**
+	 * Warns that a summary the model was called for failed. A logger that throws ends the run,
+	 * carrying what that call spent, which the run has not counted yet.
+	 */
+	private warnSummaryCallFailed(
+		why: string,
+		{ usage, unreported }: { usage: Tokens | undefined; unreported: boolean },
+	): void {
+		try {
+			this.warnCompactionFailed(why);
+		} catch (hostFailure) {
+			throw withSpentTokens(hostFailure, usage, unreported);
+		}
+	}
+
+	/**
 	 * Has the agent's own model summarize the context before the recent compactor's cut, and
 	 * records the summary in the run, with what it keeps word for word. Once the threshold passed,
 	 * the model reads the context as it was last sent, from its provider's cache; once the context
@@ -503,17 +518,18 @@ export class LLMAgent implements Agent {
 		} catch (error) {
 			if (isAbortError(error)) throw error;
 			const failure = classifyProviderFailure(error, 'The context summary failed');
-			this.warnCompactionFailed(describeFailure(failure));
 			const billed =
 				failure instanceof RecoverableError || failure instanceof UnrecoverableError
 					? failure
 					: undefined;
-			return {
+			const failed = {
 				compacted: false,
 				called: true,
 				usage: billed?.tokens,
 				unreported: billed?.usageUnreported ?? false,
 			};
+			this.warnSummaryCallFailed(describeFailure(failure), failed);
+			return failed;
 		}
 
 		const spent = { called: true, usage: response.usage, unreported: !response.usage };
@@ -527,7 +543,7 @@ export class LLMAgent implements Agent {
 			response.message.content.some(part => part.type === 'toolCall') ||
 			summary === ''
 		) {
-			this.warnCompactionFailed('the model did not answer with a summary');
+			this.warnSummaryCallFailed('the model did not answer with a summary', spent);
 			return { compacted: false, ...spent };
 		}
 		runMessages.push({
