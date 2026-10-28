@@ -349,7 +349,9 @@ agent's own model is sent that context again, with the same tools, and asked for
 run as a `ContextSummaryPart`, with copies of what it keeps word for word: the run's prompt and the
 last answers, each with its tool results, without the signed reasoning of any but the last. Every
 call sends `compactedContext`, the context from the latest summary on; the conversation keeps
-every part. A summary the model failed to write is logged and not asked for again in that run. A
+every part. A summary the model failed to write, or one the provider failed in passing
+(`RecoverableError`), is logged and not asked for again in that run; any other failure ends it.
+The size it measures is the last kept run's, so a run that is not kept leaves it as it was. A
 second `MaxContextError` in a row ends the run. A call sent
 with `compactAt` has its provider compact the context inside the call that passes it; the summary is a
 `compaction` part of the answer, unless the compaction failed and Claude returned no summary, which

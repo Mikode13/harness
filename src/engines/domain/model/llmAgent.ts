@@ -271,8 +271,9 @@ export class LLMAgent implements Agent {
 	private readonly onTranscript: TranscriptCallback | undefined;
 	private readonly writeRoots: readonly string[] | undefined;
 	private readonly compactor: Compactor;
-	// The tokens of context the model was last sent, as its provider reported them, which the
-	// recent compactor measures against its threshold: the conversation's size, not a run's count.
+	// The tokens of context the model was last sent in a run that was kept, as its provider
+	// reported them, which the recent compactor measures against its threshold: the
+	// conversation's size, not a run's count.
 	private contextTokens: number | undefined;
 	// The latest move through the history this conversation has followed.
 	private seenRevision = 0;
@@ -483,8 +484,9 @@ export class LLMAgent implements Agent {
 	 * records the summary in the run, with what it keeps word for word. Once the threshold passed,
 	 * the model reads the context as it was last sent, from its provider's cache; once the context
 	 * no longer fit, it reads what it summarizes as text. `compacted` is false when the model had
-	 * answered too few times, which costs no call, or the summary failed, which it logs. The
-	 * summary's usage is the run's either way.
+	 * answered too few times, which costs no call, or the model wrote no summary or the provider
+	 * failed in passing, which it logs; any other failure is thrown. The summary's usage is the
+	 * run's either way.
 	 */
 	private async compactRecent(
 		compactor: RecentCompactor,
@@ -518,15 +520,14 @@ export class LLMAgent implements Agent {
 		} catch (error) {
 			if (isAbortError(error)) throw error;
 			const failure = classifyProviderFailure(error, 'The context summary failed');
-			const billed =
-				failure instanceof RecoverableError || failure instanceof UnrecoverableError
-					? failure
-					: undefined;
+			// Only a passing failure of the provider goes without a summary: anything else, such as
+			// a logger or a response the client could not map, ends the run as any call's would.
+			if (!(failure instanceof RecoverableError)) throw failure;
 			const failed = {
 				compacted: false,
 				called: true,
-				usage: billed?.tokens,
-				unreported: billed?.usageUnreported ?? false,
+				usage: failure.tokens,
+				unreported: failure.usageUnreported,
 			};
 			this.warnSummaryCallFailed(describeFailure(failure), failed);
 			return failed;
@@ -1195,6 +1196,9 @@ export class LLMAgent implements Agent {
 		// The turn this one follows: the last recorded, unless the workspace moved since.
 		let after = this.conversation.currentTurn;
 		let followed: Followed | undefined;
+		// The context's size as this run knows it, the agent's once the run is kept: a run that
+		// is not kept leaves the conversation, and so its size, as they were.
+		let contextTokens = this.contextTokens;
 		// What the model has seen so far, whichever turn the run ends up following.
 		seen.messages = () =>
 			compactedContext([...this.conversation.contextAfter(after), ...runMessages]);
@@ -1207,7 +1211,7 @@ export class LLMAgent implements Agent {
 				if (followed.revisions.length > 0) {
 					this.reads.clear();
 					// Its context is no longer the one last sent.
-					this.contextTokens = undefined;
+					contextTokens = undefined;
 				}
 				if (followed.undone.length > 0) {
 					const summary = await this.summarizeUndone(followed, signal);
@@ -1252,6 +1256,7 @@ export class LLMAgent implements Agent {
 				// With the turns that read them, and only then.
 				reads.commit();
 				if (followed) this.seenRevision = followed.latestRevision;
+				this.contextTokens = contextTokens;
 			};
 			// A run kept although it failed stops its agents first, and tells the next run what
 			// became of each one, which would otherwise wait for answers that never come.
@@ -1277,8 +1282,8 @@ export class LLMAgent implements Agent {
 					(outgrown ||
 						(!summaryFailed &&
 							compactor.at !== undefined &&
-							this.contextTokens !== undefined &&
-							this.contextTokens >= compactor.at))
+							contextTokens !== undefined &&
+							contextTokens >= compactor.at))
 				) {
 					const compaction = await this.compactRecent(compactor, runMessages, after, {
 						signal,
@@ -1288,14 +1293,14 @@ export class LLMAgent implements Agent {
 					tokens = addTokens(tokens, compaction.usage);
 					unreported ||= compaction.unreported;
 					if (compaction.compacted) {
-						const contextTokens = outgrown ? outgrownTokens : this.contextTokens;
-						this.contextTokens = undefined;
+						const compacted = outgrown ? outgrownTokens : contextTokens;
+						contextTokens = undefined;
 						emit(
 							{
 								type: 'compaction',
 								by: 'harness',
 								reason: outgrown ? 'maxContext' : 'threshold',
-								...(contextTokens === undefined ? {} : { contextTokens }),
+								...(compacted === undefined ? {} : { contextTokens: compacted }),
 							},
 							callback,
 						);
@@ -1339,7 +1344,7 @@ export class LLMAgent implements Agent {
 				const { response, context: sent } = called;
 				tokens = addTokens(tokens, response.usage);
 				unreported ||= !response.usage;
-				this.contextTokens = response.usage && contextSize(response.usage);
+				contextTokens = response.usage && contextSize(response.usage);
 				// After the tokens are counted, so a throwing callback still reports them, and for an
 				// unusable answer too: the call was sent, and billed.
 				this.narrateStep(step, response.usage, { context: sent, tools }, callback);

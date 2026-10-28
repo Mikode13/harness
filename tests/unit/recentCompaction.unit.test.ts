@@ -3,6 +3,7 @@ import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import { messagesAsText, recentCut } from '../../src/engines/domain/model/recentCompaction.ts';
 import { MaxContextError } from '../../src/llm/domain/errors.ts';
+import { UnrecoverableError } from '../../src/shared/domain/errors.ts';
 import { compactedContext, type Message } from '../../src/llm/domain/message.ts';
 import {
 	assistantResponse,
@@ -344,6 +345,53 @@ describe('LLMAgent with the recent compactor', () => {
 			),
 			// A total with an unreported call is unknown, never a subtotal.
 		).rejects.toMatchObject({ tokens: undefined, usageUnreported: true });
+	});
+
+	it('ends the run on a summary failure that is not a passing one of the provider', async () => {
+		const llmClient = new FakeLLMClient(
+			assistantResponse(answer('call-1', 'Madrid').content, { usage: usage(50) }),
+			assistantResponse(answer('call-2', 'Paris').content, { usage: usage(150) }),
+			new UnrecoverableError('Claude client logger failed while mapping a response', {
+				cause: 'the logger threw',
+			}),
+		);
+
+		await expect(
+			new LLMAgent({
+				llmClient,
+				tools: [weather],
+				logger: { warn: vi.fn() },
+				compactor: { by: 'harness', at: 100, keptSteps: 1 },
+			}).run('task', { signal }),
+		).rejects.toMatchObject({
+			constructor: UnrecoverableError,
+			message: 'Claude client logger failed while mapping a response',
+			tokens: { inputTokens: 200 },
+		});
+		expect(llmClient.contexts).toHaveLength(3);
+	});
+
+	it('measures the context of the last run kept, not of one that was not', async () => {
+		const llmClient = new FakeLLMClient(
+			assistantResponse(answer('call-1', 'Madrid').content, { usage: usage(50) }),
+			assistantResponse(answer('call-2', 'Paris').content, { usage: usage(60) }),
+			textResponse('Both sunny.', { usage: usage(70) }),
+			textResponse('', { usage: usage(150), stopReason: 'refused' }),
+			textResponse('Hello.'),
+		);
+		const agent = new LLMAgent({
+			llmClient,
+			tools: [weather],
+			compactor: { by: 'harness', at: 100, keptSteps: 1 },
+		});
+
+		await agent.run('task', { signal });
+		await expect(agent.run('refused', { signal })).rejects.toBeInstanceOf(UnrecoverableError);
+		await agent.run('hello', { signal });
+
+		// The refused run is not in the conversation, so neither is its size: no summary is asked.
+		expect(llmClient.contexts[4]?.at(-1)).toEqual(userMessage('hello'));
+		expect(llmClient.contexts).toHaveLength(5);
 	});
 
 	it('fails when a context that no longer fits cannot be summarized', async () => {
