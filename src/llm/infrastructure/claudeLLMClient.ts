@@ -112,6 +112,9 @@ function toClaudeBlocks(part: MessagePart): ContentBlockParam[] {
 		case 'reasoning':
 			// Unsigned text cannot be replayed as thinking. The API accepts a turn without it.
 			return [];
+		case 'contextSummary':
+			// Never sent: the agent sends the context derived from it.
+			return [];
 	}
 }
 

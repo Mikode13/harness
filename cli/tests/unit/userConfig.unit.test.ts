@@ -44,6 +44,7 @@ describe('loadUserConfig', () => {
 				commands: { test },
 				maxSteps: { executor: 120 },
 				compactAt: 200_000,
+				compaction: 'recent',
 				formatter,
 			},
 		});
@@ -53,6 +54,7 @@ describe('loadUserConfig', () => {
 			commands: { test },
 			maxSteps: { executor: 120 },
 			compactAt: 200_000,
+			compaction: 'recent',
 			formatter,
 		});
 	});

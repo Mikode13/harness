@@ -2798,3 +2798,33 @@ tags: #mikode-harness #llm #cost #api-design
 - The Claude client sends the compaction beta whenever the context it sends starts with a compaction of its own, not only when it asks for one: a context compacted once with compaction off goes on under it. Found by the Codex review of #153.
 - Forcing a compaction at the least threshold is not yet measured live: whether a provider compacts a context already past its window, and whether OpenAI accepts a threshold of 50,000, are questions for the live round.
 - It ships as a `feat`, since nobody uses the harness yet.
+
+## The recent compactor: the agent's own model summarizes, and the last answers stay word for word
+
+tags: #mikode-harness #llm #cost #api-design
+
+**Decision:**
+
+- **A mode the consumer chooses:** `compaction: 'provider' | 'recent'`, beside `compactAt`, for an agent or for every agent of the orchestrator. `provider` stays the default; `jev` comes next.
+- **What `recent` keeps word for word:** the run's prompt and the model's last 10 answers, each with its tool results, so a call never leaves its result behind. At least one answer is summarized; with fewer than two, nothing is.
+- **The agent's own model writes the summary,** sent the context as it was last sent, with the same tools, so the call reads it from the provider's cache. After a `MaxContextError` it reads a text transcript of what is summarized instead, since the whole context no longer fits.
+- **In the conversation,** the summary is a `ContextSummaryPart` with copies of what it kept. Every call sends the context from the latest one on (`compactedContext`); the conversation keeps every part it replaced.
+- **Signed reasoning is dropped from what is kept,** and the summary is asked to say what the model was thinking there, except in the last answer, whose tool calls the next call answers.
+- A summary that fails is logged and not asked for again in that run; one that fails after a `MaxContextError` ends the run.
+
+**Context:** #48, decided with the user on 2026-10-28. It is the fallback for the Jev compactor and the point Jev's triage is compared against in the live tests. The user chose the agent's own model so the summary reads the cache, and a cheaper model only if the measurements show that the cache is not read. The user chose to keep a copy of what is kept in the summary part, over a mark of where it starts, so a move through the history cannot misplace it.
+
+**Alternatives considered:**
+
+- **Keeping the last N tokens,** estimated from characters. Predictable in size, but the harness does not tokenize.
+- **The provider's cheap model for the summary.** Cheaper per token, but it reads no cache of the agent's.
+- **A mark of where what is kept starts,** instead of copies. Nothing duplicated, but the context's derivation depends on positions a move through the history can change.
+- **Keeping all signed reasoning.** The model keeps it, but a provider may refuse or drop a signed block behind a changed context.
+- **Falling back to the provider's forced compaction after a `MaxContextError`.** Already built, but it mixes the two mechanisms in one mode.
+
+**Consequences:**
+
+- A summary costs one more call, with the whole context, mostly read from the cache. Its tokens count in the run's, and no `step` event narrates it.
+- The context after a summary differs from the one before it, so the next call writes the cache again from the start.
+- Whether a provider accepts the last answer's signed reasoning behind a summary is not yet known: a question for the live round. So is whether a run with too large a last answer can be compacted at all: those 10 answers are kept whatever their size.
+- 10 answers is a default of the harness's, not a measured one.

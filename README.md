@@ -616,10 +616,17 @@ it must be at least 50,000. `false` turns compaction off:
 createLLMOrchestrator({ workspace, compactAt: { executor: 200_000 } });
 ```
 
+`compaction: 'recent'` has the harness compact it instead, for the agent and for every role:
+before the next call, the agent's own model summarizes the context, reading it from its
+provider's cache, and only the run's prompt and the model's last 10 answers, each with its tool
+results, are kept word for word after the summary, without their signed reasoning. The
+conversation still keeps every turn; only what the model is sent starts at the summary.
+
 Either way, a context that no longer fits the model is compacted once and the call tried again;
-when it still does not fit, the run fails with `UnrecoverableError`. A `compaction` event, after
-the `step` of the call that compacted, says who compacted, why, and how many tokens of context
-it compacted.
+in the recent mode the model summarizes a transcript of it. When it still does not fit, the run
+fails with `UnrecoverableError`. A `compaction` event says who compacted, why, and how many
+tokens of context it compacted: after the `step` of the call that compacted, or once the
+harness's summary is written. The summary's tokens count in the run's.
 
 Without `workspace` it works on the current directory, read only. One run of the
 orchestrator is one run of the history, every round included.
