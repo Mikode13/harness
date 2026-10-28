@@ -2,32 +2,37 @@ import type { Message, MessagePart } from '#src/llm/domain/message';
 
 /**
  * Where the recent compactor cuts `context`, the context the model was last sent with what the
- * run added since: everything before the cut is summarized, and the messages it keeps word for
- * word follow the summary. `undefined` when the model has answered too few times for anything to
- * be summarized.
+ * run added since: everything before the cut is summarized, and the run's prompt and its last
+ * answers, each with its tool results, are kept word for word after the summary. Answers of
+ * earlier runs are always summarized, so what is kept starts at the prompt and keeps its order.
+ * `undefined` when there is no answer to summarize.
  *
- * @param prompt the run's prompt, kept wherever it is. Found by identity: one that is only in an
- * earlier summary's copies is kept again from here.
+ * @param prompt the run's prompt. Found by identity; when it is not there, an earlier compaction
+ * of this run kept it, first, so it is in the summary's message, which is summarized again.
  */
 export function recentCut(
 	context: Message[],
-	prompt: Message | undefined,
+	prompt: Message,
 	keptSteps: number,
 ): { summarized: Message[]; kept: Message[] } | undefined {
+	const found = context.indexOf(prompt);
+	const promptAt = Math.max(found, 0);
 	const answers = context.flatMap((message, index) =>
-		message.role === 'assistant' ? [index] : [],
+		message.role === 'assistant' && index > promptAt ? [index] : [],
 	);
+	const earlier = context.slice(0, promptAt).some(message => message.role === 'assistant');
 	// At least one answer is summarized, or compacting would only add a summary.
-	const kept = Math.min(keptSteps, answers.length - 1);
-	const cut = answers[answers.length - kept];
-	if (kept < 0 || cut === undefined || cut === 0) return undefined;
+	const kept = Math.max(0, Math.min(keptSteps, earlier ? answers.length : answers.length - 1));
 	// A step starts at an answer, so each call keeps its results, which follow it.
-	const tail = context.slice(cut);
-	const promptAt = prompt ? context.indexOf(prompt) : -1;
-	const keptPrompt = prompt && promptAt < cut ? [prompt] : [];
+	const cut = kept === 0 ? context.length : (answers[answers.length - kept] ?? context.length);
+	const summarized =
+		found === -1
+			? context.slice(0, cut)
+			: [...context.slice(0, found), ...context.slice(found + 1, cut)];
+	if (!summarized.some(message => message.role === 'assistant')) return undefined;
 	return {
-		summarized: context.slice(0, cut),
-		kept: withoutReplayedReasoning([...keptPrompt, ...tail]),
+		summarized,
+		kept: withoutReplayedReasoning([prompt, ...context.slice(cut)]),
 	};
 }
 

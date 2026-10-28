@@ -505,9 +505,10 @@ export class LLMAgent implements Agent {
 	}> {
 		// The run's messages are not copied, so its prompt is found where it is.
 		const context = compactedContext([...this.conversation.contextAfter(after), ...runMessages]);
-		const cut = recentCut(context, runMessages[0], compactor.keptSteps);
+		const [prompt] = runMessages;
+		const cut = prompt && recentCut(context, prompt, compactor.keptSteps);
 		if (!cut) {
-			this.warnCompactionFailed('the model has answered too few times to summarize any of it');
+			this.warnCompactionFailed('the model has not answered yet, so there is nothing to summarize');
 			return { compacted: false, called: false, usage: undefined, unreported: false };
 		}
 		const request = outgrown
@@ -520,6 +521,25 @@ export class LLMAgent implements Agent {
 		} catch (error) {
 			if (isAbortError(error)) throw error;
 			const failure = classifyProviderFailure(error, 'The context summary failed');
+			if (failure instanceof MaxContextError && !outgrown) {
+				// The context grew past the model since it was last sent: the model reads what it
+				// summarizes as text instead, and this call is the run's too.
+				let fallback: Awaited<ReturnType<typeof this.compactRecent>>;
+				try {
+					fallback = await this.compactRecent(compactor, runMessages, after, {
+						signal,
+						tools,
+						outgrown: true,
+					});
+				} catch (fallbackFailure) {
+					throw withSpentTokens(fallbackFailure, failure.tokens, failure.usageUnreported);
+				}
+				return {
+					...fallback,
+					usage: addTokens(failure.tokens, fallback.usage),
+					unreported: fallback.unreported || failure.usageUnreported,
+				};
+			}
 			// Only a passing failure of the provider goes without a summary: anything else, such as
 			// a logger or a response the client could not map, ends the run as any call's would.
 			if (!(failure instanceof RecoverableError)) throw failure;

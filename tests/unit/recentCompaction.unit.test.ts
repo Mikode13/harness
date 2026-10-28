@@ -102,7 +102,7 @@ describe('recentCut', () => {
 
 		const cut = recentCut(context, prompt, 2);
 
-		expect(cut?.summarized).toEqual(context.slice(0, 3));
+		expect(cut?.summarized).toEqual(context.slice(1, 3));
 		expect(cut?.kept).toEqual([
 			prompt,
 			// Only the last answer keeps its signed reasoning, for the call it is waiting on.
@@ -113,7 +113,7 @@ describe('recentCut', () => {
 		]);
 	});
 
-	it('does not keep the prompt twice when it is among the last answers', () => {
+	it("summarizes earlier runs' answers, so what is kept starts at the prompt", () => {
 		const earlier = userMessage('earlier task');
 		const prompt = userMessage('task');
 		const context = [
@@ -127,14 +127,40 @@ describe('recentCut', () => {
 		expect(recentCut(context, prompt, 5)?.kept).toEqual([prompt, answer('call-2', 'Paris')]);
 	});
 
-	it('summarizes at least one answer, and nothing with fewer than two', () => {
+	it('summarizes at least one answer, and nothing without one', () => {
 		const prompt = userMessage('task');
 
-		expect(recentCut([prompt, answer('call-1', 'Madrid')], prompt, 10)).toBeUndefined();
+		expect(recentCut([prompt], prompt, 10)).toBeUndefined();
+		expect(recentCut([prompt, answer('call-1', 'Madrid')], prompt, 10)).toEqual({
+			summarized: [answer('call-1', 'Madrid')],
+			kept: [prompt],
+		});
 		expect(
-			recentCut([prompt, answer('call-1', 'Madrid'), answer('call-2', 'Paris')], prompt, 10)
-				?.summarized,
-		).toEqual([prompt, answer('call-1', 'Madrid')]);
+			recentCut([prompt, answer('call-1', 'Madrid'), answer('call-2', 'Paris')], prompt, 10),
+		).toEqual({
+			summarized: [answer('call-1', 'Madrid')],
+			kept: [prompt, answer('call-2', 'Paris')],
+		});
+	});
+
+	it('summarizes again the message an earlier compaction of the run joined the prompt to, keeping the prompt once', () => {
+		const prompt = userMessage('task');
+		const joined: Message = {
+			role: 'user',
+			content: [{ type: 'text', text: 'summary' }, ...prompt.content],
+		};
+		const context = [
+			joined,
+			answer('call-2', 'Paris'),
+			weatherOf('call-2', 'Paris'),
+			answer('call-3', 'Rome'),
+			weatherOf('call-3', 'Rome'),
+		];
+
+		expect(recentCut(context, prompt, 1)).toEqual({
+			summarized: context.slice(0, 3),
+			kept: [prompt, answer('call-3', 'Rome'), weatherOf('call-3', 'Rome')],
+		});
 	});
 
 	it("leaves out a provider's compactions and earlier summaries from what it keeps", () => {
@@ -247,7 +273,7 @@ describe('LLMAgent with the recent compactor', () => {
 	it('goes on whole when the summary fails, and does not ask again in the same run', async () => {
 		const logger = { warn: vi.fn() };
 		const llmClient = new FakeLLMClient(
-			assistantResponse(answer('call-1', 'Madrid').content, { usage: usage(150) }),
+			assistantResponse(answer('call-1', 'Madrid').content, { usage: usage(50) }),
 			assistantResponse(answer('call-2', 'Paris').content, { usage: usage(150) }),
 			assistantResponse([toolCall('call-9', 'weather', { city: 'Oslo' })]),
 			assistantResponse(answer('call-3', 'Rome').content, { usage: usage(150) }),
@@ -262,10 +288,8 @@ describe('LLMAgent with the recent compactor', () => {
 		}).run('task', { signal });
 
 		expect(response.response).toBe('done');
-		expect(logger.warn).toHaveBeenCalledWith(
-			'The context could not be compacted: the model has answered too few times to summarize any of it',
-		);
-		// Asked once the model had answered twice, and answered with a call instead of a summary.
+		// Answered with a call instead of a summary, and not asked again once past the threshold.
+		expect(logger.warn).toHaveBeenCalledOnce();
 		expect(logger.warn).toHaveBeenCalledWith(
 			'The context could not be compacted: the model did not answer with a summary',
 		);
@@ -392,6 +416,55 @@ describe('LLMAgent with the recent compactor', () => {
 		// The refused run is not in the conversation, so neither is its size: no summary is asked.
 		expect(llmClient.contexts[4]?.at(-1)).toEqual(userMessage('hello'));
 		expect(llmClient.contexts).toHaveLength(5);
+	});
+
+	it('summarizes from a transcript when the summary request itself no longer fits', async () => {
+		const events: ProgressEvent[] = [];
+		const llmClient = new FakeLLMClient(
+			assistantResponse(answer('call-1', 'Madrid').content, { usage: usage(50) }),
+			assistantResponse(answer('call-2', 'Paris').content, { usage: usage(150) }),
+			new MaxContextError('Too long', {
+				cause: 'window',
+				tokens: { inputTokens: 300, readCacheTokens: 0, writtenCacheTokens: 0, outputTokens: 0 },
+			}),
+			textResponse('Madrid is sunny.', { usage: usage(20) }),
+			textResponse('done'),
+		);
+
+		const response = await new LLMAgent({
+			llmClient,
+			tools: [weather],
+			compactor: { by: 'harness', at: 100, keptSteps: 1 },
+		}).run('task', {
+			signal,
+			onProgress: event => {
+				if (event.type === 'compaction') events.push(event);
+			},
+		});
+
+		expect(response.response).toBe('done');
+		expect(llmClient.contexts[3]).toHaveLength(1);
+		expect(JSON.stringify(llmClient.contexts[3])).toContain('It no longer fits your context');
+		expect(events).toEqual([
+			{ type: 'compaction', by: 'harness', reason: 'threshold', contextTokens: 150 },
+		]);
+		// The request that did not fit is billed with the run.
+		expect(response.tokens?.inputTokens).toBe(50 + 150 + 300 + 20 + 1);
+	});
+
+	it('fails when a context that no longer fits holds no answer to summarize', async () => {
+		const logger = { warn: vi.fn() };
+
+		await expect(
+			new LLMAgent({
+				llmClient: new FakeLLMClient(new MaxContextError('Too long', { cause: 'window' })),
+				logger,
+				compactor: { by: 'harness', at: undefined, keptSteps: 1 },
+			}).run('task', { signal }),
+		).rejects.toBeInstanceOf(MaxContextError);
+		expect(logger.warn).toHaveBeenCalledWith(
+			'The context could not be compacted: the model has not answered yet, so there is nothing to summarize',
+		);
 	});
 
 	it('fails when a context that no longer fits cannot be summarized', async () => {

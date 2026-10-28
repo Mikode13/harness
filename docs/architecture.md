@@ -345,9 +345,10 @@ as `compactAt`; a call that fails with `MaxContextError` is followed by one sent
 `compactAt: 'now'`, even with compaction off. The recent compactor (`recentCompaction.ts`) leaves
 the provider's off: once the last call's context passed the threshold, before the next call, the
 agent's own model is sent that context again, with the same tools, and asked for a summary; after a
-`MaxContextError` it reads a transcript of what is summarized instead. The summary goes into the
-run as a `ContextSummaryPart`, with copies of what it keeps word for word: the run's prompt and the
-last answers, each with its tool results, without the signed reasoning of any but the last. Every
+`MaxContextError`, or when that request no longer fits, it reads a transcript of what is summarized
+instead. The summary goes into the run as a `ContextSummaryPart`, with copies of what it keeps word
+for word: the run's prompt and the run's last answers, each with its tool results, so what is kept
+starts at the prompt and an earlier summary of the run is summarized again, without the signed reasoning of any but the last. Every
 call sends `compactedContext`, the context from the latest summary on; the conversation keeps
 every part. A summary the model failed to write, or one the provider failed in passing
 (`RecoverableError`), is logged and not asked for again in that run; any other failure ends it.

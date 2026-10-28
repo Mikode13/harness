@@ -2806,8 +2806,8 @@ tags: #mikode-harness #llm #cost #api-design
 **Decision:**
 
 - **A mode the consumer chooses:** `compaction: 'provider' | 'recent'`, beside `compactAt`, for an agent or for every agent of the orchestrator. `provider` stays the default; `jev` comes next.
-- **What `recent` keeps word for word:** the run's prompt and the model's last 10 answers, each with its tool results, so a call never leaves its result behind. At least one answer is summarized; with fewer than two, nothing is.
-- **The agent's own model writes the summary,** sent the context as it was last sent, with the same tools, so the call reads it from the provider's cache. After a `MaxContextError` it reads a text transcript of what is summarized instead, since the whole context no longer fits.
+- **What `recent` keeps word for word:** the run's prompt and the run's last 10 answers, each with its tool results, so a call never leaves its result behind. Earlier runs are always summarized: what is kept starts at the prompt, in order, and a second compaction in the run finds the prompt first. At least one answer is summarized; with none, nothing is.
+- **The agent's own model writes the summary,** sent the context as it was last sent, with the same tools, so the call reads it from the provider's cache. After a `MaxContextError`, or when the summary request itself no longer fits, it reads a text transcript of what is summarized instead.
 - **In the conversation,** the summary is a `ContextSummaryPart` with copies of what it kept. Every call sends the context from the latest one on (`compactedContext`); the conversation keeps every part it replaced.
 - **Signed reasoning is dropped from what is kept,** and the summary is asked to say what the model was thinking there, except in the last answer, whose tool calls the next call answers.
 - A summary that is no summary, or that fails in passing on the provider's side (a rate limit, an overload), is logged and not asked for again in that run; any other failure, such as a throwing logger, ends the run like any call's. One that fails after a `MaxContextError` ends the run.

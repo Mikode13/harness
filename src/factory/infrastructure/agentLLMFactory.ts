@@ -146,9 +146,9 @@ export interface CreateLLMAgentOptions {
 	/**
 	 * Who compacts the context once it passes `compactAt`. `provider`, the default, has the
 	 * model's provider compact it on its side. `recent` has the agent's own model summarize it
-	 * before the next call, from its provider's cache, and keeps the run's prompt and the model's
+	 * before the next call, from its provider's cache, and keeps the run's prompt and the run's
 	 * last 10 answers, each with its tool results, word for word after the summary, without
-	 * their signed reasoning.
+	 * their signed reasoning. Earlier runs are always summarized.
 	 */
 	compaction?: CompactionMode;
 	/**

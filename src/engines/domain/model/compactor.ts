@@ -17,8 +17,8 @@ export interface ProviderCompactor {
 
 /**
  * The harness's compactor without Jev: once the context passes `at`, before the next call, the
- * agent's own model summarizes it, and the run's prompt and the last `keptSteps` answers of the
- * model, each with its tool results, are kept word for word after the summary.
+ * agent's own model summarizes it, and the run's prompt and the run's last `keptSteps` answers of
+ * the model, each with its tool results, are kept word for word after the summary.
  */
 export interface RecentCompactor {
 	readonly by: 'harness';

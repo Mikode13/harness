@@ -618,8 +618,9 @@ createLLMOrchestrator({ workspace, compactAt: { executor: 200_000 } });
 
 `compaction: 'recent'` has the harness compact it instead, for the agent and for every role:
 before the next call, the agent's own model summarizes the context, reading it from its
-provider's cache, and only the run's prompt and the model's last 10 answers, each with its tool
-results, are kept word for word after the summary, without their signed reasoning. The
+provider's cache, and only the run's prompt and its last 10 answers, each with its tool
+results, are kept word for word after the summary, without their signed reasoning; earlier runs
+are always summarized. The
 conversation still keeps every turn; only what the model is sent starts at the summary.
 
 Either way, a context that no longer fits the model is compacted once and the call tried again;
