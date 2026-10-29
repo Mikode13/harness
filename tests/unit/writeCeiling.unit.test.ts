@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { RunContext } from '../../src/agent/domain/runContext.ts';
 import { createFileTools } from '../../src/factory/infrastructure/agentLLMFactory.ts';
 import { EditRefusedError } from '../../src/tools/domain/fileEdits.ts';
-import type { PreparingTool } from '../../src/tools/domain/preparedCall.ts';
+import { type PreparingTool, prepareCall } from '../../src/tools/domain/preparedCall.ts';
+import type { Tool } from '../../src/tools/domain/tool.ts';
 import { ReadRegistry, type ToolCallContext } from '../../src/tools/domain/readRegistry.ts';
 import { createRemoveWorktreeTool } from '../../src/tools/infrastructure/removeWorktreeTool.ts';
 import { delegateCeiling } from '../../src/tools/infrastructure/writeCeiling.ts';
@@ -121,6 +122,44 @@ describe('a write ceiling', () => {
 		await expect(remove.prepare({ path: elsewhere }, signal, callUnder([repo]))).rejects.toThrow(
 			`your tools may also write in ${elsewhere}`,
 		);
+	});
+});
+
+describe("a write ceiling over the consumer's own tools", () => {
+	const commit = (risk: 'safe' | 'mutating') => {
+		let ran = 0;
+		const tool: Tool = {
+			name: 'commit',
+			description: 'Commits the work',
+			inputSchema: { type: 'object', properties: {} },
+			risk: () => risk,
+			execute: () => {
+				ran++;
+				return Promise.resolve('committed');
+			},
+		};
+		return { tool, ran: () => ran };
+	};
+
+	it('refuses a call that may change things under a caller that only reads, before anyone is asked', async () => {
+		const { tool, ran } = commit('mutating');
+
+		await expect(prepareCall(tool, {}, signal, callUnder([]))).rejects.toThrow(
+			'only reads, and commit may change things',
+		);
+		expect(ran()).toBe(0);
+	});
+
+	it('lets it run under a caller that writes, with no ceiling, or when it is safe', async () => {
+		const mutating = commit('mutating');
+		const safe = commit('safe');
+
+		await (await prepareCall(mutating.tool, {}, signal, callUnder([repo]))).run(signal);
+		await (await prepareCall(mutating.tool, {}, signal, callUnder(undefined))).run(signal);
+		await (await prepareCall(safe.tool, {}, signal, callUnder([]))).run(signal);
+
+		expect(mutating.ran()).toBe(2);
+		expect(safe.ran()).toBe(1);
 	});
 });
 

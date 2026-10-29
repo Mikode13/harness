@@ -675,7 +675,9 @@ The agent works inside the caller's run:
   agent's `workspace`, and nowhere when that workspace only reads. A calling agent with no
   `workspace`, such as a coordinator that only hands out tasks, sets no limit of its own. Its
   tools that may write elsewhere, a command included, are refused before anyone is asked, and
-  the model is told why;
+  the model is told why. Where your own `Tool` writes is unknown, so under an agent that only
+  reads, a call your tool judges `mutating` or `destructive` is refused too; under an agent
+  that writes, it writes wherever your tool does;
 - what it spends counts in the caller's `tokens`, a failed attempt included;
 - it asks and is approved through the run's `ask` and `approve`, which agents working at once
   may call before an earlier call has its answer; one person at one terminal needs them queued,

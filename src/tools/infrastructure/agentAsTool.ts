@@ -63,7 +63,9 @@ export interface AgentAsToolOptions {
  * - it never writes more than the calling agent may: only within the `write` roots of that
  *   agent's `workspace`, and nowhere when they are none, as for the planner and the reviewer.
  *   A calling agent with no workspace sets no limit of its own. Its tools that may write elsewhere are
- *   refused, a command included, and the model is told why;
+ *   refused, a command included, and the model is told why. A consumer's `Tool` that is not
+ *   `safe` is refused under a calling agent that only reads, since where it writes is unknown;
+ *   under one that writes, it writes wherever it does;
  * - what it spends counts in the caller's `tokens`, a failed attempt included;
  * - its progress reaches the consumer as `subagent` events of the call, and a transcript it gives
  *   names the call in `delegation`;

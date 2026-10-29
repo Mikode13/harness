@@ -143,7 +143,8 @@ function isPreparing(tool: AgentTool): tool is PreparingTool {
 
 /**
  * Brings any tool into the one lifecycle of prepare, approve, run. A consumer's `Tool` has its
- * risk judged now, and later runs on the input as the model sent it.
+ * risk judged now, and later runs on the input as the model sent it; one that is not `safe` is
+ * refused for an agent started by an agent that only reads.
  */
 export async function prepareCall(
 	tool: Tool | PreparingTool,
@@ -154,5 +155,12 @@ export async function prepareCall(
 	if (isPreparing(tool)) return tool.prepare(input, signal, call);
 
 	const risk = tool.risk(input);
+	// Where a consumer's tool writes is unknown, so under an agent that only reads, one that may
+	// write is refused whole. Under one that writes, it writes where the consumer let it.
+	if (risk !== 'safe' && call.writeCeiling?.length === 0) {
+		throw new Error(
+			`Nothing was changed: the agent that handed you this task only reads, and ${tool.name} may change things. An agent another agent started never writes more than that agent may. Answer with what you found, and say what you would have changed.`,
+		);
+	}
 	return { risk, unrecorded: true, run: runSignal => tool.execute(input, runSignal) };
 }
