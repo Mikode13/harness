@@ -204,9 +204,11 @@ Four contracts have rules of their own:
   `name`, says when each ended and whether it `answered`, `failed` or was `stopped` when the run
   ended. It is narration: the answer reaches only the model that sent the agent.
   `OrchestratorAgent` stamps the outer wrapper with the role that made the call. An agent on
-  the model APIs emits `compaction` after the `step` of a call that compacted its context, with
-  who compacted it, why, and, when known, how many tokens of context it compacted; that call's
-  tokens are already in the `step` and the run's total.
+  the model APIs emits `compaction` when its context was compacted, with who compacted it, why,
+  and, when known, how many tokens of context it compacted. The provider's follows the `step`
+  of the call that compacted, whose tokens it includes; the harness's comes once its summary is
+  written, before the next call's `step`, and the summary call has no `step` of its own: its
+  tokens are only in the run's total.
 - **`Tool` narration stays outside the provider definition.** A tool may provide
   `summarize(input)`, but `ToolDefinition` sent to an `LLMClient` contains only `name`,
   `description` and `inputSchema`. `defineTool` validates the model input and passes that

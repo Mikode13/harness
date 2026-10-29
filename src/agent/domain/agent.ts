@@ -147,8 +147,10 @@ export type ProgressEvent =
 	 * while its conversation keeps every part. `by` is who compacted it, the model's provider or
 	 * the harness. `reason` is `threshold` when the context passed the agent's `compactAt`, and
 	 * `maxContext` when it no longer fit the model, which compacts it even with compaction off.
-	 * `contextTokens` is how many tokens of context were compacted, when known. It follows the
-	 * `step` event of the call that compacted, whose tokens include the compaction's.
+	 * `contextTokens` is how many tokens of context were compacted, when known. The provider's
+	 * compaction follows the `step` event of the call that compacted, whose tokens include the
+	 * compaction's. The harness's is narrated once its summary is written, before the next call's
+	 * `step`: the summary call has no `step` of its own, and its tokens are only in the run's.
 	 */
 	| {
 			type: 'compaction';
