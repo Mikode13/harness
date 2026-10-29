@@ -310,6 +310,39 @@ describe('LLMAgent with the recent compactor', () => {
 		expect(JSON.stringify(transcripts)).not.toContain('"kept"');
 	});
 
+	it('does not summarize again in the run when what the summary kept is still past the threshold', async () => {
+		const logger = { warn: vi.fn() };
+		const events: ProgressEvent[] = [];
+		const llmClient = new FakeLLMClient(
+			assistantResponse(answer('call-1', 'Madrid').content, { usage: usage(50) }),
+			assistantResponse(answer('call-2', 'Paris').content, { usage: usage(150) }),
+			textResponse('Madrid is sunny; Paris was asked.', { usage: usage(160) }),
+			assistantResponse(answer('call-3', 'Rome').content, { usage: usage(140) }),
+			assistantResponse(answer('call-4', 'Oslo').content, { usage: usage(170) }),
+			textResponse('done'),
+		);
+
+		const response = await new LLMAgent({
+			llmClient,
+			tools: [weather],
+			logger,
+			compactor: { by: 'harness', at: 100, keptSteps: 1 },
+		}).run('task', {
+			signal,
+			onProgress: event => {
+				if (event.type === 'compaction') events.push(event);
+			},
+		});
+
+		expect(response.response).toBe('done');
+		// One summary, and no other call asks for one.
+		expect(llmClient.contexts).toHaveLength(6);
+		expect(events).toHaveLength(1);
+		expect(logger.warn).toHaveBeenCalledWith(
+			'The context could not be compacted: what the summary kept is still 140 tokens, past the threshold of 100, so the context is not compacted again in this run unless it no longer fits',
+		);
+	});
+
 	it('goes on whole when the summary fails, and does not ask again in the same run', async () => {
 		const logger = { warn: vi.fn() };
 		const llmClient = new FakeLLMClient(

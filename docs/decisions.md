@@ -2812,6 +2812,7 @@ tags: #mikode-harness #llm #cost #api-design
 - **Signed reasoning is dropped from what is kept,** and the summary is asked to say what the model was thinking there, except in the last answer, whose tool calls the next call answers.
 - A summary that is no summary, or that fails in passing on the provider's side (a rate limit, an overload), is logged and not asked for again in that run; any other failure, such as a throwing logger, ends the run like any call's. One that fails after a `MaxContextError` ends the run.
 - The context's size the compactor measures is the last kept run's: a run that is not kept leaves it as it was, as it leaves the conversation.
+- A summary whose kept answers still leave the context past the threshold is logged, and the context is not summarized again in that run unless it no longer fits: each summary costs a whole context, and the next one would keep the same.
 
 **Context:** #48, decided with the user on 2026-10-28. It is the fallback for the Jev compactor and the point Jev's triage is compared against in the live tests. The user chose the agent's own model so the summary reads the cache, and a cheaper model only if the measurements show that the cache is not read. The user chose to keep a copy of what is kept in the summary part, over a mark of where it starts, so a move through the history cannot misplace it.
 

@@ -149,7 +149,6 @@ interface RunEffects {
 	toolRan: boolean;
 }
 
-/** What a run has shown the model, for its transcript. */
 /**
  * `message` with each summary in it reduced to its text: what a summary kept is in the
  * conversation before it already.
@@ -174,6 +173,7 @@ interface CompactionOutcome {
 	unreported: boolean;
 }
 
+/** What a run has shown the model, for its transcript. */
 interface Seen {
 	messages: () => Message[];
 	tools: ToolDefinition[];
@@ -1419,6 +1419,8 @@ export class LLMAgent implements Agent {
 			// A summary the model failed to write is not asked for again in the same run, unless the
 			// context no longer fits.
 			let summaryFailed = false;
+			// A summary was just written, so the next call measures what it left.
+			let summarized = false;
 			const { compactor } = this;
 			for (let step = 1; step <= this.maxSteps; step++) {
 				// An agent at work may have narrated through a callback that failed.
@@ -1441,6 +1443,7 @@ export class LLMAgent implements Agent {
 					if (compaction.compacted) {
 						const compacted = outgrown ? outgrownTokens : contextTokens;
 						contextTokens = undefined;
+						summarized = true;
 						emit(
 							{
 								type: 'compaction',
@@ -1493,6 +1496,20 @@ export class LLMAgent implements Agent {
 				tokens = addTokens(tokens, response.usage);
 				unreported ||= !response.usage;
 				contextTokens = response.usage && contextSize(response.usage);
+				// What a summary keeps word for word may stay past the threshold: summarizing it again
+				// on every step would cost a whole context each time and keep nothing less.
+				if (
+					summarized &&
+					compactor.at !== undefined &&
+					contextTokens !== undefined &&
+					contextTokens >= compactor.at
+				) {
+					summaryFailed = true;
+					this.warnCompactionFailed(
+						`what the summary kept is still ${String(contextTokens)} tokens, past the threshold of ${String(compactor.at)}, so the context is not compacted again in this run unless it no longer fits`,
+					);
+				}
+				summarized = false;
 				// After the tokens are counted, so a throwing callback still reports them, and for an
 				// unusable answer too: the call was sent, and billed.
 				this.narrateStep(step, response.usage, { context: sent, tools }, callback);

@@ -223,7 +223,8 @@ Four contracts have rules of their own:
   model-specific constraints, so constructor validation remains the final boundary and the factory does not otherwise validate the values.
 
 External integrations are `@anthropic-ai/claude-agent-sdk` and `@openai/codex-sdk`, each
-reached only from its own engine, `openai` and `@anthropic-ai/sdk`, each reached only from its own `LLMClient`, and `zod`, used by
+reached only from its own engine, `openai` and `@anthropic-ai/sdk`, each reached only from its own `LLMClient`, `@typesafe-ai/sdk`, reached only from `JevContextTriage` and only in
+the `jev` compaction mode, which sends it the tool results it judges, and `zod`, used by
 `ReviewerDecisionValidator` behind the `Validator<T>` interface of `src/shared/`, by `defineTool`, and by a consumer's own workflow validators. `ILogger` is the one outbound
 port: the factories default it to a stderr logger, and nothing in `src/` writes to stdout,
 which belongs to the consumer.
