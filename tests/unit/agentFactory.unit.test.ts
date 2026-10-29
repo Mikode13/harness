@@ -480,23 +480,25 @@ describe('createLLMAgent', () => {
 		},
 	);
 
-	it('never has the provider compact in the recent mode, and refuses a mode that does not exist', async () => {
-		const create = openAIReplying('hi');
+	it('never has the provider compact in the recent or Jev mode, and refuses a mode that does not exist', async () => {
+		for (const compaction of ['recent', 'jev'] as const) {
+			const create = openAIReplying('hi');
 
-		await createLLMAgent('openai', {
-			systemPrompt: 'Be brief.',
-			compaction: 'recent',
-			logger: createLogger(),
-		}).run('prompt', { signal });
+			await createLLMAgent('openai', {
+				systemPrompt: 'Be brief.',
+				compaction,
+				logger: createLogger(),
+			}).run('prompt', { signal });
 
-		expect(requestsOf(create)[0]).not.toHaveProperty('context_management');
+			expect(requestsOf(create)[0]).not.toHaveProperty('context_management');
+		}
 		expect(() =>
 			createLLMAgent('openai', {
 				systemPrompt: 'Be brief.',
-				compaction: 'jev' as never,
+				compaction: 'magic' as never,
 				logger: createLogger(),
 			}),
-		).toThrow('compaction must be one of: provider, recent; got jev');
+		).toThrow('compaction must be one of: provider, recent, jev; got magic');
 	});
 
 	it('never has the provider compact with compactAt false', async () => {

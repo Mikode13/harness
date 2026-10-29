@@ -613,3 +613,22 @@ most of them read from the cache, and under 500 output tokens, cents at most.
   without them.
 - **What changed:** "An agent given a workspace needs tools" in decisions.md: such an agent is
   now refused when it is built (#148).
+
+## A first probe of Jev's triage (2026-10-28)
+
+With the user's approval, two requests to `jev-1.14.0` asked how much an agent fixing a failing
+test needed four tool results word for word, on a score from 0 to 3: a listing of the
+repository, the failing test run, the README and the file it was about to edit. Together they
+read 2,228 input tokens, about $0.0001, and each took 160 to 260 ms.
+
+### Jev ordered tool results as a person would
+
+- **What happened:** the file being edited scored 2.27 to 2.39, the test run 1.06, the listing
+  0.13 and the README 0.02. Asked about one result alone or about all four in one request, the
+  file scored nearly the same.
+- **Evidence:** the scores came with the probabilities of each level; the low ones with
+  confidence 0.87 and 0.99, the file's with 0.26 to 0.40, split between 2 and 3.
+- **What it means:** a threshold of 2 keeps the file and summarizes the rest, on one small,
+  made-up case. Whether it holds on real contexts is for the live round.
+- **What changed:** the Jev compactor keeps a result from a score of 2, one request per result.
+  See "The Jev compactor: Jev chooses which tool results stay word for word" in decisions.md.
