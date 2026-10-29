@@ -171,6 +171,8 @@ interface CompactionOutcome {
 	called: boolean;
 	usage: Tokens | undefined;
 	unreported: boolean;
+	/** Why it did not compact, when it did not. */
+	why?: string;
 }
 
 /** What a run has shown the model, for its transcript. */
@@ -544,17 +546,18 @@ export class LLMAgent implements Agent {
 			chosen = this.recentChoice(compactor, context, prompt);
 		}
 		if (!chosen?.cut) {
-			this.warnCompactionFailed(
-				chosen?.triaged
-					? 'Jev kept every answer whole, so there is nothing to summarize'
-					: 'the model has not answered yet, so there is nothing to summarize',
-			);
+			const why = chosen?.triaged
+				? 'Jev kept every answer whole, so there is nothing to summarize'
+				: 'the model has not answered yet, so there is nothing to summarize';
+			// A context that no longer fits ends the run, with why in its error rather than the log.
+			if (!options.outgrown) this.warnCompactionFailed(why);
 			// Jev would keep the same again: it is not asked again in the same run.
 			return {
 				compacted: false,
 				called: chosen?.triaged ?? false,
 				usage: undefined,
 				unreported: false,
+				why,
 			};
 		}
 		return this.summarize(chosen.cut, chosen.kept, runMessages, { ...options, context });
@@ -674,8 +677,9 @@ export class LLMAgent implements Agent {
 				called: true,
 				usage: failure.tokens,
 				unreported: failure.usageUnreported,
+				why: describeFailure(failure),
 			};
-			this.warnSummaryCallFailed(describeFailure(failure), failed);
+			if (!outgrown) this.warnSummaryCallFailed(failed.why, failed);
 			return failed;
 		}
 
@@ -690,8 +694,9 @@ export class LLMAgent implements Agent {
 			response.message.content.some(part => part.type === 'toolCall') ||
 			summary === ''
 		) {
-			this.warnSummaryCallFailed('the model did not answer with a summary', spent);
-			return { compacted: false, ...spent };
+			const why = 'the model did not answer with a summary';
+			if (!outgrown) this.warnSummaryCallFailed(why, spent);
+			return { compacted: false, ...spent, why };
 		}
 		runMessages.push({
 			role: 'user',
@@ -1455,7 +1460,7 @@ export class LLMAgent implements Agent {
 						);
 					} else if (outgrown) {
 						throw new MaxContextError('The context no longer fits the model', {
-							cause: 'It no longer fit, and could not be compacted.',
+							cause: `It no longer fit, and could not be compacted: ${compaction.why ?? 'it is unknown why'}.`,
 						});
 					} else {
 						summaryFailed = compaction.called;

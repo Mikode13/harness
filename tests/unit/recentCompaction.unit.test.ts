@@ -534,10 +534,13 @@ describe('LLMAgent with the recent compactor', () => {
 				logger,
 				compactor: { by: 'harness', at: undefined, keptSteps: 1 },
 			}).run('task', { signal }),
-		).rejects.toBeInstanceOf(MaxContextError);
-		expect(logger.warn).toHaveBeenCalledWith(
-			'The context could not be compacted: the model has not answered yet, so there is nothing to summarize',
-		);
+		).rejects.toMatchObject({
+			constructor: MaxContextError,
+			cause:
+				'It no longer fit, and could not be compacted: the model has not answered yet, so there is nothing to summarize.',
+		});
+		// The failure that ends the run is thrown, not logged as well.
+		expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('could not be compacted'));
 	});
 
 	it('ends the run as soon as the summary is written when an agent at work ended it meanwhile', async () => {
@@ -590,6 +593,7 @@ describe('LLMAgent with the recent compactor', () => {
 	});
 
 	it('fails when a context that no longer fits cannot be summarized', async () => {
+		const logger = { warn: vi.fn() };
 		const llmClient = new FakeLLMClient(
 			assistantResponse(answer('call-1', 'Madrid').content),
 			assistantResponse(answer('call-2', 'Paris').content),
@@ -601,12 +605,13 @@ describe('LLMAgent with the recent compactor', () => {
 			new LLMAgent({
 				llmClient,
 				tools: [weather],
-				logger: { warn: vi.fn() },
+				logger,
 				compactor: { by: 'harness', at: undefined, keptSteps: 1 },
 			}).run('task', { signal }),
 		).rejects.toMatchObject({
 			constructor: MaxContextError,
-			cause: 'It no longer fit, and could not be compacted.',
+			cause: 'It no longer fit, and could not be compacted: overloaded.',
 		});
+		expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('could not be compacted'));
 	});
 });

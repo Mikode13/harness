@@ -2811,7 +2811,7 @@ tags: #mikode-harness #llm #cost #api-design
 - **The agent's own model writes the summary,** sent the context as it was last sent, with the same tools, so the call reads it from the provider's cache. After a `MaxContextError`, or when the summary request itself no longer fits, it reads a text transcript of what is summarized instead.
 - **In the conversation,** the summary is a `ContextSummaryPart` with copies of what it kept. Every call sends the context from the latest one on (`compactedContext`); the conversation keeps every part it replaced.
 - **Signed reasoning is dropped from what is kept,** and the summary is asked to say what the model was thinking there, except in the last answer, whose tool calls the next call answers.
-- A summary that is no summary, or that fails in passing on the provider's side (a rate limit, an overload), is logged and not asked for again in that run; any other failure, such as a throwing logger, ends the run like any call's. One that fails after a `MaxContextError` ends the run.
+- A summary that is no summary, or that fails in passing on the provider's side (a rate limit, an overload), is logged and not asked for again in that run; any other failure, such as a throwing logger, ends the run like any call's. One that fails after a `MaxContextError` ends the run, with why in the error's `cause` rather than in the log.
 - The context's size the compactor measures is the last kept run's: a run that is not kept leaves it as it was, as it leaves the conversation.
 - A summary whose kept answers still leave the context past the threshold is logged, and the context is not summarized again in that run unless it no longer fits: each summary costs a whole context, and the next one would keep the same.
 
