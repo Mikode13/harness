@@ -538,8 +538,9 @@ export class LLMAgent implements Agent {
 		const context = compactedContext([...this.conversation.contextAfter(after), ...runMessages]);
 		const [prompt] = runMessages;
 		let chosen = prompt && (await this.harnessCut(compactor, context, prompt, options.signal));
-		// A context that no longer fits must lose something: when Jev keeps it all, recent cuts.
-		if (prompt && chosen?.triaged && !chosen.cut && options.outgrown) {
+		// A context that no longer fits must lose something: when Jev's cut keeps it all, even the
+		// last answer it always keeps, recent cuts.
+		if (prompt && compactor.triage && !chosen?.cut && options.outgrown) {
 			chosen = this.recentChoice(compactor, context, prompt);
 		}
 		if (!chosen?.cut) {

@@ -280,6 +280,27 @@ describe('LLMAgent with Jev compaction', () => {
 		expect(triage.score).toHaveBeenCalledTimes(1);
 		expect(JSON.stringify(llmClient.contexts[3])).toContain('your last 1 answers');
 	});
+
+	it("has the recent compactor summarize a first answer that no longer fits, which Jev's cut always keeps", async () => {
+		const triage = { score: vi.fn<ContextTriage['score']>() };
+		const llmClient = new FakeLLMClient(
+			assistantResponse([toolCall('call-1', 'weather', { city: 'Madrid' })]),
+			new MaxContextError('Too long', { cause: 'window' }),
+			textResponse('Madrid was asked.'),
+			textResponse('done'),
+		);
+
+		const response = await new LLMAgent({
+			llmClient,
+			tools: [weather],
+			compactor: { by: 'harness', at: undefined, keptSteps: 1, triage },
+		}).run('task', { signal });
+
+		expect(response.response).toBe('done');
+		// Jev had no earlier result to judge.
+		expect(triage.score).not.toHaveBeenCalled();
+		expect(JSON.stringify(llmClient.contexts[2])).toContain('Madrid');
+	});
 });
 
 describe('JevContextTriage', () => {
