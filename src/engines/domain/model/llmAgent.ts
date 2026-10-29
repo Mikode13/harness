@@ -560,7 +560,12 @@ export class LLMAgent implements Agent {
 				why,
 			};
 		}
-		return this.summarize(chosen.cut, chosen.kept, runMessages, { ...options, context });
+		// The run's context no longer fitting is what makes a failure end it.
+		return this.summarize(chosen.cut, chosen.kept, runMessages, {
+			...options,
+			context,
+			endsRun: options.outgrown,
+		});
 	}
 
 	/**
@@ -627,6 +632,8 @@ export class LLMAgent implements Agent {
 	 * way.
 	 *
 	 * @param kept what `cut` keeps, as the summary request tells the model.
+	 * @param endsRun whether a failure ends the run, which throws why instead of logging it: the
+	 * run's context no longer fits. `outgrown` alone may be this call's own fallback.
 	 */
 	private async summarize(
 		cut: { summarized: Message[]; kept: Message[] },
@@ -637,7 +644,14 @@ export class LLMAgent implements Agent {
 			signal,
 			tools,
 			outgrown,
-		}: { context: Message[]; signal: AbortSignal; tools: ToolDefinition[]; outgrown: boolean },
+			endsRun,
+		}: {
+			context: Message[];
+			signal: AbortSignal;
+			tools: ToolDefinition[];
+			outgrown: boolean;
+			endsRun: boolean;
+		},
 	): Promise<CompactionOutcome> {
 		const request = outgrown
 			? { context: [transcriptSummaryRequest(cut.summarized, kept)], tools: [] }
@@ -659,6 +673,7 @@ export class LLMAgent implements Agent {
 						signal,
 						tools,
 						outgrown: true,
+						endsRun,
 					});
 				} catch (fallbackFailure) {
 					throw withSpentTokens(fallbackFailure, failure.tokens, failure.usageUnreported);
@@ -679,7 +694,7 @@ export class LLMAgent implements Agent {
 				unreported: failure.usageUnreported,
 				why: describeFailure(failure),
 			};
-			if (!outgrown) this.warnSummaryCallFailed(failed.why, failed);
+			if (!endsRun) this.warnSummaryCallFailed(failed.why, failed);
 			return failed;
 		}
 
@@ -695,7 +710,7 @@ export class LLMAgent implements Agent {
 			summary === ''
 		) {
 			const why = 'the model did not answer with a summary';
-			if (!outgrown) this.warnSummaryCallFailed(why, spent);
+			if (!endsRun) this.warnSummaryCallFailed(why, spent);
 			return { compacted: false, ...spent, why };
 		}
 		runMessages.push({

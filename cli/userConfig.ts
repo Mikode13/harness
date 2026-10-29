@@ -14,7 +14,7 @@ export interface RepositoryConfig {
 	 * `false` for never.
 	 */
 	compactAt?: number | false | RoleTokens;
-	/** Who compacts every role's context: the provider, by default, or the recent compactor. */
+	/** Who compacts every role's context: the provider, by default, the recent compactor or Jev's. */
 	compaction?: CompactionMode;
 	/** What the executor's edits run on each file they write. */
 	formatter?: Formatter;

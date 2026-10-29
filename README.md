@@ -961,7 +961,8 @@ is told to decide and say what it assumed.
 With `--llm`, the agents can also [run commands](#running-the-projects-commands) you
 configure for the repository, in `~/.config/mikode-harness/config.json` (or under
 `$XDG_CONFIG_HOME`). The file maps each repository's real path to its `commands` and,
-optionally, its `maxSteps`, `compactAt` and [`formatter`](#formatting-what-the-agent-writes). It lives outside every repository, so neither a cloned repository
+optionally, its `maxSteps`, its `compactAt`, or `false` to turn compaction off, its
+`compaction` (`provider`, `recent` or `jev`, as `createLLMOrchestrator` takes them) and [`formatter`](#formatting-what-the-agent-writes). It lives outside every repository, so neither a cloned repository
 nor the agent decides what runs, or for how long:
 
 ```json

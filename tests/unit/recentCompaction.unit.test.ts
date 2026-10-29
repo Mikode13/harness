@@ -525,6 +525,27 @@ describe('LLMAgent with the recent compactor', () => {
 		expect(response.tokens?.inputTokens).toBe(50 + 150 + 300 + 20 + 1);
 	});
 
+	it('logs why a threshold summary that fell back to a transcript failed, and goes on', async () => {
+		const logger = { warn: vi.fn() };
+		const llmClient = new FakeLLMClient(
+			assistantResponse(answer('call-1', 'Madrid').content, { usage: usage(50) }),
+			assistantResponse(answer('call-2', 'Paris').content, { usage: usage(150) }),
+			new MaxContextError('Too long', { cause: 'window' }),
+			new Error('overloaded'),
+			textResponse('done'),
+		);
+
+		const response = await new LLMAgent({
+			llmClient,
+			tools: [weather],
+			logger,
+			compactor: { by: 'harness', at: 100, keptSteps: 1 },
+		}).run('task', { signal });
+
+		expect(response.response).toBe('done');
+		expect(logger.warn).toHaveBeenCalledWith('The context could not be compacted: overloaded');
+	});
+
 	it('fails when a context that no longer fits holds no answer to summarize', async () => {
 		const logger = { warn: vi.fn() };
 
