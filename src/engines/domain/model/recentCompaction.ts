@@ -41,7 +41,7 @@ export function recentCut(
  * it may no longer accept: its signed reasoning and its compactions. The last answer keeps its
  * reasoning, since the provider needs it to go on with that answer's tool calls.
  */
-function withoutReplayedReasoning(messages: Message[]): Message[] {
+export function withoutReplayedReasoning(messages: Message[]): Message[] {
 	const last = messages.findLastIndex(message => message.role === 'assistant');
 	return messages.flatMap((message, index) => {
 		const content = structuredClone(message.content).filter(
@@ -54,14 +54,23 @@ function withoutReplayedReasoning(messages: Message[]): Message[] {
 	});
 }
 
-/** What the model is asked once its context passed the threshold, after that whole context. */
-export function summaryRequest(keptSteps: number): Message {
+/** What the recent compactor keeps, as its summary requests tell the model. */
+export function recentlyKept(keptSteps: number): string {
+	return `the user's request for this run and your last ${String(keptSteps)} answers, with their tool results,`;
+}
+
+/**
+ * What the model is asked once its context passed the threshold, after that whole context.
+ *
+ * @param kept what is kept word for word after the summary, as `recentlyKept` says it.
+ */
+export function summaryRequest(kept: string): Message {
 	return {
 		role: 'user',
 		content: [
 			{
 				type: 'text',
-				text: `Your context is about to be compacted. Write a summary of this conversation so far that lets you go on without it: what the user asked, what you found and decided, what you changed and why, what is left to do, and what you would need to read again. After your summary, only the user's request for this run and your last ${String(keptSteps)} answers, with their tool results, are kept word for word, and not your reasoning in them: say what you were thinking and planning there too. Answer with the summary alone, in plain text, and call no tool.`,
+				text: `Your context is about to be compacted. Write a summary of this conversation so far that lets you go on without it: what the user asked, what you found and decided, what you changed and why, what is left to do, and what you would need to read again. After your summary, only ${kept} are kept word for word, and not your reasoning in them: say what you were thinking and planning there too. Answer with the summary alone, in plain text, and call no tool.`,
 			},
 		],
 	};
@@ -76,14 +85,14 @@ const partCharacters = 3_000;
  * What the model is asked when the context no longer fit: the part to summarize, as text, since
  * it can no longer be sent as it was.
  */
-export function transcriptSummaryRequest(summarized: Message[], keptSteps: number): Message {
+export function transcriptSummaryRequest(summarized: Message[], kept: string): Message {
 	return {
 		role: 'user',
 		content: [
 			{
 				type: 'text',
 				text: [
-					`Below is the start of a conversation in which you, an agent, work on a task for the user. It no longer fits your context, so write a summary of it that lets you go on without it: what the user asked, what you found and decided, what you changed and why, what is left to do, and what you would need to read again. The user's request for this run and your last ${String(keptSteps)} answers, with their tool results, are kept word for word after your summary. Answer with the summary alone, in plain text.`,
+					`Below is the start of a conversation in which you, an agent, work on a task for the user. It no longer fits your context, so write a summary of it that lets you go on without it: what the user asked, what you found and decided, what you changed and why, what is left to do, and what you would need to read again. Only ${kept} are kept word for word after your summary. Answer with the summary alone, in plain text.`,
 					'',
 					messagesAsText(summarized, transcriptCharacters, partCharacters),
 				].join('\n'),

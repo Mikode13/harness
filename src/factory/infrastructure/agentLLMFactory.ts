@@ -4,6 +4,7 @@ import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcrip
 import type { HistoryReader } from '#src/engines/domain/model/historyFollower';
 import { type Compactor, recentKeptSteps } from '#src/engines/domain/model/compactor';
 import { LLMAgent } from '#src/engines/domain/model/llmAgent';
+import { JevContextTriage } from '#src/llm/infrastructure/jevContextTriage';
 import type { LLMClient } from '#src/llm/domain/llm';
 import {
 	ClaudeLLMClient,
@@ -148,7 +149,12 @@ export interface CreateLLMAgentOptions {
 	 * model's provider compact it on its side. `recent` has the agent's own model summarize it
 	 * before the next call, from its provider's cache, and keeps the run's prompt and the run's
 	 * last 10 answers, each with its tool results, word for word after the summary, without
-	 * their signed reasoning. Earlier runs are always summarized.
+	 * their signed reasoning. Earlier runs are always summarized. `jev` summarizes the same way,
+	 * but TypeSafe's Jev chooses what is kept: the run's prompt, the model's last answer with its
+	 * tool results, and each earlier tool result Jev judges the agent still needs word for word,
+	 * with its call. Jev is sent the run's prompt, the model's last answer and each of those tool
+	 * results, so what the tools read leaves for TypeSafe. It reads the key from `TYPESAFE_API_KEY`; without it, or when Jev fails, the
+	 * `recent` choice is made instead, and logged.
 	 */
 	compaction?: CompactionMode;
 	/**
@@ -166,9 +172,9 @@ export interface CreateLLMAgentOptions {
 }
 
 /** Who compacts an agent's context; see `CreateLLMAgentOptions.compaction`. */
-export type CompactionMode = 'provider' | 'recent';
+export type CompactionMode = 'provider' | 'recent' | 'jev';
 
-const compactionModes = ['provider', 'recent'] as const satisfies readonly CompactionMode[];
+const compactionModes = ['provider', 'recent', 'jev'] as const satisfies readonly CompactionMode[];
 
 /** A limit per role of `createLLMOrchestrator`; a role left out keeps its default. */
 export type RoleSteps = Partial<Record<OrchestratorRole, number>>;
@@ -327,9 +333,14 @@ function compactorFor(
 		compactAt === false
 			? undefined
 			: (compactAt ?? (compactionThresholds as Partial<Record<string, number>>)[model]);
-	return mode === 'recent'
-		? { by: 'harness', at, keptSteps: recentKeptSteps }
-		: { by: 'provider', at };
+	switch (mode) {
+		case 'provider':
+			return { by: 'provider', at };
+		case 'recent':
+			return { by: 'harness', at, keptSteps: recentKeptSteps };
+		case 'jev':
+			return { by: 'harness', at, keptSteps: recentKeptSteps, triage: new JevContextTriage() };
+	}
 }
 
 function defaultModelOf(provider: AgentProvider): AgentModel {

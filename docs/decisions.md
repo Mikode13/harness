@@ -2829,3 +2829,33 @@ tags: #mikode-harness #llm #cost #api-design
 - The context after a summary differs from the one before it, so the next call writes the cache again from the start.
 - Whether a provider accepts the last answer's signed reasoning behind a summary is not yet known: a question for the live round. So is whether a run with too large a last answer can be compacted at all: those 10 answers are kept whatever their size.
 - 10 answers is a default of the harness's, not a measured one.
+
+## The Jev compactor: Jev chooses which tool results stay word for word
+
+tags: #mikode-harness #llm #cost #api-design
+
+**Decision:**
+
+- **`compaction: 'jev'`** summarizes as `recent` does, with the agent's own model, but what is kept is chosen by TypeSafe's Jev: the run's prompt, the model's last answer with its tool results, and each earlier tool result Jev scores 2 or more, with its call, in their order. Everything else is summarized, and the summary request names the calls that are kept.
+- **One `score` question per tool result,** from 0 ("not needed again") to 3 ("needed word for word"), one request each, a few at once. Jev's state is the run's prompt, the model's last answer as text, and the call with its result, cut to stay within Jev's default 32k tokens a question.
+- **Kept by threshold alone,** with no budget: a context whose results Jev keeps whole may not shrink. A triage that keeps every answer whole is logged and not asked for again in that run; once the context no longer fits, whenever Jev's cut would summarize nothing, because Jev kept it all or the last answer, always kept, is the only one, the recent compactor cuts instead, since something must go.
+- **Jev sits behind its own port,** `ContextTriage`, so the compactor works the same without it. Without `TYPESAFE_API_KEY`, or when Jev fails, the recent compactor chooses instead, and it is logged; a cancelled run stops.
+- **The TypeSafe SDK,** `@typesafe-ai/sdk`, with its logger off, since the console is the consumer's, and the model pinned to `jev-1.14.0`, so a new release does not change what is kept unannounced.
+- Jev's tokens are not counted in the run's `tokens`: they are another model's, at another price, about $0.04 per million.
+
+**Context:** #48, decided with the user on 2026-10-28 and 2026-10-29, after a probe of Jev's API (see learnings.md, "A first probe of Jev's triage"). The user chose a score per tool result, kept by a threshold alone, and the recent compactor as the fallback. Whether Jev's choice beats the recent one, and the provider's, is measured in the live round before any default changes.
+
+**Alternatives considered:**
+
+- **Jev judges whole steps,** an answer with all its results. Fewer requests, but one large result decides for the rest.
+- **A `noul` or `choice` question.** A yes or no per result is simpler; a score orders them, and its threshold can be moved.
+- **A budget of what is kept,** filled in the order of the scores. The context always shrinks, but Jev's judgement is overruled by size.
+- **Several results in one request.** Cheaper per result and, in the probe, as consistent, but each question sees the others, and a large result leaves less room for the rest.
+- **A plain `fetch` with Zod.** No dependency, but the retries, cancellation and error types are the harness's to write.
+
+**Consequences:**
+
+- A compaction costs Jev's requests, one per tool result before the last answer, cents at most for a 450k context, and their time, before the summary.
+- The threshold of 2 and the questions are the harness's, from one probe, not measured on real runs.
+- A failed or missing Jev compacts as `recent` does, so the mode never fails because of Jev.
+- What the tools read leaves for TypeSafe: Jev is sent each tool result it judges.

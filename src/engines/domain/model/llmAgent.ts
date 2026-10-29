@@ -33,6 +33,7 @@ import {
 	treatErrors,
 } from '#src/shared/domain/providerFailure';
 import { Conversation } from '#src/llm/domain/conversation';
+import { keptScore } from '#src/llm/domain/contextTriage';
 import { MaxContextError } from '#src/llm/domain/errors';
 import type { LLMClient, LLMResponse } from '#src/llm/domain/llm';
 import {
@@ -83,7 +84,14 @@ import {
 } from './commandLoops.ts';
 import { BackgroundAgents, sentNote } from './backgroundAgents.ts';
 import { compactionOff, type Compactor, type RecentCompactor } from './compactor.ts';
-import { recentCut, summaryRequest, transcriptSummaryRequest } from './recentCompaction.ts';
+import {
+	messagesAsText,
+	recentCut,
+	recentlyKept,
+	summaryRequest,
+	transcriptSummaryRequest,
+} from './recentCompaction.ts';
+import { triageCandidates, triagedCut, triagedKept } from './triagedCompaction.ts';
 import { measureContext } from './stepContext.ts';
 import {
 	askUserDefinition,
@@ -155,6 +163,15 @@ function withoutKeptCopies(
 			part.type === 'contextSummary' ? { type: part.type, summary: part.summary } : part,
 		),
 	};
+}
+
+/** What a harness compaction did, and what its summary call spent. */
+interface CompactionOutcome {
+	compacted: boolean;
+	/** Whether it spent a call that is not asked for again in the same run. */
+	called: boolean;
+	usage: Tokens | undefined;
+	unreported: boolean;
 }
 
 interface Seen {
@@ -469,6 +486,16 @@ export class LLMAgent implements Agent {
 		);
 	}
 
+	private warnTriageFailed(why: string): void {
+		treatErrors(
+			() => {
+				this.logger?.warn(`Jev could not choose what to keep, so the recent compactor did: ${why}`);
+			},
+			classifyHostFailure,
+			'LLM agent logger failed',
+		);
+	}
+
 	private warnCompactionFailed(why: string): void {
 		treatErrors(
 			() => {
@@ -495,40 +522,123 @@ export class LLMAgent implements Agent {
 	}
 
 	/**
-	 * Has the agent's own model summarize the context before the recent compactor's cut, and
-	 * records the summary in the run, with what it keeps word for word. Once the threshold passed,
-	 * the model reads the context as it was last sent, from its provider's cache; once the context
-	 * no longer fit, it reads what it summarizes as text. `compacted` is false when the model had
-	 * answered too few times, which costs no call, or the model wrote no summary or the provider
-	 * failed in passing, which it logs; any other failure is thrown. The summary's usage is the
-	 * run's either way.
+	 * Has the agent's own model summarize the context before the harness compactor's cut, and
+	 * records the summary in the run, with what it keeps word for word. With a triage, Jev chooses
+	 * what is kept; when it fails, which it logs, the recent cut does. `compacted` is false when
+	 * the model had answered too few times, which costs no call, when Jev kept every answer
+	 * whole, unless the context no longer fits, or when the summary failed as `summarize` says.
 	 */
-	private async compactRecent(
+	private async compactHarness(
 		compactor: RecentCompactor,
 		runMessages: Message[],
 		after: number | undefined,
-		{
-			signal,
-			tools,
-			outgrown,
-		}: { signal: AbortSignal; tools: ToolDefinition[]; outgrown: boolean },
-	): Promise<{
-		compacted: boolean;
-		called: boolean;
-		usage: Tokens | undefined;
-		unreported: boolean;
-	}> {
+		options: { signal: AbortSignal; tools: ToolDefinition[]; outgrown: boolean },
+	): Promise<CompactionOutcome> {
 		// The run's messages are not copied, so its prompt is found where it is.
 		const context = compactedContext([...this.conversation.contextAfter(after), ...runMessages]);
 		const [prompt] = runMessages;
-		const cut = prompt && recentCut(context, prompt, compactor.keptSteps);
-		if (!cut) {
-			this.warnCompactionFailed('the model has not answered yet, so there is nothing to summarize');
-			return { compacted: false, called: false, usage: undefined, unreported: false };
+		let chosen = prompt && (await this.harnessCut(compactor, context, prompt, options.signal));
+		// A context that no longer fits must lose something: when Jev's cut keeps it all, even the
+		// last answer it always keeps, recent cuts.
+		if (prompt && compactor.triage && !chosen?.cut && options.outgrown) {
+			chosen = this.recentChoice(compactor, context, prompt);
 		}
+		if (!chosen?.cut) {
+			this.warnCompactionFailed(
+				chosen?.triaged
+					? 'Jev kept every answer whole, so there is nothing to summarize'
+					: 'the model has not answered yet, so there is nothing to summarize',
+			);
+			// Jev would keep the same again: it is not asked again in the same run.
+			return {
+				compacted: false,
+				called: chosen?.triaged ?? false,
+				usage: undefined,
+				unreported: false,
+			};
+		}
+		return this.summarize(chosen.cut, chosen.kept, runMessages, { ...options, context });
+	}
+
+	/**
+	 * Where the harness compactor cuts `context`, and what it keeps, as the summary request says
+	 * it. `triaged` when Jev was asked and answered.
+	 */
+	private async harnessCut(
+		compactor: RecentCompactor,
+		context: Message[],
+		prompt: Message,
+		signal: AbortSignal,
+	): Promise<{
+		cut: { summarized: Message[]; kept: Message[] } | undefined;
+		kept: string;
+		triaged: boolean;
+	}> {
+		const { triage } = compactor;
+		const candidates = triage ? triageCandidates(context) : [];
+		let scores: number[] | undefined = triage && candidates.length === 0 ? [] : undefined;
+		if (triage && candidates.length > 0) {
+			const latest = context.findLast(message => message.role === 'assistant');
+			try {
+				scores = await triage.score(
+					{
+						task: prompt.content
+							.flatMap(part => (part.type === 'text' ? [part.text] : []))
+							.join('\n'),
+						latestAnswer: latest ? messagesAsText([latest], 8_000, 3_000) : '',
+						results: candidates.map(({ tool, input, output }) => ({ tool, input, output })),
+					},
+					signal,
+				);
+			} catch (error) {
+				if (isAbortError(error)) throw error;
+				signal.throwIfAborted();
+				this.warnTriageFailed(describeFailure(error));
+			}
+		}
+		if (scores) {
+			const kept = candidates.filter((_, index) => (scores[index] ?? 0) >= keptScore);
+			return {
+				cut: triagedCut(context, prompt, new Set(kept.map(({ callId }) => callId))),
+				kept: triagedKept(kept),
+				triaged: candidates.length > 0,
+			};
+		}
+		return this.recentChoice(compactor, context, prompt);
+	}
+
+	private recentChoice(compactor: RecentCompactor, context: Message[], prompt: Message) {
+		return {
+			cut: recentCut(context, prompt, compactor.keptSteps),
+			kept: recentlyKept(compactor.keptSteps),
+			triaged: false,
+		};
+	}
+
+	/**
+	 * Has the agent's own model summarize what `cut` does not keep, and records the summary in the
+	 * run. Once the threshold passed, the model reads `context`, the context as it was last sent,
+	 * from its provider's cache; once the context no longer fit, it reads what it summarizes as
+	 * text. `compacted` is false when the model wrote no summary or the provider failed in
+	 * passing, which it logs; any other failure is thrown. The summary's usage is the run's either
+	 * way.
+	 *
+	 * @param kept what `cut` keeps, as the summary request tells the model.
+	 */
+	private async summarize(
+		cut: { summarized: Message[]; kept: Message[] },
+		kept: string,
+		runMessages: Message[],
+		{
+			context,
+			signal,
+			tools,
+			outgrown,
+		}: { context: Message[]; signal: AbortSignal; tools: ToolDefinition[]; outgrown: boolean },
+	): Promise<CompactionOutcome> {
 		const request = outgrown
-			? { context: [transcriptSummaryRequest(cut.summarized, compactor.keptSteps)], tools: [] }
-			: { context: [...structuredClone(context), summaryRequest(compactor.keptSteps)], tools };
+			? { context: [transcriptSummaryRequest(cut.summarized, kept)], tools: [] }
+			: { context: [...structuredClone(context), summaryRequest(kept)], tools };
 
 		let response: LLMResponse;
 		try {
@@ -539,9 +649,10 @@ export class LLMAgent implements Agent {
 			if (failure instanceof MaxContextError && !outgrown) {
 				// The context grew past the model since it was last sent: the model reads what it
 				// summarizes as text instead, and this call is the run's too.
-				let fallback: Awaited<ReturnType<typeof this.compactRecent>>;
+				let fallback: CompactionOutcome;
 				try {
-					fallback = await this.compactRecent(compactor, runMessages, after, {
+					fallback = await this.summarize(cut, kept, runMessages, {
+						context,
 						signal,
 						tools,
 						outgrown: true,
@@ -1320,7 +1431,7 @@ export class LLMAgent implements Agent {
 							contextTokens !== undefined &&
 							contextTokens >= compactor.at))
 				) {
-					const compaction = await this.compactRecent(compactor, runMessages, after, {
+					const compaction = await this.compactHarness(compactor, runMessages, after, {
 						signal,
 						tools,
 						outgrown,

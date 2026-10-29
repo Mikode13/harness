@@ -623,6 +623,13 @@ results, are kept word for word after the summary, without their signed reasonin
 are always summarized. The
 conversation still keeps every turn; only what the model is sent starts at the summary.
 
+`compaction: 'jev'` summarizes the same way, but TypeSafe's Jev chooses what is kept: the run's
+prompt, the model's last answer with its tool results, and each earlier tool result Jev judges
+the agent still needs word for word, with its call. Jev is sent the run's prompt, the model's
+last answer and each of those tool results, so what the tools read leaves for TypeSafe. It reads
+its key from `TYPESAFE_API_KEY`;
+without one, or when Jev fails, the recent choice is made instead, and logged.
+
 Either way, a context that no longer fits the model is compacted once and the call tried again;
 in the recent mode the model summarizes a transcript of it. When it still does not fit, the run
 fails with `UnrecoverableError`. A `compaction` event says who compacted, why, and how many
