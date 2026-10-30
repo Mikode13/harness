@@ -22,6 +22,7 @@ import {
 	type BranchCommit,
 	type BranchWarning,
 	type CommitState,
+	commitKey,
 	commitStates,
 	redoCommits,
 	undoCommits,
@@ -645,19 +646,17 @@ export class FileRecoveryStore implements RecoveryStore {
 			await save();
 		};
 		const states = commitStates(await this.listRevisions());
-		const warn: BranchWarning = (repository, branch, error) => {
+		const warn: BranchWarning = message => {
 			treatErrors(
 				() => {
-					this.logger.warn(
-						`The history could not tell which commits ${branch} in ${repository} still holds, and reports every commit the move went over: ${describeFailure(error)}`,
-					);
+					this.logger.warn(message);
 				},
 				classifyHostFailure,
 				'Recovery store logger failed while reporting commits it could not check',
 			);
 		};
-		// Git first, while the files still hold what its commits do: a revert, a reset or a
-		// cherry-pick then leaves each file where the step leads, and the step finds it there.
+		// Git first, on the branch and the index only: the files are the steps' to move, as the
+		// journal says, whatever the commits hold.
 		const gitPhase = async (
 			phase: 'gitUndo' | 'gitRedo',
 			act: (interrupted: boolean) => Promise<BranchMove[]>,
@@ -726,7 +725,7 @@ export class FileRecoveryStore implements RecoveryStore {
 			const { commits } = await this.readRun(runId);
 			const made = commits.flatMap(({ repository, branch, commits: run, runId: madeIn }) =>
 				run.map(({ sha, subject }): BranchCommit => {
-					const state = states.get(sha);
+					const state = states.get(commitKey(repository, branch, sha));
 					return {
 						repository,
 						branch,

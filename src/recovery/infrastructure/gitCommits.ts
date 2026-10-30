@@ -1,4 +1,6 @@
-import { realpath } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import type {
 	BranchMove,
 	Commit,
@@ -39,14 +41,14 @@ export interface CommitState {
 	taken?: 'revert' | 'reset';
 }
 
-/** Tells why a branch could not be checked, while the move goes on. */
-export type BranchWarning = (repository: string, branch: string, error: unknown) => void;
+/** Tells what git could not do while the move went on. */
+export type BranchWarning = (message: string) => void;
 
-function git(args: string[], cwd: string, signal: AbortSignal) {
+function git(args: string[], cwd: string, signal: AbortSignal, env: NodeJS.ProcessEnv = {}) {
 	return runProcess('git', ['-c', 'color.ui=never', ...args], {
 		cwd,
 		signal,
-		env: gitEnvironment(),
+		env: { ...gitEnvironment(), ...env },
 	});
 }
 
@@ -133,23 +135,34 @@ export async function commitsBetween(
 }
 
 /**
- * Where each commit the runs made is now, by the SHA the run recorded, read from the moves made so
- * far: a revert or a reset that was done takes it back, and a re-apply puts it, or a new commit
- * for it, back on the branch. A commit no move took back is not in the map.
+ * Where each commit the runs made is now, by `commitKey`, read from the moves made so far: a
+ * revert or a reset that was done takes it back, and a re-apply puts it, or a new commit for it,
+ * back on the branch. A commit no move took back is not in the map.
  */
 export function commitStates(
 	revisions: readonly { git?: readonly BranchMove[] }[],
 ): Map<string, CommitState> {
 	const states = new Map<string, CommitState>();
 	for (const { git: moves = [] } of revisions) {
-		for (const { action, outcome, commits } of moves) {
+		for (const { repository, branch, action, outcome, commits } of moves) {
 			if (outcome !== 'done' || action === 'keep') continue;
 			for (const { sha, original } of commits) {
-				states.set(original ?? sha, action === 'reapply' ? { sha } : { sha, taken: action });
+				states.set(
+					commitKey(repository, branch, original ?? sha),
+					action === 'reapply' ? { sha } : { sha, taken: action },
+				);
 			}
 		}
 	}
 	return states;
+}
+
+/**
+ * Names a commit a run recorded on one branch: the same commit may be on two branches, and a move
+ * that takes it back from one leaves it on the other.
+ */
+export function commitKey(repository: string, branch: string, sha: string): string {
+	return JSON.stringify([repository, branch, sha]);
 }
 
 /**
@@ -179,8 +192,8 @@ export async function undoCommits(
 		}
 		const moved =
 			policy === 'revert'
-				? await revert(repository, branch, live)
-				: await reset(repository, branch, live);
+				? await revert(repository, branch, live, warn)
+				: await reset(repository, branch, live, warn);
 		if (moved) reports.push(moved);
 	}
 	return reports;
@@ -209,7 +222,7 @@ export async function redoCommits(
 		reports.push(
 			interrupted
 				? report(repository, branch, 'reapply', taken, stoppedReason)
-				: await reapply(repository, branch, taken),
+				: await reapply(repository, branch, taken, warn),
 		);
 	}
 	return reports;
@@ -270,31 +283,69 @@ async function keptOn(
 ): Promise<BranchMove | undefined> {
 	if (commits.length === 0) return undefined;
 	const held = await onBranch(repository, branch, commits).catch((error: unknown) => {
-		warn(repository, branch, error);
+		warn(
+			`The history could not tell which commits ${branch} in ${repository} still holds, and reports every commit the move went over: ${errorText(error)}`,
+		);
 		return undefined;
 	});
 	const stayed = commits.filter(commit => held?.has(commit.sha) ?? true);
 	return stayed.length === 0 ? undefined : report(repository, branch, 'keep', stayed);
 }
 
-/** Why git cannot change `branch` in `repository` now, or `undefined` when it can. */
-async function notCheckedOut(repository: string, branch: string): Promise<string | undefined> {
+/**
+ * Why git cannot change `branch` in `repository` now, or `undefined` when it can: it must still be
+ * checked out there, with no merge, rebase, cherry-pick or revert in progress, which moving the
+ * branch under would spoil.
+ */
+async function notReady(repository: string, branch: string): Promise<string | undefined> {
 	try {
 		const tip = await readTip(repository, uncancelled);
-		if (tip?.branch === branch) return undefined;
+		if (tip?.branch !== branch) return `${branch} is no longer checked out in ${repository}`;
+		for (const name of inProgress) {
+			const path = await git(['rev-parse', '--git-path', name], repository, uncancelled);
+			if (path.exitCode !== 0) return gitReason('find what is in progress', path);
+			if (await exists(resolve(repository, path.stdout.replace(/\n$/, '')))) {
+				return `a merge, rebase, cherry-pick or revert is in progress in ${repository}`;
+			}
+		}
 	} catch (error) {
-		return `the harness could not read which branch is checked out in ${repository}: ${errorText(error)}`;
+		return `the harness could not read the state of ${repository}: ${errorText(error)}`;
 	}
-	return `${branch} is no longer checked out in ${repository}`;
+	return undefined;
 }
 
-/** Adds commits that take back `commits`, given newest first, those still on the branch. */
+// What git keeps while an operation that may still be finished or aborted is in progress.
+const inProgress = [
+	'MERGE_HEAD',
+	'CHERRY_PICK_HEAD',
+	'REVERT_HEAD',
+	'rebase-merge',
+	'rebase-apply',
+	'sequencer',
+];
+
+async function exists(path: string): Promise<boolean> {
+	try {
+		await stat(path);
+		return true;
+	} catch (error) {
+		if (code(error) === 'ENOENT') return false;
+		throw error;
+	}
+}
+
+/**
+ * Adds commits that take back `commits`, given newest first, those still on the branch. They are
+ * made in an index of their own, and the branch is moved to them: the files are never touched,
+ * since the history moves them.
+ */
 async function revert(
 	repository: string,
 	branch: string,
 	commits: readonly BranchCommit[],
+	warn: BranchWarning,
 ): Promise<BranchMove | undefined> {
-	const blocked = await notCheckedOut(repository, branch);
+	const blocked = await notReady(repository, branch);
 	if (blocked) return report(repository, branch, 'revert', commits, blocked);
 	let held;
 	try {
@@ -305,12 +356,26 @@ async function revert(
 	// One the user since reset away needs no revert.
 	const onIt = commits.filter(commit => held.has(commit.sha));
 	if (onIt.length === 0) return undefined;
-	const shas = onIt.map(commit => commit.sha);
-	const reverted = await git(['revert', '--no-edit', ...shas], repository, uncancelled);
-	if (reverted.exitCode !== 0) {
-		// Back to before the first of them, if it got that far.
-		await git(['revert', '--abort'], repository, uncancelled).catch(() => undefined);
-		return report(repository, branch, 'revert', onIt, gitReason('revert them', reverted));
+	const left = (reason: string) => report(repository, branch, 'revert', onIt, reason);
+	try {
+		const from = await branchTip(repository, branch);
+		let tip = from;
+		await withIndex(repository, from, async (index, scratch) => {
+			for (const { sha, subject } of onIt) {
+				await applyChange(repository, index, scratch, {
+					from: sha,
+					to: await parentOf(repository, sha),
+				});
+				tip = await commitIndex(repository, index, scratch, {
+					parent: tip,
+					message: `Revert "${subject}"\n\nThis reverts commit ${sha}.\n`,
+				});
+			}
+		});
+		const moved = await moveBranch(repository, branch, from, tip, warn);
+		if (moved) return left(moved);
+	} catch (error) {
+		return left(`git could not revert them: ${errorText(error)}`);
 	}
 	return report(repository, branch, 'revert', onIt);
 }
@@ -323,30 +388,33 @@ async function reset(
 	repository: string,
 	branch: string,
 	commits: readonly BranchCommit[],
+	warn: BranchWarning,
 ): Promise<BranchMove> {
 	const left = (reason: string) => report(repository, branch, 'reset', commits, reason);
-	const blocked = await notCheckedOut(repository, branch);
+	const blocked = await notReady(repository, branch);
 	if (blocked) return left(blocked);
-	const oldest = commits.at(-1)?.sha ?? '';
-	const base = await git(['rev-parse', '-q', '--verify', `${oldest}^`], repository, uncancelled);
-	if (base.exitCode !== 0) {
-		return left('the oldest of them starts the branch, so there is no commit to go back to');
+	try {
+		const from = await branchTip(repository, branch);
+		const oldest = commits.at(-1)?.sha ?? '';
+		const target = await parentOf(repository, oldest);
+		if (target === undefined) {
+			return left('the oldest of them starts the branch, so there is no commit to go back to');
+		}
+		const onTop = new Set(await revList(repository, `${target}..${from}`));
+		if (onTop.size !== commits.length || commits.some(commit => !onTop.has(commit.sha))) {
+			return left(
+				'other commits are among them or on top of them, and a reset would drop those too',
+			);
+		}
+		for (const { sha } of commits) {
+			const published = await isPublished(repository, branch, sha);
+			if (published !== false) return left(published || "the branch's upstream holds them");
+		}
+		const moved = await moveBranch(repository, branch, from, target, warn);
+		if (moved) return left(moved);
+	} catch (error) {
+		return left(`git could not reset the branch: ${errorText(error)}`);
 	}
-	const target = firstLine(base.stdout);
-	const above = await git(
-		['rev-list', `${target}..${branchPrefix}${branch}`],
-		repository,
-		uncancelled,
-	);
-	if (above.exitCode !== 0) return left(gitReason('list the commits on the branch', above));
-	const onTop = new Set(above.stdout.split('\n').filter(line => line !== ''));
-	if (onTop.size !== commits.length || commits.some(commit => !onTop.has(commit.sha))) {
-		return left('other commits are among them or on top of them, and a reset would drop those too');
-	}
-	const published = await isPublished(repository, branch, oldest);
-	if (published !== false) return left(published || "the branch's upstream holds them");
-	const moved = await git(['reset', '--quiet', '--keep', target], repository, uncancelled);
-	if (moved.exitCode !== 0) return left(gitReason('reset the branch', moved));
 	return report(repository, branch, 'reset', commits);
 }
 
@@ -376,72 +444,246 @@ async function isPublished(
 /**
  * Puts back `commits`, given oldest first, which earlier moves took back: forward to the same
  * commits when every one was reset and the branch is still where the reset left it, and as new
- * commits, cherry-picked, otherwise.
+ * commits, cherry-picked in an index of their own, otherwise. The files are never touched.
  */
 async function reapply(
 	repository: string,
 	branch: string,
 	commits: readonly BranchCommit[],
+	warn: BranchWarning,
 ): Promise<BranchMove> {
 	const left = (reason: string) => report(repository, branch, 'reapply', commits, reason);
-	const blocked = await notCheckedOut(repository, branch);
+	const blocked = await notReady(repository, branch);
 	if (blocked) return left(blocked);
-	const tip = await git(['rev-parse', '-q', '--verify', 'HEAD'], repository, uncancelled);
-	if (tip.exitCode !== 0) return left(gitReason('read the branch', tip));
-	const from = firstLine(tip.stdout);
+	try {
+		const from = await branchTip(repository, branch);
+		if (commits.every(commit => commit.taken === 'reset')) {
+			const newest = commits.at(-1)?.sha ?? '';
+			const base = await parentOf(repository, commits[0]?.sha ?? '');
+			const chain = base === from ? await revList(repository, `${from}..${newest}`) : [];
+			if (chain.length === commits.length && commits.every(({ sha }) => chain.includes(sha))) {
+				const moved = await moveBranch(repository, branch, from, newest, warn);
+				return moved ? left(moved) : report(repository, branch, 'reapply', commits);
+			}
+		}
 
-	if (commits.every(commit => commit.taken === 'reset')) {
-		const forward = await fastForward(repository, from, commits);
-		if (forward === true) return report(repository, branch, 'reapply', commits);
-		if (forward !== undefined) return left(forward);
+		const created: string[] = [];
+		let tip = from;
+		await withIndex(repository, from, async (index, scratch) => {
+			for (const { sha } of commits) {
+				const parent = await parentOf(repository, sha);
+				await applyChange(repository, index, scratch, { from: parent, to: sha });
+				const { author, message } = await authorOf(repository, sha);
+				tip = await commitIndex(repository, index, scratch, { parent: tip, message, author });
+				created.push(tip);
+			}
+		});
+		const moved = await moveBranch(repository, branch, from, tip, warn);
+		if (moved) return left(moved);
+		return report(
+			repository,
+			branch,
+			'reapply',
+			commits.map((commit, index) => ({
+				...commit,
+				sha: created[index] ?? commit.sha,
+				original: commit.original ?? commit.sha,
+			})),
+		);
+	} catch (error) {
+		return left(`git could not cherry-pick them: ${errorText(error)}`);
 	}
+}
 
-	const shas = commits.map(commit => commit.sha);
-	const picked = await git(
-		['cherry-pick', '--allow-empty', '--keep-redundant-commits', ...shas],
+async function branchTip(repository: string, branch: string): Promise<string> {
+	const tip = await git(
+		['rev-parse', '-q', '--verify', `${branchPrefix}${branch}^{commit}`],
 		repository,
 		uncancelled,
 	);
-	if (picked.exitCode !== 0) {
-		await git(['cherry-pick', '--abort'], repository, uncancelled).catch(() => undefined);
-		return left(gitReason('cherry-pick them', picked));
-	}
-	const made = await git(['rev-list', '--reverse', `${from}..HEAD`], repository, uncancelled);
-	const created = made.stdout.split('\n').filter(line => line !== '');
-	if (made.exitCode !== 0 || created.length !== commits.length) {
-		return left(gitReason('list the commits it cherry-picked', made));
-	}
-	return report(
-		repository,
-		branch,
-		'reapply',
-		commits.map((commit, index) => ({
-			...commit,
-			sha: created[index] ?? commit.sha,
-			original: commit.original ?? commit.sha,
-		})),
-	);
+	if (tip.exitCode !== 0) throw gitFailed(`read ${branch}`, tip);
+	return firstLine(tip.stdout);
 }
 
 /**
- * Moves the branch forward to `commits` again when it is still where a reset of them left it:
- * `true` once it did, why git failed to, or `undefined` when the branch moved since.
+ * The only parent of `sha`, or `undefined` for a commit with none. A merge is refused: which of
+ * its parents it would go back to is not the history's to choose.
  */
-async function fastForward(
+async function parentOf(repository: string, sha: string): Promise<string | undefined> {
+	const listed = await git(['rev-list', '--parents', '-n', '1', sha], repository, uncancelled);
+	if (listed.exitCode !== 0) throw gitFailed(`read ${sha}`, listed);
+	const [, ...parents] = firstLine(listed.stdout).split(' ');
+	if (parents.length > 1)
+		throw new Error(`${sha} is a merge, which the history does not take back or re-apply`);
+	return parents[0];
+}
+
+async function revList(repository: string, range: string): Promise<string[]> {
+	const listed = await git(['rev-list', range], repository, uncancelled);
+	if (listed.exitCode !== 0) throw gitFailed(`list ${range}`, listed);
+	return listed.stdout.split('\n').filter(line => line !== '');
+}
+
+/**
+ * Runs `use` with an index of its own, read from `tree`, and a folder for what git reads from a
+ * file, both removed after.
+ */
+async function withIndex(
 	repository: string,
+	tree: string,
+	use: (index: string, scratch: string) => Promise<void>,
+): Promise<void> {
+	const scratch = await mkdtemp(join(tmpdir(), 'harness-git-'));
+	try {
+		const index = join(scratch, 'index');
+		const read = await git(['read-tree', tree], repository, uncancelled, { GIT_INDEX_FILE: index });
+		if (read.exitCode !== 0) throw gitFailed('read the branch', read);
+		await use(index, scratch);
+	} finally {
+		await rm(scratch, { recursive: true, force: true });
+	}
+}
+
+/**
+ * Applies to `index` the change from one commit to another, `undefined` for none: what reverting
+ * or re-applying a commit does. The patch goes through a file, as bytes, so no text decoding can
+ * change it.
+ *
+ * @throws when it does not apply, such as when a later commit changed the same lines.
+ */
+async function applyChange(
+	repository: string,
+	index: string,
+	scratch: string,
+	{ from, to }: { from: string | undefined; to: string | undefined },
+): Promise<void> {
+	const empty = await emptyTree(repository);
+	const patch = join(scratch, 'change.patch');
+	const diff = await git(
+		[
+			'diff',
+			'--binary',
+			'--no-color',
+			'--no-ext-diff',
+			`--output=${patch}`,
+			from ?? empty,
+			to ?? empty,
+		],
+		repository,
+		uncancelled,
+	);
+	if (diff.exitCode !== 0) throw gitFailed('read the change', diff);
+	const applied = await git(['apply', '--cached', '--binary', patch], repository, uncancelled, {
+		GIT_INDEX_FILE: index,
+	});
+	if (applied.exitCode !== 0) throw gitFailed('apply the change', applied);
+}
+
+async function emptyTree(repository: string): Promise<string> {
+	const hashed = await git(['hash-object', '-t', 'tree', '/dev/null'], repository, uncancelled);
+	if (hashed.exitCode !== 0) throw gitFailed('name the empty tree', hashed);
+	return firstLine(hashed.stdout);
+}
+
+/**
+ * Makes a commit of `index` on `parent`, signed when the repository signs its commits, and
+ * returns it. Author and message come from the commit it re-applies, or from the user's
+ * configuration for a revert.
+ */
+async function commitIndex(
+	repository: string,
+	index: string,
+	scratch: string,
+	{ parent, message, author }: { parent: string; message: string; author?: NodeJS.ProcessEnv },
+): Promise<string> {
+	const tree = await git(['write-tree'], repository, uncancelled, { GIT_INDEX_FILE: index });
+	if (tree.exitCode !== 0) throw gitFailed('write the tree', tree);
+	const messageFile = join(scratch, 'message');
+	await writeFile(messageFile, message);
+	const signs = await git(['config', '--bool', '--get', 'commit.gpgsign'], repository, uncancelled);
+	const committed = await git(
+		[
+			'commit-tree',
+			...(firstLine(signs.stdout) === 'true' ? ['-S'] : []),
+			firstLine(tree.stdout),
+			'-p',
+			parent,
+			'-F',
+			messageFile,
+		],
+		repository,
+		uncancelled,
+		author,
+	);
+	if (committed.exitCode !== 0) throw gitFailed('make the commit', committed);
+	return firstLine(committed.stdout);
+}
+
+/** The author of `sha`, as the variables git reads it from, and its whole message. */
+async function authorOf(
+	repository: string,
+	sha: string,
+): Promise<{ author: NodeJS.ProcessEnv; message: string }> {
+	const shown = await git(
+		[
+			'log',
+			'-1',
+			'--no-show-signature',
+			'--encoding=UTF-8',
+			'--format=%an%x00%ae%x00%aI%x00%B',
+			sha,
+		],
+		repository,
+		uncancelled,
+	);
+	if (shown.exitCode !== 0) throw gitFailed(`read ${sha}`, shown);
+	const [name = '', email = '', date = '', ...message] = shown.stdout.split('\0');
+	return {
+		author: { GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: email, GIT_AUTHOR_DATE: date },
+		message: message.join('\0'),
+	};
+}
+
+/**
+ * Moves `branch` from `from` to `to`, only if it is still at `from`, then brings the index of the
+ * paths that differ to `to`, so git shows the files against the new tip: the files themselves
+ * are left as they are. Returns why it could not move the branch.
+ */
+async function moveBranch(
+	repository: string,
+	branch: string,
 	from: string,
-	commits: readonly BranchCommit[],
-): Promise<true | string | undefined> {
-	const oldest = commits[0]?.sha ?? '';
-	const newest = commits.at(-1)?.sha ?? '';
-	const base = await git(['rev-parse', '-q', '--verify', `${oldest}^`], repository, uncancelled);
-	if (base.exitCode !== 0 || firstLine(base.stdout) !== from) return undefined;
-	const chain = await git(['rev-list', `${from}..${newest}`], repository, uncancelled);
-	const between = new Set(chain.stdout.split('\n').filter(line => line !== ''));
-	if (chain.exitCode !== 0 || between.size !== commits.length) return undefined;
-	if (commits.some(commit => !between.has(commit.sha))) return undefined;
-	const moved = await git(['reset', '--quiet', '--keep', newest], repository, uncancelled);
-	return moved.exitCode === 0 || gitReason('move the branch forward', moved);
+	to: string,
+	warn: BranchWarning,
+): Promise<string | undefined> {
+	const changed = await git(['diff', '--name-only', '-z', from, to], repository, uncancelled);
+	if (changed.exitCode !== 0) return gitReason('compare the branch before and after', changed);
+	const moved = await git(
+		['update-ref', '-m', 'harness: move through the history', `${branchPrefix}${branch}`, to, from],
+		repository,
+		uncancelled,
+	);
+	if (moved.exitCode !== 0) return gitReason('move the branch', moved);
+	const paths = changed.stdout.split('\0').filter(path => path !== '');
+	if (paths.length === 0) return undefined;
+	const scratch = await mkdtemp(join(tmpdir(), 'harness-git-'));
+	try {
+		const listed = join(scratch, 'paths');
+		await writeFile(listed, `${paths.join('\0')}\0`);
+		const indexed = await git(
+			['reset', '-q', to, `--pathspec-from-file=${listed}`, '--pathspec-file-nul'],
+			repository,
+			uncancelled,
+		);
+		if (indexed.exitCode !== 0) {
+			warn(
+				`The history moved ${branch} in ${repository}, but could not bring its index to the new tip, so git may show those files as staged: ${gitReason('update the index', indexed)}`,
+			);
+		}
+	} finally {
+		await rm(scratch, { recursive: true, force: true });
+	}
+	return undefined;
 }
 
 /**

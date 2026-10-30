@@ -665,6 +665,90 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 		});
 	});
 
+	it('leaves the files to the history: a run that only committed an earlier edit keeps it', async () => {
+		const { tool } = await commandTool({
+			edit: shell('echo two > a.txt'),
+			commit: shell('git commit --quiet -am "commit a"'),
+		});
+		await run(tool, 'edit');
+		const committed = head();
+		await run(tool, 'commit');
+		const history = await createHistory({ root, stateDirectory: join(parent, 'state') });
+
+		for (const commits of ['reset', 'revert'] as const) {
+			const undone = await history.undo({ commits });
+
+			expect(undone).toMatchObject({ complete: true, git: [{ action: commits, outcome: 'done' }] });
+			// The edit's run is where the workspace is: its file stays, now a change git shows.
+			expect(readA()).toBe('two\n');
+			expect(git('status', '--porcelain')).toBe('M a.txt');
+			await history.redo();
+		}
+		expect(git('log', '--format=%s', `${committed}..HEAD`).split('\n')).toEqual([
+			'commit a',
+			'Revert "commit a"',
+			'commit a',
+		]);
+	});
+
+	it('leaves the branch while the user has a cherry-pick in progress, and the cherry-pick too', async () => {
+		const { history } = await committedRun();
+		const marker = join(root, '.git', 'CHERRY_PICK_HEAD');
+		writeFileSync(marker, `${head()}\n`);
+		const tip = head();
+
+		const undone = await history.undo({ commits: 'revert' });
+
+		expect(head()).toBe(tip);
+		expect(readFileSync(marker, 'utf8')).toBe(`${tip}\n`);
+		expect(undone.git?.[0]).toMatchObject({
+			outcome: 'left',
+			reason: `a merge, rebase, cherry-pick or revert is in progress in ${root}`,
+		});
+	});
+
+	it('resets nothing when its upstream holds any of the commits, not only the oldest', async () => {
+		const { tool } = await commandTool({
+			merge: shell(
+				'git switch --quiet -c side && git commit --quiet --allow-empty -m S && git switch --quiet main && git commit --quiet --allow-empty -m M && git merge --quiet --no-ff --no-edit side',
+			),
+		});
+		await run(tool, 'merge');
+		const remote = join(parent, 'remote.git');
+		execFileSync('git', ['init', '--quiet', '--bare', remote]);
+		git('remote', 'add', 'origin', remote);
+		// The upstream holds the mainline commit, and not the side branch's.
+		git('push', '--quiet', 'origin', 'HEAD^1:refs/heads/main');
+		git('fetch', '--quiet', 'origin');
+		git('branch', '--quiet', '--set-upstream-to=origin/main');
+		const tip = head();
+		const history = await createHistory({ root, stateDirectory: join(parent, 'state') });
+
+		const undone = await history.undo({ commits: 'reset' });
+
+		expect(head()).toBe(tip);
+		expect(undone.git?.[0]).toMatchObject({ action: 'reset', outcome: 'left' });
+	});
+
+	it('takes a commit back from one branch and still from another that holds it', async () => {
+		const { tool } = await commandTool({
+			commit: shell('echo two > a.txt && git commit --quiet -am "change a"'),
+			follow: shell('git merge --quiet --ff-only main'),
+		});
+		await run(tool, 'commit');
+		git('switch', '--quiet', '-c', 'other', 'HEAD~1');
+		await run(tool, 'follow');
+		const history = await createHistory({ root, stateDirectory: join(parent, 'state') });
+
+		const onOther = await history.undo({ commits: 'revert' });
+		git('switch', '--quiet', 'main');
+		const onMain = await history.undo({ commits: 'revert' });
+
+		expect(onOther.git?.[0]).toMatchObject({ branch: 'other', action: 'revert', outcome: 'done' });
+		expect(onMain.git?.[0]).toMatchObject({ branch: 'main', action: 'revert', outcome: 'done' });
+		expect(git('log', '-1', '--format=%s')).toBe('Revert "change a"');
+	});
+
 	it('refuses an unknown policy before it moves anything', async () => {
 		const { history } = await committedRun();
 

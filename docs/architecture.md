@@ -249,14 +249,15 @@ run.
 
 The journal also records the commits a command made (`RecordedCommits`): a run that made one
 stays in the history even if it changed no file. A move takes care of those commits before
-it moves the files, per branch, in `gitCommits.ts`: undoing keeps them, reverts them or
-resets the branch to before them, as `MoveOptions.commits` says, and redoing puts back what
-an earlier move took back, forward to the same commits after a reset when the branch has not
-moved, cherry-picked otherwise; where each commit is now is read from the moves recorded so
-far (`commitStates`). When git cannot follow, the branch is left as it was. The move reports
-it in its `git`, one `BranchMove` per branch and action, and records it in the move in
-progress, so a move whose process stopped while git ran does not run it again and reports
-the branch as left. An agent following the workspace is told what git did (`commitsNote`).
+it moves the files, per branch, in `gitCommits.ts`, on the branch and the index only, never
+the files: undoing keeps them, reverts them or resets the branch to before them, as
+`MoveOptions.commits` says, and redoing puts back what an earlier move took back, forward to
+the same commits after a reset when the branch has not moved, cherry-picked otherwise; where
+each commit is now is read from the moves recorded so far (`commitStates`). When git cannot
+follow, the branch is left as it was. The move reports it in its `git`, one `BranchMove` per
+branch and action, and records it in the move in progress, so a move whose process stopped
+while git ran does not run it again and reports the branch as left. An agent following the
+workspace is told what git did (`commitsNote`).
 
 Moves and runs share the workspace lock. While it holds that lock, a run or a move also
 claims the folders it may write, its first root and the other `write` roots it was opened

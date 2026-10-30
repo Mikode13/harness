@@ -2896,23 +2896,24 @@ tags: #mikode-harness #recovery #git #api-design
 
 - **`MoveOptions.commits` chooses what undoing does:** `keep`, the default, `revert`, which adds commits that take them back, or `reset`, which moves the branch back to before them only when no other commit is among them or on top, the branch's upstream holds none of them, and the branch is still checked out.
 - **Redoing always puts back what an earlier move took back,** whatever the option says: files and commits come back together. After a reset, the branch goes forward to the same commits when it has not moved since; otherwise they are cherry-picked, as new commits, as after a revert. `BranchMove.action` gains `reapply`, and `MovedCommit.original` names the commit a cherry-picked one re-applies.
-- **Git goes first, then the files.** Before a file is moved, the files still hold what the commits do, so a revert, a reset or a cherry-pick leaves each file where the step leads, and the step finds it there.
-- **When git cannot follow, the branch is left as it was:** a conflicting revert or cherry-pick is aborted, and the move reports `outcome: 'left'` with the reason. The files move either way.
-- **Where each commit is now is read from the moves recorded,** not stored apart: a revert or reset that was done took it back, and a re-apply put it, or its new commit, back.
+- **Git never touches the files, only the branch and the index.** A revert or a cherry-pick is made in an index of its own, from the change between a commit and its parent, and committed with `commit-tree`; the branch moves with `update-ref`, only if it is still where the move read it; then the index of the paths that changed is brought to the new tip. The files are the history's to move, as the journal says: a run that only committed an earlier run's edit, once undone, leaves that edit in place, now a change git shows.
+- **When git cannot follow, the branch is left as it was,** and the move reports `outcome: 'left'` with the reason: the branch is not checked out, a merge, rebase, cherry-pick or revert is in progress, a change does not apply, a commit is a merge, or a reset would drop other commits or published ones. The files move either way.
+- **Where each commit is now is read from the moves recorded,** not stored apart, per repository, branch and commit: a revert or reset that was done took it back from that branch, and a re-apply put it, or its new commit, back.
 - **A move whose process stopped while git ran does not run git again** when it is finished: the branch is reported as left.
 - **The model is told after every move with commits,** one line per branch and action, in the note about undone turns, or in a note of its own when nothing was undone.
 
-**Context:** #140, decided with the user on 2026-10-29 and 2026-10-30. The second of three pull requests; the orchestrator's committer stage is the third.
+**Context:** #140, decided with the user on 2026-10-29 and 2026-10-30. The second of three pull requests; the orchestrator's committer stage is the third. The first version ran git's own commands before moving the files; the review showed they rewrote files the journal decides, and could abort a cherry-pick of the user's.
 
 **Alternatives considered:**
 
 - **Redo following the option too,** so `keep` would leave reverted commits reverted. The consumer chooses per move, but the default would leave files and commits apart after a redo.
 - **Always cherry-picking after a reset.** One path, but new SHAs where the originals could come back.
-- **Moving the files first.** The order of the history, but a revert or a reset then meets files that already hold what it would write, and refuses.
+- **`git revert`, `git reset --keep` and `git cherry-pick` in the workspace.** Git's own commands, with its messages and hooks, but they write the files, which may not be what the journal says, and aborting a failed one could abort an operation of the user's.
 - **Storing each commit's state apart.** Direct, but a second record that the moves already hold.
 
 **Consequences:**
 
-- A `revert` or a cherry-pick makes commits as the user, with the user's git configuration: signing and hooks apply, and an identity git lacks makes the branch left.
-- A revert or a reset meets the files before they move: one the run changed again after its commit makes git refuse, and the branch is left.
+- A revert or a cherry-pick makes commits as the user, signed when `commit.gpgsign` says so, and no hook runs; an identity git lacks makes the branch left. A revert's message is git's own; a re-applied commit keeps its author and message.
+- A change that later commits touched in the same lines does not apply, and the branch is left: there is no merge to resolve it.
+- A merge commit is never taken back or re-applied.
 - A move whose process stopped while git ran reports the branch as left even if git finished: the user checks the branch.
