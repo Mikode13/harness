@@ -13,6 +13,11 @@ export interface LLMResponse {
 	 */
 	usage: Tokens | undefined;
 	stopReason: StopReason;
+	/**
+	 * When the provider compacted the context in this call: the tokens of context it compacted,
+	 * as the provider reported them. Missing when it did not compact, or did not report them.
+	 */
+	compactedContextTokens?: number;
 }
 
 export interface LLMClient {
@@ -25,8 +30,23 @@ export interface LLMClient {
 	readonly providerDataSource?: string;
 	/** Whether this client can declare a native tool. Missing means it declares none. */
 	supportsNative?(tool: NativeTool): boolean;
+	/**
+	 * Checks a threshold for `send`'s `compactAt`. Missing when the provider cannot compact.
+	 *
+	 * @throws {InvalidAgentConfigError} for a threshold the provider cannot take.
+	 */
+	checkCompactAt?(compactAt: number): void;
+	/**
+	 * @param compactAt the tokens of context at which the provider compacts it inside this call,
+	 * answering with its summary first; `now` compacts it whatever its size, as far as the
+	 * provider can. Without it, the call never compacts.
+	 */
 	send(
-		{ context, tools }: { context: Message[]; tools: ToolDefinition[] },
+		{
+			context,
+			tools,
+			compactAt,
+		}: { context: Message[]; tools: ToolDefinition[]; compactAt?: number | 'now' | undefined },
 		signal: AbortSignal,
 	): Promise<LLMResponse>;
 }

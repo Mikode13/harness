@@ -28,6 +28,8 @@ async function explore(
 		subagent,
 		task: question,
 		options: { signal },
+		// It only finds and reads.
+		writeCeiling: [],
 	});
 	try {
 		const { response, tokens } = await explorer().run(question, options);

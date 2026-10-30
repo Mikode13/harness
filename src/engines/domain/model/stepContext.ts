@@ -57,6 +57,9 @@ export function measureContext({
 					measured.reasoning += JSON.stringify(part.data).length;
 				}
 				break;
+			// The agent sends the context derived from it, where the summary is text.
+			case 'contextSummary':
+				break;
 			case 'toolCall':
 				calls.set(part.id, part);
 				measured.toolCalls += JSON.stringify(part.input).length;

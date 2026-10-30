@@ -21,6 +21,8 @@ export {
 	type CreateLLMOrchestratorOptions,
 	type RoleSteps,
 	type RoleTokens,
+	type RoleAgents,
+	type CompactionMode,
 } from './factory/infrastructure/agentLLMFactory.ts';
 export type { FileTool, WorkspaceOptions } from './tools/infrastructure/fileTools.ts';
 export {

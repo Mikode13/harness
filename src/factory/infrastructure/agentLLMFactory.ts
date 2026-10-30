@@ -2,15 +2,19 @@ import { resolve } from 'node:path';
 import type { Agent } from '#src/agent/domain/agent';
 import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcript';
 import type { HistoryReader } from '#src/engines/domain/model/historyFollower';
+import { type Compactor, recentKeptSteps } from '#src/engines/domain/model/compactor';
 import { LLMAgent } from '#src/engines/domain/model/llmAgent';
+import { JevContextTriage } from '#src/llm/infrastructure/jevContextTriage';
 import type { LLMClient } from '#src/llm/domain/llm';
 import {
 	ClaudeLLMClient,
+	type ClaudeLLMModel,
 	claudeLLMModels,
 	claudeLLMReasoningEfforts,
 } from '#src/llm/infrastructure/claudeLLMClient';
 import {
 	OpenAILLMClient,
+	type OpenAIModel,
 	openAIModels,
 	openAIReasoningEfforts,
 } from '#src/llm/infrastructure/openAILLMClient';
@@ -132,12 +136,27 @@ export interface CreateLLMAgentOptions {
 	 */
 	maxSteps?: number;
 	/**
-	 * The input tokens at which the provider compacts the conversation on its side: it replaces
-	 * every turn before that call with its own summary, which only its model reads back. The
-	 * conversation keeps every original turn. Without it, the conversation is never compacted.
-	 * At least 50,000 on Anthropic.
+	 * The tokens of context at which the provider compacts it on its side: it replaces every turn
+	 * before that call with its own summary, which only its model reads back. The conversation
+	 * keeps every original turn. Defaults to the model's threshold: 450,000 for Claude Opus,
+	 * Fable and Sonnet and GPT astra, sol and terra, and 125,000 for Claude Haiku and GPT luna.
+	 * `false` turns compaction off. Either way, a context that no longer fits the model is
+	 * compacted once, and the call tried again. At least 50,000 on Anthropic.
 	 */
-	compactAt?: number;
+	compactAt?: number | false;
+	/**
+	 * Who compacts the context once it passes `compactAt`. `provider`, the default, has the
+	 * model's provider compact it on its side. `recent` has the agent's own model summarize it
+	 * before the next call, from its provider's cache, and keeps the run's prompt and the run's
+	 * last 10 answers, each with its tool results, word for word after the summary, without
+	 * their signed reasoning. Earlier runs are always summarized. `jev` summarizes the same way,
+	 * but TypeSafe's Jev chooses what is kept: the run's prompt, the model's last answer with its
+	 * tool results, and each earlier tool result Jev judges the agent still needs word for word,
+	 * with its call. Jev is sent the run's prompt, the model's last answer and each of those tool
+	 * results, so what the tools read leaves for TypeSafe. It reads the key from `TYPESAFE_API_KEY`; without it, or when Jev fails, the
+	 * `recent` choice is made instead, and logged.
+	 */
+	compaction?: CompactionMode;
 	/**
 	 * Runs every tool call without asking, `destructive` ones included, for CI where no one can
 	 * answer. Without it, a `destructive` call goes to the run's `approve`, or is denied.
@@ -152,11 +171,19 @@ export interface CreateLLMAgentOptions {
 	onTranscript?: TranscriptCallback;
 }
 
+/** Who compacts an agent's context; see `CreateLLMAgentOptions.compaction`. */
+export type CompactionMode = 'provider' | 'recent' | 'jev';
+
+const compactionModes = ['provider', 'recent', 'jev'] as const satisfies readonly CompactionMode[];
+
 /** A limit per role of `createLLMOrchestrator`; a role left out keeps its default. */
 export type RoleSteps = Partial<Record<OrchestratorRole, number>>;
 
 /** A number of tokens per role of `createLLMOrchestrator`; a role left out keeps its default. */
 export type RoleTokens = Partial<Record<OrchestratorRole, number>>;
+
+/** The consumer's agents, from `agentAsTool`, that each role of `createLLMOrchestrator` may call. */
+export type RoleAgents = Partial<Record<OrchestratorRole, DelegationTool[]>>;
 
 // The same three roles a command can be given to.
 type OrchestratorRole = CommandRole;
@@ -168,7 +195,7 @@ const defaultRoleSteps: Record<OrchestratorRole, number> = {
 	reviewer: 65,
 };
 
-// No role compacts unless asked to.
+// Each role compacts at its model's threshold unless told otherwise.
 const defaultRoleCompaction: Record<OrchestratorRole, number | undefined> = {
 	planner: undefined,
 	executor: undefined,
@@ -224,11 +251,14 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	 */
 	maxSteps?: number | RoleSteps;
 	/**
-	 * The input tokens at which each role's provider compacts its conversation, as
-	 * `CreateLLMAgentOptions.compactAt`: one number for every role, or a number per role. Without
-	 * it, no role compacts.
+	 * The tokens of context at which each role's provider compacts it, as
+	 * `CreateLLMAgentOptions.compactAt`: one number for every role, or a number per role. A role
+	 * left out compacts at its model's threshold, as do the explorers. `false` turns compaction
+	 * off for every role.
 	 */
-	compactAt?: number | RoleTokens;
+	compactAt?: number | false | RoleTokens;
+	/** Who compacts every agent's context, as `CreateLLMAgentOptions.compaction`. */
+	compaction?: CompactionMode;
 	/**
 	 * Commands the roles may run, such as the project's tests, through `runCommand`. Each goes to
 	 * the roles its `roles` names, the executor by default. See `createFileTools`. Each needs a
@@ -255,12 +285,74 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	 * root is in when the user asks. See `createFileTools`.
 	 */
 	removeWorktree?: boolean;
+	/**
+	 * The consumer's agents, from `agentAsTool`, that each role may hand a task to, beside its own
+	 * tools: the planner and the reviewer keep their explorers. An agent never writes more than
+	 * the role that calls it, so only the executor's may write, within the `write` roots.
+	 */
+	agents?: RoleAgents;
 }
 
 const defaultLLMAgentModels = {
 	anthropic: 'sonnet',
 	openai: 'gpt-5.6-luna',
 } as const satisfies Record<AgentProvider, AgentModel>;
+
+// The tokens of context at which each model compacts by default, the small ones sooner. The
+// margins are wide on purpose: compacting at 64k cleared file reads the executor then read again.
+const compactionThresholds: Record<ClaudeLLMModel | OpenAIModel, number> = {
+	opus: 450_000,
+	fable: 450_000,
+	sonnet: 450_000,
+	haiku: 125_000,
+	'gpt-6-astra': 450_000,
+	'gpt-5.6-sol': 450_000,
+	'gpt-5.6-terra': 450_000,
+	'gpt-5.6-luna': 125_000,
+};
+
+/**
+ * The compactor `mode` names for an agent on `model`: at `compactAt`, at the model's threshold
+ * without it, or off with `false`, when only a context that no longer fits is compacted.
+ *
+ * @throws {InvalidAgentConfigError} for a mode that does not exist, from untyped input.
+ */
+function compactorFor(
+	model: AgentModel,
+	compactAt: number | false | undefined,
+	mode: CompactionMode = 'provider',
+): Compactor {
+	// Checked whatever it is, as untyped input can hold anything here.
+	if (typeof mode !== 'string' || !isOneOf(compactionModes, mode)) {
+		throw new InvalidAgentConfigError(
+			`compaction must be one of: ${compactionModes.join(', ')}; got ${String(mode)}`,
+		);
+	}
+	// A model with no threshold was already refused by its client.
+	const at =
+		compactAt === false
+			? undefined
+			: (compactAt ?? (compactionThresholds as Partial<Record<string, number>>)[model]);
+	switch (mode) {
+		case 'provider':
+			return { by: 'provider', at };
+		case 'recent':
+			return { by: 'harness', at, keptSteps: recentKeptSteps };
+		case 'jev':
+			return { by: 'harness', at, keptSteps: recentKeptSteps, triage: new JevContextTriage() };
+	}
+}
+
+function defaultModelOf(provider: AgentProvider): AgentModel {
+	switch (provider) {
+		case 'anthropic':
+		case 'openai':
+			return defaultLLMAgentModels[provider];
+		default:
+			// Reachable from untyped input.
+			throw unknownProvider(provider);
+	}
+}
 
 function unknownProvider(provider: never): InvalidAgentConfigError {
 	return new InvalidAgentConfigError(
@@ -273,13 +365,11 @@ function llmClientFor(
 	{
 		model,
 		reasoningEffort,
-		compactAt,
 		systemPrompt,
 		logger,
 	}: {
-		model?: AgentModel;
+		model: AgentModel;
 		reasoningEffort?: ReasoningEffort;
-		compactAt?: number | undefined;
 		systemPrompt: string;
 		logger: ILogger;
 	},
@@ -287,17 +377,15 @@ function llmClientFor(
 	switch (provider) {
 		case 'anthropic':
 			return new ClaudeLLMClient({
-				model: model ?? defaultLLMAgentModels.anthropic,
+				model,
 				reasoningEffort,
-				compactAt,
 				systemPrompt,
 				logger,
 			});
 		case 'openai':
 			return new OpenAILLMClient({
-				model: model ?? defaultLLMAgentModels.openai,
+				model,
 				reasoningEffort,
-				compactAt,
 				systemPrompt,
 				logger,
 			});
@@ -380,9 +468,11 @@ function buildLLMAgent(
 		summarizer,
 		maxSteps,
 		compactAt,
+		compaction,
 		autoApprove,
 		logger,
 		onTranscript,
+		writeRoots,
 	}: {
 		model?: AgentModel;
 		reasoningEffort?: ReasoningEffort;
@@ -391,16 +481,20 @@ function buildLLMAgent(
 		history?: HistoryReader;
 		summarizer?: LLMClient;
 		maxSteps?: number;
-		compactAt?: number | undefined;
+		/** See `CreateLLMAgentOptions.compactAt`. */
+		compactAt?: number | false | undefined;
+		compaction?: CompactionMode | undefined;
 		autoApprove?: boolean;
 		logger: ILogger;
 		onTranscript?: TranscriptCallback | undefined;
+		/** See `LLMAgent`: where an agent it delegates to may write. */
+		writeRoots?: readonly string[];
 	},
 ): Agent {
+	const chosen = model ?? defaultModelOf(provider);
 	const llmClient = llmClientFor(provider, {
-		model,
+		model: chosen,
 		reasoningEffort,
-		compactAt,
 		systemPrompt,
 		logger,
 	});
@@ -415,6 +509,8 @@ function buildLLMAgent(
 			...(summarizer ? { summarizer } : {}),
 			...(maxSteps === undefined ? {} : { maxSteps }),
 			...(onTranscript ? { onTranscript } : {}),
+			...(writeRoots ? { writeRoots } : {}),
+			compactor: compactorFor(chosen, compactAt, compaction),
 		}),
 		logger,
 		noteFailures: false,
@@ -444,6 +540,7 @@ export function createLLMAgent(
 		summarizeUndone = true,
 		maxSteps,
 		compactAt,
+		compaction,
 		autoApprove,
 		logger = new Logger(),
 		onTranscript,
@@ -468,10 +565,17 @@ export function createLLMAgent(
 		...(workspace && summarizeUndone ? { summarizer: summarizerFor(provider, logger) } : {}),
 		maxSteps,
 		compactAt,
+		compaction,
 		autoApprove,
 		logger,
 		onTranscript,
+		// An agent it delegates to writes only where its workspace lets it.
+		...(workspace ? { writeRoots: writeRootsOf(workspace.roots) } : {}),
 	});
+}
+
+function writeRootsOf(roots: readonly WorkspaceRoot[]): string[] {
+	return roots.filter(({ access }) => access === 'write').map(({ path }) => path);
 }
 
 /**
@@ -562,6 +666,36 @@ async function removeWorktreeToolFor({
 		);
 	});
 	return createRemoveWorktreeTool({ base, roots, stateDirectory });
+}
+
+/**
+ * Each role's agents from `agentAsTool`, as the harness's tools.
+ *
+ * @throws {InvalidAgentConfigError} for a role that does not exist, or a role's agents that are
+ * not a list.
+ */
+function roleAgents(agents: unknown): Record<OrchestratorRole, AgentTool[]> {
+	// Untyped input, such as the CLI's configuration file, can hold anything here.
+	if (typeof agents !== 'object' || agents === null || Array.isArray(agents)) {
+		throw new InvalidAgentConfigError(
+			'agents must be an object of agentAsTool tools per role, such as { executor: [committer] }',
+		);
+	}
+	const byRole: Record<OrchestratorRole, AgentTool[]> = { planner: [], executor: [], reviewer: [] };
+	for (const [role, tools] of Object.entries(agents)) {
+		if (!Object.hasOwn(byRole, role)) {
+			throw new InvalidAgentConfigError(
+				`agents names "${role}", which is not a role; expected one of: ${Object.keys(byRole).join(', ')}`,
+			);
+		}
+		if (tools === undefined) continue;
+		if (!Array.isArray(tools)) {
+			throw new InvalidAgentConfigError(`agents.${role} must be a list of agentAsTool tools`);
+		}
+		// A delegation tool is a harness tool under its public name.
+		byRole[role as OrchestratorRole] = tools as AgentTool[];
+	}
+	return byRole;
 }
 
 /** What an explorer finds and reads with: no edits, no changes, no commands. */
@@ -659,27 +793,38 @@ export async function createLLMOrchestrator({
 	workspace = { roots: [{ path: process.cwd(), access: 'read' }] },
 	maxSteps,
 	compactAt,
+	compaction: compactionMode,
 	commands,
 	formatter,
 	summarizeUndone = true,
 	logger = new Logger(),
 	onTranscript,
 	removeWorktree = false,
+	agents = {},
 }: CreateLLMOrchestratorOptions = {}): Promise<Agent> {
 	const roles = orchestratorRolesFor(provider);
+	const agentsOf = roleAgents(agents);
 	const steps = perRole('maxSteps', maxSteps, defaultRoleSteps, {
 		unit: 'steps',
 		example: '{ "executor": 120 }',
 	});
-	const compaction = perRole('compactAt', compactAt, defaultRoleCompaction, {
-		unit: 'tokens',
-		example: '{ "executor": 200000 }',
-	});
+	const compaction: Record<OrchestratorRole, number | false | undefined> =
+		compactAt === false
+			? { planner: false, executor: false, reviewer: false }
+			: perRole('compactAt', compactAt, defaultRoleCompaction, {
+					unit: 'tokens',
+					example: '{ "executor": 200000 }',
+				});
 	if (formatter !== undefined) validateFormatter(formatter);
 	const opened = await openWorkspace(workspace, logger, formatter ? { formatter } : {});
 	const guidance = workspaceGuidance(workspace.roots);
 	const summarizer = summarizeUndone ? summarizerFor(roles.planner.provider, logger) : undefined;
-	const shared = { history: opened.store, ...(summarizer ? { summarizer } : {}), logger };
+	const shared = {
+		history: opened.store,
+		...(summarizer ? { summarizer } : {}),
+		compaction: compactionMode,
+		logger,
+	};
 	// A caller's own prompt replaces our instructions and guidance, not the workspace: the model
 	// needs the roots to name a file, as `createLLMAgent` gives them.
 	const prompt = (role: CommandRole, own: string | undefined, instructions: string) =>
@@ -699,6 +844,7 @@ export async function createLLMOrchestrator({
 			systemPrompt: withGuidance(explorerInstructions, guidance),
 			tools: explorerToolset,
 			maxSteps: explorerSteps,
+			compaction: compactionMode,
 			logger,
 			onTranscript: transcriptsOf('explorer'),
 		});
@@ -711,10 +857,15 @@ export async function createLLMOrchestrator({
 			model,
 			reasoningEffort,
 			systemPrompt,
-			tools: await readingTools(opened, role, commands, explorer(provider)),
+			tools: [
+				...(await readingTools(opened, role, commands, explorer(provider))),
+				...agentsOf[role],
+			],
 			maxSteps: steps[role],
 			compactAt: compaction[role],
 			onTranscript: transcriptsOf(role),
+			// It only reads, so the agents it calls only read too.
+			writeRoots: [],
 			...shared,
 		});
 	const { executor } = roles;
@@ -742,11 +893,12 @@ export async function createLLMOrchestrator({
 				systemPrompts.executor,
 				executorRuns ? executorInstructions : executorInstructionsWithoutCommands,
 			),
-			tools: executorToolset,
+			tools: [...executorToolset, ...agentsOf.executor],
 			maxSteps: steps.executor,
 			compactAt: compaction.executor,
 			autoApprove,
 			onTranscript: transcriptsOf('executor'),
+			writeRoots: writeRootsOf(workspace.roots),
 			...shared,
 		}),
 		reviewerAgent: await reader(

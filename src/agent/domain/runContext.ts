@@ -77,6 +77,11 @@ export interface Delegation {
 	/** Which of the agents that call started, from 1. */
 	readonly subagent: number;
 	readonly depth: number;
+	/**
+	 * The folders it may write in, as real paths, so it never writes more than the agents that
+	 * delegated to it: empty when it may write nowhere, absent when none set a limit.
+	 */
+	readonly writeCeiling?: readonly string[];
 }
 
 const delegationKey = Symbol('mikode-harness.delegation');

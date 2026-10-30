@@ -3,8 +3,10 @@ import type { RecoveryStore } from '#src/recovery/domain/recoveryStore';
 import type { AccessPolicy } from '../domain/accessPolicy.ts';
 import { sep } from 'node:path';
 import { EditRefusedError } from '../domain/fileEdits.ts';
+import type { ToolCallContext } from '../domain/readRegistry.ts';
 import { FileEditor } from './fileEditor.ts';
 import type { FileFormatter } from './fileFormatter.ts';
+import { ceilingRefusal, realFolders } from './writeCeiling.ts';
 import { WriteSession } from './writeSession.ts';
 
 // One session per run and history on disk, whichever set of tools asks for it: two sets built
@@ -29,19 +31,37 @@ export class WorkspaceWrites {
 	readonly formatter: FileFormatter | undefined;
 	private readonly policy: AccessPolicy;
 	private readonly store: RecoveryStore;
+	private readonly writeRoots: Promise<string[]>;
 
 	constructor({
 		policy,
 		store,
 		formatter,
+		writeRoots = store.writeFolders,
 	}: {
 		policy: AccessPolicy;
 		store: RecoveryStore;
 		formatter?: FileFormatter;
+		/** The `write` roots of the tools' workspace. Defaults to the folders the store claims. */
+		writeRoots?: readonly string[];
 	}) {
 		this.policy = policy;
 		this.store = store;
 		this.formatter = formatter;
+		this.writeRoots = realFolders(writeRoots);
+	}
+
+	/**
+	 * Checks, before anything is written or anyone is asked, that the agent that made the call
+	 * may write wherever these tools may: an agent another agent started never writes more than
+	 * that agent may.
+	 *
+	 * @throws {EditRefusedError} when these tools may write outside the call's `writeCeiling`.
+	 */
+	async checkCeiling({ writeCeiling }: Pick<ToolCallContext, 'writeCeiling'>): Promise<void> {
+		if (writeCeiling === undefined) return;
+		const refusal = ceilingRefusal(await this.writeRoots, writeCeiling);
+		if (refusal !== undefined) throw new EditRefusedError(refusal);
 	}
 
 	/** An editor over this run's session, under this set of tools' policy. */

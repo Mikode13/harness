@@ -1,7 +1,7 @@
 import { readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
-import type { Commands, Formatter, RoleSteps, RoleTokens } from '../src/index.ts';
+import type { CompactionMode, Commands, Formatter, RoleSteps, RoleTokens } from '../src/index.ts';
 
 /** What the CLI reads for one repository from the user's configuration. */
 export interface RepositoryConfig {
@@ -9,8 +9,13 @@ export interface RepositoryConfig {
 	commands?: Commands;
 	/** The step limit of every role, or of each. */
 	maxSteps?: number | RoleSteps;
-	/** The input tokens at which the provider compacts every role's conversation, or each one's. */
-	compactAt?: number | RoleTokens;
+	/**
+	 * The tokens of context at which the provider compacts every role's, or each one's, or
+	 * `false` for never.
+	 */
+	compactAt?: number | false | RoleTokens;
+	/** Who compacts every role's context: the provider, by default, the recent compactor or Jev's. */
+	compaction?: CompactionMode;
 	/** What the executor's edits run on each file they write. */
 	formatter?: Formatter;
 }
@@ -75,7 +80,7 @@ export async function loadUserConfig(
 	const entry = config[real];
 	if (entry === undefined) return {};
 	if (!isRecord(entry)) throw new Error(`${path} must give ${real} an object of settings`);
-	const known = ['commands', 'maxSteps', 'compactAt', 'formatter'];
+	const known = ['commands', 'maxSteps', 'compactAt', 'compaction', 'formatter'];
 	const unknown = Object.keys(entry).filter(key => !known.includes(key));
 	if (unknown.length > 0) {
 		throw new Error(`${path} has unknown settings for ${real}: ${unknown.join(', ')}`);

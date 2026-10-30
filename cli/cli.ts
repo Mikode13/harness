@@ -87,7 +87,7 @@ const progressFormatter = new ProgressEventFormatter({
 
 // The commands the agents may run here, their step limits, when their providers compact and
 // what formats the files they write, from the user's own file.
-const { commands, maxSteps, compactAt, formatter } = flags.llm
+const { commands, maxSteps, compactAt, compaction, formatter } = flags.llm
 	? await loadUserConfig(process.cwd())
 	: {};
 if (commands) {
@@ -101,6 +101,7 @@ const orchestratorAgent = flags.llm
 			...(commands ? { commands } : {}),
 			...(maxSteps === undefined ? {} : { maxSteps }),
 			...(compactAt === undefined ? {} : { compactAt }),
+			...(compaction === undefined ? {} : { compaction }),
 			...(formatter ? { formatter } : {}),
 			...(debug
 				? {

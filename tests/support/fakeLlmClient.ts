@@ -11,6 +11,8 @@ import type { Tokens } from '../../src/shared/domain/tokens.ts';
 export class FakeLLMClient implements LLMClient {
 	readonly contexts: Message[][] = [];
 	readonly tools: ToolDefinition[][] = [];
+	/** The `compactAt` of each call. */
+	readonly compactAts: (number | 'now' | undefined)[] = [];
 	private readonly script: (LLMResponse | Error)[];
 
 	constructor(...script: (LLMResponse | Error)[]) {
@@ -18,7 +20,11 @@ export class FakeLLMClient implements LLMClient {
 	}
 
 	send(
-		{ context, tools }: { context: Message[]; tools: ToolDefinition[] },
+		{
+			context,
+			tools,
+			compactAt,
+		}: { context: Message[]; tools: ToolDefinition[]; compactAt?: number | 'now' | undefined },
 		signal: AbortSignal,
 	): Promise<LLMResponse> {
 		if (signal.aborted) {
@@ -27,6 +33,7 @@ export class FakeLLMClient implements LLMClient {
 
 		this.contexts.push(structuredClone(context));
 		this.tools.push(structuredClone(tools));
+		this.compactAts.push(compactAt);
 
 		const next = this.script.shift();
 		if (!next) return Promise.reject(new Error('FakeLLMClient ran out of scripted responses'));

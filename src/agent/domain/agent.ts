@@ -143,6 +143,23 @@ export type ProgressEvent =
 			agent?: ProgressAgent;
 	  }
 	/**
+	 * The context an agent on the model APIs sends was compacted: summarized from some point back,
+	 * while its conversation keeps every part. `by` is who compacted it, the model's provider or
+	 * the harness. `reason` is `threshold` when the context passed the agent's `compactAt`, and
+	 * `maxContext` when it no longer fit the model, which compacts it even with compaction off.
+	 * `contextTokens` is how many tokens of context were compacted, when known. The provider's
+	 * compaction follows the `step` event of the call that compacted, whose tokens include the
+	 * compaction's. The harness's is narrated once its summary is written, before the next call's
+	 * `step`: the summary call has no `step` of its own, and its tokens are only in the run's.
+	 */
+	| {
+			type: 'compaction';
+			by: 'provider' | 'harness';
+			reason: 'threshold' | 'maxContext';
+			contextTokens?: number;
+			agent?: ProgressAgent;
+	  }
+	/**
 	 * A workflow's stage asks its agent for an answer; `attempt` is 2 or more when the previous
 	 * answer was invalid. Stages run one at a time, so the events that follow, until the next
 	 * workflow event, are this stage's agent's.

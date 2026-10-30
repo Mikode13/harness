@@ -558,7 +558,8 @@ has no stable shape; read it, but do not build on it. A callback that fails is l
 run stays as it ended.
 
 `createLLMOrchestrator()` takes the options of `createOrchestrator()` plus `workspace`,
-`maxSteps`, `compactAt`, `commands`, `formatter`, `summarizeUndone` and `onTranscript`, and returns a promise. Every role runs on the
+`maxSteps`, `compactAt`, `commands`, `formatter`, `summarizeUndone`, `onTranscript`,
+`removeWorktree` and `agents`, and returns a promise. Every role runs on the
 model APIs:
 
 - the planner and the reviewer read, with a `showChanges` tool that gives the current task's
@@ -572,7 +573,15 @@ model APIs:
   `subagent` events;
 - the executor gets its provider's file tools. `autoApprove` reaches only the executor;
 - each role gets the commands whose `roles` name it; a command names only the executor unless
-  it says otherwise.
+  it says otherwise;
+- each role gets the agents `agents` gives it, from `agentAsTool`, beside its own tools: the
+  planner and the reviewer keep their explorers. They only read, so their agents only read too;
+  the executor's may write within the `write` roots.
+
+```ts
+// Each from agentAsTool, as in "Agents that hand work to other agents" below.
+createLLMOrchestrator({ workspace, agents: { planner: [architect], executor: [commit] } });
+```
 
 Each role's run stops after a number of calls to the model: 80 for the executor and 65 for
 the planner and the reviewer by default. `maxSteps` changes it, as one number for every role
@@ -594,17 +603,38 @@ once, **Stop** ends it, and words of your own reach the model. A run stopped thi
 `ask` to ask, fails with `UnrecoverableError`, and is kept in the conversation with its changes,
 so your next prompt continues from it.
 
-No conversation is compacted unless you ask. `compactAt` is the number of input tokens at
-which the provider compacts it on its side, replacing the turns before that call with its own
-summary, which only its model reads back; the conversation keeps every original turn. The
-call that compacts can lose its cache, as it did on OpenAI, so set it well above what a task
-needs. Like
-`maxSteps`, it is one number for every role or per role, and `createLLMAgent` takes one. On
-Anthropic it must be at least 50,000:
+Each agent's context is compacted once it passes its model's threshold: 450,000 tokens for
+Claude Opus, Fable and Sonnet and GPT astra, sol and terra, and 125,000 for Claude Haiku and
+GPT luna. The provider compacts it on its side, inside the call that passes the threshold,
+replacing the turns before that call with its own summary, which only its model reads back; the
+conversation keeps every original turn. The call that compacts can lose its cache, as it did on
+OpenAI, so keep the threshold well above what a task needs. `compactAt` changes it: like
+`maxSteps`, one number for every role or per role, and `createLLMAgent` takes one; on Anthropic
+it must be at least 50,000. `false` turns compaction off:
 
 ```ts
 createLLMOrchestrator({ workspace, compactAt: { executor: 200_000 } });
 ```
+
+`compaction: 'recent'` has the harness compact it instead, for the agent and for every role:
+before the next call, the agent's own model summarizes the context, reading it from its
+provider's cache, and only the run's prompt and its last 10 answers, each with its tool
+results, are kept word for word after the summary, without their signed reasoning; earlier runs
+are always summarized. The
+conversation still keeps every turn; only what the model is sent starts at the summary.
+
+`compaction: 'jev'` summarizes the same way, but TypeSafe's Jev chooses what is kept: the run's
+prompt, the model's last answer with its tool results, and each earlier tool result Jev judges
+the agent still needs word for word, with its call. Jev is sent the run's prompt, the model's
+last answer and each of those tool results, so what the tools read leaves for TypeSafe. It reads
+its key from `TYPESAFE_API_KEY`;
+without one, or when Jev fails, the recent choice is made instead, and logged.
+
+Either way, a context that no longer fits the model is compacted once and the call tried again;
+in the recent mode the model summarizes a transcript of it. When it still does not fit, the run
+fails with `UnrecoverableError`. A `compaction` event says who compacted, why, and how many
+tokens of context it compacted: after the `step` of the call that compacted, or once the
+harness's summary is written. The summary's tokens count in the run's.
 
 Without `workspace` it works on the current directory, read only. One run of the
 orchestrator is one run of the history, every round included.
@@ -641,6 +671,13 @@ The agent works inside the caller's run:
 
 - what it writes is the same run of the history, so one undo reverts both; it keeps its own
   tools' access policy, and edits only what it read itself;
+- it never writes more than the agent that called it: only within the `write` roots of that
+  agent's `workspace`, and nowhere when that workspace only reads. A calling agent with no
+  `workspace`, such as a coordinator that only hands out tasks, sets no limit of its own. Its
+  tools that may write elsewhere, a command included, are refused before anyone is asked, and
+  the model is told why. Where your own `Tool` writes is unknown, so under an agent that only
+  reads, a call your tool judges `mutating` or `destructive` is refused too; under an agent
+  that writes, it writes wherever your tool does;
 - what it spends counts in the caller's `tokens`, a failed attempt included;
 - it asks and is approved through the run's `ask` and `approve`, which agents working at once
   may call before an earlier call has its answer; one person at one terminal needs them queued,
@@ -924,7 +961,8 @@ is told to decide and say what it assumed.
 With `--llm`, the agents can also [run commands](#running-the-projects-commands) you
 configure for the repository, in `~/.config/mikode-harness/config.json` (or under
 `$XDG_CONFIG_HOME`). The file maps each repository's real path to its `commands` and,
-optionally, its `maxSteps`, `compactAt` and [`formatter`](#formatting-what-the-agent-writes). It lives outside every repository, so neither a cloned repository
+optionally, its `maxSteps`, its `compactAt`, or `false` to turn compaction off, its
+`compaction` (`provider`, `recent` or `jev`, as `createLLMOrchestrator` takes them) and [`formatter`](#formatting-what-the-agent-writes). It lives outside every repository, so neither a cloned repository
 nor the agent decides what runs, or for how long:
 
 ```json

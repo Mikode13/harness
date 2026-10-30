@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
-import { RecoverableError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
+import {
+	InvalidAgentConfigError,
+	RecoverableError,
+	UnrecoverableError,
+} from '../../src/shared/domain/errors.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import { MaxContextError } from '../../src/llm/domain/errors.ts';
 import type { LLMClient, LLMResponse } from '../../src/llm/domain/llm.ts';
@@ -313,5 +317,126 @@ describe('LLMAgent', () => {
 			cause: 'render failed',
 			tokens: textResponse('').usage,
 		});
+	});
+});
+
+/** A client whose provider compacts at 1,000 tokens or more. */
+class CompactingClient extends FakeLLMClient {
+	checkCompactAt(compactAt: number): void {
+		if (compactAt < 1_000) throw new InvalidAgentConfigError('compactAt must be at least 1000');
+	}
+}
+
+/** An answer whose provider compacted the context first. */
+function compactedResponse(text: string, contextTokens?: number): LLMResponse {
+	const response = assistantResponse([
+		{ type: 'compaction', source: 'fake', data: {} },
+		{ type: 'text', text },
+	]);
+	return contextTokens === undefined
+		? response
+		: { ...response, compactedContextTokens: contextTokens };
+}
+
+describe('LLMAgent compaction', () => {
+	const usage = { inputTokens: 9, readCacheTokens: 0, writtenCacheTokens: 0, outputTokens: 0 };
+	const outgrown = () =>
+		new MaxContextError('The context no longer fits', { cause: 'too long', tokens: usage });
+
+	it("sends the compactor's threshold with every call, and none when compaction is off", async () => {
+		const compacting = new CompactingClient(textResponse('a'));
+		const off = new CompactingClient(textResponse('b'));
+
+		await new LLMAgent({
+			llmClient: compacting,
+			compactor: { by: 'provider', at: 450_000 },
+		}).run('prompt', { signal });
+		await new LLMAgent({ llmClient: off }).run('prompt', { signal });
+
+		expect(compacting.compactAts).toEqual([450_000]);
+		expect(off.compactAts).toEqual([undefined]);
+	});
+
+	it("refuses a threshold the client's provider cannot take, or a client that cannot compact", () => {
+		const compactor = { by: 'provider', at: 500 } as const;
+
+		expect(() => new LLMAgent({ llmClient: new CompactingClient(), compactor })).toThrow(
+			'compactAt must be at least 1000',
+		);
+		expect(
+			() =>
+				new LLMAgent({ llmClient: new FakeLLMClient(), compactor: { ...compactor, at: 5_000 } }),
+		).toThrow('This model client cannot compact');
+	});
+
+	it('narrates a compaction after the step of the call that made it', async () => {
+		const events: ProgressEvent[] = [];
+		const llmClient = new CompactingClient(compactedResponse('done', 460_000));
+
+		await new LLMAgent({ llmClient, compactor: { by: 'provider', at: 450_000 } }).run('prompt', {
+			signal,
+			onProgress: event => events.push(event),
+		});
+
+		expect(events.map(event => event.type)).toEqual(['step', 'compaction', 'agentMessage']);
+		expect(events[1]).toEqual({
+			type: 'compaction',
+			by: 'provider',
+			reason: 'threshold',
+			contextTokens: 460_000,
+		});
+	});
+
+	it('compacts a context that no longer fits once, even with compaction off, and tries again', async () => {
+		const logger = { warn: vi.fn() };
+		const events: ProgressEvent[] = [];
+		const llmClient = new CompactingClient(
+			outgrown(),
+			compactedResponse('done'),
+			textResponse('more'),
+		);
+		const agent = new LLMAgent({ llmClient, logger });
+
+		const response = await agent.run('prompt', {
+			signal,
+			onProgress: event => events.push(event),
+		});
+		await agent.run('next', { signal });
+
+		expect(response.response).toBe('done');
+		// The failed call is billed with the run.
+		expect(response.tokens).toEqual({
+			inputTokens: 10,
+			readCacheTokens: 0,
+			writtenCacheTokens: 0,
+			outputTokens: 1,
+		});
+		// Only the call after the failure compacts now; the next run is back to the threshold.
+		expect(llmClient.compactAts).toEqual([undefined, 'now', undefined]);
+		expect(logger.warn).toHaveBeenCalledWith(
+			'The context no longer fits the model; the next call compacts it and tries again',
+		);
+		expect(events.filter(event => event.type === 'compaction')).toEqual([
+			{ type: 'compaction', by: 'provider', reason: 'maxContext' },
+		]);
+	});
+
+	it('fails when the context still does not fit after compacting, with every call billed', async () => {
+		const llmClient = new CompactingClient(outgrown(), outgrown());
+
+		await expect(new LLMAgent({ llmClient }).run('prompt', { signal })).rejects.toMatchObject({
+			constructor: MaxContextError,
+			tokens: { ...usage, inputTokens: 18 },
+		});
+		expect(llmClient.compactAts).toEqual([undefined, 'now']);
+	});
+
+	it('fails at once when no step is left to try again', async () => {
+		const llmClient = new CompactingClient(outgrown());
+
+		await expect(
+			new LLMAgent({ llmClient, maxSteps: 1 }).run('prompt', { signal }),
+		).rejects.toBeInstanceOf(MaxContextError);
+		expect(llmClient.compactAts).toEqual([undefined]);
 	});
 });

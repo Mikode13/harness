@@ -15,6 +15,7 @@ import { type DelegatedAnswer, RunEndingToolError } from '../domain/preparedCall
 import type { ToolCallContext } from '../domain/readRegistry.ts';
 import { defineDelegatingTool } from './defineTool.ts';
 import { cutAnswer, failureOf, subagentOptions } from './subagents.ts';
+import { delegateCeiling } from './writeCeiling.ts';
 
 declare const delegationToolBrand: unique symbol;
 
@@ -59,6 +60,12 @@ export interface AgentAsToolOptions {
  *
  * - its changes go into the same run of the workspace's history, so one undo reverts both, and
  *   each agent keeps its own tools' access policy and its own reads;
+ * - it never writes more than the calling agent may: only within the `write` roots of that
+ *   agent's `workspace`, and nowhere when they are none, as for the planner and the reviewer.
+ *   A calling agent with no workspace sets no limit of its own. Its tools that may write elsewhere are
+ *   refused, a command included, and the model is told why. A consumer's `Tool` that is not
+ *   `safe` is refused under a calling agent that only reads, since where it writes is unknown;
+ *   under one that writes, it writes wherever it does;
  * - what it spends counts in the caller's `tokens`, a failed attempt included;
  * - its progress reaches the consumer as `subagent` events of the call, and a transcript it gives
  *   names the call in `delegation`;
@@ -127,6 +134,7 @@ export function agentAsTool({
 		// The run's approver and asker are host code: one that fails inside the agent ends the
 		// run, not just the agent's task.
 		const failed = { host: false };
+		const writeCeiling = await delegateCeiling(call);
 		const options = subagentOptions(call, {
 			tool: name,
 			name,
@@ -137,6 +145,7 @@ export function agentAsTool({
 				...(call.approve ? { approve: watchedApprover(call.approve, failed) } : {}),
 				...(call.ask ? { ask: watchedAsker(call.ask, failed) } : {}),
 			} satisfies RunOptions,
+			writeCeiling,
 		});
 
 		let agent: Agent;

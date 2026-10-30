@@ -33,8 +33,16 @@ import {
 	treatErrors,
 } from '#src/shared/domain/providerFailure';
 import { Conversation } from '#src/llm/domain/conversation';
+import { keptScore } from '#src/llm/domain/contextTriage';
+import { MaxContextError } from '#src/llm/domain/errors';
 import type { LLMClient, LLMResponse } from '#src/llm/domain/llm';
-import type { Message, MessagePart, ToolCallPart, ToolResultPart } from '#src/llm/domain/message';
+import {
+	compactedContext,
+	type Message,
+	type MessagePart,
+	type ToolCallPart,
+	type ToolResultPart,
+} from '#src/llm/domain/message';
 import { asNative, nativeOf, type ToolDefinition } from '#src/llm/domain/tool';
 import { type Asker, readAnswers, type UserQuestion } from '#src/agent/domain/question';
 import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcript';
@@ -75,6 +83,15 @@ import {
 	warnAt,
 } from './commandLoops.ts';
 import { BackgroundAgents, sentNote } from './backgroundAgents.ts';
+import { compactionOff, type Compactor, type RecentCompactor } from './compactor.ts';
+import {
+	messagesAsText,
+	recentCut,
+	recentlyKept,
+	summaryRequest,
+	transcriptSummaryRequest,
+} from './recentCompaction.ts';
+import { triageCandidates, triagedCut, triagedKept } from './triagedCompaction.ts';
 import { measureContext } from './stepContext.ts';
 import {
 	askUserDefinition,
@@ -113,7 +130,15 @@ function describePart(part: MessagePart): ProgressEvent | undefined {
 		case 'compaction':
 			// The provider's, for its client to send back; the step's context shows its effect.
 			return undefined;
+		case 'contextSummary':
+			// Narrated as a `compaction` event when it is written.
+			return undefined;
 	}
+}
+
+/** The tokens of context a call sent: all its input, cached or not. */
+function contextSize(tokens: Tokens): number {
+	return tokens.inputTokens + tokens.readCacheTokens + tokens.writtenCacheTokens;
 }
 
 /**
@@ -122,6 +147,32 @@ function describePart(part: MessagePart): ProgressEvent | undefined {
  */
 interface RunEffects {
 	toolRan: boolean;
+}
+
+/**
+ * `message` with each summary in it reduced to its text: what a summary kept is in the
+ * conversation before it already.
+ */
+function withoutKeptCopies(
+	message: Message,
+): Message | { role: Message['role']; content: unknown[] } {
+	return {
+		role: message.role,
+		content: message.content.map(part =>
+			part.type === 'contextSummary' ? { type: part.type, summary: part.summary } : part,
+		),
+	};
+}
+
+/** What a harness compaction did, and what its summary call spent. */
+interface CompactionOutcome {
+	compacted: boolean;
+	/** Whether it spent a call that is not asked for again in the same run. */
+	called: boolean;
+	usage: Tokens | undefined;
+	unreported: boolean;
+	/** Why it did not compact, when it did not. */
+	why?: string;
 }
 
 /** What a run has shown the model, for its transcript. */
@@ -252,6 +303,12 @@ export class LLMAgent implements Agent {
 	private readonly history: HistoryReader | undefined;
 	private readonly summarizer: LLMClient | undefined;
 	private readonly onTranscript: TranscriptCallback | undefined;
+	private readonly writeRoots: readonly string[] | undefined;
+	private readonly compactor: Compactor;
+	// The tokens of context the model was last sent in a run that was kept, as its provider
+	// reported them, which the recent compactor measures against its threshold: the
+	// conversation's size, not a run's count.
+	private contextTokens: number | undefined;
 	// The latest move through the history this conversation has followed.
 	private seenRevision = 0;
 	// What this conversation has seen of each file, so an edit starts from a version it read.
@@ -270,6 +327,8 @@ export class LLMAgent implements Agent {
 		history,
 		summarizer,
 		onTranscript,
+		writeRoots,
+		compactor = compactionOff,
 	}: {
 		llmClient: LLMClient;
 		messages?: Message[];
@@ -293,11 +352,30 @@ export class LLMAgent implements Agent {
 		summarizer?: LLMClient;
 		/** Receives what the model saw in each run, once the run ended. */
 		onTranscript?: TranscriptCallback;
+		/**
+		 * The `write` roots of the agent's workspace: an agent it delegates to writes only within
+		 * them. Empty when it only reads; without it, it sets no limit of its own.
+		 */
+		writeRoots?: readonly string[];
+		/** How the context is compacted. Defaults to off: only a context that no longer fits is. */
+		compactor?: Compactor;
 	}) {
 		if (!Number.isInteger(maxSteps) || maxSteps < 1) {
 			throw new InvalidAgentConfigError(
 				`maxSteps must be a positive integer; got ${String(maxSteps)}`,
 			);
+		}
+		if (compactor.by === 'harness') {
+			if (compactor.at !== undefined && !(Number.isInteger(compactor.at) && compactor.at > 0)) {
+				throw new InvalidAgentConfigError(
+					`compactAt must be a positive whole number of tokens, not ${String(compactor.at)}`,
+				);
+			}
+		} else if (compactor.at !== undefined) {
+			if (!llmClient.checkCompactAt) {
+				throw new InvalidAgentConfigError('This model client cannot compact; leave compactAt out');
+			}
+			llmClient.checkCompactAt(compactor.at);
 		}
 
 		this.llmClient = llmClient;
@@ -308,6 +386,8 @@ export class LLMAgent implements Agent {
 		this.history = history;
 		this.summarizer = summarizer;
 		this.onTranscript = onTranscript;
+		this.writeRoots = writeRoots;
+		this.compactor = compactor;
 		this.tools = new Map(tools.map(tool => [tool.name, tool]));
 		if (this.tools.size !== tools.length) {
 			// The model calls tools by name, so a second one with the same name could never run.
@@ -396,6 +476,250 @@ export class LLMAgent implements Agent {
 		);
 	}
 
+	private warnContextOutgrown(): void {
+		treatErrors(
+			() => {
+				this.logger?.warn(
+					'The context no longer fits the model; the next call compacts it and tries again',
+				);
+			},
+			classifyHostFailure,
+			'LLM agent logger failed',
+		);
+	}
+
+	private warnTriageFailed(why: string): void {
+		treatErrors(
+			() => {
+				this.logger?.warn(`Jev could not choose what to keep, so the recent compactor did: ${why}`);
+			},
+			classifyHostFailure,
+			'LLM agent logger failed',
+		);
+	}
+
+	private warnCompactionFailed(why: string): void {
+		treatErrors(
+			() => {
+				this.logger?.warn(`The context could not be compacted: ${why}`);
+			},
+			classifyHostFailure,
+			'LLM agent logger failed',
+		);
+	}
+
+	/**
+	 * Warns that a summary the model was called for failed. A logger that throws ends the run,
+	 * carrying what that call spent, which the run has not counted yet.
+	 */
+	private warnSummaryCallFailed(
+		why: string,
+		{ usage, unreported }: { usage: Tokens | undefined; unreported: boolean },
+	): void {
+		try {
+			this.warnCompactionFailed(why);
+		} catch (hostFailure) {
+			throw withSpentTokens(hostFailure, usage, unreported);
+		}
+	}
+
+	/**
+	 * Has the agent's own model summarize the context before the harness compactor's cut, and
+	 * records the summary in the run, with what it keeps word for word. With a triage, Jev chooses
+	 * what is kept; when it fails, which it logs, the recent cut does. `compacted` is false when
+	 * the model had answered too few times, which costs no call, when Jev kept every answer
+	 * whole, unless the context no longer fits, or when the summary failed as `summarize` says.
+	 */
+	private async compactHarness(
+		compactor: RecentCompactor,
+		runMessages: Message[],
+		after: number | undefined,
+		options: { signal: AbortSignal; tools: ToolDefinition[]; outgrown: boolean },
+	): Promise<CompactionOutcome> {
+		// The run's messages are not copied, so its prompt is found where it is.
+		const context = compactedContext([...this.conversation.contextAfter(after), ...runMessages]);
+		const [prompt] = runMessages;
+		let chosen = prompt && (await this.harnessCut(compactor, context, prompt, options.signal));
+		// A context that no longer fits must lose something: when Jev's cut keeps it all, even the
+		// last answer it always keeps, recent cuts.
+		if (prompt && compactor.triage && !chosen?.cut && options.outgrown) {
+			chosen = this.recentChoice(compactor, context, prompt);
+		}
+		if (!chosen?.cut) {
+			const why = chosen?.triaged
+				? 'Jev kept every answer whole, so there is nothing to summarize'
+				: 'the model has not answered yet, so there is nothing to summarize';
+			// A context that no longer fits ends the run, with why in its error rather than the log.
+			if (!options.outgrown) this.warnCompactionFailed(why);
+			// Jev would keep the same again: it is not asked again in the same run.
+			return {
+				compacted: false,
+				called: chosen?.triaged ?? false,
+				usage: undefined,
+				unreported: false,
+				why,
+			};
+		}
+		// The run's context no longer fitting is what makes a failure end it.
+		return this.summarize(chosen.cut, chosen.kept, runMessages, {
+			...options,
+			context,
+			endsRun: options.outgrown,
+		});
+	}
+
+	/**
+	 * Where the harness compactor cuts `context`, and what it keeps, as the summary request says
+	 * it. `triaged` when Jev was asked and answered.
+	 */
+	private async harnessCut(
+		compactor: RecentCompactor,
+		context: Message[],
+		prompt: Message,
+		signal: AbortSignal,
+	): Promise<{
+		cut: { summarized: Message[]; kept: Message[] } | undefined;
+		kept: string;
+		triaged: boolean;
+	}> {
+		const { triage } = compactor;
+		const candidates = triage ? triageCandidates(context) : [];
+		let scores: number[] | undefined = triage && candidates.length === 0 ? [] : undefined;
+		if (triage && candidates.length > 0) {
+			const latest = context.findLast(message => message.role === 'assistant');
+			try {
+				scores = await triage.score(
+					{
+						task: prompt.content
+							.flatMap(part => (part.type === 'text' ? [part.text] : []))
+							.join('\n'),
+						latestAnswer: latest ? messagesAsText([latest], 8_000, 3_000) : '',
+						results: candidates.map(({ tool, input, output }) => ({ tool, input, output })),
+					},
+					signal,
+				);
+			} catch (error) {
+				if (isAbortError(error)) throw error;
+				signal.throwIfAborted();
+				this.warnTriageFailed(describeFailure(error));
+			}
+		}
+		if (scores) {
+			const kept = candidates.filter((_, index) => (scores[index] ?? 0) >= keptScore);
+			return {
+				cut: triagedCut(context, prompt, new Set(kept.map(({ callId }) => callId))),
+				kept: triagedKept(kept),
+				triaged: candidates.length > 0,
+			};
+		}
+		return this.recentChoice(compactor, context, prompt);
+	}
+
+	private recentChoice(compactor: RecentCompactor, context: Message[], prompt: Message) {
+		return {
+			cut: recentCut(context, prompt, compactor.keptSteps),
+			kept: recentlyKept(compactor.keptSteps),
+			triaged: false,
+		};
+	}
+
+	/**
+	 * Has the agent's own model summarize what `cut` does not keep, and records the summary in the
+	 * run. Once the threshold passed, the model reads `context`, the context as it was last sent,
+	 * from its provider's cache; once the context no longer fit, it reads what it summarizes as
+	 * text. `compacted` is false when the model wrote no summary or the provider failed in
+	 * passing, which it logs; any other failure is thrown. The summary's usage is the run's either
+	 * way.
+	 *
+	 * @param kept what `cut` keeps, as the summary request tells the model.
+	 * @param endsRun whether a failure ends the run, which throws why instead of logging it: the
+	 * run's context no longer fits. `outgrown` alone may be this call's own fallback.
+	 */
+	private async summarize(
+		cut: { summarized: Message[]; kept: Message[] },
+		kept: string,
+		runMessages: Message[],
+		{
+			context,
+			signal,
+			tools,
+			outgrown,
+			endsRun,
+		}: {
+			context: Message[];
+			signal: AbortSignal;
+			tools: ToolDefinition[];
+			outgrown: boolean;
+			endsRun: boolean;
+		},
+	): Promise<CompactionOutcome> {
+		const request = outgrown
+			? { context: [transcriptSummaryRequest(cut.summarized, kept)], tools: [] }
+			: { context: [...structuredClone(context), summaryRequest(kept)], tools };
+
+		let response: LLMResponse;
+		try {
+			response = await this.llmClient.send(request, signal);
+		} catch (error) {
+			if (isAbortError(error)) throw error;
+			const failure = classifyProviderFailure(error, 'The context summary failed');
+			if (failure instanceof MaxContextError && !outgrown) {
+				// The context grew past the model since it was last sent: the model reads what it
+				// summarizes as text instead, and this call is the run's too.
+				let fallback: CompactionOutcome;
+				try {
+					fallback = await this.summarize(cut, kept, runMessages, {
+						context,
+						signal,
+						tools,
+						outgrown: true,
+						endsRun,
+					});
+				} catch (fallbackFailure) {
+					throw withSpentTokens(fallbackFailure, failure.tokens, failure.usageUnreported);
+				}
+				return {
+					...fallback,
+					usage: addTokens(failure.tokens, fallback.usage),
+					unreported: fallback.unreported || failure.usageUnreported,
+				};
+			}
+			// Only a passing failure of the provider goes without a summary: anything else, such as
+			// a logger or a response the client could not map, ends the run as any call's would.
+			if (!(failure instanceof RecoverableError)) throw failure;
+			const failed = {
+				compacted: false,
+				called: true,
+				usage: failure.tokens,
+				unreported: failure.usageUnreported,
+				why: describeFailure(failure),
+			};
+			if (!endsRun) this.warnSummaryCallFailed(failed.why, failed);
+			return failed;
+		}
+
+		const spent = { called: true, usage: response.usage, unreported: !response.usage };
+		const summary = response.message.content
+			.flatMap(part => (part.type === 'text' ? [part.text] : []))
+			.join('\n')
+			.trim();
+		// A cut or refused answer, or one that calls a tool, is no summary of the work.
+		if (
+			response.stopReason !== 'completed' ||
+			response.message.content.some(part => part.type === 'toolCall') ||
+			summary === ''
+		) {
+			const why = 'the model did not answer with a summary';
+			if (!endsRun) this.warnSummaryCallFailed(why, spent);
+			return { compacted: false, ...spent, why };
+		}
+		runMessages.push({
+			role: 'user',
+			content: [{ type: 'contextSummary', summary, kept: cut.kept }],
+		});
+		return { compacted: true, ...spent };
+	}
+
 	private async llmCall(
 		runMessages: Message[],
 		after: number | undefined,
@@ -404,13 +728,23 @@ export class LLMAgent implements Agent {
 			step,
 			callback,
 			tools,
-		}: { signal: AbortSignal; step: number; callback: Callback; tools: ToolDefinition[] },
+			compactAt,
+		}: {
+			signal: AbortSignal;
+			step: number;
+			callback: Callback;
+			tools: ToolDefinition[];
+			compactAt: number | 'now' | undefined;
+		},
 	): Promise<{ response: LLMResponse; context: Message[] }> {
 		// Sent as a copy, so what the run records is what the agent built, whatever the client does.
-		const context = [...this.conversation.contextAfter(after), ...structuredClone(runMessages)];
+		const context = compactedContext([
+			...this.conversation.contextAfter(after),
+			...structuredClone(runMessages),
+		]);
 		let response: LLMResponse;
 		try {
-			response = await this.llmClient.send({ context, tools }, signal);
+			response = await this.llmClient.send({ context, tools, compactAt }, signal);
 		} catch (error) {
 			const failure = classifyProviderFailure(error, 'The LLM call failed');
 			// A client turns some answers into errors, such as a stop at the context window. The
@@ -953,7 +1287,7 @@ export class LLMAgent implements Agent {
 					description,
 					inputSchema,
 				})),
-				messages: seen.messages(),
+				messages: seen.messages().map(withoutKeptCopies),
 				...(outcome === 'completed' ? {} : { error: describeFailure(error) }),
 			});
 			await this.onTranscript({
@@ -989,6 +1323,7 @@ export class LLMAgent implements Agent {
 		seen: Seen,
 	): Promise<AgentResponse> {
 		const { signal, onProgress: callback = ignoreProgress } = options;
+		const delegation = delegationOf(options);
 		// A tool narrates through this without ever failing: a failing callback would reach
 		// only the tool, which turns any failure into a result for the model. The run ends on
 		// it once that tool returns.
@@ -1027,7 +1362,11 @@ export class LLMAgent implements Agent {
 		// The turn this one follows: the last recorded, unless the workspace moved since.
 		let after = this.conversation.currentTurn;
 		let followed: Followed | undefined;
-		// What the model has seen so far, whichever turn the run ends up following.
+		// The context's size as this run knows it, the agent's once the run is kept: a run that
+		// is not kept leaves the conversation, and so its size, as they were.
+		let contextTokens = this.contextTokens;
+		// What the model has seen so far, whichever turn the run ends up following: every message,
+		// those a summary replaced too, for a person debugging the run.
 		seen.messages = () => [...this.conversation.contextAfter(after), ...runMessages];
 
 		try {
@@ -1035,7 +1374,11 @@ export class LLMAgent implements Agent {
 				followed = await this.followHistory(this.history);
 				after = followed.turn;
 				// The files may no longer hold what the conversation saw of them.
-				if (followed.revisions.length > 0) this.reads.clear();
+				if (followed.revisions.length > 0) {
+					this.reads.clear();
+					// Its context is no longer the one last sent.
+					contextTokens = undefined;
+				}
 				if (followed.undone.length > 0) {
 					const summary = await this.summarizeUndone(followed, signal);
 					tokens = addTokens(tokens, summary.usage);
@@ -1079,6 +1422,7 @@ export class LLMAgent implements Agent {
 				// With the turns that read them, and only then.
 				reads.commit();
 				if (followed) this.seenRevision = followed.latestRevision;
+				this.contextTokens = contextTokens;
 			};
 			// A run kept although it failed stops its agents first, and tells the next run what
 			// became of each one, which would otherwise wait for answers that never come.
@@ -1088,20 +1432,121 @@ export class LLMAgent implements Agent {
 				if (ended) runMessages.push(ended);
 				remember();
 			};
+			// Whether the context outgrew the model at the last call, so this one compacts it first,
+			// and how large it was, when the provider said.
+			let outgrown = false;
+			let outgrownTokens: number | undefined;
+			// A summary the model failed to write is not asked for again in the same run, unless the
+			// context no longer fits.
+			let summaryFailed = false;
+			// A summary was just written, so the next call measures what it left.
+			let summarized = false;
+			const { compactor } = this;
 			for (let step = 1; step <= this.maxSteps; step++) {
 				// An agent at work may have narrated through a callback that failed.
 				throwIfProgressFailed();
-				const { response, context: sent } = await this.llmCall(runMessages, after, {
-					signal,
-					step,
-					callback,
-					tools,
-				});
+				if (
+					compactor.by === 'harness' &&
+					(outgrown ||
+						(!summaryFailed &&
+							compactor.at !== undefined &&
+							contextTokens !== undefined &&
+							contextTokens >= compactor.at))
+				) {
+					const compaction = await this.compactHarness(compactor, runMessages, after, {
+						signal,
+						tools,
+						outgrown,
+					});
+					tokens = addTokens(tokens, compaction.usage);
+					unreported ||= compaction.unreported;
+					if (compaction.compacted) {
+						const compacted = outgrown ? outgrownTokens : contextTokens;
+						contextTokens = undefined;
+						summarized = true;
+						emit(
+							{
+								type: 'compaction',
+								by: 'harness',
+								reason: outgrown ? 'maxContext' : 'threshold',
+								...(compacted === undefined ? {} : { contextTokens: compacted }),
+							},
+							callback,
+						);
+					} else if (outgrown) {
+						throw new MaxContextError('The context no longer fits the model', {
+							cause: `It no longer fit, and could not be compacted: ${compaction.why ?? 'it is unknown why'}.`,
+						});
+					} else {
+						summaryFailed = compaction.called;
+					}
+					// An agent at work may have ended the run while the summary was written.
+					throwIfProgressFailed();
+				}
+				let called: Awaited<ReturnType<typeof this.llmCall>>;
+				try {
+					called = await this.llmCall(runMessages, after, {
+						signal,
+						step,
+						callback,
+						tools,
+						// The harness's own compactor leaves the provider's off.
+						compactAt: compactor.by === 'harness' ? undefined : outgrown ? 'now' : compactor.at,
+					});
+				} catch (error) {
+					// Compacted once and tried again, even with compaction off: a second time in a row,
+					// with nothing to compact it, or no step left to try ends the run.
+					if (
+						!(error instanceof MaxContextError) ||
+						outgrown ||
+						(compactor.by === 'provider' && !this.llmClient.checkCompactAt) ||
+						step === this.maxSteps
+					) {
+						throw error;
+					}
+					// Billed, and already narrated as a step.
+					tokens = addTokens(tokens, error.tokens);
+					unreported ||= error.usageUnreported;
+					this.warnContextOutgrown();
+					outgrown = true;
+					outgrownTokens = error.tokens && contextSize(error.tokens);
+					continue;
+				}
+				const { response, context: sent } = called;
 				tokens = addTokens(tokens, response.usage);
 				unreported ||= !response.usage;
+				contextTokens = response.usage && contextSize(response.usage);
+				// What a summary keeps word for word may stay past the threshold: summarizing it again
+				// on every step would cost a whole context each time and keep nothing less.
+				if (
+					summarized &&
+					compactor.at !== undefined &&
+					contextTokens !== undefined &&
+					contextTokens >= compactor.at
+				) {
+					summaryFailed = true;
+					this.warnCompactionFailed(
+						`what the summary kept is still ${String(contextTokens)} tokens, past the threshold of ${String(compactor.at)}, so the context is not compacted again in this run unless it no longer fits`,
+					);
+				}
+				summarized = false;
 				// After the tokens are counted, so a throwing callback still reports them, and for an
 				// unusable answer too: the call was sent, and billed.
 				this.narrateStep(step, response.usage, { context: sent, tools }, callback);
+				if (response.message.content.some(part => part.type === 'compaction')) {
+					emit(
+						{
+							type: 'compaction',
+							by: 'provider',
+							reason: outgrown ? 'maxContext' : 'threshold',
+							...(response.compactedContextTokens === undefined
+								? {}
+								: { contextTokens: response.compactedContextTokens }),
+						},
+						callback,
+					);
+				}
+				outgrown = false;
 				throwIfProgressFailed();
 				if (response.stopReason === 'truncated') {
 					// What it wrote before the output limit, kept with the run so the next run can
@@ -1219,7 +1664,9 @@ export class LLMAgent implements Agent {
 							reads,
 							onProgress,
 							spend,
-							depth: delegationOf(options)?.depth ?? 0,
+							depth: delegation?.depth ?? 0,
+							...(delegation?.writeCeiling ? { writeCeiling: delegation.writeCeiling } : {}),
+							...(this.writeRoots ? { agentWriteRoots: this.writeRoots } : {}),
 							...(options.approve ? { approve: options.approve } : {}),
 							...(options.ask ? { ask: options.ask } : {}),
 						},

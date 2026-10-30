@@ -2018,6 +2018,8 @@ tags: #mikode-harness #llm #cost
 
 partially superseded by: "Claude's aliases name the 5.5 models on both paths, and Haiku executes on Anthropic" (below) — `haiku` names Claude Haiku 5.5, which compacts, so its client no longer refuses `compactAt`.
 
+partially superseded by: "Compaction is on by default, at a threshold per model, and a context that no longer fits is compacted once" (below) — compaction is no longer off by default, and the threshold travels with each call.
+
 **Decision:**
 
 - **Compaction is the provider's own.** With `compactAt`, the OpenAI client sends `context_management` with a `compaction` threshold, and the Claude client the `compact_20260112` edit under the `compact-2026-01-12` beta. The provider compacts inside the call that passes the threshold and answers with its summary first. The harness never removes or rewrites a part of the context itself.
@@ -2737,3 +2739,125 @@ tags: #mikode-harness #api-design
 - **A warning in the log.** Nothing breaks, but the run still returns a pretended tool call as its answer.
 
 **Consequences:** it ships as a `feat`, since nobody uses the harness yet. A tool list built empty by mistake is refused too.
+
+## A delegated agent never writes more than the agent that called it, and each orchestrator role takes the consumer's agents
+
+tags: #mikode-harness #agent-loops #tool-use #api-design #security
+
+**Decision:**
+
+- **Each role of `createLLMOrchestrator` takes the consumer's agents,** from `agentAsTool`, through `agents: { planner?, executor?, reviewer? }`, beside its own tools. The planner and the reviewer keep their explorers: a consumer adds agents, and cannot remove them.
+- **A delegated agent never writes more than the agent that called it.** The limit comes from the calling agent's `workspace`: only within its `write` roots, and nowhere when it has none, as for the planner and the reviewer; a calling agent with no workspace, such as a coordinator that only hands out tasks, sets no limit of its own. A limit passes down: each agent's is the narrower of its caller's and its caller's `write` roots, as real paths.
+- **Checked when a call is prepared,** before anyone is asked: an edit, a command or `removeWorktree` from a set of tools that may write outside the limit is refused, and the model is told why. A command counts as a write, since what it changes is recorded in the history; the check is per set of tools, as the rule that a run's sets of tools write only where the first may.
+- **A consumer's `Tool` is checked by its risk,** since where it writes is unknown: under an agent that only reads, a call it judges `mutating` or `destructive` is refused; under an agent that writes, it writes wherever it does, as the consumer built it. Refusing it there too would keep the limit exact, but would refuse every consumer tool that writes, such as a commit tool, to any agent the executor starts.
+- **Depth counts from the role,** which is level 0: executor → specialist → committer is 2 levels, within the default `maxDepth`.
+
+**Context:** #138. Its first implementation (#141) gave `createLLMAgent` agents as tools; the criterion of a planner delegating to an explorer and a coding specialist remained, inside the orchestrator, whose roles took no agents of the consumer. On 2026-10-27 the user chose to reuse permissions rather than classify agents: a reviewer that cannot write should not have an agent that writes. A committer after the reviewer's approval, the case that seemed to need one, belongs to #140, whose undo policy its commits must follow. The user preferred deducing the limit from the workspace over a `role` field, since the workspace already declares what an agent may write. A workflow is not an agent and never delegates: its stages' agents do, so the same rule holds there.
+
+**Alternatives considered:**
+
+- **Only the executor takes agents.** Simpler, but the planner could not consult a specialist.
+- **Any role takes any agent.** What the issue's criterion literally asks, but an agent that writes, called by the planner or the reviewer, breaks the rule that only the executor changes files.
+- **Read-only roles take only agents that do not write.** It keeps that rule, but the harness would have to tell what an agent does, and an agent declares no such thing.
+- **A `role` field on an agent,** whose `orchestrator` value skips the limit. Explicit, but it duplicates what the workspace says and can contradict it.
+- **A general limit, an agent with no workspace included.** It refuses a coordinator with no tools that hands a task to a coding specialist, which works today.
+- **A check per path instead of per set of tools.** A specialist built over a broader workspace could still write inside the limit, but a command's paths are known only after it ran.
+- **Counting the orchestrator as a level of depth.** It measures how deep a chain goes, but `maxDepth` would mean different things in and out of the orchestrator.
+
+**Consequences:**
+
+- An agent that only reads and delegated to one that writes now sees its writes refused. It ships as a `feat`, since nobody uses the harness yet.
+- A specialist whose tools may write beyond the caller's `write` roots cannot write at all under it, even inside them: give it a workspace within the caller's.
+- A specialist under the planner or the reviewer cannot run a command, even one that only reads, such as the tests.
+- A limit is compared as real paths: two spellings of one folder are one folder.
+- The shared budget of the issue's criteria is #137's.
+
+## Compaction is on by default, at a threshold per model, and a context that no longer fits is compacted once
+
+tags: #mikode-harness #llm #cost #api-design
+
+**Decision:**
+
+- **On by default, at a threshold per model:** 450,000 tokens of context for Claude Opus, Fable and Sonnet and GPT astra, sol and terra, and 125,000 for Claude Haiku and GPT luna. `compactAt` changes it, per agent or per role, and `false` turns compaction off. The explorers compact at their model's threshold.
+- **A `Compactor` port on `LLMAgent`, internal for now,** with one mode today: the provider's, which gives its threshold to every call. The client no longer holds a threshold: `send` takes `compactAt`, a number or `now`, and a client that can compact checks a threshold with `checkCompactAt`. A compactor of the harness's own, which compacts in `LLMAgent` before the call, is the second mode (#48's next pull requests).
+- **A context that no longer fits is compacted once,** even with compaction off: after a `MaxContextError`, the next step sends the call again with `compactAt: 'now'`, the least threshold the provider takes, and a warning is logged. A second one in a row, a client that cannot compact, or no step left ends the run. The failed call counts in the run's tokens.
+- **A `compaction` event** follows the `step` of the call that compacted (for the harness's own compactor, which came later, once its summary is written, with no `step` of its own), with `by` (`provider` or `harness`), `reason` (`threshold` or `maxContext`), and `contextTokens`, the context compacted as the provider reported it: Claude's compaction iteration, or OpenAI's whole input of the call that compacted.
+
+**Context:** #48, decided with the user on 2026-10-26, 2026-10-27 and 2026-10-28. The user's rule: about 40% of a large model's window is the sweet spot, so about 450k on the large models, and a small model compacts sooner, at 125k. The margins are wide on purpose: what went wrong in #107 was compacting, at 64k, file reads the executor then read again. The conversation is never compacted, only the context sent to the model, so what a consumer stores keeps every part (#111). The port stays internal until the harness's own compactors have used it, and may shrink to choosing a mode.
+
+**Alternatives considered:**
+
+- **Off by default,** as decided on 2026-10-17. Nothing changes for a run that never grows, but one that does fails at the window instead of going on.
+- **A port only for the harness's own compactors,** with the provider's left in the client as before. Simpler today, but two mechanisms the consumer would see apart.
+- **A `compaction: { at, by } | false` option.** It groups the threshold and the compactor, but removes `compactAt`.
+- **Failing at once when compaction is off.** It does exactly what was asked, but loses the run.
+- **An event with only its type, or without the tokens.** It could never break, but a consumer could not tell who compacted, why, or how much.
+
+**Consequences:**
+
+- A Claude agent now marks its system prompt for the cache on every call, since it compacts by default.
+- The Claude client sends the compaction beta whenever the context it sends starts with a compaction of its own, not only when it asks for one: a context compacted once with compaction off goes on under it. Found by the Codex review of #153.
+- Forcing a compaction at the least threshold is not yet measured live: whether a provider compacts a context already past its window, and whether OpenAI accepts a threshold of 50,000, are questions for the live round.
+- It ships as a `feat`, since nobody uses the harness yet.
+
+## The recent compactor: the agent's own model summarizes, and the last answers stay word for word
+
+tags: #mikode-harness #llm #cost #api-design
+
+**Decision:**
+
+- **A mode the consumer chooses:** `compaction: 'provider' | 'recent'`, beside `compactAt`, for an agent or for every agent of the orchestrator. `provider` stays the default; `jev` comes next.
+- **What `recent` keeps word for word:** the run's prompt and the run's last 10 answers, each with its tool results, so a call never leaves its result behind. Earlier runs are always summarized: what is kept starts at the prompt, in order, and a second compaction in the run finds the prompt first. At least one answer is summarized; with none, nothing is.
+- **The agent's own model writes the summary,** sent the context as it was last sent, with the same tools, so the call reads it from the provider's cache. After a `MaxContextError`, or when the summary request itself no longer fits, it reads a text transcript of what is summarized instead.
+- **In the conversation,** the summary is a `ContextSummaryPart` with copies of what it kept. Every call sends the context from the latest one on (`compactedContext`); the conversation keeps every part it replaced.
+- **Signed reasoning is dropped from what is kept,** and the summary is asked to say what the model was thinking there, except in the last answer, whose tool calls the next call answers.
+- A summary that is no summary, or that fails in passing on the provider's side (a rate limit, an overload), is logged and not asked for again in that run; any other failure, such as a throwing logger, ends the run like any call's. One that fails after a `MaxContextError` ends the run, with why in the error's `cause` rather than in the log.
+- The context's size the compactor measures is the last kept run's: a run that is not kept leaves it as it was, as it leaves the conversation.
+- A summary whose kept answers still leave the context past the threshold is logged, and the context is not summarized again in that run unless it no longer fits: each summary costs a whole context, and the next one would keep the same.
+
+**Context:** #48, decided with the user on 2026-10-28. It is the fallback for the Jev compactor and the point Jev's triage is compared against in the live tests. The user chose the agent's own model so the summary reads the cache, and a cheaper model only if the measurements show that the cache is not read. The user chose to keep a copy of what is kept in the summary part, over a mark of where it starts, so a move through the history cannot misplace it.
+
+**Alternatives considered:**
+
+- **Keeping the last N tokens,** estimated from characters. Predictable in size, but the harness does not tokenize.
+- **The provider's cheap model for the summary.** Cheaper per token, but it reads no cache of the agent's.
+- **A mark of where what is kept starts,** instead of copies. Nothing duplicated, but the context's derivation depends on positions a move through the history can change.
+- **Keeping all signed reasoning.** The model keeps it, but a provider may refuse or drop a signed block behind a changed context.
+- **Falling back to the provider's forced compaction after a `MaxContextError`.** Already built, but it mixes the two mechanisms in one mode.
+
+**Consequences:**
+
+- A summary costs one more call, with the whole context, mostly read from the cache. Its tokens count in the run's, and no `step` event narrates it.
+- The context after a summary differs from the one before it, so the next call writes the cache again from the start.
+- Whether a provider accepts the last answer's signed reasoning behind a summary is not yet known: a question for the live round. So is whether a run with too large a last answer can be compacted at all: those 10 answers are kept whatever their size.
+- 10 answers is a default of the harness's, not a measured one.
+
+## The Jev compactor: Jev chooses which tool results stay word for word
+
+tags: #mikode-harness #llm #cost #api-design
+
+**Decision:**
+
+- **`compaction: 'jev'`** summarizes as `recent` does, with the agent's own model, but what is kept is chosen by TypeSafe's Jev: the run's prompt, the model's last answer with its tool results, and each earlier tool result Jev scores 2 or more, with its call, in their order. Everything else is summarized, and the summary request names the calls that are kept.
+- **One `score` question per tool result,** from 0 ("not needed again") to 3 ("needed word for word"), one request each, a few at once. Jev's state is the run's prompt, the model's last answer as text, and the call with its result, cut to stay within Jev's default 32k tokens a question.
+- **Kept by threshold alone,** with no budget: a context whose results Jev keeps whole may not shrink. A triage that keeps every answer whole is logged and not asked for again in that run; once the context no longer fits, whenever Jev's cut would summarize nothing, because Jev kept it all or the last answer, always kept, is the only one, the recent compactor cuts instead, since something must go.
+- **Jev sits behind its own port,** `ContextTriage`, so the compactor works the same without it. Without `TYPESAFE_API_KEY`, or when Jev fails, the recent compactor chooses instead, and it is logged; a cancelled run stops.
+- **The TypeSafe SDK,** `@typesafe-ai/sdk`, with its logger off, since the console is the consumer's, and the model pinned to `jev-1.14.0`, so a new release does not change what is kept unannounced.
+- Jev's tokens are not counted in the run's `tokens`: they are another model's, at another price, about $0.04 per million.
+
+**Context:** #48, decided with the user on 2026-10-28 and 2026-10-29, after a probe of Jev's API (see learnings.md, "A first probe of Jev's triage"). The user chose a score per tool result, kept by a threshold alone, and the recent compactor as the fallback. Whether Jev's choice beats the recent one, and the provider's, is measured in the live round before any default changes.
+
+**Alternatives considered:**
+
+- **Jev judges whole steps,** an answer with all its results. Fewer requests, but one large result decides for the rest.
+- **A `noul` or `choice` question.** A yes or no per result is simpler; a score orders them, and its threshold can be moved.
+- **A budget of what is kept,** filled in the order of the scores. The context always shrinks, but Jev's judgement is overruled by size.
+- **Several results in one request.** Cheaper per result and, in the probe, as consistent, but each question sees the others, and a large result leaves less room for the rest.
+- **A plain `fetch` with Zod.** No dependency, but the retries, cancellation and error types are the harness's to write.
+
+**Consequences:**
+
+- A compaction costs Jev's requests, one per tool result before the last answer, cents at most for a 450k context, and their time, before the summary.
+- The threshold of 2 and the questions are the harness's, from one probe, not measured on real runs.
+- A failed or missing Jev compacts as `recent` does, so the mode never fails because of Jev.
+- What the tools read leaves for TypeSafe: Jev is sent each tool result it judges.
