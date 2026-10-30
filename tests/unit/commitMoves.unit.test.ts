@@ -231,6 +231,27 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		});
 	});
 
+	it('counts no commit made while the files were captured, before the command started', async () => {
+		const { opened } = await commandTool({ unused: shell('true') });
+		let listings = 0;
+		const tool = await createCommandTool({
+			commands: { check: shell('true') },
+			policy: opened.policy,
+			writes: opened.writes,
+			covered: async listSignal => {
+				// The user commits while the harness captures the files.
+				if (listings++ === 0) git('commit', '--quiet', '--allow-empty', '-m', 'the user');
+				return opened.covered(listSignal);
+			},
+			base: opened.base,
+		});
+
+		const { output, runId } = await run(tool, 'check');
+
+		expect(output).not.toContain('Commits it made');
+		expect(runId).toBe('');
+	});
+
 	it('reads only commits from a log configured to show signatures', async () => {
 		const key = join(parent, 'key');
 		execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', key]);

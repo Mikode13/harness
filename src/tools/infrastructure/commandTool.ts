@@ -174,15 +174,6 @@ export async function createCommandTool({
 	): Promise<string> {
 		signal.throwIfAborted();
 		const journal = await session.journalForChange();
-		// Where its branch is before it runs, so the commits it makes are the run's.
-		let tip: BranchTip | undefined;
-		let unreadTip: unknown;
-		try {
-			tip = await readTip(line.cwd, signal);
-		} catch (error) {
-			signal.throwIfAborted();
-			unreadTip = error;
-		}
 		let checkpoint: CommandCheckpoint;
 		try {
 			checkpoint = await CommandCheckpoint.begin({ journal, covered, by: name, signal });
@@ -194,6 +185,16 @@ export async function createCommandTool({
 			);
 		}
 
+		// Where its branch is right before it starts, after the files are captured, so the commits it
+		// makes are the run's and none made meanwhile is. A cancellation here reaches the command,
+		// which ends as cancelled once what it changed is recorded.
+		let tip: BranchTip | undefined;
+		let unreadTip: unknown;
+		try {
+			tip = await readTip(line.cwd, signal);
+		} catch (error) {
+			if (!signal.aborted) unreadTip = error;
+		}
 		let result: CommandProcessResult | undefined;
 		let startFailure: unknown;
 		const fingerprint = new OutputFingerprint();
