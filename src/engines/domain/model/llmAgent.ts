@@ -101,6 +101,7 @@ import {
 	summarizeQuestions,
 } from './askUser.ts';
 import {
+	commitsNote,
 	type Followed,
 	followHistory,
 	type HistoryReader,
@@ -1392,6 +1393,10 @@ export class LLMAgent implements Agent {
 						throw classifyLocalFailure(error, 'The workspace history could not be read');
 					});
 					runMessages[0]?.content.unshift({ type: 'text', text: note });
+				} else {
+					// Nothing undone, as after a redo, but git may have changed under it.
+					const note = commitsNote(followed.revisions);
+					if (note) runMessages[0]?.content.unshift({ type: 'text', text: note });
 				}
 			}
 

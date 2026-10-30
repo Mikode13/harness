@@ -2887,3 +2887,32 @@ tags: #mikode-harness #recovery #git #api-design
 - Each command costs a few `git` calls before and after it, a few milliseconds each.
 - A process that dies between a command's commit and its record loses the attribution: the commit stays, unnamed.
 - After an undo with `keep`, git shows the restored files as changes against a commit that still holds the run's: the host decides what to tell the user, from `git`.
+
+## Undoing reverts or resets a run's commits on request, and redoing always puts them back
+
+tags: #mikode-harness #recovery #git #api-design
+
+**Decision:**
+
+- **`MoveOptions.commits` chooses what undoing does:** `keep`, the default, `revert`, which adds commits that take them back, or `reset`, which moves the branch back to before them only when no other commit is among them or on top, the branch's upstream holds none of them, and the branch is still checked out.
+- **Redoing always puts back what an earlier move took back,** whatever the option says: files and commits come back together. After a reset, the branch goes forward to the same commits when it has not moved since; otherwise they are cherry-picked, as new commits, as after a revert. `BranchMove.action` gains `reapply`, and `MovedCommit.original` names the commit a cherry-picked one re-applies.
+- **Git goes first, then the files.** Before a file is moved, the files still hold what the commits do, so a revert, a reset or a cherry-pick leaves each file where the step leads, and the step finds it there.
+- **When git cannot follow, the branch is left as it was:** a conflicting revert or cherry-pick is aborted, and the move reports `outcome: 'left'` with the reason. The files move either way.
+- **Where each commit is now is read from the moves recorded,** not stored apart: a revert or reset that was done took it back, and a re-apply put it, or its new commit, back.
+- **A move whose process stopped while git ran does not run git again** when it is finished: the branch is reported as left.
+- **The model is told after every move with commits,** one line per branch and action, in the note about undone turns, or in a note of its own when nothing was undone.
+
+**Context:** #140, decided with the user on 2026-10-29 and 2026-10-30. The second of three pull requests; the orchestrator's committer stage is the third.
+
+**Alternatives considered:**
+
+- **Redo following the option too,** so `keep` would leave reverted commits reverted. The consumer chooses per move, but the default would leave files and commits apart after a redo.
+- **Always cherry-picking after a reset.** One path, but new SHAs where the originals could come back.
+- **Moving the files first.** The order of the history, but a revert or a reset then meets files that already hold what it would write, and refuses.
+- **Storing each commit's state apart.** Direct, but a second record that the moves already hold.
+
+**Consequences:**
+
+- A `revert` or a cherry-pick makes commits as the user, with the user's git configuration: signing and hooks apply, and an identity git lacks makes the branch left.
+- A revert or a reset meets the files before they move: one the run changed again after its commit makes git refuse, and the branch is left.
+- A move whose process stopped while git ran reports the branch as left even if git finished: the user checks the branch.

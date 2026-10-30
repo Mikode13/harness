@@ -803,18 +803,29 @@ then not `complete`. So is a file a command changed into, or from, something the
 cannot copy, such as a file over 64 MB: what it held on the other side is unknown. The
 reason is kept with the move.
 
-A move restores files, not commits. When a configured command commits, the run records
-the commits it made: those new on the branch it ran on, as long as that branch stayed
-checked out and only moved forward, so commits a `git pull` brings in count too. A move over that run leaves the commits on their
-branch, and its `git` names them, per branch of each repository, each with the run that
-made it and whether the move undid or redid that run. After an undo, git then shows the
-restored files as changes against a commit that still holds the run's. A commit already
-gone from its branch, such as one you reset away, is not named.
+When a configured command commits, the run records the commits it made: those new on the
+branch it ran on, as long as that branch stayed checked out and only moved forward, so
+commits a `git pull` brings in count too. What undoing does with them is `commits` in the
+move's options:
+
+- `keep`, the default, leaves them on their branch. Git then shows the restored files as
+  changes against a commit that still holds the run's.
+- `revert` adds commits that take them back.
+- `reset` moves the branch back to before them, only when no other commit is among them or on
+  top, the branch's upstream holds none of them, and the branch is still checked out.
+
+Redoing, or a `goTo` forward, always puts back what an earlier move took back: the branch goes
+forward to the same commits when it has not moved since a reset, and they are cherry-picked,
+as new commits, otherwise. The move's `git` reports each branch of each repository: the
+action, `done` or `left` with the `reason` git could not follow, such as a revert that
+conflicts, and each commit with the run that made it, whether the move undid or redid that
+run, and, for one cherry-picked, the `original` it re-applies. The files move either way. An
+agent over the workspace is told what git did with them, on its next run.
 
 ```ts
-const move = await history.undo();
-for (const { repository, branch, commits } of move.git ?? []) {
-	console.log(`${branch} in ${repository} keeps ${commits.map(c => c.sha.slice(0, 7)).join(', ')}`);
+const move = await history.undo({ commits: 'revert' });
+for (const { branch, action, outcome, reason } of move.git ?? []) {
+	console.log(`${branch}: ${action} ${outcome}${reason ? ` (${reason})` : ''}`);
 }
 ```
 

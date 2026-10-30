@@ -210,7 +210,13 @@ export interface MoveConflict {
 
 /** A commit a move went over: one a run it undid or redid made. */
 export interface MovedCommit {
+	/** The commit on the branch: for `reapply`, the new one, unless the branch went back to it. */
 	sha: string;
+	/**
+	 * The commit the run made, when `sha` is another one that re-applies it: a commit a later move
+	 * cherry-picked after a revert, or after a reset the branch had moved on from.
+	 */
+	original?: string;
 	/** The first line of its message. */
 	subject: string;
 	/**
@@ -223,6 +229,18 @@ export interface MovedCommit {
 }
 
 /**
+ * What a move does with the commits of the runs it undoes:
+ * - `keep` leaves them on their branch;
+ * - `revert` adds commits that take them back, newest first;
+ * - `reset` moves the branch back to before them, only when no other commit is among them or on
+ *   top, none is published, which is when the branch's upstream holds it, and the branch is
+ *   still checked out.
+ *
+ * Redoing a run whose commits a move took back always puts them back: see `BranchMove`.
+ */
+export type CommitsPolicy = 'keep' | 'revert' | 'reset';
+
+/**
  * What a move did with the commits of the runs it went over, on one branch of one repository.
  * The files are moved either way; this reports the commits, separately.
  */
@@ -231,11 +249,24 @@ export interface BranchMove {
 	repository: string;
 	/** The branch's short name, such as `main`. */
 	branch: string;
-	/** `keep`: the commits stay on the branch, whatever the move did to the files. */
-	action: 'keep';
-	/** `done`: the action was taken. */
-	outcome: 'done';
-	/** Those still on the branch, in the order the move went over them. */
+	/**
+	 * `keep`, `revert` or `reset` when undoing, as `MoveOptions.commits` asked. `reapply` when
+	 * redoing a run whose commits an earlier move reverted or reset: the branch goes forward to them
+	 * again when it has not moved since a reset, and they are cherry-picked otherwise. A redo over
+	 * commits no move took back reports them as `keep`.
+	 */
+	action: CommitsPolicy | 'reapply';
+	/**
+	 * `done`: the action was taken. `left`: git could not follow, such as when the branch is no
+	 * longer checked out, a revert conflicts, or a reset would drop other commits; the commits stay
+	 * as they were, and `reason` says why. The files are moved either way.
+	 */
+	outcome: 'done' | 'left';
+	reason?: string;
+	/**
+	 * Those the action concerned, in the order the move went over them: for `keep`, those still on
+	 * the branch.
+	 */
 	commits: MovedCommit[];
 }
 
@@ -268,6 +299,8 @@ export interface MoveOptions {
 	 * the workspace lock, so a move confirmed against one state never runs from another.
 	 */
 	from?: string;
+	/** What undoing does with the commits the undone runs made: `keep` by default. */
+	commits?: CommitsPolicy;
 }
 
 /** There is nothing to undo at the start of the history, or nothing to redo at its tip. */

@@ -93,6 +93,7 @@ export {
 	WorkspaceBusyError,
 	WorkspaceMovedError,
 	type BranchMove,
+	type CommitsPolicy,
 	type MovedCommit,
 	type MoveOptions,
 	type RunStatus,

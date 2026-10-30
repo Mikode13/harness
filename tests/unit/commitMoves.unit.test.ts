@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RunContext } from '../../src/agent/domain/runContext.ts';
+import { commitsNote } from '../../src/engines/domain/model/historyFollower.ts';
 import { createHistory, historyStart } from '../../src/index.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
 import * as gitCommits from '../../src/recovery/infrastructure/gitCommits.ts';
@@ -149,7 +150,7 @@ describe('the commits between two tips of a branch', () => {
 			{ sha: head(), subject: 'beside the tag' },
 		]);
 		await expect(
-			gitCommits.keptCommits(
+			gitCommits.undoCommits(
 				[
 					{
 						repository: root,
@@ -160,7 +161,8 @@ describe('the commits between two tips of a branch', () => {
 						direction: 'undo',
 					},
 				],
-				() => undefined,
+				'keep',
+				{ interrupted: false, warn: () => undefined },
 			),
 		).resolves.toMatchObject([{ branch: 'main', commits: [{ sha: head() }] }]);
 	});
@@ -435,7 +437,7 @@ describe('a move over runs that made commits', { timeout: 20_000 }, () => {
 		expect(committed).not.toHaveProperty('git');
 	});
 
-	it('names the commits of the steps a move took before its process stopped, once it is finished', async () => {
+	it('runs no git again for a move that stopped while git ran, and says it left the branch', async () => {
 		const { opened, tool } = await commandTool({
 			commit: shell('git commit --quiet --allow-empty -m "step"'),
 		});
@@ -443,31 +445,35 @@ describe('a move over runs that made commits', { timeout: 20_000 }, () => {
 		const firstSha = head();
 		const second = await run(tool, 'commit');
 		const secondSha = head();
-		// The process died going to the start, after undoing the second run.
+		// The process died going to the start, while git reverted the commits.
 		const [state] = readdirSync(join(parent, 'state'), { recursive: true, encoding: 'utf8' })
 			.filter(path => path.endsWith('head.json'))
 			.map(path => join(parent, 'state', path));
-		const commit = { repository: root, branch: 'main', subject: 'step', direction: 'undo' };
 		writeFileSync(
 			state ?? '',
 			JSON.stringify({
-				runId: first.runId,
+				runId: second.runId,
 				revision: 0,
-				pending: {
-					revision: 1,
-					from: second.runId,
-					conflicts: [],
-					commits: [{ ...commit, sha: secondSha, runId: second.runId }],
-				},
+				pending: { revision: 1, from: second.runId, conflicts: [], commits: 'revert', gitUndo: {} },
 			}),
 		);
 
 		await opened.store.redo();
 
+		expect(head()).toBe(secondSha);
 		const [finished] = await opened.store.listRevisions();
-		expect(finished?.git?.[0]?.commits).toEqual([
-			{ sha: secondSha, subject: 'step', runId: second.runId, direction: 'undo' },
-			{ sha: firstSha, subject: 'step', runId: first.runId, direction: 'undo' },
+		expect(finished?.git).toEqual([
+			{
+				repository: root,
+				branch: 'main',
+				action: 'revert',
+				outcome: 'left',
+				reason: 'the move stopped while git ran on this branch, so the harness left it as it was',
+				commits: [
+					{ sha: secondSha, subject: 'step', runId: second.runId, direction: 'undo' },
+					{ sha: firstSha, subject: 'step', runId: first.runId, direction: 'undo' },
+				],
+			},
 		]);
 	});
 });
@@ -502,5 +508,213 @@ describe('retention', () => {
 		await store.goTo(historyStart);
 		const [revision] = await store.listRevisions();
 		expect(revision?.git?.[0]?.commits.map(made => made.runId).slice(-2)).toEqual([second, first]);
+	});
+});
+
+describe('undoing and redoing commits', { timeout: 20_000 }, () => {
+	beforeEach(() => {
+		// What the history's own git commits need, whatever the machine's configuration says.
+		git('config', 'user.name', 'Test');
+		git('config', 'user.email', 'test@example.com');
+		git('config', 'commit.gpgsign', 'false');
+		git('config', 'core.hooksPath', '/dev/null');
+	});
+
+	async function committedRun() {
+		const { opened, tool } = await commandTool({
+			commit: shell('echo two > a.txt && git commit --quiet -am "change a"'),
+		});
+		const { runId } = await run(tool, 'commit');
+		const history = await createHistory({ root, stateDirectory: join(parent, 'state') });
+		return { opened, history, runId, sha: head() };
+	}
+
+	function readA(): string {
+		return readFileSync(join(root, 'a.txt'), 'utf8');
+	}
+
+	it('reverts them, and cherry-picks them back on redo, then reverts the new ones', async () => {
+		const { history, runId, sha } = await committedRun();
+
+		const undone = await history.undo({ commits: 'revert' });
+
+		expect(readA()).toBe('one\n');
+		expect(undone.complete).toBe(true);
+		expect(git('log', '-1', '--format=%s')).toBe('Revert "change a"');
+		expect(git('status', '--porcelain')).toBe('');
+		expect(undone.git).toEqual([
+			{
+				repository: root,
+				branch: 'main',
+				action: 'revert',
+				outcome: 'done',
+				commits: [{ sha, subject: 'change a', runId, direction: 'undo' }],
+			},
+		]);
+
+		const redone = await history.redo();
+		const picked = head();
+
+		expect(readA()).toBe('two\n');
+		expect(picked).not.toBe(sha);
+		expect(redone.git).toEqual([
+			{
+				repository: root,
+				branch: 'main',
+				action: 'reapply',
+				outcome: 'done',
+				commits: [{ sha: picked, original: sha, subject: 'change a', runId, direction: 'redo' }],
+			},
+		]);
+
+		const again = await history.undo({ commits: 'revert' });
+
+		expect(readA()).toBe('one\n');
+		expect(again.git?.[0]?.commits).toEqual([
+			{ sha: picked, original: sha, subject: 'change a', runId, direction: 'undo' },
+		]);
+	});
+
+	it('resets them away, and moves the branch forward to the same commits on redo', async () => {
+		const { history, runId, sha } = await committedRun();
+		const start = git('rev-parse', `${sha}^`);
+
+		const undone = await history.undo({ commits: 'reset' });
+
+		expect(head()).toBe(start);
+		expect(readA()).toBe('one\n');
+		expect(git('status', '--porcelain')).toBe('');
+		expect(undone.git?.[0]).toMatchObject({ action: 'reset', outcome: 'done' });
+
+		const redone = await history.redo();
+
+		expect(head()).toBe(sha);
+		expect(readA()).toBe('two\n');
+		expect(redone.git?.[0]).toEqual({
+			repository: root,
+			branch: 'main',
+			action: 'reapply',
+			outcome: 'done',
+			commits: [{ sha, subject: 'change a', runId, direction: 'redo' }],
+		});
+	});
+
+	it('cherry-picks reset commits back when the branch moved on since', async () => {
+		const { history, sha } = await committedRun();
+		await history.undo({ commits: 'reset' });
+		git('commit', '--quiet', '--allow-empty', '-m', 'the user');
+
+		const redone = await history.redo();
+
+		expect(git('log', '-1', '--format=%s')).toBe('change a');
+		expect(redone.git?.[0]?.commits[0]).toMatchObject({ sha: head(), original: sha });
+	});
+
+	it('leaves the branch when a reset would drop a commit on top, or one its upstream holds', async () => {
+		const { history } = await committedRun();
+		git('commit', '--quiet', '--allow-empty', '-m', 'the user');
+		const tip = head();
+
+		const onTop = await history.undo({ commits: 'reset' });
+
+		expect(head()).toBe(tip);
+		expect(readA()).toBe('one\n');
+		expect(onTop.git?.[0]).toMatchObject({
+			action: 'reset',
+			outcome: 'left',
+			reason: 'other commits are among them or on top of them, and a reset would drop those too',
+		});
+
+		await history.redo();
+		const remote = join(parent, 'remote.git');
+		execFileSync('git', ['init', '--quiet', '--bare', remote]);
+		git('remote', 'add', 'origin', remote);
+		git('reset', '--quiet', '--hard', 'HEAD~1');
+		git('push', '--quiet', '-u', 'origin', 'main');
+
+		const published = await history.undo({ commits: 'reset' });
+
+		expect(published.git?.[0]).toMatchObject({
+			outcome: 'left',
+			reason: "the branch's upstream holds them",
+		});
+	});
+
+	it('leaves the branch as it was when a revert conflicts, or the branch is not checked out', async () => {
+		const { history, runId } = await committedRun();
+		writeFileSync(join(root, 'a.txt'), 'three\n');
+		git('commit', '--quiet', '-am', 'the user');
+		const tip = head();
+
+		const conflicting = await history.undo({ commits: 'revert' });
+
+		expect(head()).toBe(tip);
+		expect(git('status', '--porcelain')).toBe('');
+		expect(conflicting.git?.[0]).toMatchObject({ action: 'revert', outcome: 'left' });
+		expect(conflicting.git?.[0]?.reason).toMatch(/^git could not revert them: /);
+		expect(conflicting.conflicts).toEqual([{ path: 'a.txt', runId }]);
+
+		await history.redo();
+		git('switch', '--quiet', '-c', 'other');
+
+		const elsewhere = await history.undo({ commits: 'revert' });
+
+		expect(elsewhere.git?.[0]).toMatchObject({
+			outcome: 'left',
+			reason: `main is no longer checked out in ${root}`,
+		});
+	});
+
+	it('refuses an unknown policy before it moves anything', async () => {
+		const { history } = await committedRun();
+
+		await expect(history.undo({ commits: 'drop' as never })).rejects.toBeInstanceOf(RangeError);
+		expect(readA()).toBe('two\n');
+	});
+});
+
+describe('what the model is told of the commits', () => {
+	const at = '2026-10-30T00:00:00.000Z';
+	const commit = { subject: 'change a', runId: 'r1' };
+
+	it('names each branch, what git did and why it could not', () => {
+		const note = commitsNote([
+			{
+				revision: 1,
+				at,
+				complete: true,
+				conflicts: [],
+				git: [
+					{
+						repository: '/repo',
+						branch: 'main',
+						action: 'reapply',
+						outcome: 'done',
+						commits: [
+							{ ...commit, sha: 'b'.repeat(40), original: 'a'.repeat(40), direction: 'redo' },
+						],
+					},
+					{
+						repository: '/repo',
+						branch: 'side',
+						action: 'reset',
+						outcome: 'left',
+						reason: "the branch's upstream holds them",
+						commits: [{ ...commit, sha: 'c'.repeat(40), direction: 'redo' }],
+					},
+				],
+			},
+		]);
+
+		expect(note).toContain(
+			'- main in /repo: aaaaaaa change a, now bbbbbbb put back on the branch.',
+		);
+		expect(note).toContain(
+			"- side in /repo: git could not remove ccccccc change a, so the branch was left as it was: the branch's upstream holds them",
+		);
+	});
+
+	it('is nothing for moves over no commit', () => {
+		expect(commitsNote([{ revision: 1, at, complete: true, conflicts: [] }])).toBeUndefined();
 	});
 });

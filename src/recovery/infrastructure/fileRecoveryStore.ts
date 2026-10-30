@@ -18,7 +18,14 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, sep } from 'node:path';
 import type { ILogger } from '#src/shared/domain/logger';
 import { FolderClaims } from './folderClaims.ts';
-import { type BranchCommit, keptCommits } from './gitCommits.ts';
+import {
+	type BranchCommit,
+	type BranchWarning,
+	type CommitState,
+	commitStates,
+	redoCommits,
+	undoCommits,
+} from './gitCommits.ts';
 import {
 	classifyHostFailure,
 	describeFailure,
@@ -31,6 +38,8 @@ import {
 	type FileState,
 	type JournalEntry,
 	type Manifest,
+	type BranchMove,
+	type CommitsPolicy,
 	type ObservationMeasure,
 	type MoveConflict,
 	type RecordedCommits,
@@ -176,6 +185,8 @@ async function writeDurably(
 	await syncDirectory(dirname(path));
 }
 
+const commitsPolicies: readonly unknown[] = ['keep', 'revert', 'reset'] satisfies CommitsPolicy[];
+
 /** A move not finished yet: the next move or run finishes it before anything else. */
 interface PendingMove {
 	revision: number;
@@ -184,8 +195,15 @@ interface PendingMove {
 	reason?: string;
 	/** Found by the steps already taken. */
 	conflicts: MoveConflict[];
-	/** The commits of the runs the steps already taken went over. */
-	commits?: BranchCommit[];
+	/** What undoing does with the commits of the runs it undoes. Absent for `keep`. */
+	commits?: CommitsPolicy;
+	/**
+	 * What it did with commits before undoing the files, and before redoing them: `{}` once git
+	 * began, and its reports once it finished. Begun and not finished, the process stopped while
+	 * git ran, and finishing the move does not run it again.
+	 */
+	gitUndo?: { done?: BranchMove[] };
+	gitRedo?: { done?: BranchMove[] };
 	/**
 	 * The temporary a file is being restored through, named before it is created, so finishing
 	 * the move removes this one and no file of the user's.
@@ -521,8 +539,11 @@ export class FileRecoveryStore implements RecoveryStore {
 			head: string | undefined;
 			revisions: Revision[];
 		}) => string | undefined,
-		{ reason, from }: MoveOptions,
+		{ reason, from, commits = 'keep' }: MoveOptions,
 	): Promise<Revision> {
+		if (!commitsPolicies.includes(commits)) {
+			throw new RangeError(`commits must be keep, revert or reset; got ${JSON.stringify(commits)}`);
+		}
 		const moveId = `move-${newRunId()}`;
 		try {
 			await this.lock(moveId);
@@ -544,6 +565,7 @@ export class FileRecoveryStore implements RecoveryStore {
 				...(head.runId ? { from: head.runId } : {}),
 				...(to ? { to } : {}),
 				...(reason === undefined ? {} : { reason }),
+				...(commits === 'keep' ? {} : { commits }),
 				conflicts: [],
 			});
 		} finally {
@@ -622,25 +644,8 @@ export class FileRecoveryStore implements RecoveryStore {
 			else pending.temporary = temporary;
 			await save();
 		};
-		const took = ({ conflicts, commits }: Awaited<ReturnType<typeof this.step>>) => {
-			pending.conflicts.push(...conflicts);
-			if (commits.length > 0) pending.commits = [...(pending.commits ?? []), ...commits];
-		};
-		for (const runId of undo) {
-			took(await this.step(runId, 'undo', announce));
-			reached = parents.get(runId);
-			await save();
-		}
-		for (const runId of redo) {
-			took(await this.step(runId, 'redo', announce));
-			reached = runId;
-			await save();
-		}
-
-		// Every write that started has finished, so no temporary is left to name.
-		delete pending.temporary;
-		const { conflicts, commits = [], ...rest } = pending;
-		const git = await keptCommits(commits, (repository, branch, error) => {
+		const states = commitStates(await this.listRevisions());
+		const warn: BranchWarning = (repository, branch, error) => {
 			treatErrors(
 				() => {
 					this.logger.warn(
@@ -650,7 +655,48 @@ export class FileRecoveryStore implements RecoveryStore {
 				classifyHostFailure,
 				'Recovery store logger failed while reporting commits it could not check',
 			);
-		});
+		};
+		// Git first, while the files still hold what its commits do: a revert, a reset or a
+		// cherry-pick then leaves each file where the step leads, and the step finds it there.
+		const gitPhase = async (
+			phase: 'gitUndo' | 'gitRedo',
+			act: (interrupted: boolean) => Promise<BranchMove[]>,
+		) => {
+			const begun = pending[phase];
+			if (begun?.done) return;
+			if (!begun) {
+				pending[phase] = {};
+				await save();
+			}
+			pending[phase] = { done: await act(begun !== undefined) };
+			await save();
+		};
+
+		await gitPhase('gitUndo', async interrupted =>
+			undoCommits(await this.commitsOver(undo, 'undo', states), pending.commits ?? 'keep', {
+				interrupted,
+				warn,
+			}),
+		);
+		for (const runId of undo) {
+			pending.conflicts.push(...(await this.step(runId, 'undo', announce)));
+			reached = parents.get(runId);
+			await save();
+		}
+		await gitPhase('gitRedo', async interrupted =>
+			redoCommits(await this.commitsOver(redo, 'redo', states), { interrupted, warn }),
+		);
+		for (const runId of redo) {
+			pending.conflicts.push(...(await this.step(runId, 'redo', announce)));
+			reached = runId;
+			await save();
+		}
+
+		// Every write that started has finished, so no temporary is left to name.
+		delete pending.temporary;
+		const { conflicts, gitUndo, gitRedo, ...rest } = pending;
+		delete rest.commits;
+		const git = [...(gitUndo?.done ?? []), ...(gitRedo?.done ?? [])];
 		const revision: Revision = {
 			...rest,
 			at: new Date().toISOString(),
@@ -667,15 +713,44 @@ export class FileRecoveryStore implements RecoveryStore {
 	}
 
 	/**
-	 * Takes one run's changes back to its parent, or forward again, file by file, and names the
-	 * commits it made, which it leaves where they are.
+	 * The commits the runs made, in the order a move goes over them, newest first when it undoes
+	 * them, each where the moves so far left it.
 	 */
+	private async commitsOver(
+		runIds: readonly string[],
+		direction: 'undo' | 'redo',
+		states: ReadonlyMap<string, CommitState>,
+	): Promise<BranchCommit[]> {
+		const over: BranchCommit[] = [];
+		for (const runId of runIds) {
+			const { commits } = await this.readRun(runId);
+			const made = commits.flatMap(({ repository, branch, commits: run, runId: madeIn }) =>
+				run.map(({ sha, subject }): BranchCommit => {
+					const state = states.get(sha);
+					return {
+						repository,
+						branch,
+						sha: state?.sha ?? sha,
+						...(state && state.sha !== sha ? { original: sha } : {}),
+						subject,
+						runId: madeIn ?? runId,
+						direction,
+						...(state?.taken ? { taken: state.taken } : {}),
+					};
+				}),
+			);
+			over.push(...(direction === 'undo' ? made.reverse() : made));
+		}
+		return over;
+	}
+
+	/** Takes one run's changes back to its parent, or forward again, file by file. */
 	private async step(
 		runId: string,
 		direction: 'undo' | 'redo',
 		announce: (temporary: string | undefined) => Promise<void>,
-	): Promise<{ conflicts: MoveConflict[]; commits: BranchCommit[] }> {
-		const { entries, unrecorded, commits } = await this.readRun(runId);
+	): Promise<MoveConflict[]> {
+		const { entries, unrecorded } = await this.readRun(runId);
 		const changes = fileChanges(entries, true);
 		// What the history could not copy is left as it is, in either direction.
 		const conflicting = new Set(unrecorded.map(change => change.path));
@@ -683,21 +758,7 @@ export class FileRecoveryStore implements RecoveryStore {
 		for (const change of direction === 'undo' ? changes.reverse() : changes) {
 			if (!(await this.moveFile(change, direction, announce))) conflicting.add(change.path);
 		}
-		// Newest first when undone, like its files.
-		const made = commits.flatMap(({ repository, branch, commits: run, runId: madeIn }) =>
-			run.map(({ sha, subject }) => ({
-				repository,
-				branch,
-				sha,
-				subject,
-				runId: madeIn ?? runId,
-				direction,
-			})),
-		);
-		return {
-			conflicts: [...conflicting].map((path): MoveConflict => ({ path, runId })),
-			commits: direction === 'undo' ? made.reverse() : made,
-		};
+		return [...conflicting].map((path): MoveConflict => ({ path, runId }));
 	}
 
 	/**
