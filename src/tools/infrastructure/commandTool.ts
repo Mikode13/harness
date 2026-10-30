@@ -213,6 +213,20 @@ export async function createCommandTool({
 		}
 
 		const complete = result?.stopped ?? true;
+		// Before the files: a failure comparing them must not lose the commits, and with them a run
+		// that changed nothing else.
+		let commits: CommitsSeen = { made: [] };
+		let unrecordedCommits: Error | undefined;
+		if (result) {
+			try {
+				commits =
+					unreadTip === undefined
+						? await recordCommits({ name, tip, cwd: line.cwd, journal, session })
+						: { unknown: unreadTip };
+			} catch (error) {
+				unrecordedCommits = error instanceof Error ? error : new Error(String(error));
+			}
+		}
 		let observed: Awaited<ReturnType<CommandCheckpoint['end']>>;
 		try {
 			observed = await checkpoint.end({ complete });
@@ -224,14 +238,11 @@ export async function createCommandTool({
 			);
 		}
 
+		if (unrecordedCommits !== undefined) throw unrecordedCommits;
 		if (!result) {
 			signal.throwIfAborted();
 			throw new EditRefusedError(`"${name}" could not be started`, { cause: startFailure });
 		}
-		const commits =
-			unreadTip === undefined
-				? await recordCommits({ name, tip, cwd: line.cwd, journal, session })
-				: { unknown: unreadTip };
 		const report = describeRun(name, definition, result, observed, commits);
 		if (!complete) {
 			session.stop('Writing stopped: a command could not be stopped');

@@ -3,6 +3,8 @@ import type { BranchMove, Commit, MovedCommit } from '#src/recovery/domain/recov
 import { firstLine, runProcess } from '#src/shared/infrastructure/runProcess';
 
 const branchPrefix = 'refs/heads/';
+// SHA-1 or SHA-256.
+const shaPattern = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 // Never cancelled: a move reports its commits once its files are moved.
 const uncancelled = new AbortController().signal;
 
@@ -85,15 +87,17 @@ export async function commitsBetween(
 	}
 	// On a branch with no commit before, every commit it holds now is new.
 	const range = before.head === undefined ? after.head : `${before.head}..${after.head}`;
-	const log = await git(['log', '--reverse', '--format=%H%x00%s', range, '--'], repository, signal);
+	// No signature checks: with `log.showSignature`, their text would be read as commits.
+	const log = await git(
+		['log', '--no-show-signature', '--reverse', '--format=%H%x00%s', range, '--'],
+		repository,
+		signal,
+	);
 	if (log.exitCode !== 0) throw gitFailed('list the new commits', log);
-	return log.stdout
-		.split('\n')
-		.filter(line => line !== '')
-		.map(line => {
-			const [sha = '', subject = ''] = line.split('\0');
-			return { sha, subject };
-		});
+	return log.stdout.split('\n').flatMap(line => {
+		const [sha = '', subject = ''] = line.split('\0');
+		return shaPattern.test(sha) ? [{ sha, subject }] : [];
+	});
 }
 
 /**

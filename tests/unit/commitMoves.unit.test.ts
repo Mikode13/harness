@@ -17,6 +17,8 @@ import * as gitCommits from '../../src/recovery/infrastructure/gitCommits.ts';
 import type { Commands } from '../../src/tools/domain/commands.ts';
 import type { PreparingTool } from '../../src/tools/domain/preparedCall.ts';
 import { ReadRegistry } from '../../src/tools/domain/readRegistry.ts';
+import { EditUnconfirmedError } from '../../src/tools/domain/fileEdits.ts';
+import { createCommandTool } from '../../src/tools/infrastructure/commandTool.ts';
 import { commandToolFor, openWorkspace } from '../../src/tools/infrastructure/fileTools.ts';
 
 vi.mock('../../src/recovery/infrastructure/gitCommits.ts', async importOriginal => {
@@ -193,6 +195,62 @@ describe('runCommand', { timeout: 20_000 }, () => {
 				commits: [{ sha: head(), subject: 'change a' }],
 				by: 'commit',
 			},
+		]);
+	});
+
+	it('records the commits of a command whose files could not be compared after it', async () => {
+		const { opened } = await commandTool({ unused: shell('true') });
+		let listings = 0;
+		const tool = await createCommandTool({
+			commands: { empty: shell('git commit --quiet --allow-empty -m "kept"') },
+			policy: opened.policy,
+			writes: opened.writes,
+			covered: async listSignal => {
+				if (listings++ > 0) throw new Error('listing failed');
+				return opened.covered(listSignal);
+			},
+			base: opened.base,
+		});
+
+		const context = new RunContext({ id: 'test-session' });
+		const call = await tool.prepare({ command: { name: 'empty' } }, signal, {
+			run: context,
+			reads: new ReadRegistry().begin(),
+			callId: 'call',
+			onProgress: () => undefined,
+			spend: () => undefined,
+			depth: 0,
+		});
+		await expect(call.run(signal)).rejects.toBeInstanceOf(EditUnconfirmedError);
+		await context.finish('failed');
+
+		// Settling found no file changed, and the commit keeps the run.
+		const runId = context.historyRun.runId ?? '';
+		await expect(opened.store.readRun(runId)).resolves.toMatchObject({
+			commits: [{ commits: [{ sha: head(), subject: 'kept' }] }],
+		});
+	});
+
+	it('reads only commits from a log configured to show signatures', async () => {
+		const key = join(parent, 'key');
+		execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', key]);
+		git('config', 'log.showSignature', 'true');
+		const before = await tip();
+		git(
+			'-c',
+			'gpg.format=ssh',
+			'-c',
+			`user.signingkey=${key}`,
+			'commit',
+			'--quiet',
+			'-S',
+			'--allow-empty',
+			'-m',
+			'signed',
+		);
+
+		await expect(gitCommits.commitsBetween(before, await tip(), signal)).resolves.toEqual([
+			{ sha: head(), subject: 'signed' },
 		]);
 	});
 
