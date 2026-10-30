@@ -1,5 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -247,6 +254,42 @@ describe('a move over runs that made commits', { timeout: 20_000 }, () => {
 
 		expect(touched).not.toHaveProperty('git');
 		expect(committed).not.toHaveProperty('git');
+	});
+
+	it('names the commits of the steps a move took before its process stopped, once it is finished', async () => {
+		const { opened, tool } = await commandTool({
+			commit: shell('git commit --quiet --allow-empty -m "step"'),
+		});
+		const first = await run(tool, 'commit');
+		const firstSha = head();
+		const second = await run(tool, 'commit');
+		const secondSha = head();
+		// The process died going to the start, after undoing the second run.
+		const [state] = readdirSync(join(parent, 'state'), { recursive: true, encoding: 'utf8' })
+			.filter(path => path.endsWith('head.json'))
+			.map(path => join(parent, 'state', path));
+		const commit = { repository: root, branch: 'main', subject: 'step', direction: 'undo' };
+		writeFileSync(
+			state ?? '',
+			JSON.stringify({
+				runId: first.runId,
+				revision: 0,
+				pending: {
+					revision: 1,
+					from: second.runId,
+					conflicts: [],
+					commits: [{ ...commit, sha: secondSha, runId: second.runId }],
+				},
+			}),
+		);
+
+		await opened.store.redo();
+
+		const [finished] = await opened.store.listRevisions();
+		expect(finished?.git?.[0]?.commits).toEqual([
+			{ sha: secondSha, subject: 'step', runId: second.runId, direction: 'undo' },
+			{ sha: firstSha, subject: 'step', runId: first.runId, direction: 'undo' },
+		]);
 	});
 });
 

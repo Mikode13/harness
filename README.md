@@ -805,7 +805,7 @@ reason is kept with the move.
 
 A move restores files, not commits. When a configured command commits, the run records
 the commits it made: those new on the branch it ran on, as long as that branch stayed
-checked out and only moved forward. A move over that run leaves the commits on their
+checked out and only moved forward, so commits a `git pull` brings in count too. A move over that run leaves the commits on their
 branch, and its `git` names them, per branch of each repository, each with the run that
 made it and whether the move undid or redid that run. After an undo, git then shows the
 restored files as changes against a commit that still holds the run's. A commit already

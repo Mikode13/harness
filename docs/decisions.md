@@ -2883,6 +2883,7 @@ tags: #mikode-harness #recovery #git #api-design
 
 **Consequences:**
 
+- Any commit that reaches the branch while a command runs counts as the run's, whoever made it: the commits a `git pull` brings in, one the user makes in that folder meanwhile, or, on a branch with no commit before, every commit a reset brings. The user chose this rule as it is, on 2026-10-30, over excluding what other references already held, which would also leave out a commit the command pushed.
 - Each command costs a few `git` calls before and after it, a few milliseconds each.
 - A process that dies between a command's commit and its record loses the attribution: the commit stays, unnamed.
 - After an undo with `keep`, git shows the restored files as changes against a commit that still holds the run's: the host decides what to tell the user, from `git`.
