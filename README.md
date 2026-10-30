@@ -803,6 +803,21 @@ then not `complete`. So is a file a command changed into, or from, something the
 cannot copy, such as a file over 64 MB: what it held on the other side is unknown. The
 reason is kept with the move.
 
+A move restores files, not commits. When a configured command commits, the run records
+the commits it made: those new on the branch it ran on, as long as that branch stayed
+checked out and only moved forward. A move over that run leaves the commits on their
+branch, and its `git` names them, per branch of each repository, each with the run that
+made it and whether the move undid or redid that run. After an undo, git then shows the
+restored files as changes against a commit that still holds the run's. A commit already
+gone from its branch, such as one you reset away, is not named.
+
+```ts
+const move = await history.undo();
+for (const { repository, branch, commits } of move.git ?? []) {
+	console.log(`${branch} in ${repository} keeps ${commits.map(c => c.sha.slice(0, 7)).join(', ')}`);
+}
+```
+
 A move can be tied to where the workspace is. Pass `from`, a run or `historyStart`, and
 the move happens only if the workspace is still there; otherwise it fails with
 `WorkspaceMovedError` and changes nothing. Pass it when you showed the user what a move

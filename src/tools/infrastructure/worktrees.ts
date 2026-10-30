@@ -1,7 +1,7 @@
 import { mkdir, readdir, realpath, rmdir } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { UnrecoverableError } from '#src/shared/domain/errors';
-import { runProcess } from './runProcess.ts';
+import { runProcess } from '#src/shared/infrastructure/runProcess';
 
 // Never cancelled: creating a worktree is short, and the consumer waits for it.
 const uncancelled = new AbortController().signal;

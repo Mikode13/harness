@@ -29,7 +29,7 @@ import type {
 import type { ToolCallContext } from '../../src/tools/domain/readRegistry.ts';
 import { createRemoveWorktreeTool } from '../../src/tools/infrastructure/removeWorktreeTool.ts';
 import { createWorktree, supportsWorktrees } from '../../src/tools/infrastructure/worktrees.ts';
-import type * as RunProcess from '../../src/tools/infrastructure/runProcess.ts';
+import type * as RunProcess from '../../src/shared/infrastructure/runProcess.ts';
 import type * as Worktrees from '../../src/tools/infrastructure/worktrees.ts';
 import {
 	assistantResponse,
@@ -54,7 +54,7 @@ vi.mock('../../src/tools/infrastructure/worktrees.ts', async importOriginal => {
 });
 // Lets a test have `git version` answer as Ubuntu 22.04's git does.
 const oldGit = vi.hoisted(() => ({ on: false }));
-vi.mock('../../src/tools/infrastructure/runProcess.ts', async importOriginal => {
+vi.mock('../../src/shared/infrastructure/runProcess.ts', async importOriginal => {
 	const actual = await importOriginal<typeof RunProcess>();
 	return {
 		...actual,

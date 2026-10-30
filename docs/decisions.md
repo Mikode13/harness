@@ -2861,3 +2861,28 @@ tags: #mikode-harness #llm #cost #api-design
 - The threshold of 2 and the questions are the harness's, from one probe, not measured on real runs.
 - A failed or missing Jev compacts as `recent` does, so the mode never fails because of Jev.
 - What the tools read leaves for TypeSafe: Jev is sent each tool result it judges.
+
+## A command's commits belong to the run that ran it, and a move keeps them and names them
+
+tags: #mikode-harness #recovery #git #api-design
+
+**Decision:**
+
+- **Commits are attributed per command.** Around each configured command, the harness reads the branch checked out in the command's folder and its tip. The commits new on it after the command are the run's, counted only when the same branch is checked out before and after and its new tip descends from the old one. A commit made with no branch checked out, or on a branch the command switched to, is not counted, and neither are commits the user makes while the run works, outside its commands.
+- **The journal records them,** as one more kind of line, `committed`, so they travel with the run: retention carries them into the run it chains into, and a run that made a commit stays in the history even if it changed no file.
+- **A move restores files, not commits: `keep`.** The commits stay on their branch, and the move's `git` names them, one entry per branch of each repository, each commit with the run that made it and whether the move undid or redid it, in every move that goes over such a run. A commit the branch no longer holds is left out.
+- **A failure to read git does not stop a command,** since it has run either way: the model is told the history names no commits for it. A failure to record them in the journal stops writing for the run, as for a change.
+
+**Context:** #140, decided with the user on 2026-10-29 and 2026-10-30. Before this, undoing a run that committed restored its files and left its commit unmentioned. This is the first of three pull requests: the `revert` and `reset` policies, and redo and goTo after a revert, come next, then the orchestrator's committer stage. The user chose one `git` entry per branch, so a `revert` that fails in one repository does not hide one that worked in another, and a report in every move, not only in undo.
+
+**Alternatives considered:**
+
+- **Attributing by time,** every commit on the branch between the run's start and end. Simpler, but a commit the user makes meanwhile becomes the agent's.
+- **One `git` block for the whole move.** Simpler for a single repository, but one action and one outcome cannot describe several branches.
+- **Reporting only when undoing.** Less to read, but a host does not see which commits match the files again after a redo.
+
+**Consequences:**
+
+- Each command costs a few `git` calls before and after it, a few milliseconds each.
+- A process that dies between a command's commit and its record loses the attribution: the commit stays, unnamed.
+- After an undo with `keep`, git shows the restored files as changes against a commit that still holds the run's: the host decides what to tell the user, from `git`.

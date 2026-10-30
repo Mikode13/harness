@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { runProcess } from '../../src/tools/infrastructure/runProcess.ts';
+import { runProcess } from '../../src/shared/infrastructure/runProcess.ts';
 
 // Node itself is the one program every machine running these tests has.
 const node = process.execPath;

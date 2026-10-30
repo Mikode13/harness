@@ -92,6 +92,8 @@ export {
 	NothingToMoveError,
 	WorkspaceBusyError,
 	WorkspaceMovedError,
+	type BranchMove,
+	type MovedCommit,
 	type MoveOptions,
 	type RunStatus,
 } from './recovery/domain/recoveryStore.ts';

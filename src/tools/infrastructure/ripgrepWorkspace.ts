@@ -1,6 +1,6 @@
 import type { TextMatch } from '../domain/workspace.ts';
 import { BoundedWorkspace } from './boundedWorkspace.ts';
-import { firstLine, runProcess } from './runProcess.ts';
+import { firstLine, runProcess } from '#src/shared/infrastructure/runProcess';
 
 // Every call sees what git would. Each flag is ours; nothing a model writes ever reaches the
 // command line except the pattern, and that only after `-e`.

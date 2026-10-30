@@ -2,7 +2,7 @@ import { rmSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { firstLine, runProcess } from './runProcess.ts';
+import { firstLine, runProcess } from '#src/shared/infrastructure/runProcess';
 
 /** Whether `.gitignore` excludes a path, which may not exist yet. */
 export interface IgnoreRules {
