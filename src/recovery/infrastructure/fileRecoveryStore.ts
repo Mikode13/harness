@@ -18,6 +18,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, sep } from 'node:path';
 import type { ILogger } from '#src/shared/domain/logger';
 import { FolderClaims } from './folderClaims.ts';
+import { type BranchCommit, keptCommits } from './gitCommits.ts';
 import {
 	classifyHostFailure,
 	describeFailure,
@@ -32,6 +33,7 @@ import {
 	type Manifest,
 	type ObservationMeasure,
 	type MoveConflict,
+	type RecordedCommits,
 	type MoveOptions,
 	NothingToMoveError,
 	type Revision,
@@ -182,6 +184,8 @@ interface PendingMove {
 	reason?: string;
 	/** Found by the steps already taken. */
 	conflicts: MoveConflict[];
+	/** The commits of the runs the steps already taken went over. */
+	commits?: BranchCommit[];
 	/**
 	 * The temporary a file is being restored through, named before it is created, so finishing
 	 * the move removes this one and no file of the user's.
@@ -201,7 +205,8 @@ type JournalLine =
 	| { type: 'applied' | 'abandoned'; sequence: number }
 	| { type: 'observing'; sequence: number; manifest: string; by: string }
 	| { type: 'observed'; sequence: number; measure?: ObservationMeasure }
-	| ({ type: 'unrecorded'; sequence: number } & UnrecordedChange);
+	| ({ type: 'unrecorded'; sequence: number } & UnrecordedChange)
+	| ({ type: 'committed'; sequence: number } & RecordedCommits);
 
 /** An observation a run began and never finished: what its command changed is not recorded yet. */
 interface OpenObservation {
@@ -410,9 +415,12 @@ export class FileRecoveryStore implements RecoveryStore {
 		return { ...(head ? { head } : {}), runs: runs.filter(run => !gone.has(run.runId)) };
 	}
 
-	async readRun(
-		runId: string,
-	): Promise<{ record: RunRecord; entries: JournalEntry[]; unrecorded: UnrecordedChange[] }> {
+	async readRun(runId: string): Promise<{
+		record: RunRecord;
+		entries: JournalEntry[];
+		unrecorded: UnrecordedChange[];
+		commits: RecordedCommits[];
+	}> {
 		// An id from outside is checked before it names a folder.
 		if (!runIdPattern.test(runId)) throw new UnknownRunError(runId);
 		// The lock first: a run that finishes between the two reads then shows as finished, not as
@@ -426,11 +434,12 @@ export class FileRecoveryStore implements RecoveryStore {
 			await this.assertNotAbsorbed(runId);
 			throw new UnknownRunError(runId);
 		});
-		const { entries, unrecorded } = await this.readJournal(runId, record.journal);
+		const { entries, unrecorded, commits } = await this.readJournal(runId, record.journal);
 		return {
 			record: withLiveStatus(record, holder),
 			entries,
 			unrecorded: unrecorded.map(({ path, by }) => ({ path, by })),
+			commits,
 		};
 	}
 
@@ -613,25 +622,41 @@ export class FileRecoveryStore implements RecoveryStore {
 			else pending.temporary = temporary;
 			await save();
 		};
+		const took = ({ conflicts, commits }: Awaited<ReturnType<typeof this.step>>) => {
+			pending.conflicts.push(...conflicts);
+			if (commits.length > 0) pending.commits = [...(pending.commits ?? []), ...commits];
+		};
 		for (const runId of undo) {
-			pending.conflicts.push(...(await this.step(runId, 'undo', announce)));
+			took(await this.step(runId, 'undo', announce));
 			reached = parents.get(runId);
 			await save();
 		}
 		for (const runId of redo) {
-			pending.conflicts.push(...(await this.step(runId, 'redo', announce)));
+			took(await this.step(runId, 'redo', announce));
 			reached = runId;
 			await save();
 		}
 
 		// Every write that started has finished, so no temporary is left to name.
 		delete pending.temporary;
-		const { conflicts, ...rest } = pending;
+		const { conflicts, commits = [], ...rest } = pending;
+		const git = await keptCommits(commits, (repository, branch, error) => {
+			treatErrors(
+				() => {
+					this.logger.warn(
+						`The history could not tell which commits ${branch} in ${repository} still holds, and reports every commit the move went over: ${describeFailure(error)}`,
+					);
+				},
+				classifyHostFailure,
+				'Recovery store logger failed while reporting commits it could not check',
+			);
+		});
 		const revision: Revision = {
 			...rest,
 			at: new Date().toISOString(),
 			complete: conflicts.length === 0,
 			conflicts,
+			...(git.length > 0 ? { git } : {}),
 		};
 		await this.appendRevision(revision);
 		await this.writeHead({
@@ -641,13 +666,16 @@ export class FileRecoveryStore implements RecoveryStore {
 		return revision;
 	}
 
-	/** Takes one run's changes back to its parent, or forward again, file by file. */
+	/**
+	 * Takes one run's changes back to its parent, or forward again, file by file, and names the
+	 * commits it made, which it leaves where they are.
+	 */
 	private async step(
 		runId: string,
 		direction: 'undo' | 'redo',
 		announce: (temporary: string | undefined) => Promise<void>,
-	): Promise<MoveConflict[]> {
-		const { entries, unrecorded } = await this.readRun(runId);
+	): Promise<{ conflicts: MoveConflict[]; commits: BranchCommit[] }> {
+		const { entries, unrecorded, commits } = await this.readRun(runId);
 		const changes = fileChanges(entries, true);
 		// What the history could not copy is left as it is, in either direction.
 		const conflicting = new Set(unrecorded.map(change => change.path));
@@ -655,7 +683,21 @@ export class FileRecoveryStore implements RecoveryStore {
 		for (const change of direction === 'undo' ? changes.reverse() : changes) {
 			if (!(await this.moveFile(change, direction, announce))) conflicting.add(change.path);
 		}
-		return [...conflicting].map((path): MoveConflict => ({ path, runId }));
+		// Newest first when undone, like its files.
+		const made = commits.flatMap(({ repository, branch, commits: run, runId: madeIn }) =>
+			run.map(({ sha, subject }) => ({
+				repository,
+				branch,
+				sha,
+				subject,
+				runId: madeIn ?? runId,
+				direction,
+			})),
+		);
+		return {
+			conflicts: [...conflicting].map((path): MoveConflict => ({ path, runId })),
+			commits: direction === 'undo' ? made.reverse() : made,
+		};
 	}
 
 	/**
@@ -767,6 +809,15 @@ export class FileRecoveryStore implements RecoveryStore {
 			...newerJournal.unrecorded,
 		].entries()) {
 			lines.push({ type: 'unrecorded', sequence: entries.length + index + 1, path, by });
+		}
+		// The commits of both, oldest first, each still naming the run that made it: going back past
+		// the chain goes back past them all.
+		const commits = [
+			...olderJournal.commits.map(made => ({ ...made, runId: made.runId ?? older })),
+			...newerJournal.commits,
+		];
+		for (const made of commits) {
+			lines.push({ type: 'committed', sequence: lines.length + 1, ...made });
 		}
 		await writeDurably(
 			join(this.runDirectory(newer), journal),
@@ -1087,6 +1138,7 @@ export class FileRecoveryStore implements RecoveryStore {
 		observations: OpenObservation[];
 		/** With the sequence of its line, which `readRun` leaves out. */
 		unrecorded: (UnrecordedChange & { sequence: number })[];
+		commits: RecordedCommits[];
 		lastSequence: number;
 	}> {
 		let text: string;
@@ -1095,7 +1147,7 @@ export class FileRecoveryStore implements RecoveryStore {
 		} catch (error) {
 			// A run that stopped before opening its journal never changed anything.
 			if (isNotFound(error)) {
-				return { entries: [], observations: [], unrecorded: [], lastSequence: 0 };
+				return { entries: [], observations: [], unrecorded: [], commits: [], lastSequence: 0 };
 			}
 			throw error;
 		}
@@ -1104,6 +1156,7 @@ export class FileRecoveryStore implements RecoveryStore {
 		const entries = new Map<number, JournalEntry>();
 		const observations = new Map<number, OpenObservation>();
 		const unrecorded: (UnrecordedChange & { sequence: number })[] = [];
+		const commits: RecordedCommits[] = [];
 		let lastSequence = 0;
 		lines.forEach((text, index) => {
 			if (text === '') return;
@@ -1145,6 +1198,17 @@ export class FileRecoveryStore implements RecoveryStore {
 				unrecorded.push({ sequence: line.sequence, path: line.path, by: line.by });
 				return;
 			}
+			if (line.type === 'committed') {
+				const { repository, branch, commits: made, by, runId: madeIn } = line;
+				commits.push({
+					repository,
+					branch,
+					commits: made,
+					by,
+					...(madeIn ? { runId: madeIn } : {}),
+				});
+				return;
+			}
 			const entry = entries.get(line.sequence);
 			if (entry) entry.status = line.type;
 		});
@@ -1153,6 +1217,7 @@ export class FileRecoveryStore implements RecoveryStore {
 			entries: [...entries.values()],
 			observations: [...observations.values()],
 			unrecorded,
+			commits,
 			lastSequence,
 		};
 	}
@@ -1208,17 +1273,23 @@ export class FileRecoveryStore implements RecoveryStore {
 }
 
 /**
- * No change it recorded may have reached a file: it recorded none, or abandoned each one, and
- * none it could not copy.
+ * No change it recorded may have reached a file: it recorded none, or abandoned each one, none
+ * it could not copy, and no commit.
  */
 function changedNothing({
 	entries,
 	unrecorded,
+	commits,
 }: {
 	entries: JournalEntry[];
 	unrecorded: UnrecordedChange[];
+	commits: RecordedCommits[];
 }): boolean {
-	return unrecorded.length === 0 && entries.every(entry => entry.status === 'abandoned');
+	return (
+		unrecorded.length === 0 &&
+		commits.length === 0 &&
+		entries.every(entry => entry.status === 'abandoned')
+	);
 }
 
 /**
@@ -1328,6 +1399,8 @@ class FileRunJournal implements RunJournal {
 	private readonly observing = new Set<number>();
 	// A change it could not copy reached a file, and stays in the history.
 	private lost = false;
+	// A command it ran made a commit, which a move over it names.
+	private committedAny = false;
 	// Settling what it left open as it finished found that it changed nothing.
 	private settledEmpty = false;
 	// Appends run one after another, so the lines never interleave.
@@ -1427,6 +1500,12 @@ class FileRunJournal implements RunJournal {
 		this.lost = true;
 	}
 
+	async committed(commits: RecordedCommits): Promise<void> {
+		this.assertOpen();
+		await this.append({ type: 'committed', sequence: ++this.sequence, ...commits });
+		this.committedAny = true;
+	}
+
 	get storedBytes(): number {
 		return this.stored;
 	}
@@ -1453,7 +1532,7 @@ class FileRunJournal implements RunJournal {
 	}
 
 	get changed(): boolean {
-		return !this.settledEmpty && (this.lost || this.effects.size > 0);
+		return !this.settledEmpty && (this.lost || this.committedAny || this.effects.size > 0);
 	}
 
 	async finish(status: Exclude<RunStatus, 'running' | 'interrupted'>): Promise<void> {

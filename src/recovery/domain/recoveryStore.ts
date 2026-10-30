@@ -53,6 +53,34 @@ export interface UnrecordedChange {
 	by: string;
 }
 
+/** One commit, as git names it. */
+export interface Commit {
+	sha: string;
+	/** The first line of its message. */
+	subject: string;
+}
+
+/**
+ * Commits a command made on one branch while a run ran it: those new on the branch after it,
+ * counted only when the branch was the same one before and after and its new tip descends from
+ * the old one. A commit made with no branch checked out is not counted.
+ */
+export interface RecordedCommits {
+	/** The real path of the folder the repository, or its worktree, is checked out in. */
+	repository: string;
+	/** The branch's short name, such as `main`. */
+	branch: string;
+	/** Oldest first. */
+	commits: Commit[];
+	/** The command that made them. */
+	by: string;
+	/**
+	 * The run that made them, once retention chained it into the run whose journal holds them now.
+	 * Absent while they are in the journal of the run that made them.
+	 */
+	runId?: string;
+}
+
 /** What one observation cost: before and after together. */
 export interface ObservationMeasure {
 	/** Files captured before, and compared after. */
@@ -135,6 +163,11 @@ export interface RunJournal {
 	 * over the run leaves it as it is, and is not complete.
 	 */
 	unrecorded(path: string, by: string): Promise<void>;
+	/**
+	 * Records the commits a command made. A run that made one stays in the history even if it
+	 * changed no file, so a move over it can name them.
+	 */
+	committed(commits: RecordedCommits): Promise<void>;
 	/** How many bytes of content this run stored that the store did not hold yet. */
 	readonly storedBytes: number;
 	/** The path of every change it recorded as applied, in order: each one reached a file. */
@@ -147,9 +180,9 @@ export interface RunJournal {
 	contentState(): string;
 	/**
 	 * Whether a change it recorded may have reached a file: one prepared and not abandoned, or one
-	 * it could not copy. It holds whatever happens to the record afterwards, except once `finish`
-	 * settled an observation the run left open and found that the run changed nothing: the run
-	 * left the history, so it is `false`.
+	 * it could not copy, or whether it recorded a commit. It holds whatever happens to the record
+	 * afterwards, except once `finish` settled an observation the run left open and found that the
+	 * run changed nothing: the run left the history, so it is `false`.
 	 */
 	readonly changed: boolean;
 	/**
@@ -175,6 +208,37 @@ export interface MoveConflict {
 	runId: string;
 }
 
+/** A commit a move went over: one a run it undid or redid made. */
+export interface MovedCommit {
+	sha: string;
+	/** The first line of its message. */
+	subject: string;
+	/**
+	 * The run that made it: the run the move went over, or one retention chained into it, which
+	 * that run's `absorbed` names.
+	 */
+	runId: string;
+	/** Whether the move undid that run or redid it. */
+	direction: 'undo' | 'redo';
+}
+
+/**
+ * What a move did with the commits of the runs it went over, on one branch of one repository.
+ * The files are moved either way; this reports the commits, separately.
+ */
+export interface BranchMove {
+	/** The real path of the folder the repository, or its worktree, is checked out in. */
+	repository: string;
+	/** The branch's short name, such as `main`. */
+	branch: string;
+	/** `keep`: the commits stay on the branch, whatever the move did to the files. */
+	action: 'keep';
+	/** `done`: the action was taken. */
+	outcome: 'done';
+	/** Those still on the branch, in the order the move went over them. */
+	commits: MovedCommit[];
+}
+
 /**
  * One move of the workspace through its history, kept so an agent that runs next can tell
  * that its conversation is about a state the workspace has left.
@@ -192,6 +256,8 @@ export interface Revision {
 	/** Every file reached the state the history expected. Otherwise `conflicts` names those that did not. */
 	complete: boolean;
 	conflicts: MoveConflict[];
+	/** What it did with the commits of the runs it went over, per branch. Absent when they made none. */
+	git?: BranchMove[];
 }
 
 export interface MoveOptions {
@@ -273,15 +339,19 @@ export interface RecoveryStore {
 	/** Every move of the workspace, oldest first. */
 	listRevisions(): Promise<Revision[]>;
 	/**
-	 * A run's record, its changes, in the order they were prepared, and the changes it could not
-	 * copy.
+	 * A run's record, its changes, in the order they were prepared, the changes it could not
+	 * copy, and the commits it made.
 	 *
 	 * @throws {UnknownRunError} when `runId` was never a run of this workspace.
 	 * @throws {HistoryExpiredError} when retention removed `runId` or chained it into a later run.
 	 */
-	readRun(
-		runId: string,
-	): Promise<{ record: RunRecord; entries: JournalEntry[]; unrecorded: UnrecordedChange[] }>;
+	readRun(runId: string): Promise<{
+		record: RunRecord;
+		entries: JournalEntry[];
+		unrecorded: UnrecordedChange[];
+		/** The commits its commands made, in the order they were recorded. */
+		commits: RecordedCommits[];
+	}>;
 	/** The bytes a hash names. */
 	readContent(hash: string): Promise<Buffer>;
 }

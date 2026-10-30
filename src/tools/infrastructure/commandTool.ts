@@ -3,8 +3,16 @@ import { isAbsolute, relative, resolve } from 'node:path';
 import { z } from 'zod';
 import type { CommandLine } from '#src/agent/domain/approval';
 import type { RunContext } from '#src/agent/domain/runContext';
+import type { Commit, RunJournal } from '#src/recovery/domain/recoveryStore';
 import { displayPath } from '#src/recovery/domain/runChanges';
+import { type BranchTip, commitsBetween, readTip } from '#src/recovery/infrastructure/gitCommits';
 import { InvalidAgentConfigError } from '#src/shared/domain/errors';
+import type { ILogger } from '#src/shared/domain/logger';
+import {
+	classifyHostFailure,
+	describeFailure,
+	treatErrors,
+} from '#src/shared/domain/providerFailure';
 import type { AccessPolicy } from '../domain/accessPolicy.ts';
 import {
 	buildArguments,
@@ -20,6 +28,7 @@ import {
 import { EditRefusedError, EditUnconfirmedError } from '../domain/fileEdits.ts';
 import {
 	type CommandEnding,
+	RunEndingToolError,
 	ToolExecutionError,
 	type PreparingTool,
 } from '../domain/preparedCall.ts';
@@ -33,6 +42,8 @@ import type { WriteSession } from './writeSession.ts';
 // Only what a toolchain needs to find itself and its locale. Everything else, the provider
 // keys included, stays in this process.
 const inheritedVariables = ['PATH', 'HOME', 'TMPDIR', 'USER', 'SHELL', 'LANG'];
+// Never cancelled: once a command has run, the commits it made must reach the history.
+const uncancelled = new AbortController().signal;
 // Long enough for a slow disk, short enough not to hold up building an agent.
 const cwdCheckMs = 10_000;
 
@@ -65,6 +76,7 @@ export async function createCommandTool({
 	writes,
 	covered,
 	base,
+	logger,
 	platform = process.platform,
 	runProcess = runCommandProcess,
 }: {
@@ -74,6 +86,8 @@ export async function createCommandTool({
 	covered: CoveredFiles;
 	/** The real path of the first root, where a relative `cwd` starts. */
 	base: string;
+	/** Where a failure it absorbs is logged, such as git failing to list a command's commits. */
+	logger: ILogger;
 	platform?: NodeJS.Platform;
 	/** Runs the program. Replaced in tests, to reach what a real process rarely does. */
 	runProcess?: typeof runCommandProcess;
@@ -180,6 +194,23 @@ export async function createCommandTool({
 			);
 		}
 
+		// Where its branch is right before it starts, after the files are captured, so the commits it
+		// makes are the run's and none made meanwhile is. A cancellation here reaches the command,
+		// which ends as cancelled once what it changed is recorded.
+		let tip: BranchTip | undefined;
+		let unreadTip: unknown;
+		// Failures it carries on after, logged once what the command changed is recorded.
+		const absorbed: string[] = [];
+		try {
+			tip = await readTip(line.cwd, signal);
+		} catch (error) {
+			if (!signal.aborted) {
+				unreadTip = error;
+				absorbed.push(
+					`The harness could not read the branch before "${name}", so the history names none of its commits: ${describeFailure(error)}`,
+				);
+			}
+		}
 		let result: CommandProcessResult | undefined;
 		let startFailure: unknown;
 		const fingerprint = new OutputFingerprint();
@@ -199,22 +230,39 @@ export async function createCommandTool({
 		}
 
 		const complete = result?.stopped ?? true;
+		// Before the files: a failure comparing them must not lose the commits, and with them a run
+		// that changed nothing else.
+		let commits: CommitsSeen = { made: [] };
+		let unrecordedCommits: Error | undefined;
+		if (result) {
+			try {
+				commits =
+					unreadTip === undefined
+						? await recordCommits({ name, tip, cwd: line.cwd, journal, session, absorbed })
+						: { unknown: unreadTip };
+			} catch (error) {
+				unrecordedCommits = error instanceof Error ? error : new Error(String(error));
+			}
+		}
 		let observed: Awaited<ReturnType<CommandCheckpoint['end']>>;
 		try {
 			observed = await checkpoint.end({ complete });
 		} catch (error) {
 			session.stop('Writing stopped: the harness could not record what a command changed');
+			logAbsorbed(absorbed);
 			throw new EditUnconfirmedError(
 				`"${name}" ran, but the harness could not record what it changed; writing has stopped for this run`,
 				{ cause: error },
 			);
 		}
+		logAbsorbed(absorbed);
 
+		if (unrecordedCommits !== undefined) throw unrecordedCommits;
 		if (!result) {
 			signal.throwIfAborted();
 			throw new EditRefusedError(`"${name}" could not be started`, { cause: startFailure });
 		}
-		const report = describeRun(name, definition, result, observed);
+		const report = describeRun(name, definition, result, observed, commits);
 		if (!complete) {
 			session.stop('Writing stopped: a command could not be stopped');
 			throw new EditUnconfirmedError(
@@ -240,11 +288,82 @@ export async function createCommandTool({
 		return report;
 	}
 
+	/**
+	 * Logs what a command absorbed, once what it changed is recorded. A logger that fails is a
+	 * host failure, which ends the run.
+	 */
+	function logAbsorbed(messages: readonly string[]): void {
+		try {
+			for (const message of messages) {
+				treatErrors(
+					() => {
+						logger.warn(message);
+					},
+					classifyHostFailure,
+					'Command tool logger failed while reporting commits it could not read',
+				);
+			}
+		} catch (error) {
+			throw new RunEndingToolError(error);
+		}
+	}
+
+	/**
+	 * Records the commits the command made in the run's journal. One git could not list is told
+	 * to the model and left out, since the command has run either way; a journal that could not
+	 * record them stops writing, as for a change.
+	 */
+	async function recordCommits({
+		name,
+		tip,
+		cwd,
+		journal,
+		session,
+		absorbed,
+	}: {
+		name: string;
+		tip: BranchTip | undefined;
+		cwd: string;
+		journal: RunJournal;
+		session: WriteSession;
+		absorbed: string[];
+	}): Promise<CommitsSeen> {
+		// Outside a repository, or with no branch checked out, no commit is the run's.
+		if (tip?.branch === undefined) return { made: [] };
+		let made: Commit[];
+		try {
+			const after = await readTip(cwd, uncancelled);
+			made = after ? await commitsBetween(tip, after, uncancelled) : [];
+		} catch (error) {
+			absorbed.push(
+				`The harness could not tell whether "${name}" made commits, so the history names none: ${describeFailure(error)}`,
+			);
+			return { unknown: error };
+		}
+		if (made.length === 0) return { made };
+		try {
+			await journal.committed({
+				repository: tip.repository,
+				branch: tip.branch,
+				commits: made,
+				by: name,
+			});
+		} catch (error) {
+			session.stop('Writing stopped: the harness could not record the commits a command made');
+			throw new EditUnconfirmedError(
+				`"${name}" made commits, but the harness could not record them; writing has stopped for this run`,
+				{ cause: error },
+			);
+		}
+		return { made, branch: tip.branch };
+	}
+
 	function describeRun(
 		name: string,
 		definition: CommandDefinition,
 		result: CommandProcessResult,
 		{ changes, unrecorded }: Awaited<ReturnType<CommandCheckpoint['end']>>,
+		commits: CommitsSeen,
 	): string {
 		const seconds = (result.durationMs / 1000).toFixed(1);
 		const lines: string[] = [];
@@ -270,6 +389,16 @@ export async function createCommandTool({
 				`Not recorded, because the history cannot copy them (a folder, a link, or a file over 64 MB) before or after: ${unrecorded.map(shown).join(', ')}. Undo leaves them as they are.`,
 			);
 		}
+		if ('unknown' in commits) {
+			lines.push(
+				`The harness could not tell whether it made commits, so the history does not name any: ${describeFailure(commits.unknown)}`,
+			);
+		} else if (commits.made.length > 0) {
+			const listed = commits.made.map(({ sha, subject }) => `${sha.slice(0, 7)} ${subject}`);
+			lines.push(
+				`Commits it made on ${commits.branch ?? 'its branch'}, recorded in the history: ${listed.join('; ')}.`,
+			);
+		}
 
 		const limit = definition.outputBytes ?? defaultCommandOutputBytes;
 		if (result.printedBytes === 0) {
@@ -285,6 +414,9 @@ export async function createCommandTool({
 		return lines.join('\n');
 	}
 }
+
+/** The commits a command made, or why git could not tell. */
+type CommitsSeen = { made: Commit[]; branch?: string } | { unknown: unknown };
 
 function howItEnded(result: CommandProcessResult): string {
 	if (result.outcome === 'timedOut') return 'ran past its time limit';

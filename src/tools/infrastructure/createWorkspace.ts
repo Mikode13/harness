@@ -5,7 +5,7 @@ import { Logger } from '#src/shared/infrastructure/logger';
 import type { Workspace } from '../domain/workspace.ts';
 import { GitWorkspace } from './gitWorkspace.ts';
 import { RipgrepWorkspace } from './ripgrepWorkspace.ts';
-import { runProcess } from './runProcess.ts';
+import { runProcess } from '#src/shared/infrastructure/runProcess';
 
 // Long enough for a slow disk; short enough that a hung git does not hold up building an agent.
 const gitCheckTimeoutMs = 5_000;

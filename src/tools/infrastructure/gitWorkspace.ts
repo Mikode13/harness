@@ -1,6 +1,6 @@
 import type { TextMatch } from '../domain/workspace.ts';
 import { BoundedWorkspace } from './boundedWorkspace.ts';
-import { firstLine, runProcess } from './runProcess.ts';
+import { firstLine, runProcess } from '#src/shared/infrastructure/runProcess';
 
 /**
  * The fallback `Workspace`, on the git the repository already has. git applies `.gitignore`

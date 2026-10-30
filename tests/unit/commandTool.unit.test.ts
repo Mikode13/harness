@@ -695,6 +695,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			writes: opened.writes,
 			covered: () => Promise.reject(new Error('listing failed')),
 			base: opened.base,
+			logger: opened.logger,
 		});
 
 		const { error } = await call(tool, { command: { name: 'mark' } });
@@ -719,6 +720,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 				return opened.covered(listSignal);
 			},
 			base: opened.base,
+			logger: opened.logger,
 		});
 
 		const { error, context } = await call(tool, { command: { name: 'format' } });
@@ -749,6 +751,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 				return opened.covered(listSignal);
 			},
 			base: opened.base,
+			logger: opened.logger,
 		});
 
 		const { error, context } = await call(tool, { command: { name: 'check' } });
@@ -781,6 +784,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 				throw new Error('listing failed');
 			},
 			base: opened.base,
+			logger: opened.logger,
 		});
 		const llmClient = new FakeLLMClient(
 			assistantResponse([toolCall('call-1', 'runCommand', { command: { name: 'check' } })]),
@@ -812,6 +816,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			writes: opened.writes,
 			covered: opened.covered,
 			base: opened.base,
+			logger: opened.logger,
 			runProcess: async (...args) => {
 				truncateSync(join(root, 'src', 'a.ts'), 65 * 1024 * 1024);
 				const result = await runCommandProcess(...args);
@@ -848,6 +853,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			writes: opened.writes,
 			covered: opened.covered,
 			base: opened.base,
+			logger: opened.logger,
 			runProcess: async (...args) => {
 				write('src/a.ts', 'changed by something still running\n');
 				const result = await runCommandProcess(...args);
@@ -886,6 +892,7 @@ describe('createCommandTool', () => {
 				writes: opened.writes,
 				covered: opened.covered,
 				base: opened.base,
+				logger: opened.logger,
 				platform: 'win32',
 			}),
 		).rejects.toBeInstanceOf(InvalidAgentConfigError);
