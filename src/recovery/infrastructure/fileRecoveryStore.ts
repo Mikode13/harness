@@ -684,8 +684,15 @@ export class FileRecoveryStore implements RecoveryStore {
 			if (!(await this.moveFile(change, direction, announce))) conflicting.add(change.path);
 		}
 		// Newest first when undone, like its files.
-		const made = commits.flatMap(({ repository, branch, commits: run }) =>
-			run.map(({ sha, subject }) => ({ repository, branch, sha, subject, runId, direction })),
+		const made = commits.flatMap(({ repository, branch, commits: run, runId: madeIn }) =>
+			run.map(({ sha, subject }) => ({
+				repository,
+				branch,
+				sha,
+				subject,
+				runId: madeIn ?? runId,
+				direction,
+			})),
 		);
 		return {
 			conflicts: [...conflicting].map((path): MoveConflict => ({ path, runId })),
@@ -803,9 +810,14 @@ export class FileRecoveryStore implements RecoveryStore {
 		].entries()) {
 			lines.push({ type: 'unrecorded', sequence: entries.length + index + 1, path, by });
 		}
-		// The commits of both, oldest first: going back past the chain goes back past them all.
-		for (const commits of [...olderJournal.commits, ...newerJournal.commits]) {
-			lines.push({ type: 'committed', sequence: lines.length + 1, ...commits });
+		// The commits of both, oldest first, each still naming the run that made it: going back past
+		// the chain goes back past them all.
+		const commits = [
+			...olderJournal.commits.map(made => ({ ...made, runId: made.runId ?? older })),
+			...newerJournal.commits,
+		];
+		for (const made of commits) {
+			lines.push({ type: 'committed', sequence: lines.length + 1, ...made });
 		}
 		await writeDurably(
 			join(this.runDirectory(newer), journal),
@@ -1187,8 +1199,14 @@ export class FileRecoveryStore implements RecoveryStore {
 				return;
 			}
 			if (line.type === 'committed') {
-				const { repository, branch, commits: made, by } = line;
-				commits.push({ repository, branch, commits: made, by });
+				const { repository, branch, commits: made, by, runId: madeIn } = line;
+				commits.push({
+					repository,
+					branch,
+					commits: made,
+					by,
+					...(madeIn ? { runId: madeIn } : {}),
+				});
 				return;
 			}
 			const entry = entries.get(line.sequence);

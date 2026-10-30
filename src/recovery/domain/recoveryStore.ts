@@ -74,6 +74,11 @@ export interface RecordedCommits {
 	commits: Commit[];
 	/** The command that made them. */
 	by: string;
+	/**
+	 * The run that made them, once retention chained it into the run whose journal holds them now.
+	 * Absent while they are in the journal of the run that made them.
+	 */
+	runId?: string;
 }
 
 /** What one observation cost: before and after together. */
@@ -208,7 +213,10 @@ export interface MovedCommit {
 	sha: string;
 	/** The first line of its message. */
 	subject: string;
-	/** The run that made it. */
+	/**
+	 * The run that made it: the run the move went over, or one retention chained into it, which
+	 * that run's `absorbed` names.
+	 */
 	runId: string;
 	/** Whether the move undid that run or redid it. */
 	direction: 'undo' | 'redo';

@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RunContext } from '../../src/agent/domain/runContext.ts';
-import { createHistory } from '../../src/index.ts';
+import { createHistory, historyStart } from '../../src/index.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
 import * as gitCommits from '../../src/recovery/infrastructure/gitCommits.ts';
 import type { Commands } from '../../src/tools/domain/commands.ts';
@@ -132,6 +132,33 @@ describe('the commits between two tips of a branch', () => {
 			await expect(gitCommits.commitsBetween(before, after, signal)).resolves.toEqual([]);
 		}
 		expect(detached).not.toHaveProperty('branch');
+	});
+
+	it('are counted on a branch a tag shares its name with', async () => {
+		git('tag', 'main');
+		const before = await tip();
+		git('commit', '--quiet', '--allow-empty', '-m', 'beside the tag');
+		const after = await tip();
+
+		expect(before.branch).toBe('main');
+		await expect(gitCommits.commitsBetween(before, after, signal)).resolves.toEqual([
+			{ sha: head(), subject: 'beside the tag' },
+		]);
+		await expect(
+			gitCommits.keptCommits(
+				[
+					{
+						repository: root,
+						branch: 'main',
+						sha: head(),
+						subject: 'x',
+						runId: 'r',
+						direction: 'undo',
+					},
+				],
+				() => undefined,
+			),
+		).resolves.toMatchObject([{ branch: 'main', commits: [{ sha: head() }] }]);
 	});
 
 	it('are every commit of a branch that had none before', async () => {
@@ -307,14 +334,21 @@ describe('retention', () => {
 			await journal.finish('completed');
 			return journal.runId;
 		};
-		await commitIn('a');
+		const first = await commitIn('a');
 		const second = await commitIn('b');
 		await commitIn('c');
 		await commitIn('d');
 
 		const { record, commits } = await store.readRun(second);
 
-		expect(record.absorbed).toHaveLength(1);
-		expect(commits.map(made => made.commits[0]?.subject)).toEqual(['a', 'b']);
+		expect(record.absorbed).toEqual([first]);
+		expect(commits.map(made => [made.commits[0]?.subject, made.runId])).toEqual([
+			['a', first],
+			['b', undefined],
+		]);
+		// A move over the run that holds both still names the run that made each commit.
+		await store.goTo(historyStart);
+		const [revision] = await store.listRevisions();
+		expect(revision?.git?.[0]?.commits.map(made => made.runId).slice(-2)).toEqual([second, first]);
 	});
 });

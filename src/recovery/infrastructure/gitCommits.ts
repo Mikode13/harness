@@ -2,6 +2,7 @@ import { realpath } from 'node:fs/promises';
 import type { BranchMove, Commit, MovedCommit } from '#src/recovery/domain/recoveryStore';
 import { firstLine, runProcess } from '#src/shared/infrastructure/runProcess';
 
+const branchPrefix = 'refs/heads/';
 // Never cancelled: a move reports its commits once its files are moved.
 const uncancelled = new AbortController().signal;
 
@@ -43,12 +44,14 @@ export async function readTip(folder: string, signal: AbortSignal): Promise<Bran
 	}
 	if (top.exitCode !== 0) return undefined;
 	const [branch, head] = await Promise.all([
-		git(['symbolic-ref', '-q', '--short', 'HEAD'], folder, signal),
+		// The full name: `--short` gives `heads/main` when a tag is also called `main`.
+		git(['symbolic-ref', '-q', 'HEAD'], folder, signal),
 		git(['rev-parse', '-q', '--verify', 'HEAD^{commit}'], folder, signal),
 	]);
+	const ref = branch.exitCode === 0 ? firstLine(branch.stdout) : '';
 	return {
 		repository: await realpath(firstLine(top.stdout)),
-		...(branch.exitCode === 0 ? { branch: firstLine(branch.stdout) } : {}),
+		...(ref.startsWith(branchPrefix) ? { branch: ref.slice(branchPrefix.length) } : {}),
 		...(head.exitCode === 0 ? { head: firstLine(head.stdout) } : {}),
 	};
 }
@@ -141,7 +144,7 @@ async function onBranch(
 	const held = new Set<string>();
 	for (const { sha } of commits) {
 		const result = await git(
-			['merge-base', '--is-ancestor', sha, `refs/heads/${branch}`],
+			['merge-base', '--is-ancestor', sha, `${branchPrefix}${branch}`],
 			repository,
 			uncancelled,
 		);
