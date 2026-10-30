@@ -15,7 +15,7 @@ import { createHistory, historyStart } from '../../src/index.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
 import * as gitCommits from '../../src/recovery/infrastructure/gitCommits.ts';
 import type { Commands } from '../../src/tools/domain/commands.ts';
-import type { PreparingTool } from '../../src/tools/domain/preparedCall.ts';
+import { type PreparingTool, RunEndingToolError } from '../../src/tools/domain/preparedCall.ts';
 import { ReadRegistry } from '../../src/tools/domain/readRegistry.ts';
 import { EditUnconfirmedError } from '../../src/tools/domain/fileEdits.ts';
 import { createCommandTool } from '../../src/tools/infrastructure/commandTool.ts';
@@ -297,6 +297,52 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		await expect(gitCommits.commitsBetween(before, await tip(), signal)).resolves.toEqual([
 			{ sha: head(), subject: 'signed' },
 		]);
+	});
+
+	it('ends the run once what the command changed is recorded, when the logger fails', async () => {
+		vi.mocked(gitCommits.commitsBetween).mockRejectedValueOnce(new Error('git broke'));
+		const opened = await openWorkspace(
+			{ roots: [{ path: root, access: 'write' }], stateDirectory: join(parent, 'state') },
+			{
+				warn: () => {
+					throw new Error('logger broke');
+				},
+			},
+		);
+		const tool = (await commandToolFor(opened, {
+			commit: shell('echo two > a.txt && git commit --quiet -am "change a"'),
+		})) as PreparingTool;
+
+		const context = new RunContext({ id: 'test-session' });
+		const call = await tool.prepare({ command: { name: 'commit' } }, signal, {
+			run: context,
+			reads: new ReadRegistry().begin(),
+			callId: 'call',
+			onProgress: () => undefined,
+			spend: () => undefined,
+			depth: 0,
+		});
+		await expect(call.run(signal)).rejects.toBeInstanceOf(RunEndingToolError);
+		await context.finish('failed');
+
+		const { entries } = await opened.store.readRun(context.historyRun.runId ?? '');
+		expect(entries).toMatchObject([{ path: join(root, 'a.txt'), status: 'applied' }]);
+	});
+
+	it('reads the repository the command runs in, whatever git the host points to', async () => {
+		const other = join(parent, 'other');
+		execFileSync('git', ['init', '--quiet', other]);
+		const { opened, tool } = await commandTool({
+			commit: shell('git commit --quiet --allow-empty -m "here"'),
+		});
+
+		vi.stubEnv('GIT_DIR', join(other, '.git'));
+		const { runId } = await run(tool, 'commit');
+		vi.unstubAllEnvs();
+
+		await expect(opened.store.readRun(runId)).resolves.toMatchObject({
+			commits: [{ repository: root, commits: [{ sha: head(), subject: 'here' }] }],
+		});
 	});
 
 	it('keeps a run in the history that made a commit and changed no file', async () => {

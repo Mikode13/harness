@@ -116,3 +116,11 @@ export function runProcess(
 export function firstLine(text: string): string {
 	return text.trim().split('\n')[0] ?? '';
 }
+
+/**
+ * git's environment without the variables that point it elsewhere: `GIT_DIR` or
+ * `GIT_WORK_TREE` inherited from the host would make it answer about another repository.
+ */
+export function gitEnvironment(): NodeJS.ProcessEnv {
+	return Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+}

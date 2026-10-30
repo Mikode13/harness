@@ -28,6 +28,7 @@ import {
 import { EditRefusedError, EditUnconfirmedError } from '../domain/fileEdits.ts';
 import {
 	type CommandEnding,
+	RunEndingToolError,
 	ToolExecutionError,
 	type PreparingTool,
 } from '../domain/preparedCall.ts';
@@ -198,12 +199,14 @@ export async function createCommandTool({
 		// which ends as cancelled once what it changed is recorded.
 		let tip: BranchTip | undefined;
 		let unreadTip: unknown;
+		// Failures it carries on after, logged once what the command changed is recorded.
+		const absorbed: string[] = [];
 		try {
 			tip = await readTip(line.cwd, signal);
 		} catch (error) {
 			if (!signal.aborted) {
 				unreadTip = error;
-				warn(
+				absorbed.push(
 					`The harness could not read the branch before "${name}", so the history names none of its commits: ${describeFailure(error)}`,
 				);
 			}
@@ -235,7 +238,7 @@ export async function createCommandTool({
 			try {
 				commits =
 					unreadTip === undefined
-						? await recordCommits({ name, tip, cwd: line.cwd, journal, session })
+						? await recordCommits({ name, tip, cwd: line.cwd, journal, session, absorbed })
 						: { unknown: unreadTip };
 			} catch (error) {
 				unrecordedCommits = error instanceof Error ? error : new Error(String(error));
@@ -246,11 +249,13 @@ export async function createCommandTool({
 			observed = await checkpoint.end({ complete });
 		} catch (error) {
 			session.stop('Writing stopped: the harness could not record what a command changed');
+			logAbsorbed(absorbed);
 			throw new EditUnconfirmedError(
 				`"${name}" ran, but the harness could not record what it changed; writing has stopped for this run`,
 				{ cause: error },
 			);
 		}
+		logAbsorbed(absorbed);
 
 		if (unrecordedCommits !== undefined) throw unrecordedCommits;
 		if (!result) {
@@ -283,14 +288,24 @@ export async function createCommandTool({
 		return report;
 	}
 
-	function warn(message: string): void {
-		treatErrors(
-			() => {
-				logger.warn(message);
-			},
-			classifyHostFailure,
-			'Command tool logger failed while reporting commits it could not read',
-		);
+	/**
+	 * Logs what a command absorbed, once what it changed is recorded. A logger that fails is a
+	 * host failure, which ends the run.
+	 */
+	function logAbsorbed(messages: readonly string[]): void {
+		try {
+			for (const message of messages) {
+				treatErrors(
+					() => {
+						logger.warn(message);
+					},
+					classifyHostFailure,
+					'Command tool logger failed while reporting commits it could not read',
+				);
+			}
+		} catch (error) {
+			throw new RunEndingToolError(error);
+		}
 	}
 
 	/**
@@ -304,12 +319,14 @@ export async function createCommandTool({
 		cwd,
 		journal,
 		session,
+		absorbed,
 	}: {
 		name: string;
 		tip: BranchTip | undefined;
 		cwd: string;
 		journal: RunJournal;
 		session: WriteSession;
+		absorbed: string[];
 	}): Promise<CommitsSeen> {
 		// Outside a repository, or with no branch checked out, no commit is the run's.
 		if (tip?.branch === undefined) return { made: [] };
@@ -318,7 +335,7 @@ export async function createCommandTool({
 			const after = await readTip(cwd, uncancelled);
 			made = after ? await commitsBetween(tip, after, uncancelled) : [];
 		} catch (error) {
-			warn(
+			absorbed.push(
 				`The harness could not tell whether "${name}" made commits, so the history names none: ${describeFailure(error)}`,
 			);
 			return { unknown: error };

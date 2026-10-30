@@ -1,6 +1,6 @@
 import { realpath } from 'node:fs/promises';
 import type { BranchMove, Commit, MovedCommit } from '#src/recovery/domain/recoveryStore';
-import { firstLine, runProcess } from '#src/shared/infrastructure/runProcess';
+import { firstLine, gitEnvironment, runProcess } from '#src/shared/infrastructure/runProcess';
 
 const branchPrefix = 'refs/heads/';
 // SHA-1 or SHA-256.
@@ -25,7 +25,11 @@ export interface BranchCommit extends MovedCommit {
 }
 
 function git(args: string[], cwd: string, signal: AbortSignal) {
-	return runProcess('git', ['-c', 'color.ui=never', ...args], { cwd, signal });
+	return runProcess('git', ['-c', 'color.ui=never', ...args], {
+		cwd,
+		signal,
+		env: gitEnvironment(),
+	});
 }
 
 function code(error: unknown): string | undefined {

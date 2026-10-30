@@ -2,20 +2,12 @@ import { rmSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { firstLine, runProcess } from '#src/shared/infrastructure/runProcess';
+import { firstLine, gitEnvironment, runProcess } from '#src/shared/infrastructure/runProcess';
 
 /** Whether `.gitignore` excludes a path, which may not exist yet. */
 export interface IgnoreRules {
 	/** `relative` is relative to `root` and written with `/`. */
 	isIgnored(root: string, relative: string, signal: AbortSignal): Promise<boolean>;
-}
-
-/**
- * git's environment without the variables that point it elsewhere: `GIT_DIR` or
- * `GIT_WORK_TREE` inherited from the host would make it answer about another repository.
- */
-function gitEnvironment(): NodeJS.ProcessEnv {
-	return Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
 }
 
 let emptyRepository: Promise<string> | undefined;
