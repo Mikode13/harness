@@ -7,7 +7,12 @@ import type { Commit, RunJournal } from '#src/recovery/domain/recoveryStore';
 import { displayPath } from '#src/recovery/domain/runChanges';
 import { type BranchTip, commitsBetween, readTip } from '#src/recovery/infrastructure/gitCommits';
 import { InvalidAgentConfigError } from '#src/shared/domain/errors';
-import { describeFailure } from '#src/shared/domain/providerFailure';
+import type { ILogger } from '#src/shared/domain/logger';
+import {
+	classifyHostFailure,
+	describeFailure,
+	treatErrors,
+} from '#src/shared/domain/providerFailure';
 import type { AccessPolicy } from '../domain/accessPolicy.ts';
 import {
 	buildArguments,
@@ -70,6 +75,7 @@ export async function createCommandTool({
 	writes,
 	covered,
 	base,
+	logger,
 	platform = process.platform,
 	runProcess = runCommandProcess,
 }: {
@@ -79,6 +85,8 @@ export async function createCommandTool({
 	covered: CoveredFiles;
 	/** The real path of the first root, where a relative `cwd` starts. */
 	base: string;
+	/** Where a failure it absorbs is logged, such as git failing to list a command's commits. */
+	logger: ILogger;
 	platform?: NodeJS.Platform;
 	/** Runs the program. Replaced in tests, to reach what a real process rarely does. */
 	runProcess?: typeof runCommandProcess;
@@ -193,7 +201,12 @@ export async function createCommandTool({
 		try {
 			tip = await readTip(line.cwd, signal);
 		} catch (error) {
-			if (!signal.aborted) unreadTip = error;
+			if (!signal.aborted) {
+				unreadTip = error;
+				warn(
+					`The harness could not read the branch before "${name}", so the history names none of its commits: ${describeFailure(error)}`,
+				);
+			}
 		}
 		let result: CommandProcessResult | undefined;
 		let startFailure: unknown;
@@ -270,6 +283,16 @@ export async function createCommandTool({
 		return report;
 	}
 
+	function warn(message: string): void {
+		treatErrors(
+			() => {
+				logger.warn(message);
+			},
+			classifyHostFailure,
+			'Command tool logger failed while reporting commits it could not read',
+		);
+	}
+
 	/**
 	 * Records the commits the command made in the run's journal. One git could not list is told
 	 * to the model and left out, since the command has run either way; a journal that could not
@@ -295,6 +318,9 @@ export async function createCommandTool({
 			const after = await readTip(cwd, uncancelled);
 			made = after ? await commitsBetween(tip, after, uncancelled) : [];
 		} catch (error) {
+			warn(
+				`The harness could not tell whether "${name}" made commits, so the history names none: ${describeFailure(error)}`,
+			);
 			return { unknown: error };
 		}
 		if (made.length === 0) return { made };

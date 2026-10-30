@@ -41,8 +41,10 @@ const gitConfig = [
 
 let parent: string;
 let root: string;
+let warnings: string[];
 
 beforeEach(() => {
+	warnings = [];
 	parent = realpathSync(mkdtempSync(join(tmpdir(), 'harness-commits-')));
 	root = join(parent, 'repo');
 	execFileSync('git', ['init', '--quiet', '--initial-branch=main', root]);
@@ -79,7 +81,7 @@ function shell(script: string): Commands[string] {
 async function commandTool(commands: Commands) {
 	const opened = await openWorkspace(
 		{ roots: [{ path: root, access: 'write' }], stateDirectory: join(parent, 'state') },
-		{ warn: () => undefined },
+		{ warn: (message: unknown) => warnings.push(String(message)) },
 	);
 	return { opened, tool: (await commandToolFor(opened, commands)) as PreparingTool };
 }
@@ -163,6 +165,26 @@ describe('the commits between two tips of a branch', () => {
 		).resolves.toMatchObject([{ branch: 'main', commits: [{ sha: head() }] }]);
 	});
 
+	it('are read from a repository whose folder ends in a space, whatever encoding its log uses', async () => {
+		const spaced = join(parent, 'spaced ');
+		execFileSync('git', ['init', '--quiet', '--initial-branch=main', spaced]);
+		execFileSync('git', [...gitConfig, 'commit', '--quiet', '--allow-empty', '-m', 'start'], {
+			cwd: spaced,
+		});
+		execFileSync('git', ['config', 'i18n.logOutputEncoding', 'ISO-8859-1'], { cwd: spaced });
+		const before = await gitCommits.readTip(spaced, signal);
+		execFileSync('git', [...gitConfig, 'commit', '--quiet', '--allow-empty', '-m', 'café'], {
+			cwd: spaced,
+		});
+		const after = await gitCommits.readTip(spaced, signal);
+
+		expect(before?.repository).toBe(spaced);
+		if (!before || !after) throw new Error('Not read');
+		await expect(gitCommits.commitsBetween(before, after, signal)).resolves.toMatchObject([
+			{ subject: 'café' },
+		]);
+	});
+
 	it('are every commit of a branch that had none before', async () => {
 		git('switch', '--quiet', '--orphan', 'fresh');
 		const before = await tip();
@@ -210,6 +232,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 				return opened.covered(listSignal);
 			},
 			base: opened.base,
+			logger: opened.logger,
 		});
 
 		const context = new RunContext({ id: 'test-session' });
@@ -244,6 +267,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 				return opened.covered(listSignal);
 			},
 			base: opened.base,
+			logger: opened.logger,
 		});
 
 		const { output, runId } = await run(tool, 'check');
@@ -311,6 +335,9 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			'The harness could not tell whether it made commits, so the history does not name any: git broke',
 		);
 		await expect(opened.store.readRun(runId)).resolves.toMatchObject({ commits: [] });
+		expect(warnings).toEqual([
+			'The harness could not tell whether "commit" made commits, so the history names none: git broke',
+		]);
 	});
 });
 

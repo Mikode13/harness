@@ -52,7 +52,8 @@ export async function readTip(folder: string, signal: AbortSignal): Promise<Bran
 	]);
 	const ref = branch.exitCode === 0 ? firstLine(branch.stdout) : '';
 	return {
-		repository: await realpath(firstLine(top.stdout)),
+		// Only git's own line end: a folder's name may end in a space, or hold a newline.
+		repository: await realpath(top.stdout.replace(/\n$/, '')),
 		...(ref.startsWith(branchPrefix) ? { branch: ref.slice(branchPrefix.length) } : {}),
 		...(head.exitCode === 0 ? { head: firstLine(head.stdout) } : {}),
 	};
@@ -87,9 +88,18 @@ export async function commitsBetween(
 	}
 	// On a branch with no commit before, every commit it holds now is new.
 	const range = before.head === undefined ? after.head : `${before.head}..${after.head}`;
-	// No signature checks: with `log.showSignature`, their text would be read as commits.
+	// No signature checks, whose text `log.showSignature` would mix in, and UTF-8 whatever
+	// `i18n.logOutputEncoding` says, which is how the output is read.
 	const log = await git(
-		['log', '--no-show-signature', '--reverse', '--format=%H%x00%s', range, '--'],
+		[
+			'log',
+			'--no-show-signature',
+			'--encoding=UTF-8',
+			'--reverse',
+			'--format=%H%x00%s',
+			range,
+			'--',
+		],
 		repository,
 		signal,
 	);
