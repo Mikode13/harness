@@ -730,14 +730,15 @@ export class FileRecoveryStore implements RecoveryStore {
 			const { commits } = await this.readRun(runId);
 			const made = commits.flatMap(({ repository, branch, commits: run, runId: madeIn }) =>
 				run.map(({ sha, subject }): BranchCommit => {
-					const state = states.get(commitKey(repository, branch, sha));
+					const by = madeIn ?? runId;
+					const state = states.get(commitKey(repository, branch, sha, by));
 					return {
 						repository,
 						branch,
 						sha: state?.sha ?? sha,
 						...(state && state.sha !== sha ? { original: sha } : {}),
 						subject,
-						runId: madeIn ?? runId,
+						runId: by,
 						direction,
 						...(state?.taken ? { taken: state.taken } : {}),
 					};

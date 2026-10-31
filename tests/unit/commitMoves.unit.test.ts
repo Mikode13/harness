@@ -752,6 +752,59 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 		expect(git('log', '-1', '--format=%s')).toBe('Revert "change a"');
 	});
 
+	it('takes back a commit a later run brought back after an earlier move reset it', async () => {
+		const { tool } = await commandTool({
+			commit: shell('echo two > a.txt && git commit --quiet -am "change a"'),
+			restore: shell('git merge --quiet --ff-only saved'),
+		});
+		await run(tool, 'commit');
+		const sha = head();
+		const start = git('rev-parse', `${sha}^`);
+		git('branch', 'saved');
+		const history = await createHistory({ root, stateDirectory: join(parent, 'state') });
+		await history.undo({ commits: 'reset' });
+		const { runId } = await run(tool, 'restore');
+		expect(head()).toBe(sha);
+
+		const undone = await history.undo({ commits: 'reset' });
+
+		expect(head()).toBe(start);
+		expect(undone.git).toEqual([
+			{
+				repository: root,
+				branch: 'main',
+				action: 'reset',
+				outcome: 'done',
+				commits: [{ sha, subject: 'change a', runId, direction: 'undo' }],
+			},
+		]);
+	});
+
+	it('leaves the branch when the change it reverts was changed since, even if a copy matches', async () => {
+		writeFileSync(join(root, 'a.txt'), 'a\nb\nc\nd\ne\nf\ng\n');
+		git('commit', '--quiet', '-am', 'lines');
+		const { tool } = await commandTool({
+			commit: shell(
+				'sed -i.bak \'s/^d$/D/\' a.txt && rm a.txt.bak && git commit --quiet -am "change d"',
+			),
+		});
+		await run(tool, 'commit');
+		// The user changes the line again, and adds elsewhere a copy of the block the commit left.
+		writeFileSync(join(root, 'a.txt'), 'a\nb\nc\nDD\ne\nf\ng\nx\na\nb\nc\nD\ne\nf\ng\n');
+		git('commit', '--quiet', '-am', 'the user');
+		const tip = head();
+		const history = await createHistory({ root, stateDirectory: join(parent, 'state') });
+
+		const undone = await history.undo({ commits: 'revert' });
+
+		expect(head()).toBe(tip);
+		expect(undone.git?.[0]).toMatchObject({
+			action: 'revert',
+			outcome: 'left',
+			reason: 'git could not revert them: the change conflicts with what the branch holds now',
+		});
+	});
+
 	it('keeps what the user staged in a path the commits changed, and warns', async () => {
 		const { opened, sha } = await committedRun();
 		const start = git('rev-parse', `${sha}^`);
@@ -955,6 +1008,15 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 
 		await expect(history.undo({ commits: 'drop' as never })).rejects.toBeInstanceOf(RangeError);
 		expect(readA()).toBe('two\n');
+	});
+});
+
+describe('the git that reverts and re-applies commits', () => {
+	it('is 2.40 or later, whose merge-tree takes a merge base', () => {
+		expect(gitCommits.mergesInMemory('git version 2.40.0')).toBe(true);
+		expect(gitCommits.mergesInMemory('git version 3.0.1\n')).toBe(true);
+		expect(gitCommits.mergesInMemory('git version 2.39.3 (Apple Git-146)')).toBe(false);
+		expect(gitCommits.mergesInMemory('not git')).toBe(false);
 	});
 });
 

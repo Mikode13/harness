@@ -820,7 +820,9 @@ as new commits, otherwise. The move's `git` reports each branch of each reposito
 action, `done` or `left` with the `reason` git could not follow, such as a revert that
 conflicts, and each commit with the run that made it, whether the move undid or redid that
 run, and, for one cherry-picked, the `original` it re-applies. The files move either way. An
-agent over the workspace is told what git did with them, on its next run.
+agent over the workspace is told what git did with them, on its next run. Reverting and
+cherry-picking need git 2.40 or later; with an older git, the branch is left, and the `reason`
+names the version.
 
 ```ts
 const move = await history.undo({ commits: 'revert' });

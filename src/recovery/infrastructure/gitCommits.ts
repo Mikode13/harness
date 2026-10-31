@@ -148,9 +148,9 @@ export function commitStates(
 	for (const { git: moves = [] } of revisions) {
 		for (const { repository, branch, action, outcome, commits } of moves) {
 			if (outcome !== 'done' || action === 'keep') continue;
-			for (const { sha, original } of commits) {
+			for (const { sha, original, runId } of commits) {
 				states.set(
-					commitKey(repository, branch, original ?? sha),
+					commitKey(repository, branch, original ?? sha, runId),
 					action === 'reapply' ? { sha } : { sha, taken: action },
 				);
 			}
@@ -161,10 +161,11 @@ export function commitStates(
 
 /**
  * Names a commit a run recorded on one branch: the same commit may be on two branches, and a move
- * that takes it back from one leaves it on the other.
+ * that takes it back from one leaves it on the other; and a later run may bring back one an
+ * earlier move took back, which is then that run's to take back again.
  */
-export function commitKey(repository: string, branch: string, sha: string): string {
-	return JSON.stringify([repository, branch, sha]);
+export function commitKey(repository: string, branch: string, sha: string, runId: string): string {
+	return JSON.stringify([repository, branch, sha, runId]);
 }
 
 /**
@@ -337,9 +338,9 @@ async function exists(path: string): Promise<boolean> {
 }
 
 /**
- * Adds commits that take back `commits`, given newest first, those still on the branch. They are
- * made in an index of their own, and the branch is moved to them: the files are never touched,
- * since the history moves them.
+ * Adds commits that take back `commits`, given newest first, those still on the branch. Git merges
+ * each in memory, as `git revert` would, and the branch is moved to them: the files are never
+ * touched, since the history moves them.
  */
 async function revert(
 	repository: string,
@@ -347,7 +348,7 @@ async function revert(
 	commits: readonly BranchCommit[],
 	warn: BranchWarning,
 ): Promise<BranchMove | undefined> {
-	const blocked = await notReady(repository, branch);
+	const blocked = (await notReady(repository, branch)) ?? (await cannotMerge(repository));
 	if (blocked) return report(repository, branch, 'revert', commits, blocked);
 	let held;
 	try {
@@ -364,18 +365,17 @@ async function revert(
 	try {
 		from = await branchTip(repository, branch);
 		let made = from;
-		await withIndex(repository, from, async (index, scratch) => {
-			for (const { sha, subject } of onIt) {
-				await applyChange(repository, index, scratch, {
-					from: sha,
-					to: await parentOf(repository, sha),
-				});
-				made = await commitIndex(repository, index, scratch, {
-					parent: made,
-					message: `Revert "${subject}"\n\nThis reverts commit ${sha}.\n`,
-				});
-			}
-		});
+		for (const { sha, subject } of onIt) {
+			const tree = await merged(repository, {
+				base: sha,
+				ours: made,
+				theirs: (await parentOf(repository, sha)) ?? (await emptyCommit(repository)),
+			});
+			made = await commitTree(repository, tree, {
+				parent: made,
+				message: `Revert "${subject}"\n\nThis reverts commit ${sha}.\n`,
+			});
+		}
 		tip = made;
 	} catch (error) {
 		return left(`git could not revert them: ${errorText(error)}`);
@@ -448,7 +448,7 @@ async function isPublished(
 /**
  * Puts back `commits`, given oldest first, which earlier moves took back: forward to the same
  * commits when every one was reset and the branch is still where the reset left it, and as new
- * commits, cherry-picked in an index of their own, otherwise. The files are never touched.
+ * commits, merged in memory as `git cherry-pick` would, otherwise. The files are never touched.
  */
 async function reapply(
 	repository: string,
@@ -463,8 +463,13 @@ async function reapply(
 	let put: { tip: string; commits: readonly BranchCommit[] };
 	try {
 		from = await branchTip(repository, branch);
-		put =
-			(await forwardTo(repository, from, commits)) ?? (await cherryPick(repository, from, commits));
+		const forward = await forwardTo(repository, from, commits);
+		if (forward) put = forward;
+		else {
+			const unmerged = await cannotMerge(repository);
+			if (unmerged) return left(unmerged);
+			put = await cherryPick(repository, from, commits);
+		}
 	} catch (error) {
 		return left(`git could not cherry-pick them: ${errorText(error)}`);
 	}
@@ -498,15 +503,16 @@ async function cherryPick(
 ): Promise<{ tip: string; commits: readonly BranchCommit[] }> {
 	const created: BranchCommit[] = [];
 	let tip = from;
-	await withIndex(repository, from, async (index, scratch) => {
-		for (const commit of commits) {
-			const parent = await parentOf(repository, commit.sha);
-			await applyChange(repository, index, scratch, { from: parent, to: commit.sha });
-			const { author, message } = await authorOf(repository, commit.sha);
-			tip = await commitIndex(repository, index, scratch, { parent: tip, message, author });
-			created.push({ ...commit, sha: tip, original: commit.original ?? commit.sha });
-		}
-	});
+	for (const commit of commits) {
+		const tree = await merged(repository, {
+			base: (await parentOf(repository, commit.sha)) ?? (await emptyCommit(repository)),
+			ours: tip,
+			theirs: commit.sha,
+		});
+		const { author, message } = await authorOf(repository, commit.sha);
+		tip = await commitTree(repository, tree, { parent: tip, message, author });
+		created.push({ ...commit, sha: tip, original: commit.original ?? commit.sha });
+	}
 	return { tip, commits: created };
 }
 
@@ -539,114 +545,116 @@ async function revList(repository: string, range: string): Promise<string[]> {
 	return listed.stdout.split('\n').filter(line => line !== '');
 }
 
+// The first git whose `merge-tree` takes `--merge-base`, which reverting needs.
+const oldestMergingGit = [2, 40] as const;
+
 /**
- * Runs `use` with an index of its own, read from `tree`, and a folder for what git reads from a
- * file, both removed after.
+ * Whether `git version` names a git that merges a commit's change in memory: `git version 2.40.0`
+ * does, `git version 2.39.3 (Apple Git-146)` does not. An answer it cannot read does not.
  */
-async function withIndex(
-	repository: string,
-	tree: string,
-	use: (index: string, scratch: string) => Promise<void>,
-): Promise<void> {
-	const scratch = await mkdtemp(join(tmpdir(), 'harness-git-'));
+export function mergesInMemory(versionOutput: string): boolean {
+	const match = /^git version (\d+)\.(\d+)/.exec(versionOutput.trim());
+	if (!match) return false;
+	const [major, minor] = [Number(match[1]), Number(match[2])];
+	return (
+		major > oldestMergingGit[0] || (major === oldestMergingGit[0] && minor >= oldestMergingGit[1])
+	);
+}
+
+/** Why git cannot revert or re-apply a commit in memory here, or `undefined` when it can. */
+async function cannotMerge(repository: string): Promise<string | undefined> {
 	try {
-		const index = join(scratch, 'index');
-		const read = await git(['read-tree', tree], repository, uncancelled, { GIT_INDEX_FILE: index });
-		if (read.exitCode !== 0) throw gitFailed('read the branch', read);
-		await use(index, scratch);
-	} finally {
-		await rm(scratch, { recursive: true, force: true });
+		const version = await git(['version'], repository, uncancelled);
+		if (version.exitCode !== 0) return gitReason('tell its version', version);
+		if (mergesInMemory(version.stdout)) return undefined;
+		return `reverting or re-applying commits needs git ${oldestMergingGit.join('.')} or later, and this machine has ${firstLine(version.stdout) || 'an unknown version'}`;
+	} catch (error) {
+		return `the harness could not run git: ${errorText(error)}`;
 	}
 }
 
 /**
- * Applies to `index` the change from one commit to another, `undefined` for none: what reverting
- * or re-applying a commit does. The patch goes through a file, as bytes, so no text decoding can
- * change it, and comes from `diff-tree`, which reads the stored blobs, never the user's diff
- * configuration or text conversion. An empty commit changes nothing.
+ * The tree of `ours` with the change from `base` to `theirs` merged in, as `git revert` and `git
+ * cherry-pick` merge it: three ways, by content, never by where a patch's context matches.
  *
- * @throws when it does not apply, such as when a later commit changed the same lines.
+ * @throws when they conflict, such as when a later commit changed the same lines.
  */
-async function applyChange(
+async function merged(
 	repository: string,
-	index: string,
-	scratch: string,
-	{ from, to }: { from: string | undefined; to: string | undefined },
-): Promise<void> {
-	const empty = await emptyTree(repository);
-	const patch = join(scratch, 'change.patch');
-	const diff = await git(
-		[
-			'diff-tree',
-			'-r',
-			'-p',
-			'--binary',
-			'--no-renames',
-			`--output=${patch}`,
-			from ?? empty,
-			to ?? empty,
-		],
+	{ base, ours, theirs }: { base: string; ours: string; theirs: string },
+): Promise<string> {
+	const result = await git(
+		['merge-tree', '--write-tree', '--no-messages', `--merge-base=${base}`, ours, theirs],
 		repository,
 		uncancelled,
 	);
-	if (diff.exitCode !== 0) throw gitFailed('read the change', diff);
-	if ((await stat(patch)).size === 0) return;
-	// The change as it was stored: no whitespace fixed, none ignored when matching.
-	const applied = await git(
-		[
-			'-c',
-			'apply.ignoreWhitespace=no',
-			'apply',
-			'--cached',
-			'--binary',
-			'--whitespace=nowarn',
-			patch,
-		],
-		repository,
-		uncancelled,
-		{ GIT_INDEX_FILE: index },
-	);
-	if (applied.exitCode !== 0) throw gitFailed('apply the change', applied);
-}
-
-async function emptyTree(repository: string): Promise<string> {
-	const hashed = await git(['hash-object', '-t', 'tree', '/dev/null'], repository, uncancelled);
-	if (hashed.exitCode !== 0) throw gitFailed('name the empty tree', hashed);
-	return firstLine(hashed.stdout);
+	if (result.exitCode === 1) {
+		throw new Error('the change conflicts with what the branch holds now');
+	}
+	if (result.exitCode !== 0) throw gitFailed('merge the change', result);
+	return firstLine(result.stdout);
 }
 
 /**
- * Makes a commit of `index` on `parent`, signed when the repository signs its commits, and
- * returns it. Author and message come from the commit it re-applies, or from the user's
- * configuration for a revert.
+ * A commit of the empty tree, which no branch holds, to merge against for a commit with no parent:
+ * the same whatever the machine, so making it again adds nothing.
  */
-async function commitIndex(
-	repository: string,
-	index: string,
-	scratch: string,
-	{ parent, message, author }: { parent: string; message: string; author?: NodeJS.ProcessEnv },
-): Promise<string> {
-	const tree = await git(['write-tree'], repository, uncancelled, { GIT_INDEX_FILE: index });
-	if (tree.exitCode !== 0) throw gitFailed('write the tree', tree);
-	const messageFile = join(scratch, 'message');
-	await writeFile(messageFile, message);
-	const signs = await git(['config', '--bool', '--get', 'commit.gpgsign'], repository, uncancelled);
+async function emptyCommit(repository: string): Promise<string> {
+	const tree = await git(['hash-object', '-t', 'tree', devNull], repository, uncancelled);
+	if (tree.exitCode !== 0) throw gitFailed('name the empty tree', tree);
+	const identity = { NAME: 'harness', EMAIL: 'harness@localhost', DATE: '@0 +0000' };
 	const committed = await git(
-		[
-			'commit-tree',
-			...(firstLine(signs.stdout) === 'true' ? ['-S'] : []),
-			firstLine(tree.stdout),
-			'-p',
-			parent,
-			'-F',
-			messageFile,
-		],
+		['commit-tree', firstLine(tree.stdout), '-m', 'The empty tree'],
 		repository,
 		uncancelled,
-		author,
+		Object.fromEntries(
+			['AUTHOR', 'COMMITTER'].flatMap(role =>
+				Object.entries(identity).map(([field, value]) => [`GIT_${role}_${field}`, value]),
+			),
+		),
 	);
-	if (committed.exitCode !== 0) throw gitFailed('make the commit', committed);
+	if (committed.exitCode !== 0) throw gitFailed('make the empty commit', committed);
 	return firstLine(committed.stdout);
+}
+
+/**
+ * Makes a commit of `tree` on `parent`, signed when the repository signs its commits, and returns
+ * it. Author and message come from the commit it re-applies, or from the user's configuration for
+ * a revert. The message goes through a file, so git keeps it as it is.
+ */
+async function commitTree(
+	repository: string,
+	tree: string,
+	{ parent, message, author }: { parent: string; message: string; author?: NodeJS.ProcessEnv },
+): Promise<string> {
+	const scratch = await mkdtemp(join(tmpdir(), 'harness-git-'));
+	try {
+		const messageFile = join(scratch, 'message');
+		await writeFile(messageFile, message);
+		const signs = await git(
+			['config', '--bool', '--get', 'commit.gpgsign'],
+			repository,
+			uncancelled,
+		);
+		const committed = await git(
+			[
+				'commit-tree',
+				...(firstLine(signs.stdout) === 'true' ? ['-S'] : []),
+				tree,
+				'-p',
+				parent,
+				'-F',
+				messageFile,
+			],
+			repository,
+			uncancelled,
+			author,
+		);
+		if (committed.exitCode !== 0) throw gitFailed('make the commit', committed);
+		return firstLine(committed.stdout);
+	} finally {
+		await rm(scratch, { recursive: true, force: true });
+	}
 }
 
 /** The author of `sha`, as the variables git reads it from, and its whole message. */
