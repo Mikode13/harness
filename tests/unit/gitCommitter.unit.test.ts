@@ -3,6 +3,7 @@ import {
 	chmodSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	realpathSync,
 	rmSync,
 	symlinkSync,
@@ -256,6 +257,76 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		).rejects.toMatchObject({ name: 'AbortError' });
 		expect(head()).toBe(start);
 		expect(git('status', '--porcelain')).toBe('M a.txt\n?? b.txt');
+	});
+
+	it('leaves the repository when a file changes while the commit captures the files', async () => {
+		const { opened, run, options } = await workingRun({ edit: 'echo two > a.txt' });
+		await run('edit');
+		let edited = false;
+		const committer = new GitCommitter({
+			store: opened.store,
+			writes: opened.writes,
+			covered: signal => {
+				if (!edited) writeFileSync(join(root, 'a.txt'), 'edited meanwhile\n');
+				edited = true;
+				return opened.covered(signal);
+			},
+			policy: opened.policy,
+		});
+		const frozen = await committer.freeze(options);
+		const start = head();
+
+		const reports = await committer.commit(
+			frozen ?? { repositories: [] },
+			new Map([[root, 'Change a']]),
+			options,
+		);
+
+		expect(reports[0]).toMatchObject({
+			outcome: 'left',
+			reason: 'files changed since the review: a.txt',
+		});
+		expect(head()).toBe(start);
+	});
+
+	it('leaves a new file you staged staged when a hook rejects the commit', async () => {
+		hook('pre-commit', 'exit 1');
+		const { run, committer, options } = await workingRun({ edit: 'echo new > b.txt' });
+		await run('edit');
+		const frozen = await committer.freeze(options);
+		git('add', 'b.txt');
+
+		const reports = await committer.commit(
+			frozen ?? { repositories: [] },
+			new Map([[root, 'Add b']]),
+			options,
+		);
+
+		expect(reports[0]?.outcome).toBe('rejected');
+		expect(git('status', '--porcelain')).toBe('A  b.txt');
+	});
+
+	it('stops a filter that hangs, with git, when the run is cancelled', async () => {
+		git(
+			'config',
+			'filter.slow.clean',
+			'if [ -f stall ]; then echo $$ > filter.pid; exec sleep 30; fi; cat',
+		);
+		writeFileSync(join(root, '.gitattributes'), 'a.txt filter=slow\n');
+		const { run, committer, context } = await workingRun({ edit: 'echo two > a.txt' });
+		await run('edit');
+		writeFileSync(join(root, 'stall'), '');
+		const controller = new AbortController();
+		setTimeout(() => {
+			controller.abort();
+		}, 500);
+
+		await expect(
+			committer.freeze(withRunContext({ signal: controller.signal }, context)),
+		).rejects.toMatchObject({ name: 'AbortError' });
+
+		const pid = Number(readFileSync(join(root, 'filter.pid'), 'utf8'));
+		expect(() => process.kill(pid, 0)).toThrow();
 	});
 
 	it('leaves the repository when a file changes after the review', async () => {

@@ -540,10 +540,12 @@ with a reason; a repository without a branch, or where `notReady` finds an opera
 progress or a sparse checkout, is refused whole. Once the reviewer approves, the orchestrator
 asks through `ask`, unless `autoCommit` is set, then runs the committer agent once per
 repository with the request, the plan, the bounded diff and the branch's recent subjects.
-`commit` takes the session's write lock (`exclusive`), checks that the tip and every frozen
-file, and its index entry, are as they were, and opens a `CommandCheckpoint` named for the committer: it adds the
-new files and runs `git commit --only` with `GIT_LITERAL_PATHSPECS`, so hooks run and the
-rest of the index stays. The commits it made go into the journal as the run's, and the move
+`commit` takes the session's write lock (`exclusive`), opens a `CommandCheckpoint` named for
+the committer, and then checks that the tip, every frozen file and its index entry are as they
+were, so nothing changed while the checkpoint captured the files reaches the commit. It adds the
+new files the index lacks and runs `git commit --only` with `GIT_LITERAL_PATHSPECS`, so hooks run
+and the rest of the index stays. Every git call runs in a process group of its own, as a command
+does, so a filter it starts stops with it. The commits it made go into the journal as the run's, and the move
 policies of `src/recovery/` apply to them. A hook's rejection unstages what it added and is
 reported, not thrown; a git state the committer cannot read is an `UnrecoverableError`.
 The result travels in `AgentResponse.commits`.

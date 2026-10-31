@@ -22,7 +22,11 @@ import {
 } from '#src/recovery/infrastructure/gitCommits';
 import { isAbortError } from '#src/shared/domain/isAbortError';
 import { describeFailure } from '#src/shared/domain/providerFailure';
-import { firstLine, gitEnvironment, runProcess } from '#src/shared/infrastructure/runProcess';
+import {
+	firstLine,
+	gitEnvironment,
+	type ProcessResult,
+} from '#src/shared/infrastructure/runProcess';
 import { AccessDeniedError, type AccessPolicy } from '#src/tools/domain/accessPolicy';
 import { EditUnconfirmedError } from '#src/tools/domain/fileEdits';
 import { CommandCheckpoint, type CoveredFiles } from '#src/tools/infrastructure/commandCheckpoint';
@@ -356,29 +360,6 @@ export class GitCommitter implements Committer {
 		const left = (reason: string) => report('left', { reason });
 		if (message === undefined) return left('the committer wrote no message');
 
-		const tip = await readTip(repository, signal);
-		if (tip?.branch !== branch || tip.head !== state.head) {
-			return left('the branch moved, or another was checked out, since the review');
-		}
-		const blocked = await notReady(repository, branch);
-		if (blocked !== undefined) return left(blocked);
-		const changed: string[] = [];
-		const staged = await indexOf(repository, [...state.paths.keys()], signal);
-		for (const [name, frozenState] of state.paths) {
-			const now = await stateOf(repository, name, join(repository, ...name.split('/')), signal);
-			if (!sameState(now, frozenState) || stagedApart(staged.get(name), frozenState)) {
-				changed.push(name);
-			}
-		}
-		if (changed.length > 0) {
-			return left(`files changed since the review: ${changed.join(', ')}`);
-		}
-
-		const paths = [...state.paths.keys()];
-		const added = paths.filter(name => {
-			const each = state.paths.get(name);
-			return each?.exists === true && !each.inHead;
-		});
 		signal.throwIfAborted();
 		const journal = await session.journalForChange();
 		const checkpoint = await CommandCheckpoint.begin({
@@ -387,6 +368,24 @@ export class GitCommitter implements Committer {
 			by: committerName,
 			signal,
 		});
+		// Checked once the checkpoint holds the files, so nothing changed while it captured them
+		// reaches the commit.
+		let still: Awaited<ReturnType<typeof stillAsFrozen>>;
+		try {
+			still = await stillAsFrozen(repository, state, signal);
+		} catch (error) {
+			await close(checkpoint, true, session);
+			throw error;
+		}
+		if ('reason' in still) {
+			await close(checkpoint, true, session);
+			return left(still.reason);
+		}
+		const { tip, staged } = still;
+
+		const paths = [...state.paths.keys()];
+		// Only what the index does not hold yet: what the user staged stays staged however it ends.
+		const added = paths.filter(name => state.paths.get(name)?.exists === true && !staged.has(name));
 
 		let result: Awaited<ReturnType<typeof runCommandProcess>> | undefined;
 		let failure: unknown;
@@ -414,6 +413,7 @@ export class GitCommitter implements Committer {
 			await rm(scratch, { recursive: true, force: true });
 		}
 
+		const stopped = result?.stopped ?? !(failure instanceof UnstoppedGitError);
 		// Whatever happened, what git made and what its hooks changed reach the history.
 		let made: Commit[];
 		try {
@@ -424,25 +424,17 @@ export class GitCommitter implements Committer {
 			}
 		} catch (error) {
 			session.stop('Writing stopped: the harness could not record the commit it made');
-			await checkpoint.end({ complete: result?.stopped ?? true }).catch(() => undefined);
+			await checkpoint.end({ complete: stopped }).catch(() => undefined);
 			throw new EditUnconfirmedError(
 				'The committer ran git, but the harness could not record what it committed; writing has stopped for this run',
 				{ cause: error },
 			);
 		}
-		try {
-			await checkpoint.end({ complete: result?.stopped ?? true });
-		} catch (error) {
-			session.stop('Writing stopped: the harness could not record what the commit changed');
+		await close(checkpoint, stopped, session);
+		if (!stopped) {
+			session.stop('Writing stopped: a hook or a filter of the commit could not be stopped');
 			throw new EditUnconfirmedError(
-				'The committer ran git, but the harness could not record what its hooks changed; writing has stopped for this run',
-				{ cause: error },
-			);
-		}
-		if (result && !result.stopped) {
-			session.stop('Writing stopped: a hook of the commit could not be stopped');
-			throw new EditUnconfirmedError(
-				'A hook of the commit could not be stopped: something it started may still be changing files. Writing has stopped for this run.',
+				'A hook or a filter of the commit could not be stopped: something it started may still be changing files. Writing has stopped for this run.',
 			);
 		}
 		// What it staged for the commit, the user had not: it goes back to untracked.
@@ -478,6 +470,54 @@ export class GitCommitter implements Committer {
 		});
 	}
 }
+
+/**
+ * Whether the repository is as it was frozen, on the same tip, ready, with every path and its
+ * index entry unchanged: its tip and index then, or why it is not.
+ */
+async function stillAsFrozen(
+	repository: string,
+	state: FrozenState,
+	signal: AbortSignal,
+): Promise<{ tip: BranchTip; staged: Map<string, GitEntry> } | { reason: string }> {
+	const tip = await readTip(repository, signal);
+	if (tip?.branch !== state.branch || tip.head !== state.head) {
+		return { reason: 'the branch moved, or another was checked out, since the review' };
+	}
+	const blocked = await notReady(repository, state.branch);
+	if (blocked !== undefined) return { reason: blocked };
+	const changed: string[] = [];
+	const staged = await indexOf(repository, [...state.paths.keys()], signal);
+	for (const [name, frozenState] of state.paths) {
+		const now = await stateOf(repository, name, join(repository, ...name.split('/')), signal);
+		if (!sameState(now, frozenState) || stagedApart(staged.get(name), frozenState)) {
+			changed.push(name);
+		}
+	}
+	if (changed.length > 0)
+		return { reason: `files changed since the review: ${changed.join(', ')}` };
+	return { tip, staged };
+}
+
+/** Ends the commit's checkpoint; a failure to record what it saw stops writing for the run. */
+async function close(
+	checkpoint: CommandCheckpoint,
+	complete: boolean,
+	session: WriteSession,
+): Promise<void> {
+	try {
+		await checkpoint.end({ complete });
+	} catch (error) {
+		session.stop('Writing stopped: the harness could not record what the commit changed');
+		throw new EditUnconfirmedError(
+			'The committer ran git, but the harness could not record what its hooks changed; writing has stopped for this run',
+			{ cause: error },
+		);
+	}
+}
+
+/** A git process whose group could not be stopped: something it started, such as a filter, may still run. */
+class UnstoppedGitError extends Error {}
 
 /** One file the run changed, or one it changed in a way the history could not copy. */
 interface Item {
@@ -714,35 +754,41 @@ async function git(
 }
 
 /**
- * Git with every pathspec taken literally, so a path is never read as a pattern. It stops with the
- * run's `signal`, and fails past `gitTimeoutMs`, which is not a cancellation.
+ * Git with every pathspec taken literally, so a path is never read as a pattern. It runs in a
+ * process group of its own, as a command does, so a filter it starts stops with it: with the run's
+ * `signal`, or past `gitTimeoutMs`, which fails and is not a cancellation.
+ *
+ * @throws {UnstoppedGitError} when its group could not be stopped.
  */
 async function runGit(
 	args: string[],
 	repository: string,
 	{ literal = true, signal = uncancelled }: { literal?: boolean; signal?: AbortSignal } = {},
-) {
-	const timer = new AbortController();
-	const timeout = setTimeout(() => {
-		timer.abort();
-	}, gitTimeoutMs);
-	try {
-		return await runProcess('git', ['-c', 'color.ui=never', ...args], {
-			cwd: repository,
-			signal: AbortSignal.any([signal, timer.signal]),
-			env: { ...gitEnvironment(), ...(literal ? { GIT_LITERAL_PATHSPECS: '1' } : {}) },
-		});
-	} catch (error) {
-		if (timer.signal.aborted && !signal.aborted) {
-			throw new Error(
-				`git ${args[0] ?? ''} did not finish within ${String(gitTimeoutMs / 1000)} seconds`,
-				{ cause: error },
-			);
-		}
-		throw error;
-	} finally {
-		clearTimeout(timeout);
+): Promise<ProcessResult> {
+	const printed = { stdout: [] as Buffer[], stderr: [] as Buffer[] };
+	const result = await runCommandProcess('git', ['-c', 'color.ui=never', ...args], {
+		cwd: repository,
+		env: { ...gitEnvironment(), ...(literal ? { GIT_LITERAL_PATHSPECS: '1' } : {}) },
+		timeoutMs: gitTimeoutMs,
+		outputBytes: 1,
+		signal,
+		onOutput: (stream, chunk) => {
+			printed[stream].push(chunk);
+		},
+	});
+	const what = `git ${args[0] ?? ''}`;
+	if (!result.stopped) {
+		throw new UnstoppedGitError(`${what} left a process running that could not be stopped`);
 	}
+	if (result.outcome === 'cancelled') signal.throwIfAborted();
+	if (result.outcome !== 'exited') {
+		throw new Error(`${what} did not finish within ${String(gitTimeoutMs / 1000)} seconds`);
+	}
+	return {
+		exitCode: result.exitCode ?? -1,
+		stdout: Buffer.concat(printed.stdout).toString('utf8'),
+		stderr: Buffer.concat(printed.stderr).toString('utf8'),
+	};
 }
 
 function gitFailed(what: string, { stderr }: { stderr: string }): Error {
