@@ -265,6 +265,23 @@ describe("the orchestrator's committer", () => {
 		expect(logger.warn).toHaveBeenCalledWith('The committer made no commit in /repo: lint failed');
 	});
 
+	it('tells the logger when git failed after it made the commit', async () => {
+		const late: RepositoryCommit = {
+			...committed,
+			reason: 'git ran past its limit and was stopped',
+		};
+		const commit = vi.fn<Committer['commit']>(() => Promise.resolve([late]));
+
+		const response = await orchestrator({
+			committer: { freeze: fakeCommitter().freeze, commit },
+		}).run('task', { signal, ask: yes });
+
+		expect(response.commits?.outcome).toBe('committed');
+		expect(logger.warn).toHaveBeenCalledWith(
+			"The committer's commit in /repo was made, but git failed after it: git ran past its limit and was stopped",
+		);
+	});
+
 	it('ends the run with an UnrecoverableError when the asker fails or answers wrongly', async () => {
 		await expect(
 			orchestrator().run('task', {

@@ -565,6 +565,10 @@ export class OrchestratorAgent implements Agent {
 		for (const { repository, outcome, reason, unreviewed } of repositories) {
 			if (outcome !== 'done') {
 				this.warn(`The committer made no commit in ${repository}: ${reason ?? 'no reason given'}`);
+			} else if (reason !== undefined) {
+				this.warn(
+					`The committer's commit in ${repository} was made, but git failed after it: ${reason}`,
+				);
 			}
 			if (unreviewed.length > 0) {
 				this.warn(

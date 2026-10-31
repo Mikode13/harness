@@ -17,7 +17,8 @@ import { changedFiles, showChanges } from '#src/recovery/domain/runChanges';
 import {
 	type BranchTip,
 	commitsBetween,
-	notReady,
+	type GitRunner,
+	readiness,
 	readTip,
 } from '#src/recovery/infrastructure/gitCommits';
 import { isAbortError } from '#src/shared/domain/isAbortError';
@@ -175,7 +176,7 @@ export class GitCommitter implements Committer {
 			},
 		});
 		if (branch === undefined) return refuse('no branch is checked out there');
-		const blocked = await notReady(repository, branch);
+		const blocked = await readiness(repository, branch, ready(signal));
 		if (blocked !== undefined) return refuse(blocked);
 
 		const rel = (path: string) => relative(repository, path).split(sep).join('/');
@@ -227,6 +228,11 @@ export class GitCommitter implements Committer {
 			const now = await stateOf(repository, name, path, signal);
 			if (now.mode !== undefined && !isFile(now.mode)) {
 				leftOut.push({ path: name, reason: 'it is a link or a folder now' });
+				continue;
+			}
+			// What is frozen is what the history recorded, not what the file came to hold meanwhile.
+			if (!sameBlob(now, await this.blobOf(repository, name, change.after, signal))) {
+				leftOut.push({ path: name, reason: 'it changed after the task last changed it' });
 				continue;
 			}
 			// Already committed, such as by a command the executor ran.
@@ -295,14 +301,26 @@ export class GitCommitter implements Committer {
 		entry: GitEntry | undefined,
 		signal: AbortSignal,
 	): Promise<boolean> {
-		if (!before.exists) return entry === undefined;
-		if (!entry) return false;
+		const blob = await this.blobOf(repository, name, before, signal);
+		return blob === undefined
+			? entry === undefined
+			: entry?.sha === blob.sha && entry.mode === blob.mode;
+	}
+
+	/** What git would store at `name` for a state the history recorded, after git's filters. */
+	private async blobOf(
+		repository: string,
+		name: string,
+		state: FileState,
+		signal: AbortSignal,
+	): Promise<GitEntry | undefined> {
+		if (!state.exists) return undefined;
 		const scratch = await mkdtemp(join(tmpdir(), 'harness-commit-'));
 		try {
-			const copy = join(scratch, 'before');
-			await writeFile(copy, await this.store.readContent(before.hash));
+			const copy = join(scratch, 'recorded');
+			await writeFile(copy, await this.store.readContent(state.hash));
 			const hashed = await git(['hash-object', `--path=${name}`, copy], repository, signal);
-			return firstLine(hashed) === entry.sha && gitMode(before.mode) === entry.mode;
+			return { sha: firstLine(hashed), mode: gitMode(state.mode) };
 		} finally {
 			await rm(scratch, { recursive: true, force: true });
 		}
@@ -500,7 +518,7 @@ async function stillAsFrozen(
 	if (tip?.branch !== state.branch || tip.head !== state.head) {
 		return { reason: 'the branch moved, or another was checked out, since the review' };
 	}
-	const blocked = await notReady(repository, state.branch);
+	const blocked = await readiness(repository, state.branch, ready(signal));
 	if (blocked !== undefined) return { reason: blocked };
 	const changed: string[] = [];
 	const staged = await indexOf(repository, [...state.paths.keys()], signal);
@@ -784,6 +802,11 @@ async function git(
 	const result = await runGit(args, repository, { signal });
 	if (result.exitCode !== 0) throw gitFailed(`run git ${args[0] ?? ''}`, result);
 	return result.stdout;
+}
+
+/** `readiness`'s git, run as every other git call of the committer, stopping with `signal`. */
+function ready(signal: AbortSignal): GitRunner {
+	return (args, repository) => runGit(args, repository, { signal });
 }
 
 /**

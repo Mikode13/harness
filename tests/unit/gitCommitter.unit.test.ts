@@ -452,6 +452,53 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		expect(seen).toContain('SSH_AUTH_SOCK=/tmp/agent.sock');
 	});
 
+	it("checks whether git is ready without the harness's secrets", async () => {
+		const monitor = join(parent, 'fsmonitor.sh');
+		writeFileSync(monitor, `#!/bin/sh\nenv >> ${join(parent, 'monitor-env')}\nexit 1\n`);
+		chmodSync(monitor, 0o755);
+		const { run, committer, options } = await workingRun({ edit: 'echo two > a.txt' });
+		await run('edit');
+		git('config', 'core.fsmonitor', monitor);
+		vi.stubEnv('OPENAI_API_KEY', 'a secret');
+		try {
+			await committer.freeze(options);
+		} finally {
+			vi.unstubAllEnvs();
+		}
+
+		const seen = readFileSync(join(parent, 'monitor-env'), 'utf8');
+		expect(seen).not.toContain('OPENAI_API_KEY');
+	});
+
+	it('freezes what the history recorded, not an edit made while it froze', async () => {
+		// A filter that edits the file while git hashes what it held before the run.
+		git(
+			'config',
+			'filter.racy.clean',
+			'c=$(cat); if [ "$c" = one ] && [ -f race ]; then rm race; echo yours > a.txt; fi; printf "%s\\n" "$c"',
+		);
+		writeFileSync(join(root, '.gitattributes'), 'a.txt filter=racy\n');
+		const { run, committer, options } = await workingRun({ edit: 'echo two > a.txt' });
+		await run('edit');
+		writeFileSync(join(root, 'race'), '');
+
+		const frozen = await committer.freeze(options);
+
+		expect(readFileSync(join(root, 'a.txt'), 'utf8')).toBe('yours\n');
+		expect(frozen?.repositories[0]).toMatchObject({
+			paths: [],
+			leftOut: [{ path: 'a.txt', reason: 'it changed after the task last changed it' }],
+		});
+	});
+
+	it('fails to freeze a repository whose index git cannot read', async () => {
+		const { run, committer, options } = await workingRun({ edit: 'echo two > a.txt' });
+		await run('edit');
+		writeFileSync(join(root, '.git', 'index'), 'not an index');
+
+		await expect(committer.freeze(options)).rejects.toThrow('git could not list the index');
+	});
+
 	it('refuses a repository with no branch checked out', async () => {
 		git('switch', '--quiet', '--detach');
 		const { run, committer, options } = await workingRun({ edit: 'echo two > a.txt' });

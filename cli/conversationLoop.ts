@@ -129,8 +129,7 @@ function commitLines(commits: CommitReport | undefined): string[] {
 	return commits.repositories.map(({ repository, branch, outcome, reason, commits: made }) => {
 		const where = `${repository}${branch === undefined ? '' : ` (${branch})`}`;
 		const shas = made.map(({ sha, subject }) => `${sha.slice(0, 7)} ${subject}`).join('; ');
-		return outcome === 'done'
-			? `commit: ${where}: ${shas}`
-			: `commit: ${where}: ${outcome}, ${reason ?? 'no reason given'}`;
+		if (outcome !== 'done') return `commit: ${where}: ${outcome}, ${reason ?? 'no reason given'}`;
+		return `commit: ${where}: ${shas}${reason === undefined ? '' : `, then git failed: ${reason}`}`;
 	});
 }
