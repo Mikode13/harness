@@ -65,6 +65,40 @@ export interface BranchMoving {
 	staged: Map<string, Set<string>>;
 }
 
+/** The move of a branch git was about to make, so a move whose process stopped can tell if it did. */
+export interface BranchIntent {
+	from: string;
+	to: string;
+	/** What the move reports once the branch is at `to`. */
+	report: BranchMove;
+}
+
+/** How far git got with one phase of a move, going over its branches in order. */
+export interface GitProgress {
+	/** How many branches are finished. */
+	branches: number;
+	/** What the finished branches report. */
+	reports: BranchMove[];
+	/** The move the next branch was about to make, when the process stopped as git made it. */
+	intent?: BranchIntent;
+}
+
+/**
+ * One phase of a move: how far an earlier attempt at it got, and where to keep how far it gets,
+ * before git moves a branch and after each branch is finished.
+ */
+export interface GitPhase {
+	progress: GitProgress;
+	record: (progress: GitProgress) => Promise<void>;
+}
+
+/** What a branch's step needs to move it, and the intent of an earlier attempt that moved it. */
+interface BranchStep {
+	moving: BranchMoving;
+	intend: (intent: BranchIntent) => Promise<void>;
+	resumed?: BranchIntent;
+}
+
 // No hook runs: one that changed the files, such as a `reference-transaction` or a
 // `post-index-change` hook, would write outside the journal while a move restores them.
 function git(args: string[], cwd: string, signal: AbortSignal, env: NodeJS.ProcessEnv = {}) {
@@ -193,47 +227,37 @@ export function commitKey(repository: string, branch: string, sha: string, runId
  * What undoing does with the commits of the runs it undoes, per branch, newest first, before the
  * files are moved: with `keep`, it reports those still on their branch; with `revert` or `reset`,
  * it takes them back, or leaves them and says why. A commit an earlier move took back is left
- * out. With `interrupted`, a move whose process stopped while git ran, git is not run again, and
- * every branch it would have changed is reported as left.
+ * out. A phase an earlier attempt began goes on from where it stopped, as `eachBranch` says.
  */
 export async function undoCommits(
 	commits: readonly BranchCommit[],
 	policy: CommitsPolicy,
-	{ interrupted, moving }: { interrupted: boolean; moving: BranchMoving },
+	phase: GitPhase,
+	moving: BranchMoving,
 ): Promise<BranchMove[]> {
-	const reports: BranchMove[] = [];
-	for (const { repository, branch, commits: all } of byBranch(commits)) {
+	return eachBranch(commits, phase, moving, async ({ repository, branch, commits: all }, step) => {
 		const live = all.filter(commit => commit.taken === undefined);
-		if (live.length === 0) continue;
-		if (policy === 'keep') {
-			const kept = await keptOn(repository, branch, live, moving.warn);
-			if (kept) reports.push(kept);
-			continue;
-		}
-		if (interrupted) {
-			reports.push(report(repository, branch, policy, live, stoppedReason));
-			continue;
-		}
-		const moved =
+		if (live.length === 0) return [];
+		if (policy === 'keep') return listed(await keptOn(repository, branch, live, moving.warn));
+		return listed(
 			policy === 'revert'
-				? await revert(repository, branch, live, moving)
-				: await reset(repository, branch, live, moving);
-		if (moved) reports.push(moved);
-	}
-	return reports;
+				? await revert(repository, branch, live, step)
+				: await reset(repository, branch, live, step),
+		);
+	});
 }
 
 /**
  * What redoing does with the commits of the runs it redoes, per branch, oldest first, before the
  * files are moved: it puts back those an earlier move took back, and reports the others as kept.
- * With `interrupted`, as for `undoCommits`.
+ * A phase an earlier attempt began goes on as for `undoCommits`.
  */
 export async function redoCommits(
 	commits: readonly BranchCommit[],
-	{ interrupted, moving }: { interrupted: boolean; moving: BranchMoving },
+	phase: GitPhase,
+	moving: BranchMoving,
 ): Promise<BranchMove[]> {
-	const reports: BranchMove[] = [];
-	for (const { repository, branch, commits: all } of byBranch(commits)) {
+	return eachBranch(commits, phase, moving, async ({ repository, branch, commits: all }, step) => {
 		const taken = all.filter(commit => commit.taken !== undefined);
 		const kept = await keptOn(
 			repository,
@@ -241,19 +265,66 @@ export async function redoCommits(
 			all.filter(commit => commit.taken === undefined),
 			moving.warn,
 		);
-		if (kept) reports.push(kept);
-		if (taken.length === 0) continue;
-		reports.push(
-			interrupted
-				? report(repository, branch, 'reapply', taken, stoppedReason)
-				: await reapply(repository, branch, taken, moving),
-		);
+		return [
+			...listed(kept),
+			...(taken.length === 0 ? [] : [await reapply(repository, branch, taken, step)]),
+		];
+	});
+}
+
+function listed(move: BranchMove | undefined): BranchMove[] {
+	return move ? [move] : [];
+}
+
+/**
+ * Follows each branch in turn, and records after each how far the phase got. A branch an earlier
+ * attempt finished is not followed again; the one it was moving when its process stopped is
+ * reported as git left it, by `resumedAt`; those after it are followed as usual.
+ */
+async function eachBranch(
+	commits: readonly BranchCommit[],
+	{ progress, record }: GitPhase,
+	moving: BranchMoving,
+	follow: (
+		group: { repository: string; branch: string; commits: BranchCommit[] },
+		step: BranchStep,
+	) => Promise<BranchMove[]>,
+): Promise<BranchMove[]> {
+	const reports = [...progress.reports];
+	for (const [at, group] of byBranch(commits).entries()) {
+		if (at < progress.branches) continue;
+		const step: BranchStep = {
+			moving,
+			intend: intent => record({ branches: at, reports: [...reports], intent }),
+			...(at === progress.branches && progress.intent ? { resumed: progress.intent } : {}),
+		};
+		reports.push(...(await follow(group, step)));
+		await record({ branches: at + 1, reports: [...reports] });
 	}
 	return reports;
 }
 
+/**
+ * What an earlier attempt that stopped as git moved the branch did: the move it intended when the
+ * branch is where it was going, with `warn` told that the index may not have followed, and
+ * `undefined` otherwise, when the harness leaves the branch as it is.
+ */
+async function resumedAt(
+	repository: string,
+	branch: string,
+	{ to, report: intended }: BranchIntent,
+	warn: BranchWarning,
+): Promise<BranchMove | undefined> {
+	const tip = await branchTip(repository, branch).catch(() => undefined);
+	if (tip !== to) return undefined;
+	warn(
+		`The history moved ${branch} in ${repository} before its process stopped, so it may not have brought the index to the new tip, and its lock on the index may remain: git may show those files as staged`,
+	);
+	return intended;
+}
+
 const stoppedReason =
-	'the move stopped while git ran on this branch, so the harness left it as it was';
+	'the move stopped as git was about to move this branch, which is not where git would have taken it, so the harness left it as it is';
 
 function byBranch(
 	commits: readonly BranchCommit[],
@@ -367,8 +438,14 @@ async function revert(
 	repository: string,
 	branch: string,
 	commits: readonly BranchCommit[],
-	moving: BranchMoving,
+	step: BranchStep,
 ): Promise<BranchMove | undefined> {
+	if (step.resumed) {
+		return (
+			(await resumedAt(repository, branch, step.resumed, step.moving.warn)) ??
+			report(repository, branch, 'revert', commits, stoppedReason)
+		);
+	}
 	const blocked = (await notReady(repository, branch)) ?? (await cannotMerge(repository));
 	if (blocked) return report(repository, branch, 'revert', commits, blocked);
 	let held;
@@ -401,8 +478,9 @@ async function revert(
 	} catch (error) {
 		return left(`git could not revert them: ${errorText(error)}`);
 	}
-	const moved = await moveBranch(repository, branch, from, tip, moving);
-	return moved ? left(moved) : report(repository, branch, 'revert', onIt);
+	const done = report(repository, branch, 'revert', onIt);
+	const moved = await moveBranch(repository, branch, { from, to: tip, report: done }, step);
+	return moved ? left(moved) : done;
 }
 
 /**
@@ -413,9 +491,14 @@ async function reset(
 	repository: string,
 	branch: string,
 	commits: readonly BranchCommit[],
-	moving: BranchMoving,
+	step: BranchStep,
 ): Promise<BranchMove> {
 	const left = (reason: string) => report(repository, branch, 'reset', commits, reason);
+	if (step.resumed) {
+		return (
+			(await resumedAt(repository, branch, step.resumed, step.moving.warn)) ?? left(stoppedReason)
+		);
+	}
 	const blocked = await notReady(repository, branch);
 	if (blocked) return left(blocked);
 	let from: string;
@@ -441,8 +524,9 @@ async function reset(
 	} catch (error) {
 		return left(`git could not reset the branch: ${errorText(error)}`);
 	}
-	const moved = await moveBranch(repository, branch, from, target, moving);
-	return moved ? left(moved) : report(repository, branch, 'reset', commits);
+	const done = report(repository, branch, 'reset', commits);
+	const moved = await moveBranch(repository, branch, { from, to: target, report: done }, step);
+	return moved ? left(moved) : done;
 }
 
 /**
@@ -477,9 +561,14 @@ async function reapply(
 	repository: string,
 	branch: string,
 	commits: readonly BranchCommit[],
-	moving: BranchMoving,
+	step: BranchStep,
 ): Promise<BranchMove> {
 	const left = (reason: string) => report(repository, branch, 'reapply', commits, reason);
+	if (step.resumed) {
+		return (
+			(await resumedAt(repository, branch, step.resumed, step.moving.warn)) ?? left(stoppedReason)
+		);
+	}
 	const blocked = await notReady(repository, branch);
 	if (blocked) return left(blocked);
 	let from: string;
@@ -496,8 +585,9 @@ async function reapply(
 	} catch (error) {
 		return left(`git could not cherry-pick them: ${errorText(error)}`);
 	}
-	const moved = await moveBranch(repository, branch, from, put.tip, moving);
-	return moved ? left(moved) : report(repository, branch, 'reapply', put.commits);
+	const done = report(repository, branch, 'reapply', put.commits);
+	const moved = await moveBranch(repository, branch, { from, to: put.tip, report: done }, step);
+	return moved ? left(moved) : done;
 }
 
 /**
@@ -691,7 +781,8 @@ async function authorOf(
 			'-1',
 			'--no-show-signature',
 			'--encoding=UTF-8',
-			'--format=%an%x00%ae%x00%aI%x00%B',
+			// `format:`, not a terminator: the message ends as the commit's does.
+			'--format=format:%an%x00%ae%x00%aI%x00%B',
 			sha,
 		],
 		repository,
@@ -706,20 +797,21 @@ async function authorOf(
 }
 
 /**
- * Moves `branch` from `from` to `to`, only if it is still at `from`, then brings the index of the
- * paths that differ to `to`, so git shows the files against the new tip: the files themselves
- * are left as they are. What the user staged in one of those paths, matching neither tip, or
- * under or above one, is kept and goes to `warn`. Returns why it could not move the branch; once
- * the branch moved, a failure to update the index goes to `warn`, and only what `warn` throws
- * escapes.
+ * Moves `branch` from `from` to `to`, only if it is still at `from` and still checked out, then
+ * brings the index of the paths that differ to `to`, so git shows the files against the new tip:
+ * the files themselves are left as they are. The move is recorded as intended before git makes
+ * it, so a process that stops meanwhile can tell. What the user staged in one of those paths,
+ * matching neither tip, or under or above one, is kept and goes to `warn`. Returns why it could
+ * not move the branch; once the branch moved, a failure to update the index goes to `warn`, and
+ * only what `warn` throws escapes.
  */
 async function moveBranch(
 	repository: string,
 	branch: string,
-	from: string,
-	to: string,
-	moving: BranchMoving,
+	intent: BranchIntent,
+	{ moving, intend }: BranchStep,
 ): Promise<string | undefined> {
+	const { from, to } = intent;
 	const { warn } = moving;
 	const staged = moving.staged.get(repository) ?? new Set<string>();
 	moving.staged.set(repository, staged);
@@ -734,7 +826,16 @@ async function moveBranch(
 	try {
 		let update;
 		try {
+			// Checked again now that no checkout can change the index: one since it was first
+			// checked would have git write another branch's index.
+			const blocked = await notReady(repository, branch);
+			if (blocked) return blocked;
 			update = await indexUpdate(repository, from, to, staged, index.env);
+		} catch (error) {
+			return `git could not move the branch: ${errorText(error)}`;
+		}
+		await intend(intent);
+		try {
 			const moved = await git(
 				[
 					'update-ref',
@@ -751,15 +852,16 @@ async function moveBranch(
 		} catch (error) {
 			return `git could not move the branch: ${errorText(error)}`;
 		}
-		if (update.kept.length > 0) {
-			warn(
-				`The history moved ${branch} in ${repository} and kept what was staged in ${update.kept.join(', ')}, which git now shows against the new tip`,
-			);
-		}
+		// The index first: a logger that throws must not leave it at the old tip.
 		const unindexed = await writeIndex(repository, update, index);
 		if (unindexed !== undefined) {
 			warn(
 				`The history moved ${branch} in ${repository}, but could not bring its index to the new tip, so git may show those files as staged: ${unindexed}`,
+			);
+		}
+		if (update.kept.length > 0) {
+			warn(
+				`The history moved ${branch} in ${repository} and kept what was staged in ${update.kept.join(', ')}, which git now shows against the new tip`,
 			);
 		}
 		return undefined;

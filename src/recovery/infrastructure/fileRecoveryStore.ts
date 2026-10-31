@@ -23,6 +23,8 @@ import {
 	type BranchMoving,
 	type BranchWarning,
 	type CommitState,
+	type GitPhase,
+	type GitProgress,
 	commitKey,
 	commitStates,
 	redoCommits,
@@ -200,12 +202,11 @@ interface PendingMove {
 	/** What undoing does with the commits of the runs it undoes. Absent for `keep`. */
 	commits?: CommitsPolicy;
 	/**
-	 * What it did with commits before undoing the files, and before redoing them: `{}` once git
-	 * began, and its reports once it finished. Begun and not finished, the process stopped while
-	 * git ran, and finishing the move does not run it again.
+	 * How far git got with commits before undoing the files, and before redoing them, branch by
+	 * branch, and `finished` once every branch is. Finishing the move goes on from there.
 	 */
-	gitUndo?: { done?: BranchMove[] };
-	gitRedo?: { done?: BranchMove[] };
+	gitUndo?: GitProgress & { finished?: true };
+	gitRedo?: GitProgress & { finished?: true };
 	/** By repository, the paths whose index the user staged, found by the git phases so far. */
 	staged?: Record<string, string[]>;
 	/**
@@ -675,35 +676,37 @@ export class FileRecoveryStore implements RecoveryStore {
 		// Git first, on the branch and the index only: the files are the steps' to move, as the
 		// journal says, whatever the commits hold.
 		const gitPhase = async (
-			phase: 'gitUndo' | 'gitRedo',
-			act: (interrupted: boolean) => Promise<BranchMove[]>,
+			name: 'gitUndo' | 'gitRedo',
+			act: (phase: GitPhase) => Promise<BranchMove[]>,
 		) => {
-			const begun = pending[phase];
-			if (begun?.done) return;
-			if (!begun) {
-				pending[phase] = {};
+			const begun = pending[name];
+			if (begun?.finished) return;
+			const record = async (progress: GitProgress & { finished?: true }) => {
+				pending[name] = progress;
+				pending.staged = Object.fromEntries(
+					[...moving.staged].map(([repository, paths]) => [repository, [...paths]]),
+				);
 				await save();
-			}
-			pending[phase] = { done: await act(begun !== undefined) };
-			pending.staged = Object.fromEntries(
-				[...moving.staged].map(([repository, paths]) => [repository, [...paths]]),
-			);
-			await save();
+			};
+			const reports = await act({ progress: begun ?? { branches: 0, reports: [] }, record });
+			await record({ branches: pending[name]?.branches ?? 0, reports, finished: true });
 		};
 
-		await gitPhase('gitUndo', async interrupted =>
-			undoCommits(await this.commitsOver(undo, 'undo', states), pending.commits ?? 'keep', {
-				interrupted,
+		await gitPhase('gitUndo', async phase =>
+			undoCommits(
+				await this.commitsOver(undo, 'undo', states),
+				pending.commits ?? 'keep',
+				phase,
 				moving,
-			}),
+			),
 		);
 		for (const runId of undo) {
 			pending.conflicts.push(...(await this.step(runId, 'undo', announce)));
 			reached = parents.get(runId);
 			await save();
 		}
-		await gitPhase('gitRedo', async interrupted =>
-			redoCommits(await this.commitsOver(redo, 'redo', states), { interrupted, moving }),
+		await gitPhase('gitRedo', async phase =>
+			redoCommits(await this.commitsOver(redo, 'redo', states), phase, moving),
 		);
 		for (const runId of redo) {
 			pending.conflicts.push(...(await this.step(runId, 'redo', announce)));
@@ -716,7 +719,7 @@ export class FileRecoveryStore implements RecoveryStore {
 		const { conflicts, gitUndo, gitRedo, ...rest } = pending;
 		delete rest.commits;
 		delete rest.staged;
-		const git = [...(gitUndo?.done ?? []), ...(gitRedo?.done ?? [])];
+		const git = [...(gitUndo?.reports ?? []), ...(gitRedo?.reports ?? [])];
 		const revision: Revision = {
 			...rest,
 			at: new Date().toISOString(),

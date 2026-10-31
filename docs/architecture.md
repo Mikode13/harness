@@ -255,9 +255,11 @@ the files: undoing keeps them, reverts them or resets the branch to before them,
 the same commits after a reset when the branch has not moved, cherry-picked otherwise; where
 each commit is now is read from the moves recorded so far (`commitStates`). When git cannot
 follow, the branch is left as it was. The move reports it in its `git`, one `BranchMove` per
-branch and action, and records it in the move in progress, so a move whose process stopped
-while git ran does not run it again and reports the branch as left. An agent following the
-workspace is told what git did (`commitsNote`).
+branch and action, and records in the move in progress how far git got, branch by branch, and
+the move of a branch before git makes it. A move whose process stopped goes on from there: a
+finished branch is not moved again, the one git was moving is reported as moved when it is
+where git was taking it, and left otherwise, and those after it are moved as usual. An agent
+following the workspace is told what git did (`commitsNote`).
 
 Moves and runs share the workspace lock. While it holds that lock, a run or a move also
 claims the folders it may write, its first root and the other `write` roots it was opened

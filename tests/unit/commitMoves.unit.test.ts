@@ -165,7 +165,8 @@ describe('the commits between two tips of a branch', () => {
 					},
 				],
 				'keep',
-				{ interrupted: false, moving: { warn: () => undefined, staged: new Map() } },
+				{ progress: { branches: 0, reports: [] }, record: () => Promise.resolve() },
+				{ warn: () => undefined, staged: new Map() },
 			),
 		).resolves.toMatchObject([{ branch: 'main', commits: [{ sha: head() }] }]);
 	});
@@ -440,7 +441,9 @@ describe('a move over runs that made commits', { timeout: 20_000 }, () => {
 		expect(committed).not.toHaveProperty('git');
 	});
 
-	it('runs no git again for a move that stopped while git ran, and says it left the branch', async () => {
+	it('goes on with git for a move that stopped before git moved a branch', async () => {
+		git('config', 'user.name', 'Test');
+		git('config', 'user.email', 'test@example.com');
 		const { opened, tool } = await commandTool({
 			commit: shell('git commit --quiet --allow-empty -m "step"'),
 		});
@@ -448,7 +451,7 @@ describe('a move over runs that made commits', { timeout: 20_000 }, () => {
 		const firstSha = head();
 		const second = await run(tool, 'commit');
 		const secondSha = head();
-		// The process died going to the start, while git reverted the commits.
+		// The process died going to the start, once git began and before it moved the branch.
 		const [state] = readdirSync(join(parent, 'state'), { recursive: true, encoding: 'utf8' })
 			.filter(path => path.endsWith('head.json'))
 			.map(path => join(parent, 'state', path));
@@ -457,21 +460,26 @@ describe('a move over runs that made commits', { timeout: 20_000 }, () => {
 			JSON.stringify({
 				runId: second.runId,
 				revision: 0,
-				pending: { revision: 1, from: second.runId, conflicts: [], commits: 'revert', gitUndo: {} },
+				pending: {
+					revision: 1,
+					from: second.runId,
+					conflicts: [],
+					commits: 'revert',
+					gitUndo: { branches: 0, reports: [] },
+				},
 			}),
 		);
 
 		await opened.store.redo();
 
-		expect(head()).toBe(secondSha);
-		const [finished] = await opened.store.listRevisions();
+		const revisions = await opened.store.listRevisions();
+		const finished = revisions.find(revision => revision.git?.[0]?.action === 'revert');
 		expect(finished?.git).toEqual([
 			{
 				repository: root,
 				branch: 'main',
 				action: 'revert',
-				outcome: 'left',
-				reason: 'the move stopped while git ran on this branch, so the harness left it as it was',
+				outcome: 'done',
 				commits: [
 					{ sha: secondSha, subject: 'step', runId: second.runId, direction: 'undo' },
 					{ sha: firstSha, subject: 'step', runId: first.runId, direction: 'undo' },
@@ -611,6 +619,40 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 
 		expect(git('log', '-1', '--format=%s')).toBe('change a');
 		expect(redone.git?.[0]?.commits[0]).toMatchObject({ sha: head(), original: sha });
+		// The message as the commit's ends, with no line added.
+		const raw = (commit: string) =>
+			execFileSync('git', ['cat-file', 'commit', commit], { cwd: root, encoding: 'utf8' });
+		expect(raw('HEAD').endsWith('\n\nchange a\n')).toBe(true);
+		expect(raw(sha).endsWith('\n\nchange a\n')).toBe(true);
+	});
+
+	it('leaves the branch, and the index of the one checked out, when the user switches while git commits', async () => {
+		const { history } = await committedRun();
+		git('branch', 'other');
+		// A signing program that switches the branch, as the user could while git signs.
+		const program = join(parent, 'sign.sh');
+		writeFileSync(
+			program,
+			[
+				'#!/bin/sh',
+				`git -C '${root}' switch --quiet other`,
+				'cat > /dev/null',
+				"printf '\\n[GNUPG:] SIG_CREATED D 1 8 00 0 X\\n' >&2",
+				"printf -- '-----BEGIN PGP SIGNATURE-----\\n\\nx\\n-----END PGP SIGNATURE-----\\n'",
+			].join('\n'),
+			{ mode: 0o755 },
+		);
+		git('config', 'commit.gpgsign', 'true');
+		git('config', 'gpg.program', program);
+
+		const undone = await history.undo({ commits: 'revert' });
+
+		expect(undone.git?.[0]).toMatchObject({
+			action: 'revert',
+			outcome: 'left',
+			reason: `main is no longer checked out in ${root}`,
+		});
+		expect(git('diff', '--cached', '--name-only')).toBe('');
 	});
 
 	it('leaves the branch when a reset would drop a commit on top, or one its upstream holds', async () => {
@@ -1011,14 +1053,17 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 		});
 	});
 
-	it('releases the index, and ends the move, when the logger fails once the branch moved', async () => {
+	it('releases the index, ends the move, and finishes it as done, when the logger fails once the branch moved', async () => {
 		const { runId, sha } = await committedRun();
 		const start = git('rev-parse', `${sha}^`);
+		let broken = true;
 		const store = await FileRecoveryStore.open({
 			root,
 			directory: join(parent, 'state'),
 			logger: {
 				warn: () => {
+					if (!broken) return;
+					broken = false;
 					throw new Error('logger broke');
 				},
 			},
@@ -1030,7 +1075,8 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 
 		await expect(store.undo({ commits: 'reset' })).rejects.toBeInstanceOf(UnrecoverableError);
 
-		// The branch moved before the logger failed: the next move says it left it, and runs no git.
+		// The branch moved before the logger failed: the next move reports the reset as done, so
+		// redoing puts the commit back.
 		expect(head()).toBe(start);
 		expect(existsSync(join(root, '.git', 'index.lock'))).toBe(false);
 		expect(git('show', ':a.txt')).toBe('three');
@@ -1042,11 +1088,109 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 				repository: root,
 				branch: 'main',
 				action: 'reset',
-				outcome: 'left',
-				reason: 'the move stopped while git ran on this branch, so the harness left it as it was',
+				outcome: 'done',
 				commits: [{ sha, subject: 'change a', runId, direction: 'undo' }],
 			},
 		]);
+		expect(head()).toBe(sha);
+	});
+
+	/** Makes the move in progress the undo of `runId`, cut as git was about to reset its commit. */
+	function cutReset(runId: string, sha: string, start: string): void {
+		const [state] = readdirSync(join(parent, 'state'), { recursive: true, encoding: 'utf8' })
+			.filter(path => path.endsWith('head.json'))
+			.map(path => join(parent, 'state', path));
+		const report = {
+			repository: root,
+			branch: 'main',
+			action: 'reset',
+			outcome: 'done',
+			commits: [{ sha, subject: 'change a', runId, direction: 'undo' }],
+		};
+		writeFileSync(
+			state ?? '',
+			JSON.stringify({
+				runId,
+				revision: 0,
+				pending: {
+					revision: 1,
+					from: runId,
+					conflicts: [],
+					commits: 'reset',
+					gitUndo: { branches: 0, reports: [], intent: { from: sha, to: start, report } },
+				},
+			}),
+		);
+	}
+
+	it('finishes a move cut once git moved the branch as done, and redoing puts the commits back', async () => {
+		const { opened, runId, sha } = await committedRun();
+		const start = git('rev-parse', `${sha}^`);
+		cutReset(runId, sha, start);
+		// Git moved the branch, and the process stopped before it updated the index.
+		git('update-ref', 'refs/heads/main', start, sha);
+
+		await opened.store.redo();
+
+		const revisions = await opened.store.listRevisions();
+		const finished = revisions.find(revision => revision.git?.[0]?.action === 'reset');
+		expect(finished?.git?.[0]).toMatchObject({ action: 'reset', outcome: 'done' });
+		expect(warnings.some(warning => warning.includes('before its process stopped'))).toBe(true);
+		expect(head()).toBe(sha);
+		expect(readA()).toBe('two\n');
+	});
+
+	it('leaves a branch the move was cut before git moved, and runs no git on it', async () => {
+		const { opened, runId, sha } = await committedRun();
+		const start = git('rev-parse', `${sha}^`);
+		cutReset(runId, sha, start);
+
+		await opened.store.redo();
+
+		const revisions = await opened.store.listRevisions();
+		const finished = revisions.find(revision => revision.git?.[0]?.action === 'reset');
+		expect(finished?.git?.[0]).toMatchObject({
+			action: 'reset',
+			outcome: 'left',
+			reason:
+				'the move stopped as git was about to move this branch, which is not where git would have taken it, so the harness left it as it is',
+		});
+		expect(head()).toBe(sha);
+	});
+
+	it('reports a branch a cut move finished as it did, without running git on it again', async () => {
+		const { opened, runId, sha } = await committedRun();
+		const [state] = readdirSync(join(parent, 'state'), { recursive: true, encoding: 'utf8' })
+			.filter(path => path.endsWith('head.json'))
+			.map(path => join(parent, 'state', path));
+		const report = {
+			repository: root,
+			branch: 'main',
+			action: 'revert',
+			outcome: 'left',
+			reason: 'an earlier attempt',
+			commits: [{ sha, subject: 'change a', runId, direction: 'undo' }],
+		};
+		writeFileSync(
+			state ?? '',
+			JSON.stringify({
+				runId,
+				revision: 0,
+				pending: {
+					revision: 1,
+					from: runId,
+					conflicts: [],
+					commits: 'revert',
+					gitUndo: { branches: 1, reports: [report] },
+				},
+			}),
+		);
+
+		await opened.store.redo();
+
+		const revisions = await opened.store.listRevisions();
+		expect(revisions.find(revision => revision.revision === 1)?.git).toEqual([report]);
+		expect(head()).toBe(sha);
 	});
 
 	it('re-applies a change as stored, whatever whitespace git is configured to fix', async () => {
