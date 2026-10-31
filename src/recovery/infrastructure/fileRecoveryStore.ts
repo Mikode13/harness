@@ -199,8 +199,11 @@ interface PendingMove {
 	reason?: string;
 	/** Found by the steps already taken. */
 	conflicts: MoveConflict[];
-	/** What undoing does with the commits of the runs it undoes. Absent for `keep`. */
-	commits?: CommitsPolicy;
+	/**
+	 * What undoing does with the commits of the runs it undoes. Absent for `keep`. Not `commits`,
+	 * which held the commits the steps went over before the policies came.
+	 */
+	policy?: CommitsPolicy;
 	/**
 	 * How far git got with commits before undoing the files, and before redoing them, branch by
 	 * branch, and `finished` once every branch is. Finishing the move goes on from there.
@@ -570,7 +573,7 @@ export class FileRecoveryStore implements RecoveryStore {
 				...(head.runId ? { from: head.runId } : {}),
 				...(to ? { to } : {}),
 				...(reason === undefined ? {} : { reason }),
-				...(commits === 'keep' ? {} : { commits }),
+				...(commits === 'keep' ? {} : { policy: commits }),
 				conflicts: [],
 			});
 		} finally {
@@ -695,7 +698,7 @@ export class FileRecoveryStore implements RecoveryStore {
 		await gitPhase('gitUndo', async phase =>
 			undoCommits(
 				await this.commitsOver(undo, 'undo', states),
-				pending.commits ?? 'keep',
+				pending.policy ?? 'keep',
 				phase,
 				moving,
 			),
@@ -717,7 +720,7 @@ export class FileRecoveryStore implements RecoveryStore {
 		// Every write that started has finished, so no temporary is left to name.
 		delete pending.temporary;
 		const { conflicts, gitUndo, gitRedo, ...rest } = pending;
-		delete rest.commits;
+		delete rest.policy;
 		delete rest.staged;
 		const git = [...(gitUndo?.reports ?? []), ...(gitRedo?.reports ?? [])];
 		const revision: Revision = {

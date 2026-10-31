@@ -453,6 +453,8 @@ describe('a move over runs that made commits', { timeout: 20_000 }, () => {
 	it('goes on with git for a move that stopped before git moved a branch', async () => {
 		git('config', 'user.name', 'Test');
 		git('config', 'user.email', 'test@example.com');
+		git('config', 'commit.gpgsign', 'false');
+		git('config', 'core.hooksPath', '/dev/null');
 		const { opened, tool } = await commandTool({
 			commit: shell('git commit --quiet --allow-empty -m "step"'),
 		});
@@ -470,7 +472,7 @@ describe('a move over runs that made commits', { timeout: 20_000 }, () => {
 					revision: 1,
 					from: second.runId,
 					conflicts: [],
-					commits: 'revert',
+					policy: 'revert',
 					gitUndo: { branches: 0, reports: [] },
 				},
 			}),
@@ -766,6 +768,53 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 			expect(undone.git?.[0]).toMatchObject({ action: policy, outcome: 'left', reason: reason() });
 		},
 	);
+
+	it('reverts only the change of a commit a shallow clone ends at, not its whole tree', async () => {
+		const { history, sha } = await committedRun();
+		// As after `git fetch --depth=1`: git shows the commit with no parent.
+		writeFileSync(join(root, '.git', 'shallow'), `${sha}\n`);
+
+		const undone = await history.undo({ commits: 'revert' });
+
+		expect(undone.git?.[0]).toMatchObject({ action: 'revert', outcome: 'done' });
+		expect(git('show', 'HEAD:a.txt')).toBe('one');
+	});
+
+	it('finishes a move an earlier version left pending by keeping its commits', async () => {
+		const { opened, runId, sha } = await committedRun();
+		// Before the policies, the move in progress kept the commits its steps went over here.
+		writeFileSync(
+			headFile(),
+			JSON.stringify({
+				runId,
+				revision: 0,
+				pending: {
+					revision: 1,
+					from: runId,
+					conflicts: [],
+					commits: [
+						{
+							repository: root,
+							branch: 'main',
+							sha,
+							subject: 'change a',
+							runId,
+							direction: 'undo',
+						},
+					],
+				},
+			}),
+		);
+
+		await opened.store.redo();
+
+		const revisions = await opened.store.listRevisions();
+		expect(revisions.find(revision => revision.revision === 1)?.git?.[0]).toMatchObject({
+			action: 'keep',
+			outcome: 'done',
+		});
+		expect(head()).toBe(sha);
+	});
 
 	it('leaves the branch while the user has a cherry-pick in progress, and the cherry-pick too', async () => {
 		const { history } = await committedRun();
@@ -1202,7 +1251,7 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 					revision: 1,
 					from: runId,
 					conflicts: [],
-					commits: 'reset',
+					policy: 'reset',
 					gitUndo: { branches: 0, reports: [], intent: { from: sha, to: start, report } },
 				},
 			}),
@@ -1263,7 +1312,7 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 					revision: 1,
 					from: runId,
 					conflicts: [],
-					commits: 'revert',
+					policy: 'revert',
 					gitUndo: { branches: 1, reports: [report] },
 				},
 			}),

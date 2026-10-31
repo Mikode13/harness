@@ -684,12 +684,18 @@ async function branchTip(repository: string, branch: string): Promise<string> {
 
 /**
  * The only parent of `sha`, or `undefined` for a commit with none. A merge is refused: which of
- * its parents it would go back to is not the history's to choose.
+ * its parents it would go back to is not the history's to choose. Read from the commit itself:
+ * `rev-list` shows none for a commit a shallow clone ends at, which is not one that starts the
+ * history, and whose parent git may not hold.
  */
 async function parentOf(repository: string, sha: string): Promise<string | undefined> {
-	const listed = await git(['rev-list', '--parents', '-n', '1', sha], repository, uncancelled);
-	if (listed.exitCode !== 0) throw gitFailed(`read ${sha}`, listed);
-	const [, ...parents] = firstLine(listed.stdout).split(' ');
+	const read = await git(['cat-file', 'commit', sha], repository, uncancelled);
+	if (read.exitCode !== 0) throw gitFailed(`read ${sha}`, read);
+	const headers = read.stdout.slice(0, read.stdout.indexOf('\n\n'));
+	const parents = headers.split('\n').flatMap(line => {
+		const [field, value] = line.split(' ');
+		return field === 'parent' && value !== undefined ? [value] : [];
+	});
 	if (parents.length > 1)
 		throw new Error(`${sha} is a merge, which the history does not take back or re-apply`);
 	return parents[0];
