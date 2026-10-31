@@ -1,6 +1,6 @@
 import type { Conversation } from '#src/llm/domain/conversation';
 import type { Message } from '#src/llm/domain/message';
-import type { RecoveryStore, Revision } from '#src/recovery/domain/recoveryStore';
+import type { BranchMove, RecoveryStore, Revision } from '#src/recovery/domain/recoveryStore';
 import { HistoryExpiredError } from '#src/recovery/domain/runTree';
 
 /** What an agent reads of its workspace's history. */
@@ -159,6 +159,8 @@ export async function undoNote({
 			`Files left as they were, because the history cannot copy them (a folder, a link, or a file over 64 MB): ${notCopied.map(path => relativeTo(root, path)).join(', ')}`,
 		);
 	}
+	const commits = commitLines(followed.revisions);
+	if (commits.length > 0) lines.push('', commitsHeading, ...commits);
 	const reasons = followed.revisions.flatMap(revision =>
 		revision.reason ? [revision.reason] : [],
 	);
@@ -171,6 +173,69 @@ export async function undoNote({
 		'Check the current state of a file before relying on what an earlier turn saw of it.',
 	);
 	return lines.join('\n');
+}
+
+const commitsHeading = 'What git did with the commits of the runs the user moved over:';
+
+/**
+ * What the model is told when the user moved the workspace over runs that made commits, and no
+ * turn of its conversation was undone, such as after a redo: what git did with those commits.
+ * `undefined` when the moves went over no commit.
+ */
+export function commitsNote(revisions: readonly Revision[]): string | undefined {
+	const commits = commitLines(revisions);
+	if (commits.length === 0) return undefined;
+	return [
+		'Note from the harness: the user moved the workspace through its history.',
+		'',
+		commitsHeading,
+		...commits,
+		'',
+		"Check the current state of a file, and git's, before relying on what an earlier turn saw.",
+	].join('\n');
+}
+
+/** One line per branch and action of every move, oldest first. */
+function commitLines(revisions: readonly Revision[]): string[] {
+	return revisions.flatMap(revision => revision.git ?? []).map(describeBranchMove);
+}
+
+const verbs: Record<BranchMove['action'], string> = {
+	keep: 'keep',
+	revert: 'revert',
+	reset: 'remove',
+	reapply: 'put back',
+};
+
+function describeBranchMove({
+	repository,
+	branch,
+	action,
+	outcome,
+	reason,
+	commits,
+}: BranchMove): string {
+	const where = `${branch} in ${repository}`;
+	const listed = commits
+		.map(({ sha, original, subject }) =>
+			original === undefined
+				? `${sha.slice(0, 7)} ${subject}`
+				: `${original.slice(0, 7)} ${subject}, now ${sha.slice(0, 7)}`,
+		)
+		.join('; ');
+	if (outcome === 'left') {
+		return `- ${where}: git could not ${verbs[action]} ${listed}, so the branch was left as it was: ${reason ?? 'no reason given'}`;
+	}
+	if (action === 'keep') {
+		return commits[0]?.direction === 'redo'
+			? `- ${where} holds ${listed}, which match the files again.`
+			: `- ${where} still holds ${listed}: their files went back, so git shows their changes as undone.`;
+	}
+	if (action === 'revert')
+		return `- ${where}: ${listed} reverted, by new commits that take them back.`;
+	if (action === 'reset')
+		return `- ${where}: ${listed} removed; the branch went back to before them.`;
+	return `- ${where}: ${listed} put back on the branch.`;
 }
 
 /** The undone turns as plain text, for a model to summarize. Bounded, and marked when cut. */

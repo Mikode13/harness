@@ -2887,3 +2887,38 @@ tags: #mikode-harness #recovery #git #api-design
 - Each command costs a few `git` calls before and after it, a few milliseconds each.
 - A process that dies between a command's commit and its record loses the attribution: the commit stays, unnamed.
 - After an undo with `keep`, git shows the restored files as changes against a commit that still holds the run's: the host decides what to tell the user, from `git`.
+
+## Undoing reverts or resets a run's commits on request, and redoing always puts them back
+
+tags: #mikode-harness #recovery #git #api-design
+
+**Decision:**
+
+- **`MoveOptions.commits` chooses what undoing does:** `keep`, the default, `revert`, which adds commits that take them back, or `reset`, which moves the branch back to before them only when no other commit is among them or on top, none is a merge, which a redo could not cherry-pick back, the branch's upstream holds none of them, and the branch is still checked out.
+- **Redoing always puts back what an earlier move took back,** whatever the option says: files and commits come back together. After a reset, the branch goes forward to the same commits when it has not moved since; otherwise they are cherry-picked, as new commits, as after a revert. `BranchMove.action` gains `reapply`, and `MovedCommit.original` names the commit a cherry-picked one re-applies.
+- **Git never touches the files, only the branch and the index.** A revert or a cherry-pick is merged in memory with `git merge-tree --merge-base`, three ways, as `git revert` and `git cherry-pick` merge, and committed with `commit-tree`; a commit with no parent is merged against a commit of the empty tree. A conflict leaves the branch. This needs git 2.40; with an older git, a revert or a cherry-pick is reported as left, naming the version, while `keep`, a reset and a redo that goes forward after one still work. The branch moves with `update-ref`, only if it is still where the move read it; then the index of the paths that changed is brought to the new tip, except where the user staged something that matches neither tip, or something under or above a path that turns from a file into a folder or back: that is kept, and the logger is told which paths, since the user chose it and nothing in the history holds a copy. Those paths come from `diff-tree`, which compares the stored trees with no rename detection, so a rename updates the index of both paths, and each entry is written exactly with `update-index`, never as a pathspec, which would reach whatever the index holds under a folder. The index is locked as git locks it, from before it is read until the one written replaces it: `index.lock` is created only if no one holds it, the entries are read and written in a copy, written whole rather than split, and the copy replaces the index through the lock. While another git process holds the lock, the branch is left. No hook of the repository runs: a `reference-transaction` or `post-index-change` hook that changed files would write outside the journal while the move restores them. Once the branch has moved, a failure to update the index is a warning, and only a failing logger ends the move, which the next move then reports as stopped. The files are the history's to move, as the journal says: a run that only committed an earlier run's edit, once undone, leaves that edit in place, now a change git shows.
+- **When git cannot follow, the branch is left as it was,** and the move reports `outcome: 'left'` with the reason: the branch is not checked out, a merge, rebase, cherry-pick or revert is in progress, the worktree is a sparse checkout or its index holds `skip-worktree` entries, which an index written entry by entry would lose, another git process holds the index, a change does not apply, a commit is a merge, or a reset would drop other commits or published ones. The files move either way.
+- **Where each commit is now is read from the moves recorded,** not stored apart, per repository, branch, commit and the run that recorded it: a revert or reset that was done took it back from that branch, and a re-apply put it, or its new commit, back.
+- **A move whose process stopped goes on from where git stopped,** recorded branch by branch in the move in progress, with each branch's move recorded before git makes it. A finished branch is not moved again; the one git was moving is reported as moved when it is where git was taking it, and left otherwise; those after it are moved as usual. So the move's report, and the commit states read from it, say what git did.
+- **The model is told after every move with commits,** one line per branch and action, in the note about undone turns, or in a note of its own when nothing was undone.
+
+**Context:** #140, decided with the user on 2026-10-29 and 2026-10-30. The second of three pull requests; the orchestrator's committer stage is the third. The first version ran git's own commands before moving the files; the review showed they rewrote files the journal decides, and could abort a cherry-pick of the user's. The second applied each commit's patch to an index of its own; the review showed that a patch placed by its context can land on another block that matches it, changing what the commit never touched, and on 2026-10-31 the user chose `merge-tree` and git 2.40.
+
+**Alternatives considered:**
+
+- **Redo following the option too,** so `keep` would leave reverted commits reverted. The consumer chooses per move, but the default would leave files and commits apart after a redo.
+- **Reporting every branch of a cut phase as left.** No state beyond the phase begun, but a branch git had moved was reported as not moved, its commits' state was lost, and a redo then left them off the branch.
+- **Always cherry-picking after a reset.** One path, but new SHAs where the originals could come back.
+- **`git revert`, `git reset --keep` and `git cherry-pick` in the workspace.** Git's own commands, with its messages and hooks, but they write the files, which may not be what the journal says, and aborting a failed one could abort an operation of the user's.
+- **Applying each commit's patch with `git apply --cached`.** It runs on git 2.36, but a hunk is placed where its context matches, which may be another block than the one the commit changed.
+- **A temporary worktree for `git revert` and `git cherry-pick`.** Git's own merge on git 2.36, but a checkout of the whole tree on every move, and a worktree to clean up when the process dies.
+- **A merge of our own, with `read-tree -m` and `merge-file`.** No newer git, but more code that merges unlike git, with no rename detection or merge drivers.
+- **Storing each commit's state apart.** Direct, but a second record that the moves already hold.
+
+**Consequences:**
+
+- A revert or a cherry-pick makes commits as the user, signed when `commit.gpgsign` says so, and no hook runs; an identity git lacks makes the branch left. A revert's message is git's own; a re-applied commit keeps its author and message. Each commit it makes is written in UTF-8, whatever `i18n.commitEncoding` says.
+- A change that later commits touched in the same lines does not apply, and the branch is left: there is no merge to resolve it.
+- A merge commit is never taken back or re-applied.
+- A commit two runs both recorded, such as one a later command brought forward again, is taken back or put back once, and named for each run.
+- A branch that git moved before the process stopped may keep the index of its old tip, and the lock git takes on the index: the logger is told, and the user checks `git status`.

@@ -248,19 +248,27 @@ reason the host gave, and a move the process did not finish is finished by the n
 run.
 
 The journal also records the commits a command made (`RecordedCommits`): a run that made one
-stays in the history even if it changed no file. A move restores files only: it names the
-commits of the runs it went over in its `git`, one `BranchMove` per branch, each commit with
-its run and whether it was undone or redone, leaving out those the branch no longer holds,
-which `gitCommits.ts` asks git; the commits stay where they are (`keep`).
+stays in the history even if it changed no file. A move takes care of those commits before
+it moves the files, per branch, in `gitCommits.ts`, on the branch and the index only, never
+the files: undoing keeps them, reverts them or resets the branch to before them, as
+`MoveOptions.commits` says, and redoing puts back what an earlier move took back, forward to
+the same commits after a reset when the branch has not moved, cherry-picked otherwise; where
+each commit is now is read from the moves recorded so far (`commitStates`). When git cannot
+follow, the branch is left as it was. The move reports it in its `git`, one `BranchMove` per
+branch and action, and records in the move in progress how far git got, branch by branch, and
+the move of a branch before git makes it. A move whose process stopped goes on from there: a
+finished branch is not moved again, the one git was moving is reported as moved when it is
+where git was taking it, and left otherwise, and those after it are moved as usual. An agent
+following the workspace is told what git did (`commitsNote`).
 
 Moves and runs share the workspace lock. While it holds that lock, a run or a move also
 claims the folders it may write, its first root and the other `write` roots it was opened
 with, in `FolderClaims`, the state directory's `claims/` shared by every history; a move
-also claims each file its steps write outside those folders, read from the journal, since a
-history opened by its first root alone does not know a run's other roots; a worktree's
-removal claims the worktree, and whichever finds the other's live claim on an overlapping
-folder gives way. A claim that cannot be read, other than one gone meanwhile, refuses the
-claim being made.
+also claims each file its steps write outside those folders, and each repository its runs
+made commits in, read from the journal, since a history opened by its first root alone does
+not know a run's other roots; a worktree's removal claims the worktree, and whichever finds
+the other's live claim on an overlapping folder gives way. A claim that cannot be read,
+other than one gone meanwhile, refuses the claim being made.
 
 A run that changed nothing, because it prepared no change or abandoned every one, is
 discarded when it finishes, and the workspace goes back to its parent. That is read from its
