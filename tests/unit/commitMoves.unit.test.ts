@@ -742,6 +742,31 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 		]);
 	});
 
+	it.each([
+		{
+			policy: 'reset' as const,
+			setUp: () => git('config', 'core.sparseCheckout', 'true'),
+			reason: () => `${root} uses a sparse checkout, which the history does not follow`,
+		},
+		{
+			policy: 'revert' as const,
+			setUp: () => git('update-index', '--skip-worktree', 'a.txt'),
+			reason: () =>
+				`the index of ${root} holds skip-worktree entries, which the history does not follow`,
+		},
+	])(
+		'leaves the branch on $policy in a sparse checkout, or with skip-worktree entries',
+		async ({ policy, setUp, reason }) => {
+			const { history, sha } = await committedRun();
+			setUp();
+
+			const undone = await history.undo({ commits: policy });
+
+			expect(head()).toBe(sha);
+			expect(undone.git?.[0]).toMatchObject({ action: policy, outcome: 'left', reason: reason() });
+		},
+	);
+
 	it('leaves the branch while the user has a cherry-pick in progress, and the cherry-pick too', async () => {
 		const { history } = await committedRun();
 		const marker = join(root, '.git', 'CHERRY_PICK_HEAD');

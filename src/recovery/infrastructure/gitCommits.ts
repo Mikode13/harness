@@ -404,7 +404,8 @@ async function keptOn(
 /**
  * Why git cannot change `branch` in `repository` now, or `undefined` when it can: it must still be
  * checked out there, with no merge, rebase, cherry-pick or revert in progress, which moving the
- * branch under would spoil.
+ * branch under would spoil, and no sparse checkout, whose `skip-worktree` entries an index
+ * written entry by entry would lose, so git would show the files it leaves out as deleted.
  */
 async function notReady(repository: string, branch: string): Promise<string | undefined> {
 	try {
@@ -416,6 +417,20 @@ async function notReady(repository: string, branch: string): Promise<string | un
 			if (await exists(resolve(repository, path.stdout.replace(/\n$/, '')))) {
 				return `a merge, rebase, cherry-pick or revert is in progress in ${repository}`;
 			}
+		}
+		const sparse = await git(
+			['config', '--bool', '--get', 'core.sparseCheckout'],
+			repository,
+			uncancelled,
+		);
+		if (firstLine(sparse.stdout) === 'true') {
+			return `${repository} uses a sparse checkout, which the history does not follow`;
+		}
+		// Set by a sparse checkout, or by hand with `git update-index --skip-worktree`.
+		const entries = await git(['ls-files', '-t', '-z'], repository, uncancelled);
+		if (entries.exitCode !== 0) return gitReason('list the index', entries);
+		if (nulSeparated(entries.stdout).some(entry => entry.startsWith('S '))) {
+			return `the index of ${repository} holds skip-worktree entries, which the history does not follow`;
 		}
 	} catch (error) {
 		return `the harness could not read the state of ${repository}: ${errorText(error)}`;

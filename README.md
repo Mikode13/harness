@@ -823,7 +823,8 @@ conflicts, and each commit with the run that made it, whether the move undid or 
 run, and, for one cherry-picked, the `original` it re-applies. The files move either way. An
 agent over the workspace is told what git did with them, on its next run. Reverting and
 cherry-picking need git 2.40 or later; with an older git, the branch is left, and the `reason`
-names the version.
+names the version. In a sparse checkout, or with `skip-worktree` entries in the index, only `keep`
+follows: the other actions leave the branch.
 
 ```ts
 const move = await history.undo({ commits: 'revert' });
