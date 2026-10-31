@@ -72,6 +72,15 @@ async function tip(): Promise<gitCommits.BranchTip> {
 	return read;
 }
 
+/** The `head.json` of the one workspace the tests' state directory holds. */
+function headFile(): string {
+	const [state] = readdirSync(join(parent, 'state'), { recursive: true, encoding: 'utf8' })
+		.filter(path => path.endsWith('head.json'))
+		.map(path => join(parent, 'state', path));
+	if (state === undefined) throw new Error('no head.json in the state directory');
+	return state;
+}
+
 function head(): string {
 	return git('rev-parse', 'HEAD');
 }
@@ -452,11 +461,8 @@ describe('a move over runs that made commits', { timeout: 20_000 }, () => {
 		const second = await run(tool, 'commit');
 		const secondSha = head();
 		// The process died going to the start, once git began and before it moved the branch.
-		const [state] = readdirSync(join(parent, 'state'), { recursive: true, encoding: 'utf8' })
-			.filter(path => path.endsWith('head.json'))
-			.map(path => join(parent, 'state', path));
 		writeFileSync(
-			state ?? '',
+			headFile(),
 			JSON.stringify({
 				runId: second.runId,
 				revision: 0,
@@ -1155,9 +1161,6 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 
 	/** Makes the move in progress the undo of `runId`, cut as git was about to reset its commit. */
 	function cutReset(runId: string, sha: string, start: string): void {
-		const [state] = readdirSync(join(parent, 'state'), { recursive: true, encoding: 'utf8' })
-			.filter(path => path.endsWith('head.json'))
-			.map(path => join(parent, 'state', path));
 		const report = {
 			repository: root,
 			branch: 'main',
@@ -1166,7 +1169,7 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 			commits: [{ sha, subject: 'change a', runId, direction: 'undo' }],
 		};
 		writeFileSync(
-			state ?? '',
+			headFile(),
 			JSON.stringify({
 				runId,
 				revision: 0,
@@ -1218,9 +1221,6 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 
 	it('reports a branch a cut move finished as it did, without running git on it again', async () => {
 		const { opened, runId, sha } = await committedRun();
-		const [state] = readdirSync(join(parent, 'state'), { recursive: true, encoding: 'utf8' })
-			.filter(path => path.endsWith('head.json'))
-			.map(path => join(parent, 'state', path));
 		const report = {
 			repository: root,
 			branch: 'main',
@@ -1230,7 +1230,7 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 			commits: [{ sha, subject: 'change a', runId, direction: 'undo' }],
 		};
 		writeFileSync(
-			state ?? '',
+			headFile(),
 			JSON.stringify({
 				runId,
 				revision: 0,
