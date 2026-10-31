@@ -632,3 +632,22 @@ read 2,228 input tokens, about $0.0001, and each took 160 to 260 ms.
   made-up case. Whether it holds on real contexts is for the live round.
 - **What changed:** the Jev compactor keeps a result from a score of 2, one request per result.
   See "The Jev compactor: Jev chooses which tool results stay word for word" in decisions.md.
+
+## What a Codex review round reads (2026-10-30)
+
+Eight Codex review rounds on the first pull request of #140 cost about 9.5M tokens. One round
+was measured call by call.
+
+### A padded Markdown table made every architecture change cost 40K tokens
+
+- **What happened:** Prettier pads each row of a Markdown table to its longest cell. The
+  `src/tools/` row of the module table in `architecture.md` had grown to over 6,000 characters,
+  so all 13 lines of the table were 6,365 characters long, almost all of it spaces. A change
+  that moved the longest cell padded every row again, and the diff showed the whole table twice.
+- **Evidence:** a round made 22 model calls, its context growing from 11K to 98K tokens, about
+  1.46M input tokens in all, since each call sends the context again. Its largest reads were
+  `architecture.md` with `AGENTS.md` (69K characters), the whole diff (68K) and the diff of
+  `architecture.md` alone (66K). For a few sentences, `architecture.md`'s diff against the
+  integration branch was 163K characters.
+- **What changed:** the module table became a section per module, each a paragraph or a list
+  wrapped like the rest of the document, so a change shows only the lines it touches.
