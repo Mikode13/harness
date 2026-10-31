@@ -23,11 +23,14 @@ import {
 } from '#src/recovery/infrastructure/gitCommits';
 import { isAbortError } from '#src/shared/domain/isAbortError';
 import { describeFailure } from '#src/shared/domain/providerFailure';
-import { firstLine, type ProcessResult } from '#src/shared/infrastructure/runProcess';
+import {
+	firstLine,
+	gitEnvironment,
+	type ProcessResult,
+} from '#src/shared/infrastructure/runProcess';
 import { AccessDeniedError, type AccessPolicy } from '#src/tools/domain/accessPolicy';
 import { EditUnconfirmedError } from '#src/tools/domain/fileEdits';
 import { CommandCheckpoint, type CoveredFiles } from '#src/tools/infrastructure/commandCheckpoint';
-import { environmentFor } from '#src/tools/infrastructure/commandTool';
 import { withoutColors } from '#src/tools/infrastructure/commandOutput';
 import { runCommandProcess } from '#src/tools/infrastructure/commandProcess';
 import type { WorkspaceWrites } from '#src/tools/infrastructure/workspaceWrites';
@@ -52,15 +55,6 @@ const diffLines = 400;
 const styleSubjects = 10;
 // Each git call that reads or stages, which a filter of the repository's may slow down.
 const gitTimeoutMs = 2 * 60_000;
-// What git needs to sign a commit as `commit.gpgsign` asks, with gpg or ssh, beyond what a
-// command gets: the repository's hooks and filters run with it.
-const signingVariables = [
-	'SSH_AUTH_SOCK',
-	'GPG_TTY',
-	'GNUPGHOME',
-	'GPG_AGENT_INFO',
-	'XDG_CONFIG_HOME',
-];
 
 /** A blob in a tree or in the index, and its mode. */
 interface GitEntry {
@@ -425,7 +419,7 @@ export class GitCommitter implements Committer {
 				['-c', 'color.ui=never', 'commit', '--only', '-F', messageFile, '--', ...paths],
 				{
 					cwd: repository,
-					env: { ...committerEnvironment(), GIT_LITERAL_PATHSPECS: '1' },
+					env: { ...gitEnvironment(), GIT_LITERAL_PATHSPECS: '1' },
 					timeoutMs: commitTimeoutMs,
 					outputBytes: commitOutputBytes,
 					signal,
@@ -810,20 +804,6 @@ function ready(signal: AbortSignal): GitRunner {
 }
 
 /**
- * A command's environment, and what signing needs: the provider keys, and every other secret of
- * this process, stay out of the repository's hooks and filters.
- */
-function committerEnvironment(): NodeJS.ProcessEnv {
-	const signing = Object.fromEntries(
-		signingVariables.flatMap(variable => {
-			const value = process.env[variable];
-			return value === undefined ? [] : [[variable, value]];
-		}),
-	);
-	return { ...environmentFor({}), ...signing };
-}
-
-/**
  * Git with every pathspec taken literally, so a path is never read as a pattern. It runs in a
  * process group of its own, as a command does, so a filter it starts stops with it: with the run's
  * `signal`, or past `gitTimeoutMs`, which fails and is not a cancellation.
@@ -838,7 +818,7 @@ async function runGit(
 	const printed = { stdout: [] as Buffer[], stderr: [] as Buffer[] };
 	const result = await runCommandProcess('git', ['-c', 'color.ui=never', ...args], {
 		cwd: repository,
-		env: { ...committerEnvironment(), ...(literal ? { GIT_LITERAL_PATHSPECS: '1' } : {}) },
+		env: { ...gitEnvironment(), ...(literal ? { GIT_LITERAL_PATHSPECS: '1' } : {}) },
 		timeoutMs: gitTimeoutMs,
 		outputBytes: 1,
 		signal,

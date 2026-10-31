@@ -295,8 +295,10 @@ into the next call.
 ### `src/shared/`
 
 `ILogger` and its stderr implementation, `runProcess`, which runs a program with its
-arguments as an array and never through a shell, and `gitEnvironment`, the environment
-without the `GIT_` variables that would point git at another repository, `isAbortError`,
+arguments as an array and never through a shell, `inheritedEnvironment`, the few variables
+a program of the repository's gets, and `gitEnvironment`, those and what git needs to find its
+configuration and sign, never a secret, since git runs the repository's hooks, filters and
+drivers, nor the `GIT_` variables that would point it at another repository, `isAbortError`,
 `isOneOf`, `Tokens`, `Session`, which the agents answer with and the history records,
 `Validator`, the error types and the functions that classify a failure. The failure contract
 lives here because the model clients use it as much as the agents do.

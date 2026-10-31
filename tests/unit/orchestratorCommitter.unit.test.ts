@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Agent, AgentResponse } from '../../src/agent/domain/agent.ts';
 import type { RepositoryCommit } from '../../src/agent/domain/commitReport.ts';
 import type { Asker } from '../../src/agent/domain/question.ts';
+import { RunContext, withRunContext } from '../../src/agent/domain/runContext.ts';
 import type {
 	Committer,
 	FrozenChanges,
@@ -181,6 +182,19 @@ describe("the orchestrator's committer", () => {
 		const { committer, freeze } = fakeCommitter();
 
 		const response = await orchestrator({ committer }).run('task', { signal });
+
+		expect(freeze).not.toHaveBeenCalled();
+		expect(response).not.toHaveProperty('commits');
+	});
+
+	it("commits nothing in another agent's run, whose changes are not all its own", async () => {
+		const { committer, freeze } = fakeCommitter();
+		const outer = new RunContext({ id: 'outer-session' });
+
+		const response = await orchestrator({ committer }).run(
+			'task',
+			withRunContext({ signal, ask: yes }, outer),
+		);
 
 		expect(freeze).not.toHaveBeenCalled();
 		expect(response).not.toHaveProperty('commits');

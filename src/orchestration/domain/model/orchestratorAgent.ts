@@ -288,7 +288,8 @@ export class OrchestratorAgent implements Agent {
 
 		try {
 			const runOptions = inherited ? options : withRunContext(options, context);
-			const approved = await this.runRounds(prompt, runOptions, totals);
+			// Only a run of its own: inside another agent's, the run holds that agent's changes too.
+			const approved = await this.runRounds(prompt, runOptions, totals, !inherited);
 			// Before the run's records end: its commit is one of its changes.
 			commits = await this.commitStage(prompt, approved, runOptions, totals);
 			end = 'completed';
@@ -328,6 +329,7 @@ export class OrchestratorAgent implements Agent {
 		prompt: string,
 		options: RunOptions,
 		totals: RunTotals,
+		ownRun: boolean,
 	): Promise<{ plan: string; frozen: FrozenChanges | undefined }> {
 		let lastFailureReason: string | undefined;
 
@@ -370,7 +372,7 @@ export class OrchestratorAgent implements Agent {
 			}
 
 			// Before the review, so what is committed is what the reviewer read.
-			const frozen = await this.freeze(options);
+			const frozen = ownRun ? await this.freeze(options) : undefined;
 			const reviewerDecision = await this.getReviewerDecision(
 				prompt,
 				plannerResponse.response,
@@ -572,7 +574,7 @@ export class OrchestratorAgent implements Agent {
 			}
 			if (unreviewed.length > 0) {
 				this.warn(
-					`The committer's commit in ${repository} holds what the reviewer did not see, which a hook or a filter changed: ${unreviewed.join(', ')}`,
+					`The committer's commit in ${repository} holds what the reviewer did not see, changed while git committed it, by a hook, a filter or an edit: ${unreviewed.join(', ')}`,
 				);
 			}
 		}

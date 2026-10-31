@@ -13,6 +13,7 @@ import {
 	describeFailure,
 	treatErrors,
 } from '#src/shared/domain/providerFailure';
+import { inheritedEnvironment } from '#src/shared/infrastructure/runProcess';
 import type { AccessPolicy } from '../domain/accessPolicy.ts';
 import {
 	buildArguments,
@@ -39,9 +40,6 @@ import { definePreparingTool } from './defineTool.ts';
 import type { WorkspaceWrites } from './workspaceWrites.ts';
 import type { WriteSession } from './writeSession.ts';
 
-// Only what a toolchain needs to find itself and its locale. Everything else, the provider
-// keys included, stays in this process.
-const inheritedVariables = ['PATH', 'HOME', 'TMPDIR', 'USER', 'SHELL', 'LANG'];
 // Never cancelled: once a command has run, the commits it made must reach the history.
 const uncancelled = new AbortController().signal;
 // Long enough for a slow disk, short enough not to hold up building an agent.
@@ -500,14 +498,7 @@ export function environmentFor(
 	definition: Pick<CommandDefinition, 'env'>,
 	env: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-	const inherited: NodeJS.ProcessEnv = {};
-	for (const [variable, value] of Object.entries(env)) {
-		if (value === undefined) continue;
-		if (inheritedVariables.includes(variable) || variable.startsWith('LC_')) {
-			inherited[variable] = value;
-		}
-	}
-	return { ...inherited, ...definition.env };
+	return { ...inheritedEnvironment(env), ...definition.env };
 }
 
 function describeTool(commands: Commands): string {

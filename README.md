@@ -664,9 +664,10 @@ the commits of a command, and redoing puts it back. `AgentResponse.commits` repo
 `committed`, `declined`, `nothing` when no file could be committed, or `failed` when git
 refused every commit, as a hook that rejects it does. The run succeeds either way, with the
 files changed. Each repository says its `outcome`, the commits made, the paths they hold and
-those left out, a hook's included, and `unreviewed`, the paths a hook or a filter changed in the commit beyond what was
-reviewed. When git cannot be read, the run fails with `UnrecoverableError`, and so it does when
-the committer fails, as any role's failure ends the run. It does not commit
+those left out, a hook's included, and `unreviewed`, the paths a hook, a filter or an edit made while git committed changed beyond
+what was reviewed. When git cannot be read, the run fails with `UnrecoverableError`, and so it does when
+the committer fails, as any role's failure ends the run. An orchestrator that runs inside another agent's run, as an agent of `agentAsTool`, never
+commits: that run holds the other agent's changes too. It does not commit
 on Windows, where `autoCommit` is an `InvalidAgentConfigError`.
 
 ```ts

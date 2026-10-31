@@ -26,7 +26,7 @@ export interface RepositoryCommit {
 	leftOut: { path: string; reason: string }[];
 	/**
 	 * Committed paths whose content is not what the reviewer approved, relative to `repository`:
-	 * a hook or a filter of git's changed or added them.
+	 * a hook or a filter of git's changed or added them, or someone edited them while git committed.
 	 */
 	unreviewed: string[];
 }
