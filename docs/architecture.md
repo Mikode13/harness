@@ -541,7 +541,7 @@ progress or a sparse checkout, is refused whole. Once the reviewer approves, the
 asks through `ask`, unless `autoCommit` is set, then runs the committer agent once per
 repository with the request, the plan, the bounded diff and the branch's recent subjects.
 `commit` takes the session's write lock (`exclusive`), checks that the tip and every frozen
-file are as they were, and opens a `CommandCheckpoint` named for the committer: it adds the
+file, and its index entry, are as they were, and opens a `CommandCheckpoint` named for the committer: it adds the
 new files and runs `git commit --only` with `GIT_LITERAL_PATHSPECS`, so hooks run and the
 rest of the index stays. The commits it made go into the journal as the run's, and the move
 policies of `src/recovery/` apply to them. A hook's rejection unstages what it added and is

@@ -173,6 +173,91 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		});
 	});
 
+	it('leaves out a file whose staged version is yours, and commits what the run staged itself', async () => {
+		writeFileSync(join(root, 'a.txt'), 'staged by you\n');
+		git('add', 'a.txt');
+		writeFileSync(join(root, 'a.txt'), 'one\n');
+		const { run, committer, options } = await workingRun({
+			edit: 'echo two > a.txt && echo new > b.txt && git add b.txt',
+		});
+		await run('edit');
+
+		const frozen = await committer.freeze(options);
+
+		expect(frozen?.repositories[0]).toMatchObject({
+			paths: ['b.txt'],
+			leftOut: [{ path: 'a.txt', reason: 'its staged version holds changes of yours' }],
+		});
+		await committer.commit(frozen ?? { repositories: [] }, new Map([[root, 'Add b']]), options);
+		expect(git('show', '--format=', '--name-only', 'HEAD')).toBe('b.txt');
+		expect(git('show', ':a.txt')).toBe('staged by you');
+	});
+
+	it('leaves out a file whose mode changed after the run', async () => {
+		const { run, committer, options } = await workingRun({ edit: 'echo two > a.txt' });
+		await run('edit');
+		chmodSync(join(root, 'a.txt'), 0o755);
+
+		const frozen = await committer.freeze(options);
+
+		expect(frozen?.repositories[0]).toMatchObject({
+			paths: [],
+			leftOut: [{ path: 'a.txt', reason: 'it changed after the task last changed it' }],
+		});
+	});
+
+	it('names a file a hook left out of the commit, not as committed', async () => {
+		hook('pre-commit', 'git reset -q HEAD -- a.txt');
+		const { run, committer, options } = await workingRun({
+			edit: 'echo two > a.txt && echo new > b.txt',
+		});
+		await run('edit');
+		const frozen = await committer.freeze(options);
+
+		const reports = await committer.commit(
+			frozen ?? { repositories: [] },
+			new Map([[root, 'Change a']]),
+			options,
+		);
+
+		expect(git('show', '--format=', '--name-only', 'HEAD')).toBe('b.txt');
+		expect(reports[0]).toMatchObject({
+			outcome: 'done',
+			paths: ['b.txt'],
+			leftOut: [{ path: 'a.txt', reason: 'a hook left it out of the commit' }],
+		});
+	});
+
+	it('ends with the cancellation when the run is cancelled before git commits, and unstages the new files', async () => {
+		const { opened, run, options, context } = await workingRun({
+			edit: 'echo two > a.txt && echo new > b.txt',
+		});
+		await run('edit');
+		const controller = new AbortController();
+		const cancelling = new GitCommitter({
+			store: opened.store,
+			writes: opened.writes,
+			covered: opened.covered,
+			policy: opened.policy,
+			runCommit: () => {
+				controller.abort();
+				return Promise.reject(new DOMException('The run was cancelled', 'AbortError'));
+			},
+		});
+		const frozen = await cancelling.freeze(options);
+		const start = head();
+
+		await expect(
+			cancelling.commit(
+				frozen ?? { repositories: [] },
+				new Map([[root, 'Change a']]),
+				withRunContext({ signal: controller.signal }, context),
+			),
+		).rejects.toMatchObject({ name: 'AbortError' });
+		expect(head()).toBe(start);
+		expect(git('status', '--porcelain')).toBe('M a.txt\n?? b.txt');
+	});
+
 	it('leaves the repository when a file changes after the review', async () => {
 		const { run, committer, options } = await workingRun({ edit: 'echo two > a.txt' });
 		await run('edit');

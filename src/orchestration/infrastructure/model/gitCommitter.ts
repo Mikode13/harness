@@ -20,6 +20,7 @@ import {
 	notReady,
 	readTip,
 } from '#src/recovery/infrastructure/gitCommits';
+import { isAbortError } from '#src/shared/domain/isAbortError';
 import { describeFailure } from '#src/shared/domain/providerFailure';
 import { firstLine, gitEnvironment, runProcess } from '#src/shared/infrastructure/runProcess';
 import { AccessDeniedError, type AccessPolicy } from '#src/tools/domain/accessPolicy';
@@ -47,14 +48,22 @@ const reasonCharacters = 2000;
 // The diff the message is written from: enough to say what changed, not the whole change.
 const diffLines = 400;
 const styleSubjects = 10;
+// Each git call that reads or stages, which a filter of the repository's may slow down.
+const gitTimeoutMs = 2 * 60_000;
+
+/** A blob in a tree or in the index, and its mode. */
+interface GitEntry {
+	mode: string;
+	sha: string;
+}
 
 /** What git holds, or would hold, at one path: the blob as git stores it, and its mode. */
 interface PathState {
 	exists: boolean;
 	sha?: string;
 	mode?: string;
-	/** Whether HEAD holds the path, which `git add` needs to know for a new file. */
-	inHead: boolean;
+	/** What HEAD holds there: none for a new file, which `git add` needs, and what staging matches. */
+	inHead?: GitEntry;
 }
 
 /** What one repository's commit would hold when it was frozen. */
@@ -173,17 +182,20 @@ export class GitCommitter implements Committer {
 		const ignored = await ignoredOf(
 			repository,
 			candidates.map(candidate => candidate.rel),
+			signal,
 		);
 		const wanted = candidates.filter(candidate => !ignored.has(candidate.rel));
 		const inHead = await treeOf(
 			repository,
 			head,
 			wanted.map(({ rel }) => rel),
+			signal,
 		);
 		const before = await treeOf(
 			repository,
-			await startOf(repository, branch, head, commits),
+			await startOf(repository, branch, head, commits, signal),
 			wanted.map(({ rel }) => rel),
+			signal,
 		);
 
 		const paths = new Map<string, PathState>();
@@ -193,7 +205,7 @@ export class GitCommitter implements Committer {
 				leftOut.push({ path: name, reason: 'it changed after the task last changed it' });
 				continue;
 			}
-			if (!(await this.matches(repository, name, change.before, before.get(name)))) {
+			if (!(await this.matches(repository, name, change.before, before.get(name), signal))) {
 				leftOut.push({ path: name, reason: 'it held changes of yours before this task' });
 				continue;
 			}
@@ -202,14 +214,22 @@ export class GitCommitter implements Committer {
 				leftOut.push({ path: name, reason: 'git holds a link or a submodule there' });
 				continue;
 			}
-			const now = await stateOf(repository, name, path);
+			const now = await stateOf(repository, name, path, signal);
 			if (now.mode !== undefined && !isFile(now.mode)) {
 				leftOut.push({ path: name, reason: 'it is a link or a folder now' });
 				continue;
 			}
 			// Already committed, such as by a command the executor ran.
 			if (sameBlob(now, headEntry)) continue;
-			paths.set(name, { ...now, inHead: headEntry !== undefined });
+			paths.set(name, { ...now, ...(headEntry ? { inHead: headEntry } : {}) });
+		}
+		// `--only` would replace what the user staged there, which nothing else holds.
+		const staged = await indexOf(repository, [...paths.keys()], signal);
+		for (const [name, state] of paths) {
+			if (stagedApart(staged.get(name), state)) {
+				paths.delete(name);
+				leftOut.push({ path: name, reason: 'its staged version holds changes of yours' });
+			}
 		}
 
 		const eligible = new Set(
@@ -230,22 +250,28 @@ export class GitCommitter implements Committer {
 				paths: [...paths.keys()],
 				leftOut,
 				diff,
-				style: await styleOf(repository, head),
+				style: await styleOf(repository, head, signal),
 			},
 			state: { branch, head, paths },
 		};
 	}
 
-	/** Whether the file holds what the run left in it, by the history's own hash. */
+	/** Whether the file holds what the run left in it, by the history's own hash, and its mode. */
 	private async held(path: string, after: FileState): Promise<boolean> {
 		let content: Buffer;
+		let mode: number;
 		try {
+			mode = (await stat(path)).mode;
 			content = await readFile(path);
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === 'ENOENT') return !after.exists;
 			throw error;
 		}
-		return after.exists && createHash('sha256').update(content).digest('hex') === after.hash;
+		return (
+			after.exists &&
+			gitMode(mode) === gitMode(after.mode) &&
+			createHash('sha256').update(content).digest('hex') === after.hash
+		);
 	}
 
 	/**
@@ -256,7 +282,8 @@ export class GitCommitter implements Committer {
 		repository: string,
 		name: string,
 		before: FileState,
-		entry: { mode: string; sha: string } | undefined,
+		entry: GitEntry | undefined,
+		signal: AbortSignal,
 	): Promise<boolean> {
 		if (!before.exists) return entry === undefined;
 		if (!entry) return false;
@@ -264,7 +291,7 @@ export class GitCommitter implements Committer {
 		try {
 			const copy = join(scratch, 'before');
 			await writeFile(copy, await this.store.readContent(before.hash));
-			const hashed = await git(['hash-object', `--path=${name}`, copy], repository);
+			const hashed = await git(['hash-object', `--path=${name}`, copy], repository, signal);
 			return firstLine(hashed) === entry.sha && gitMode(before.mode) === entry.mode;
 		} finally {
 			await rm(scratch, { recursive: true, force: true });
@@ -336,9 +363,12 @@ export class GitCommitter implements Committer {
 		const blocked = await notReady(repository, branch);
 		if (blocked !== undefined) return left(blocked);
 		const changed: string[] = [];
+		const staged = await indexOf(repository, [...state.paths.keys()], signal);
 		for (const [name, frozenState] of state.paths) {
-			const now = await stateOf(repository, name, join(repository, ...name.split('/')));
-			if (!sameState(now, frozenState)) changed.push(name);
+			const now = await stateOf(repository, name, join(repository, ...name.split('/')), signal);
+			if (!sameState(now, frozenState) || stagedApart(staged.get(name), frozenState)) {
+				changed.push(name);
+			}
 		}
 		if (changed.length > 0) {
 			return left(`files changed since the review: ${changed.join(', ')}`);
@@ -365,7 +395,7 @@ export class GitCommitter implements Committer {
 			const messageFile = join(scratch, 'message');
 			await writeFile(messageFile, message.endsWith('\n') ? message : `${message}\n`);
 			// A new file is not known to git, which `--only` commits from.
-			if (added.length > 0) await git(['add', '--', ...added], repository);
+			if (added.length > 0) await git(['add', '--', ...added], repository, signal);
 			result = await this.runCommit(
 				'git',
 				// `--only`: these paths, from the files, whatever else the index holds.
@@ -415,33 +445,36 @@ export class GitCommitter implements Committer {
 				'A hook of the commit could not be stopped: something it started may still be changing files. Writing has stopped for this run.',
 			);
 		}
+		// What it staged for the commit, the user had not: it goes back to untracked.
+		if (made.length === 0 && added.length > 0) {
+			await git(['reset', '-q', '--', ...added], repository).catch(() => undefined);
+		}
+		if (isAbortError(failure)) throw failure;
 		if (result?.outcome === 'cancelled') signal.throwIfAborted();
 
 		const passed = result?.outcome === 'exited' && result.exitCode === 0;
-		if (!passed || made.length === 0) {
-			// What it staged for the commit, the user had not: it goes back to untracked.
-			if (made.length === 0 && added.length > 0) {
-				await git(['reset', '-q', '--', ...added], repository).catch(() => undefined);
-			}
-			const printed = result ? withoutColors(result.output).trim() : '';
-			const why =
-				failure !== undefined
+		const printed = result ? withoutColors(result.output).trim() : '';
+		const why =
+			passed && made.length > 0
+				? undefined
+				: failure !== undefined
 					? `git could not run: ${describeFailure(failure)}`
 					: result?.outcome === 'timedOut'
 						? 'git ran past its limit and was stopped'
 						: printed === ''
 							? 'git made no commit'
 							: printed.slice(-reasonCharacters);
-			return report(made.length === 0 ? 'rejected' : 'done', {
-				reason: why,
-				commits: made,
-				paths: made.length === 0 ? [] : paths,
-			});
-		}
+		if (made.length === 0) return report('rejected', why === undefined ? {} : { reason: why });
+		const committed = await whatCommitted(repository, made, state.paths);
 		return report('done', {
+			...(why === undefined ? {} : { reason: why }),
 			commits: made,
-			paths,
-			unreviewed: await unreviewedIn(repository, made, state.paths),
+			paths: committed.paths,
+			leftOut: [
+				...frozen.leftOut,
+				...committed.omitted.map(path => ({ path, reason: 'a hook left it out of the commit' })),
+			],
+			unreviewed: committed.unreviewed,
 		});
 	}
 }
@@ -485,12 +518,17 @@ async function tipOf(
 }
 
 /** The paths of `names` git ignores, asked one at a time: `-z` needs a standard input. */
-async function ignoredOf(repository: string, names: readonly string[]): Promise<Set<string>> {
+async function ignoredOf(
+	repository: string,
+	names: readonly string[],
+	signal: AbortSignal,
+): Promise<Set<string>> {
 	const ignored = new Set<string>();
 	for (const name of names) {
 		// It takes paths, not pathspecs, and refuses to be told they are literal.
 		const checked = await runGit(['check-ignore', '-q', '--', name], repository, {
 			literal: false,
+			signal,
 		});
 		// 1: git does not ignore it.
 		if (checked.exitCode === 0) ignored.add(name);
@@ -504,10 +542,15 @@ async function treeOf(
 	repository: string,
 	tree: string | undefined,
 	names: readonly string[],
-): Promise<Map<string, { mode: string; sha: string }>> {
-	const entries = new Map<string, { mode: string; sha: string }>();
+	signal: AbortSignal = uncancelled,
+): Promise<Map<string, GitEntry>> {
+	const entries = new Map<string, GitEntry>();
 	if (tree === undefined || names.length === 0) return entries;
-	const listed = await git(['ls-tree', '-z', '--full-tree', tree, '--', ...names], repository);
+	const listed = await git(
+		['ls-tree', '-z', '--full-tree', tree, '--', ...names],
+		repository,
+		signal,
+	);
 	for (const line of nulSeparated(listed)) {
 		const tab = line.indexOf('\t');
 		const [mode = '', , sha = ''] = line.slice(0, tab).split(' ');
@@ -525,11 +568,14 @@ async function startOf(
 	branch: string,
 	head: string | undefined,
 	commits: readonly RecordedCommits[],
+	signal: AbortSignal,
 ): Promise<string | undefined> {
 	const first = commits.find(made => made.repository === repository && made.branch === branch)
 		?.commits[0]?.sha;
 	if (first === undefined) return head;
-	const parent = await runGit(['rev-parse', '-q', '--verify', `${first}~1^{commit}`], repository);
+	const parent = await runGit(['rev-parse', '-q', '--verify', `${first}~1^{commit}`], repository, {
+		signal,
+	});
 	return parent.exitCode === 0 ? firstLine(parent.stdout) : undefined;
 }
 
@@ -541,6 +587,7 @@ async function stateOf(
 	repository: string,
 	name: string,
 	path: string,
+	signal: AbortSignal,
 ): Promise<Omit<PathState, 'inHead'>> {
 	let found: Stats;
 	try {
@@ -550,14 +597,40 @@ async function stateOf(
 		throw error;
 	}
 	if (!found.isFile()) return { exists: true, mode: found.isSymbolicLink() ? '120000' : 'other' };
-	const hashed = await git(['hash-object', '--', name], repository);
+	const hashed = await git(['hash-object', '--', name], repository, signal);
 	return { exists: true, sha: firstLine(hashed), mode: gitMode(found.mode) };
 }
 
-function sameBlob(
-	state: Omit<PathState, 'inHead'>,
-	entry: { mode: string; sha: string } | undefined,
-): boolean {
+/** What the index holds at each of `names`, merged entries only. */
+async function indexOf(
+	repository: string,
+	names: readonly string[],
+	signal: AbortSignal,
+): Promise<Map<string, GitEntry>> {
+	const entries = new Map<string, GitEntry>();
+	if (names.length === 0) return entries;
+	const listed = await git(['ls-files', '-s', '-z', '--', ...names], repository, signal);
+	for (const line of nulSeparated(listed)) {
+		const tab = line.indexOf('\t');
+		const [mode = '', sha = '', stage = ''] = line.slice(0, tab).split(' ');
+		if (stage === '0') entries.set(line.slice(tab + 1), { mode, sha });
+	}
+	return entries;
+}
+
+/**
+ * Whether the index holds a version of the path that is neither HEAD's nor the one a commit would
+ * hold: one the user staged.
+ */
+function stagedApart(staged: GitEntry | undefined, state: PathState): boolean {
+	const asInHead =
+		staged === undefined
+			? state.inHead === undefined
+			: staged.sha === state.inHead?.sha && staged.mode === state.inHead.mode;
+	return !asInHead && !sameBlob(state, staged);
+}
+
+function sameBlob(state: Omit<PathState, 'inHead'>, entry: GitEntry | undefined): boolean {
 	if (!state.exists) return entry === undefined;
 	return entry !== undefined && entry.sha === state.sha && entry.mode === state.mode;
 }
@@ -575,7 +648,11 @@ function gitMode(mode: number): string {
 }
 
 /** The subjects of the branch's latest commits, newest first. */
-async function styleOf(repository: string, head: string | undefined): Promise<string[]> {
+async function styleOf(
+	repository: string,
+	head: string | undefined,
+	signal: AbortSignal,
+): Promise<string[]> {
 	if (head === undefined) return [];
 	const log = await git(
 		[
@@ -588,19 +665,20 @@ async function styleOf(repository: string, head: string | undefined): Promise<st
 			'--',
 		],
 		repository,
+		signal,
 	);
 	return log.split('\n').filter(subject => subject !== '');
 }
 
 /**
- * The committed paths whose content is not what was frozen: one a hook changed, or one it added
- * that the run did not change.
+ * What the commits hold of what was frozen: the frozen paths they committed, those a hook left out,
+ * and the committed paths whose content is not what was frozen, one a hook changed or added.
  */
-async function unreviewedIn(
+async function whatCommitted(
 	repository: string,
 	made: readonly Commit[],
 	frozen: ReadonlyMap<string, PathState>,
-): Promise<string[]> {
+): Promise<{ paths: string[]; omitted: string[]; unreviewed: string[] }> {
 	const touched = new Set<string>();
 	for (const { sha } of made) {
 		const listed = await git(
@@ -617,22 +695,54 @@ async function unreviewedIn(
 		const entry = committed.get(name);
 		if (!state || !sameBlob(state, entry)) unreviewed.push(name);
 	}
-	return unreviewed;
+	const names = [...frozen.keys()];
+	return {
+		paths: names.filter(name => touched.has(name)),
+		omitted: names.filter(name => !touched.has(name)),
+		unreviewed,
+	};
 }
 
-async function git(args: string[], repository: string): Promise<string> {
-	const result = await runGit(args, repository);
+async function git(
+	args: string[],
+	repository: string,
+	signal: AbortSignal = uncancelled,
+): Promise<string> {
+	const result = await runGit(args, repository, { signal });
 	if (result.exitCode !== 0) throw gitFailed(`run git ${args[0] ?? ''}`, result);
 	return result.stdout;
 }
 
-/** Git with every pathspec taken literally, so a path is never read as a pattern. */
-function runGit(args: string[], repository: string, { literal = true } = {}) {
-	return runProcess('git', ['-c', 'color.ui=never', ...args], {
-		cwd: repository,
-		signal: uncancelled,
-		env: { ...gitEnvironment(), ...(literal ? { GIT_LITERAL_PATHSPECS: '1' } : {}) },
-	});
+/**
+ * Git with every pathspec taken literally, so a path is never read as a pattern. It stops with the
+ * run's `signal`, and fails past `gitTimeoutMs`, which is not a cancellation.
+ */
+async function runGit(
+	args: string[],
+	repository: string,
+	{ literal = true, signal = uncancelled }: { literal?: boolean; signal?: AbortSignal } = {},
+) {
+	const timer = new AbortController();
+	const timeout = setTimeout(() => {
+		timer.abort();
+	}, gitTimeoutMs);
+	try {
+		return await runProcess('git', ['-c', 'color.ui=never', ...args], {
+			cwd: repository,
+			signal: AbortSignal.any([signal, timer.signal]),
+			env: { ...gitEnvironment(), ...(literal ? { GIT_LITERAL_PATHSPECS: '1' } : {}) },
+		});
+	} catch (error) {
+		if (timer.signal.aborted && !signal.aborted) {
+			throw new Error(
+				`git ${args[0] ?? ''} did not finish within ${String(gitTimeoutMs / 1000)} seconds`,
+				{ cause: error },
+			);
+		}
+		throw error;
+	} finally {
+		clearTimeout(timeout);
+	}
 }
 
 function gitFailed(what: string, { stderr }: { stderr: string }): Error {

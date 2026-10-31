@@ -651,8 +651,9 @@ commits with git, so the repository's hooks run. Its progress arrives with
 A commit holds what the reviewer read: the run's changes are taken before each review, and a
 repository where any of them changed since is left uncommitted. It holds only the run's own
 files, never what else is staged. A file is left out, and the report says why, when it held
-changes of yours before the run, changed after the run last changed it, was changed by
-someone else while the run worked, or is a link or a submodule in git; ignored files and files a command of the run already committed are not
+changes of yours before the run, or a version of yours staged, changed after the run last
+changed it, was changed by someone else while the run worked, or is a link or a submodule in
+git; ignored files and files a command of the run already committed are not
 committed again. A repository is left whole when no branch is checked out, or when git is in
 the middle of a merge, a rebase or another operation, or in a sparse checkout.
 
@@ -660,8 +661,8 @@ The commit is one of the run's changes: undoing the run keeps, reverts or resets
 the commits of a command, and redoing puts it back. `AgentResponse.commits` reports it:
 `committed`, `declined`, `nothing` when no file could be committed, or `failed` when git
 refused every commit, as a hook that rejects it does. The run succeeds either way, with the
-files changed. Each repository says its `outcome`, the commits made, the paths committed and
-left out, and `unreviewed`, the paths a hook or a filter changed in the commit beyond what was
+files changed. Each repository says its `outcome`, the commits made, the paths they hold and
+those left out, a hook's included, and `unreviewed`, the paths a hook or a filter changed in the commit beyond what was
 reviewed. When git cannot be read, the run fails with `UnrecoverableError`, and so it does when
 the committer fails, as any role's failure ends the run. It does not commit
 on Windows, where `autoCommit` is an `InvalidAgentConfigError`.
