@@ -44,6 +44,16 @@ export interface CommitState {
 /** Tells what git could not do while the move went on. */
 export type BranchWarning = (message: string) => void;
 
+/**
+ * What one move tells each branch it changes: where to warn, and, by repository, the paths whose
+ * index the user staged, as found by the phases so far, so a later phase does not take them for
+ * the branch's.
+ */
+export interface BranchMoving {
+	warn: BranchWarning;
+	staged: Map<string, Set<string>>;
+}
+
 // No hook runs: one that changed the files, such as a `reference-transaction` or a
 // `post-index-change` hook, would write outside the journal while a move restores them.
 function git(args: string[], cwd: string, signal: AbortSignal, env: NodeJS.ProcessEnv = {}) {
@@ -178,14 +188,14 @@ export function commitKey(repository: string, branch: string, sha: string, runId
 export async function undoCommits(
 	commits: readonly BranchCommit[],
 	policy: CommitsPolicy,
-	{ interrupted, warn }: { interrupted: boolean; warn: BranchWarning },
+	{ interrupted, moving }: { interrupted: boolean; moving: BranchMoving },
 ): Promise<BranchMove[]> {
 	const reports: BranchMove[] = [];
 	for (const { repository, branch, commits: all } of byBranch(commits)) {
 		const live = all.filter(commit => commit.taken === undefined);
 		if (live.length === 0) continue;
 		if (policy === 'keep') {
-			const kept = await keptOn(repository, branch, live, warn);
+			const kept = await keptOn(repository, branch, live, moving.warn);
 			if (kept) reports.push(kept);
 			continue;
 		}
@@ -195,8 +205,8 @@ export async function undoCommits(
 		}
 		const moved =
 			policy === 'revert'
-				? await revert(repository, branch, live, warn)
-				: await reset(repository, branch, live, warn);
+				? await revert(repository, branch, live, moving)
+				: await reset(repository, branch, live, moving);
 		if (moved) reports.push(moved);
 	}
 	return reports;
@@ -209,7 +219,7 @@ export async function undoCommits(
  */
 export async function redoCommits(
 	commits: readonly BranchCommit[],
-	{ interrupted, warn }: { interrupted: boolean; warn: BranchWarning },
+	{ interrupted, moving }: { interrupted: boolean; moving: BranchMoving },
 ): Promise<BranchMove[]> {
 	const reports: BranchMove[] = [];
 	for (const { repository, branch, commits: all } of byBranch(commits)) {
@@ -218,14 +228,14 @@ export async function redoCommits(
 			repository,
 			branch,
 			all.filter(commit => commit.taken === undefined),
-			warn,
+			moving.warn,
 		);
 		if (kept) reports.push(kept);
 		if (taken.length === 0) continue;
 		reports.push(
 			interrupted
 				? report(repository, branch, 'reapply', taken, stoppedReason)
-				: await reapply(repository, branch, taken, warn),
+				: await reapply(repository, branch, taken, moving),
 		);
 	}
 	return reports;
@@ -346,7 +356,7 @@ async function revert(
 	repository: string,
 	branch: string,
 	commits: readonly BranchCommit[],
-	warn: BranchWarning,
+	moving: BranchMoving,
 ): Promise<BranchMove | undefined> {
 	const blocked = (await notReady(repository, branch)) ?? (await cannotMerge(repository));
 	if (blocked) return report(repository, branch, 'revert', commits, blocked);
@@ -380,7 +390,7 @@ async function revert(
 	} catch (error) {
 		return left(`git could not revert them: ${errorText(error)}`);
 	}
-	const moved = await moveBranch(repository, branch, from, tip, warn);
+	const moved = await moveBranch(repository, branch, from, tip, moving);
 	return moved ? left(moved) : report(repository, branch, 'revert', onIt);
 }
 
@@ -392,7 +402,7 @@ async function reset(
 	repository: string,
 	branch: string,
 	commits: readonly BranchCommit[],
-	warn: BranchWarning,
+	moving: BranchMoving,
 ): Promise<BranchMove> {
 	const left = (reason: string) => report(repository, branch, 'reset', commits, reason);
 	const blocked = await notReady(repository, branch);
@@ -401,6 +411,8 @@ async function reset(
 	let target: string | undefined;
 	try {
 		from = await branchTip(repository, branch);
+		// Every one, since a merge that is reset away could never be cherry-picked back.
+		for (const { sha } of commits.slice(0, -1)) await parentOf(repository, sha);
 		target = await parentOf(repository, commits.at(-1)?.sha ?? '');
 		if (target === undefined) {
 			return left('the oldest of them starts the branch, so there is no commit to go back to');
@@ -418,7 +430,7 @@ async function reset(
 	} catch (error) {
 		return left(`git could not reset the branch: ${errorText(error)}`);
 	}
-	const moved = await moveBranch(repository, branch, from, target, warn);
+	const moved = await moveBranch(repository, branch, from, target, moving);
 	return moved ? left(moved) : report(repository, branch, 'reset', commits);
 }
 
@@ -454,7 +466,7 @@ async function reapply(
 	repository: string,
 	branch: string,
 	commits: readonly BranchCommit[],
-	warn: BranchWarning,
+	moving: BranchMoving,
 ): Promise<BranchMove> {
 	const left = (reason: string) => report(repository, branch, 'reapply', commits, reason);
 	const blocked = await notReady(repository, branch);
@@ -473,7 +485,7 @@ async function reapply(
 	} catch (error) {
 		return left(`git could not cherry-pick them: ${errorText(error)}`);
 	}
-	const moved = await moveBranch(repository, branch, from, put.tip, warn);
+	const moved = await moveBranch(repository, branch, from, put.tip, moving);
 	return moved ? left(moved) : report(repository, branch, 'reapply', put.commits);
 }
 
@@ -695,11 +707,14 @@ async function moveBranch(
 	branch: string,
 	from: string,
 	to: string,
-	warn: BranchWarning,
+	moving: BranchMoving,
 ): Promise<string | undefined> {
+	const { warn } = moving;
+	const staged = moving.staged.get(repository) ?? new Set<string>();
+	moving.staged.set(repository, staged);
 	let update;
 	try {
-		update = await indexUpdate(repository, from, to);
+		update = await indexUpdate(repository, from, to, staged);
 		const moved = await git(
 			[
 				'update-ref',
@@ -742,10 +757,16 @@ interface IndexUpdate {
 /**
  * What brings the index of the paths that differ between `from` and `to` to `to`. A path whose
  * entry matches `from` follows the branch; one that matches `to` already has; any other holds
- * what the user staged, and so does one whose new file or folder would take the place of an entry
- * the user staged above or under it.
+ * what the user staged, and so does one an earlier phase of the move found staged, in `staged`,
+ * which this adds to, and one whose new file or folder would take the place of an entry the user
+ * staged above or under it.
  */
-async function indexUpdate(repository: string, from: string, to: string): Promise<IndexUpdate> {
+async function indexUpdate(
+	repository: string,
+	from: string,
+	to: string,
+	staged: Set<string>,
+): Promise<IndexUpdate> {
 	// Both sides of a rename: the index must drop the old path and take the new one.
 	const changed = await git(
 		['diff-tree', '-r', '-z', '--name-only', '--no-renames', from, to],
@@ -756,8 +777,9 @@ async function indexUpdate(repository: string, from: string, to: string): Promis
 	const offOld = await stagedAgainst(repository, from);
 	const offNew = await stagedAgainst(repository, to);
 	const differing = nulSeparated(changed.stdout);
-	const following = new Set(differing.filter(path => !offOld.has(path)));
-	const kept = differing.filter(path => offOld.has(path) && offNew.has(path));
+	for (const path of differing) if (offOld.has(path)) staged.add(path);
+	const following = new Set(differing.filter(path => !staged.has(path)));
+	const kept = differing.filter(path => staged.has(path) && offNew.has(path));
 	const entries = await treeEntries(repository, to, following);
 
 	// The user's entries, and every folder they sit in.

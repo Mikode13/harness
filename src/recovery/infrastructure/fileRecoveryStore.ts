@@ -20,6 +20,7 @@ import type { ILogger } from '#src/shared/domain/logger';
 import { FolderClaims } from './folderClaims.ts';
 import {
 	type BranchCommit,
+	type BranchMoving,
 	type BranchWarning,
 	type CommitState,
 	commitKey,
@@ -205,6 +206,8 @@ interface PendingMove {
 	 */
 	gitUndo?: { done?: BranchMove[] };
 	gitRedo?: { done?: BranchMove[] };
+	/** By repository, the paths whose index the user staged, found by the git phases so far. */
+	staged?: Record<string, string[]>;
 	/**
 	 * The temporary a file is being restored through, named before it is created, so finishing
 	 * the move removes this one and no file of the user's.
@@ -660,6 +663,15 @@ export class FileRecoveryStore implements RecoveryStore {
 				'Recovery store logger failed while reporting commits it could not check',
 			);
 		};
+		const moving: BranchMoving = {
+			warn,
+			staged: new Map(
+				Object.entries(pending.staged ?? {}).map(([repository, paths]) => [
+					repository,
+					new Set(paths),
+				]),
+			),
+		};
 		// Git first, on the branch and the index only: the files are the steps' to move, as the
 		// journal says, whatever the commits hold.
 		const gitPhase = async (
@@ -673,13 +685,16 @@ export class FileRecoveryStore implements RecoveryStore {
 				await save();
 			}
 			pending[phase] = { done: await act(begun !== undefined) };
+			pending.staged = Object.fromEntries(
+				[...moving.staged].map(([repository, paths]) => [repository, [...paths]]),
+			);
 			await save();
 		};
 
 		await gitPhase('gitUndo', async interrupted =>
 			undoCommits(await this.commitsOver(undo, 'undo', states), pending.commits ?? 'keep', {
 				interrupted,
-				warn,
+				moving,
 			}),
 		);
 		for (const runId of undo) {
@@ -688,7 +703,7 @@ export class FileRecoveryStore implements RecoveryStore {
 			await save();
 		}
 		await gitPhase('gitRedo', async interrupted =>
-			redoCommits(await this.commitsOver(redo, 'redo', states), { interrupted, warn }),
+			redoCommits(await this.commitsOver(redo, 'redo', states), { interrupted, moving }),
 		);
 		for (const runId of redo) {
 			pending.conflicts.push(...(await this.step(runId, 'redo', announce)));
@@ -700,6 +715,7 @@ export class FileRecoveryStore implements RecoveryStore {
 		delete pending.temporary;
 		const { conflicts, gitUndo, gitRedo, ...rest } = pending;
 		delete rest.commits;
+		delete rest.staged;
 		const git = [...(gitUndo?.done ?? []), ...(gitRedo?.done ?? [])];
 		const revision: Revision = {
 			...rest,

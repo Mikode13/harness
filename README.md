@@ -812,7 +812,8 @@ move's options:
   changes against a commit that still holds the run's.
 - `revert` adds commits that take them back.
 - `reset` moves the branch back to before them, only when no other commit is among them or on
-  top, the branch's upstream holds none of them, and the branch is still checked out.
+  top, none is a merge, the branch's upstream holds none of them, and the branch is still
+  checked out.
 
 Redoing, or a `goTo` forward, always puts back what an earlier move took back: the branch goes
 forward to the same commits when it has not moved since a reset, and they are cherry-picked,

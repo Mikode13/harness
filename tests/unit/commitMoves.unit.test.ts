@@ -165,7 +165,7 @@ describe('the commits between two tips of a branch', () => {
 					},
 				],
 				'keep',
-				{ interrupted: false, warn: () => undefined },
+				{ interrupted: false, moving: { warn: () => undefined, staged: new Map() } },
 			),
 		).resolves.toMatchObject([{ branch: 'main', commits: [{ sha: head() }] }]);
 	});
@@ -733,6 +733,23 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 		expect(undone.git?.[0]).toMatchObject({ action: 'reset', outcome: 'left' });
 	});
 
+	it('resets nothing when a merge is among the commits, which could not be put back', async () => {
+		const { tool } = await commandTool({
+			merge: shell(
+				'git switch --quiet -c side && git commit --quiet --allow-empty -m S && git switch --quiet main && git commit --quiet --allow-empty -m M && git merge --quiet --no-ff --no-edit side',
+			),
+		});
+		await run(tool, 'merge');
+		const tip = head();
+		const history = await createHistory({ root, stateDirectory: join(parent, 'state') });
+
+		const undone = await history.undo({ commits: 'reset' });
+
+		expect(head()).toBe(tip);
+		expect(undone.git?.[0]).toMatchObject({ action: 'reset', outcome: 'left' });
+		expect(undone.git?.[0]?.reason).toMatch(/is a merge, which the history does not take back/);
+	});
+
 	it('takes a commit back from one branch and still from another that holds it', async () => {
 		const { tool } = await commandTool({
 			commit: shell('echo two > a.txt && git commit --quiet -am "change a"'),
@@ -847,6 +864,36 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 		expect(git('show', ':f/c')).toBe('c');
 		expect(warnings).toContainEqual(
 			`The history moved main in ${root} and kept what was staged in f, which git now shows against the new tip`,
+		);
+	});
+
+	it('keeps what the user staged across both halves of a move to another branch', async () => {
+		const { tool } = await commandTool({
+			two: shell('echo two > a.txt && git commit --quiet -am "two"'),
+			three: shell('echo three > a.txt && git commit --quiet -am "three"'),
+		});
+		const { runId: first } = await run(tool, 'two');
+		const store = await FileRecoveryStore.open({
+			root,
+			directory: join(parent, 'state'),
+			logger: { warn: (message: unknown) => warnings.push(String(message)) },
+		});
+		await store.undo({ commits: 'reset' });
+		await run(tool, 'three');
+		// What the user stages is the start's, where the move passes between the two runs.
+		writeFileSync(join(root, 'a.txt'), 'one\n');
+		git('add', 'a.txt');
+		writeFileSync(join(root, 'a.txt'), 'three\n');
+
+		const moved = await store.goTo(first, { commits: 'reset' });
+
+		expect(moved.git?.map(({ action, outcome }) => `${action} ${outcome}`)).toEqual([
+			'reset done',
+			'reapply done',
+		]);
+		expect(git('show', ':a.txt')).toBe('one');
+		expect(warnings).toContainEqual(
+			`The history moved main in ${root} and kept what was staged in a.txt, which git now shows against the new tip`,
 		);
 	});
 
