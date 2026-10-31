@@ -752,6 +752,36 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 		expect(git('log', '-1', '--format=%s')).toBe('Revert "change a"');
 	});
 
+	it('keeps what the user staged in a path the commits changed, and warns', async () => {
+		const { opened, sha } = await committedRun();
+		const start = git('rev-parse', `${sha}^`);
+		writeFileSync(join(root, 'a.txt'), 'three\n');
+		git('add', 'a.txt');
+		writeFileSync(join(root, 'a.txt'), 'two\n');
+
+		const undone = await opened.store.undo({ commits: 'reset' });
+
+		expect(undone).toMatchObject({ git: [{ action: 'reset', outcome: 'done' }] });
+		expect(head()).toBe(start);
+		expect(readA()).toBe('one\n');
+		expect(git('show', ':a.txt')).toBe('three');
+		expect(warnings).toEqual([
+			`The history moved main in ${root} and kept what was staged in a.txt, which git now shows against the new tip`,
+		]);
+	});
+
+	it('warns of nothing staged that already matches the new tip', async () => {
+		const { opened } = await committedRun();
+		writeFileSync(join(root, 'a.txt'), 'one\n');
+		git('add', 'a.txt');
+		writeFileSync(join(root, 'a.txt'), 'two\n');
+
+		await opened.store.undo({ commits: 'reset' });
+
+		expect(git('status', '--porcelain')).toBe('');
+		expect(warnings).toEqual([]);
+	});
+
 	it("re-applies the stored contents, whatever the user's diff configuration converts", async () => {
 		writeFileSync(join(root, '.git', 'info', 'attributes'), '*.txt diff=upper\n');
 		git('config', 'diff.upper.textconv', 'tr a-z A-Z');

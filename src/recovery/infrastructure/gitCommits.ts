@@ -677,7 +677,8 @@ async function authorOf(
 /**
  * Moves `branch` from `from` to `to`, only if it is still at `from`, then brings the index of the
  * paths that differ to `to`, so git shows the files against the new tip: the files themselves
- * are left as they are. Returns why it could not move the branch; once the branch moved, a failure
+ * are left as they are. What the user staged in one of those paths, matching neither tip, is kept
+ * and goes to `warn`. Returns why it could not move the branch; once the branch moved, a failure
  * to update the index goes to `warn`, and only what `warn` throws escapes.
  */
 async function moveBranch(
@@ -688,6 +689,7 @@ async function moveBranch(
 	warn: BranchWarning,
 ): Promise<string | undefined> {
 	let paths;
+	let kept;
 	try {
 		// Both sides of a rename: the index must drop the old path and take the new one.
 		const changed = await git(
@@ -696,6 +698,13 @@ async function moveBranch(
 			uncancelled,
 		);
 		if (changed.exitCode !== 0) return gitReason('compare the branch before and after', changed);
+		// The index of a path that matches the old tip follows the branch; one that matches the new
+		// tip already has; any other holds what the user staged.
+		const offOld = await stagedAgainst(repository, from);
+		const offNew = await stagedAgainst(repository, to);
+		const differing = nulSeparated(changed.stdout);
+		paths = differing.filter(path => !offOld.has(path));
+		kept = differing.filter(path => offOld.has(path) && offNew.has(path));
 		const moved = await git(
 			[
 				'update-ref',
@@ -709,9 +718,13 @@ async function moveBranch(
 			uncancelled,
 		);
 		if (moved.exitCode !== 0) return gitReason('move the branch', moved);
-		paths = changed.stdout.split('\0').filter(path => path !== '');
 	} catch (error) {
 		return `git could not move the branch: ${errorText(error)}`;
+	}
+	if (kept.length > 0) {
+		warn(
+			`The history moved ${branch} in ${repository} and kept what was staged in ${kept.join(', ')}, which git now shows against the new tip`,
+		);
 	}
 	const unindexed = await indexAt(repository, to, paths);
 	if (unindexed !== undefined) {
@@ -720,6 +733,21 @@ async function moveBranch(
 		);
 	}
 	return undefined;
+}
+
+/** The paths whose entry in the index differs from `tree`. */
+async function stagedAgainst(repository: string, tree: string): Promise<Set<string>> {
+	const compared = await git(
+		['diff-index', '--cached', '-z', '--name-only', '--no-renames', tree],
+		repository,
+		uncancelled,
+	);
+	if (compared.exitCode !== 0) throw gitFailed('compare the index', compared);
+	return new Set(nulSeparated(compared.stdout));
+}
+
+function nulSeparated(text: string): string[] {
+	return text.split('\0').filter(path => path !== '');
 }
 
 /** Brings the index of `paths`, taken literally, to `to`, or returns why it could not. */
