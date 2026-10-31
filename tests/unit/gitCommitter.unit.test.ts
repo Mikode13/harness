@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import {
 	chmodSync,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -11,7 +12,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RunOptions } from '../../src/agent/domain/agent.ts';
 import { RunContext, withRunContext } from '../../src/agent/domain/runContext.ts';
 import { createHistory } from '../../src/index.ts';
@@ -402,6 +403,53 @@ describe('the git committer', { timeout: 20_000 }, () => {
 			outcome: 'left',
 			reason: 'files changed since the review: a.txt',
 		});
+	});
+
+	it('unstages what it added with no hook, after a hook rejects the commit', async () => {
+		hook('pre-commit', 'exit 1');
+		const { run, committer, options } = await workingRun({ edit: 'echo new > b.txt' });
+		await run('edit');
+		const frozen = await committer.freeze(options);
+		// Only the reset takes b.txt out of the index: a hook that ran after it would leave a mark.
+		hook(
+			'post-index-change',
+			'git ls-files --error-unmatch b.txt >/dev/null 2>&1 || touch "$(git rev-parse --git-dir)/unstaged-seen"',
+		);
+
+		await committer.commit(frozen ?? { repositories: [] }, new Map([[root, 'Add b']]), options);
+
+		expect(git('status', '--porcelain')).toBe('?? b.txt');
+		expect(existsSync(join(root, '.git', 'unstaged-seen'))).toBe(false);
+	});
+
+	it('fails to freeze a repository git cannot read, rather than take it for none', async () => {
+		const { run, committer, options } = await workingRun({ edit: 'echo two > a.txt' });
+		await run('edit');
+		writeFileSync(join(root, '.git', 'HEAD'), 'not a ref\n');
+
+		await expect(committer.freeze(options)).rejects.toThrow('git could not read the repository');
+	});
+
+	it("runs the commit's hooks without the harness's secrets, with what signing needs", async () => {
+		hook('pre-commit', 'env > "$(git rev-parse --git-dir)/hook-env"');
+		const { run, committer, options } = await workingRun({ edit: 'echo two > a.txt' });
+		await run('edit');
+		const frozen = await committer.freeze(options);
+		vi.stubEnv('OPENAI_API_KEY', 'a secret');
+		vi.stubEnv('SSH_AUTH_SOCK', '/tmp/agent.sock');
+		try {
+			await committer.commit(
+				frozen ?? { repositories: [] },
+				new Map([[root, 'Change a']]),
+				options,
+			);
+		} finally {
+			vi.unstubAllEnvs();
+		}
+
+		const seen = readFileSync(join(root, '.git', 'hook-env'), 'utf8');
+		expect(seen).not.toContain('OPENAI_API_KEY');
+		expect(seen).toContain('SSH_AUTH_SOCK=/tmp/agent.sock');
 	});
 
 	it('refuses a repository with no branch checked out', async () => {

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Stats } from 'node:fs';
 import { lstat, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { devNull, tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import type { RunOptions } from '#src/agent/domain/agent';
 import type { RepositoryCommit } from '#src/agent/domain/commitReport';
@@ -22,14 +22,11 @@ import {
 } from '#src/recovery/infrastructure/gitCommits';
 import { isAbortError } from '#src/shared/domain/isAbortError';
 import { describeFailure } from '#src/shared/domain/providerFailure';
-import {
-	firstLine,
-	gitEnvironment,
-	type ProcessResult,
-} from '#src/shared/infrastructure/runProcess';
+import { firstLine, type ProcessResult } from '#src/shared/infrastructure/runProcess';
 import { AccessDeniedError, type AccessPolicy } from '#src/tools/domain/accessPolicy';
 import { EditUnconfirmedError } from '#src/tools/domain/fileEdits';
 import { CommandCheckpoint, type CoveredFiles } from '#src/tools/infrastructure/commandCheckpoint';
+import { environmentFor } from '#src/tools/infrastructure/commandTool';
 import { withoutColors } from '#src/tools/infrastructure/commandOutput';
 import { runCommandProcess } from '#src/tools/infrastructure/commandProcess';
 import type { WorkspaceWrites } from '#src/tools/infrastructure/workspaceWrites';
@@ -54,6 +51,15 @@ const diffLines = 400;
 const styleSubjects = 10;
 // Each git call that reads or stages, which a filter of the repository's may slow down.
 const gitTimeoutMs = 2 * 60_000;
+// What git needs to sign a commit as `commit.gpgsign` asks, with gpg or ssh, beyond what a
+// command gets: the repository's hooks and filters run with it.
+const signingVariables = [
+	'SSH_AUTH_SOCK',
+	'GPG_TTY',
+	'GNUPGHOME',
+	'GPG_AGENT_INFO',
+	'XDG_CONFIG_HOME',
+];
 
 /** A blob in a tree or in the index, and its mode. */
 interface GitEntry {
@@ -401,7 +407,7 @@ export class GitCommitter implements Committer {
 				['-c', 'color.ui=never', 'commit', '--only', '-F', messageFile, '--', ...paths],
 				{
 					cwd: repository,
-					env: { ...gitEnvironment(), GIT_LITERAL_PATHSPECS: '1' },
+					env: { ...committerEnvironment(), GIT_LITERAL_PATHSPECS: '1' },
 					timeoutMs: commitTimeoutMs,
 					outputBytes: commitOutputBytes,
 					signal,
@@ -413,7 +419,7 @@ export class GitCommitter implements Committer {
 			await rm(scratch, { recursive: true, force: true });
 		}
 
-		const stopped = result?.stopped ?? !(failure instanceof UnstoppedGitError);
+		let stopped = result?.stopped ?? !(failure instanceof UnstoppedGitError);
 		// Whatever happened, what git made and what its hooks changed reach the history.
 		let made: Commit[];
 		try {
@@ -430,16 +436,23 @@ export class GitCommitter implements Committer {
 				{ cause: error },
 			);
 		}
+		// What it staged for the commit, the user had not, goes back to untracked: inside the
+		// checkpoint, and with no hook, which could change files after the history looked.
+		let unstaged: string | undefined;
+		if (stopped && made.length === 0 && added.length > 0) {
+			try {
+				await git(['-c', `core.hooksPath=${devNull}`, 'reset', '-q', '--', ...added], repository);
+			} catch (error) {
+				if (error instanceof UnstoppedGitError) stopped = false;
+				else unstaged = `the new files it staged stay staged: ${describeFailure(error)}`;
+			}
+		}
 		await close(checkpoint, stopped, session);
 		if (!stopped) {
 			session.stop('Writing stopped: a hook or a filter of the commit could not be stopped');
 			throw new EditUnconfirmedError(
 				'A hook or a filter of the commit could not be stopped: something it started may still be changing files. Writing has stopped for this run.',
 			);
-		}
-		// What it staged for the commit, the user had not: it goes back to untracked.
-		if (made.length === 0 && added.length > 0) {
-			await git(['reset', '-q', '--', ...added], repository).catch(() => undefined);
 		}
 		if (isAbortError(failure)) throw failure;
 		if (result?.outcome === 'cancelled') signal.throwIfAborted();
@@ -456,7 +469,10 @@ export class GitCommitter implements Committer {
 						: printed === ''
 							? 'git made no commit'
 							: printed.slice(-reasonCharacters);
-		if (made.length === 0) return report('rejected', why === undefined ? {} : { reason: why });
+		if (made.length === 0) {
+			const reason = [why, unstaged].filter(part => part !== undefined).join('; ');
+			return report('rejected', reason === '' ? {} : { reason });
+		}
 		const committed = await whatCommitted(repository, made, state.paths);
 		return report('done', {
 			...(why === undefined ? {} : { reason: why }),
@@ -553,8 +569,25 @@ async function tipOf(
 		}
 	}
 	const tip = await readTip(folder, signal);
+	// Git found no repository, though one is there: it cannot read it, which is not "outside".
+	if (!tip && (await gitFolderAbove(folder))) {
+		throw new Error(`git could not read the repository that holds ${folder}`);
+	}
 	tips.set(folder, tip);
 	return tip;
+}
+
+/** Whether `folder`, or a folder above it, holds a `.git`, as a repository's top level does. */
+async function gitFolderAbove(folder: string): Promise<boolean> {
+	for (let current = folder; ; current = dirname(current)) {
+		try {
+			await lstat(join(current, '.git'));
+			return true;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+		}
+		if (dirname(current) === current) return false;
+	}
 }
 
 /** The paths of `names` git ignores, asked one at a time: `-z` needs a standard input. */
@@ -754,6 +787,20 @@ async function git(
 }
 
 /**
+ * A command's environment, and what signing needs: the provider keys, and every other secret of
+ * this process, stay out of the repository's hooks and filters.
+ */
+function committerEnvironment(): NodeJS.ProcessEnv {
+	const signing = Object.fromEntries(
+		signingVariables.flatMap(variable => {
+			const value = process.env[variable];
+			return value === undefined ? [] : [[variable, value]];
+		}),
+	);
+	return { ...environmentFor({}), ...signing };
+}
+
+/**
  * Git with every pathspec taken literally, so a path is never read as a pattern. It runs in a
  * process group of its own, as a command does, so a filter it starts stops with it: with the run's
  * `signal`, or past `gitTimeoutMs`, which fails and is not a cancellation.
@@ -768,7 +815,7 @@ async function runGit(
 	const printed = { stdout: [] as Buffer[], stderr: [] as Buffer[] };
 	const result = await runCommandProcess('git', ['-c', 'color.ui=never', ...args], {
 		cwd: repository,
-		env: { ...gitEnvironment(), ...(literal ? { GIT_LITERAL_PATHSPECS: '1' } : {}) },
+		env: { ...committerEnvironment(), ...(literal ? { GIT_LITERAL_PATHSPECS: '1' } : {}) },
 		timeoutMs: gitTimeoutMs,
 		outputBytes: 1,
 		signal,

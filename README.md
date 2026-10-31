@@ -645,7 +645,9 @@ else, words of your own included, leaves the files changed and uncommitted. `aut
 commits without asking, for CI; without `ask` and without it, nothing is committed. The
 `committer`, on the executor's provider's cheaper model, with no tools, writes the message
 from the request, the plan, the diff and the branch's recent subjects, and the harness
-commits with git, so the repository's hooks run. Its progress arrives with
+commits with git, so the repository's hooks run, with a command's environment and what
+signing needs, `SSH_AUTH_SOCK`, `GPG_TTY`, `GNUPGHOME`, `GPG_AGENT_INFO` and `XDG_CONFIG_HOME`:
+never the provider keys. Its progress arrives with
 `agent: 'committer'`, and its usage counts in the run's.
 
 A commit holds what the reviewer read: the run's changes are taken before each review, and a
