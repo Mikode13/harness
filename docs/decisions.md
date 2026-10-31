@@ -2917,7 +2917,8 @@ tags: #mikode-harness #recovery #git #api-design
 
 **Consequences:**
 
-- A revert or a cherry-pick makes commits as the user, signed when `commit.gpgsign` says so, and no hook runs; an identity git lacks makes the branch left. A revert's message is git's own; a re-applied commit keeps its author and message.
+- A revert or a cherry-pick makes commits as the user, signed when `commit.gpgsign` says so, and no hook runs; an identity git lacks makes the branch left. A revert's message is git's own; a re-applied commit keeps its author and message. Each commit it makes is written in UTF-8, whatever `i18n.commitEncoding` says.
 - A change that later commits touched in the same lines does not apply, and the branch is left: there is no merge to resolve it.
 - A merge commit is never taken back or re-applied.
+- A commit two runs both recorded, such as one a later command brought forward again, is taken back or put back once, and named for each run.
 - A branch that git moved before the process stopped may keep the index of its old tip, and the lock git takes on the index: the logger is told, and the user checks `git status`.

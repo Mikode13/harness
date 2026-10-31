@@ -839,6 +839,64 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 		]);
 	});
 
+	it.each(['revert', 'reset'] as const)(
+		'%ss once a commit two runs on the route both made, and names it for each',
+		async policy => {
+			const { tool } = await commandTool({
+				commit: shell('echo two > a.txt && git commit --quiet -am "change a"'),
+				restore: shell('git merge --quiet --ff-only saved'),
+			});
+			const first = await run(tool, 'commit');
+			const sha = head();
+			const start = git('rev-parse', `${sha}^`);
+			git('branch', 'saved');
+			// The user goes back, and the next run brings the same commit forward again.
+			git('reset', '--quiet', '--hard', start);
+			const second = await run(tool, 'restore');
+			expect(head()).toBe(sha);
+			const history = await createHistory({ root, stateDirectory: join(parent, 'state') });
+
+			const undone = await history.goTo(historyStart, { commits: policy });
+
+			expect(undone.git).toEqual([
+				{
+					repository: root,
+					branch: 'main',
+					action: policy,
+					outcome: 'done',
+					commits: [
+						{ sha, subject: 'change a', runId: second.runId, direction: 'undo' },
+						{ sha, subject: 'change a', runId: first.runId, direction: 'undo' },
+					],
+				},
+			]);
+			if (policy === 'reset') expect(head()).toBe(start);
+			else expect(git('log', '--format=%s', `${sha}..HEAD`)).toBe('Revert "change a"');
+			expect(git('status', '--porcelain')).toBe('');
+
+			const redone = await history.goTo(second.runId);
+
+			const back = head();
+			expect(git('log', '--format=%s', `${start}..HEAD`).split('\n')[0]).toBe('change a');
+			expect(redone.git?.[0]?.commits.map(commit => commit.sha)).toEqual([back, back]);
+			expect(git('status', '--porcelain')).toBe('');
+		},
+	);
+
+	it('writes the message of a commit it makes as UTF-8, whatever encoding the repository names', async () => {
+		const { tool } = await commandTool({
+			commit: shell('echo two > a.txt && git commit --quiet -am "cambió a"'),
+		});
+		await run(tool, 'commit');
+		git('config', 'i18n.commitEncoding', 'ISO-8859-1');
+		const history = await createHistory({ root, stateDirectory: join(parent, 'state') });
+
+		await history.undo({ commits: 'revert' });
+
+		expect(git('cat-file', 'commit', 'HEAD')).not.toContain('encoding ');
+		expect(git('log', '-1', '--encoding=UTF-8', '--format=%s')).toBe('Revert "cambió a"');
+	});
+
 	it('leaves the branch when the change it reverts was changed since, even if a copy matches', async () => {
 		writeFileSync(join(root, 'a.txt'), 'a\nb\nc\nd\ne\nf\ng\n');
 		git('commit', '--quiet', '-am', 'lines');

@@ -277,6 +277,20 @@ function listed(move: BranchMove | undefined): BranchMove[] {
 }
 
 /**
+ * Each commit of `commits` once, where it first appears: two runs record the same one when the
+ * branch went back and a later command brought it forward again, and git takes it back, or puts
+ * it back, once. The report still names it for each run.
+ */
+function once(commits: readonly BranchCommit[]): BranchCommit[] {
+	const seen = new Set<string>();
+	return commits.filter(({ sha }) => {
+		if (seen.has(sha)) return false;
+		seen.add(sha);
+		return true;
+	});
+}
+
+/**
  * Follows each branch in turn, and records after each how far the phase got. A branch an earlier
  * attempt finished is not followed again; the one it was moving when its process stopped is
  * reported as git left it, by `resumedAt`; those after it are followed as usual.
@@ -463,7 +477,7 @@ async function revert(
 	try {
 		from = await branchTip(repository, branch);
 		let made = from;
-		for (const { sha, subject } of onIt) {
+		for (const { sha, subject } of once(onIt)) {
 			const tree = await merged(repository, {
 				base: sha,
 				ours: made,
@@ -501,23 +515,24 @@ async function reset(
 	}
 	const blocked = await notReady(repository, branch);
 	if (blocked) return left(blocked);
+	const distinct = once(commits);
 	let from: string;
 	let target: string | undefined;
 	try {
 		from = await branchTip(repository, branch);
 		// Every one, since a merge that is reset away could never be cherry-picked back.
-		for (const { sha } of commits.slice(0, -1)) await parentOf(repository, sha);
-		target = await parentOf(repository, commits.at(-1)?.sha ?? '');
+		for (const { sha } of distinct.slice(0, -1)) await parentOf(repository, sha);
+		target = await parentOf(repository, distinct.at(-1)?.sha ?? '');
 		if (target === undefined) {
 			return left('the oldest of them starts the branch, so there is no commit to go back to');
 		}
 		const onTop = new Set(await revList(repository, `${target}..${from}`));
-		if (onTop.size !== commits.length || commits.some(commit => !onTop.has(commit.sha))) {
+		if (onTop.size !== distinct.length || distinct.some(commit => !onTop.has(commit.sha))) {
 			return left(
 				'other commits are among them or on top of them, and a reset would drop those too',
 			);
 		}
-		for (const { sha } of commits) {
+		for (const { sha } of distinct) {
 			const published = await isPublished(repository, branch, sha);
 			if (published !== false) return left(published || "the branch's upstream holds them");
 		}
@@ -571,22 +586,35 @@ async function reapply(
 	}
 	const blocked = await notReady(repository, branch);
 	if (blocked) return left(blocked);
+	const distinct = once(commits);
 	let from: string;
-	let put: { tip: string; commits: readonly BranchCommit[] };
+	let put: { tip: string; picked?: ReadonlyMap<string, string> };
 	try {
 		from = await branchTip(repository, branch);
-		const forward = await forwardTo(repository, from, commits);
-		if (forward) put = forward;
+		const forward = await forwardTo(repository, from, distinct);
+		if (forward) put = { tip: forward };
 		else {
 			const unmerged = await cannotMerge(repository);
 			if (unmerged) return left(unmerged);
-			put = await cherryPick(repository, from, commits);
+			put = await cherryPick(repository, from, distinct);
 		}
 	} catch (error) {
 		return left(`git could not cherry-pick them: ${errorText(error)}`);
 	}
-	const done = report(repository, branch, 'reapply', put.commits);
-	const moved = await moveBranch(repository, branch, { from, to: put.tip, report: done }, step);
+	const { tip, picked } = put;
+	const done = report(
+		repository,
+		branch,
+		'reapply',
+		picked
+			? commits.map(commit => ({
+					...commit,
+					sha: picked.get(commit.sha) ?? commit.sha,
+					original: commit.original ?? commit.sha,
+				}))
+			: commits,
+	);
+	const moved = await moveBranch(repository, branch, { from, to: tip, report: done }, step);
 	return moved ? left(moved) : done;
 }
 
@@ -598,23 +626,23 @@ async function forwardTo(
 	repository: string,
 	from: string,
 	commits: readonly BranchCommit[],
-): Promise<{ tip: string; commits: readonly BranchCommit[] } | undefined> {
+): Promise<string | undefined> {
 	if (!commits.every(commit => commit.taken === 'reset')) return undefined;
 	const newest = commits.at(-1)?.sha ?? '';
 	const base = await parentOf(repository, commits[0]?.sha ?? '');
 	if (base !== from) return undefined;
 	const chain = await revList(repository, `${from}..${newest}`);
 	const same = chain.length === commits.length && commits.every(({ sha }) => chain.includes(sha));
-	return same ? { tip: newest, commits } : undefined;
+	return same ? newest : undefined;
 }
 
-/** New commits on `from` that make the changes of `commits`, each naming the one it re-applies. */
+/** New commits on `from` that make the changes of `commits`, and the new one for each. */
 async function cherryPick(
 	repository: string,
 	from: string,
 	commits: readonly BranchCommit[],
-): Promise<{ tip: string; commits: readonly BranchCommit[] }> {
-	const created: BranchCommit[] = [];
+): Promise<{ tip: string; picked: Map<string, string> }> {
+	const picked = new Map<string, string>();
 	let tip = from;
 	for (const commit of commits) {
 		const tree = await merged(repository, {
@@ -624,9 +652,9 @@ async function cherryPick(
 		});
 		const { author, message } = await authorOf(repository, commit.sha);
 		tip = await commitTree(repository, tree, { parent: tip, message, author });
-		created.push({ ...commit, sha: tip, original: commit.original ?? commit.sha });
+		picked.set(commit.sha, tip);
 	}
-	return { tip, commits: created };
+	return { tip, picked };
 }
 
 async function branchTip(repository: string, branch: string): Promise<string> {
@@ -751,6 +779,9 @@ async function commitTree(
 		);
 		const committed = await git(
 			[
+				// The message is written in UTF-8, whatever encoding the repository's commits use.
+				'-c',
+				'i18n.commitEncoding=UTF-8',
 				'commit-tree',
 				...(firstLine(signs.stdout) === 'true' ? ['-S'] : []),
 				tree,
