@@ -262,11 +262,11 @@ workspace is told what git did (`commitsNote`).
 Moves and runs share the workspace lock. While it holds that lock, a run or a move also
 claims the folders it may write, its first root and the other `write` roots it was opened
 with, in `FolderClaims`, the state directory's `claims/` shared by every history; a move
-also claims each file its steps write outside those folders, read from the journal, since a
-history opened by its first root alone does not know a run's other roots; a worktree's
-removal claims the worktree, and whichever finds the other's live claim on an overlapping
-folder gives way. A claim that cannot be read, other than one gone meanwhile, refuses the
-claim being made.
+also claims each file its steps write outside those folders, and each repository its runs
+made commits in, read from the journal, since a history opened by its first root alone does
+not know a run's other roots; a worktree's removal claims the worktree, and whichever finds
+the other's live claim on an overlapping folder gives way. A claim that cannot be read,
+other than one gone meanwhile, refuses the claim being made.
 
 A run that changed nothing, because it prepared no change or abandoned every one, is
 discarded when it finishes, and the workspace goes back to its parent. That is read from its

@@ -1,5 +1,5 @@
 import { mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { devNull, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type {
 	BranchMove,
@@ -44,8 +44,10 @@ export interface CommitState {
 /** Tells what git could not do while the move went on. */
 export type BranchWarning = (message: string) => void;
 
+// No hook runs: one that changed the files, such as a `reference-transaction` or a
+// `post-index-change` hook, would write outside the journal while a move restores them.
 function git(args: string[], cwd: string, signal: AbortSignal, env: NodeJS.ProcessEnv = {}) {
-	return runProcess('git', ['-c', 'color.ui=never', ...args], {
+	return runProcess('git', ['-c', 'color.ui=never', '-c', `core.hooksPath=${devNull}`, ...args], {
 		cwd,
 		signal,
 		env: { ...gitEnvironment(), ...env },
@@ -589,9 +591,21 @@ async function applyChange(
 	);
 	if (diff.exitCode !== 0) throw gitFailed('read the change', diff);
 	if ((await stat(patch)).size === 0) return;
-	const applied = await git(['apply', '--cached', '--binary', patch], repository, uncancelled, {
-		GIT_INDEX_FILE: index,
-	});
+	// The change as it was stored: no whitespace fixed, none ignored when matching.
+	const applied = await git(
+		[
+			'-c',
+			'apply.ignoreWhitespace=no',
+			'apply',
+			'--cached',
+			'--binary',
+			'--whitespace=nowarn',
+			patch,
+		],
+		repository,
+		uncancelled,
+		{ GIT_INDEX_FILE: index },
+	);
 	if (applied.exitCode !== 0) throw gitFailed('apply the change', applied);
 }
 

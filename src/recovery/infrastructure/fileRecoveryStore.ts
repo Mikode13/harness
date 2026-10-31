@@ -608,14 +608,19 @@ export class FileRecoveryStore implements RecoveryStore {
 	/**
 	 * Claims each file the runs on a route changed outside the folders this store claims: a run
 	 * may have written in a folder this store was not opened with, such as a second root a history
-	 * reopened by its first root alone does not know. A worktree holding one is not removed while
-	 * the move writes there.
+	 * reopened by its first root alone does not know. It claims too each repository a run made
+	 * commits in, whose branch and index the move may change. A worktree holding one is not
+	 * removed while the move writes there.
 	 */
 	private async claimFiles(runIds: readonly string[]): Promise<() => Promise<void>> {
 		const outside = new Set<string>();
 		for (const runId of runIds) {
-			const { entries } = await this.readRun(runId);
-			for (const { path } of fileChanges(entries, true)) {
+			const { entries, commits } = await this.readRun(runId);
+			const paths = [
+				...fileChanges(entries, true).map(({ path }) => path),
+				...commits.map(({ repository }) => repository),
+			];
+			for (const path of paths) {
 				if (!this.writeFolders.some(folder => within(path, folder))) outside.add(path);
 			}
 		}

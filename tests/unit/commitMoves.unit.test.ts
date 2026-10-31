@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+	existsSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
@@ -13,7 +14,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RunContext } from '../../src/agent/domain/runContext.ts';
 import { commitsNote } from '../../src/engines/domain/model/historyFollower.ts';
 import { createHistory, historyStart, UnrecoverableError } from '../../src/index.ts';
+import { WorkspaceBusyError } from '../../src/recovery/domain/recoveryStore.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
+import { FolderClaims } from '../../src/recovery/infrastructure/folderClaims.ts';
 import * as gitCommits from '../../src/recovery/infrastructure/gitCommits.ts';
 import type { Commands } from '../../src/tools/domain/commands.ts';
 import { type PreparingTool, RunEndingToolError } from '../../src/tools/domain/preparedCall.ts';
@@ -854,6 +857,67 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 				commits: [{ sha, subject: 'change a', runId, direction: 'undo' }],
 			},
 		]);
+	});
+
+	it('re-applies a change as stored, whatever whitespace git is configured to fix', async () => {
+		git('config', 'apply.whitespace', 'fix');
+		const { tool } = await commandTool({
+			add: shell('printf \'two  \\n\' > b.txt && git add b.txt && git commit --quiet -m "add b"'),
+		});
+		await run(tool, 'add');
+		const history = await createHistory({ root, stateDirectory: join(parent, 'state') });
+
+		await history.undo({ commits: 'revert' });
+		const redone = await history.redo();
+
+		expect(redone.git?.[0]).toMatchObject({ action: 'reapply', outcome: 'done' });
+		expect(git('cat-file', '-s', 'HEAD:b.txt')).toBe('6');
+	});
+
+	it("runs none of the repository's hooks as it moves the branch and the index", async () => {
+		const { history } = await committedRun();
+		git('config', '--unset', 'core.hooksPath');
+		for (const hook of ['reference-transaction', 'post-index-change']) {
+			writeFileSync(join(root, '.git', 'hooks', hook), `#!/bin/sh\necho ${hook} >> hooked\n`, {
+				mode: 0o755,
+			});
+		}
+
+		const undone = await history.undo({ commits: 'reset' });
+
+		expect(undone.git?.[0]).toMatchObject({ action: 'reset', outcome: 'done' });
+		expect(existsSync(join(root, 'hooked'))).toBe(false);
+	});
+
+	it('waits for the removal of a worktree it made commits in, reopened by its first root', async () => {
+		const second = join(parent, 'second');
+		execFileSync('git', ['init', '--quiet', '--initial-branch=main', second]);
+		execFileSync('git', [...gitConfig, 'commit', '--quiet', '--allow-empty', '-m', 'start'], {
+			cwd: second,
+		});
+		const stateDirectory = join(parent, 'state');
+		const opened = await openWorkspace(
+			{
+				roots: [
+					{ path: root, access: 'write' },
+					{ path: second, access: 'write' },
+				],
+				stateDirectory,
+			},
+			{ warn: (message: unknown) => warnings.push(String(message)) },
+		);
+		const tool = (await commandToolFor(opened, {
+			commit: { ...shell('git commit --quiet --allow-empty -m "in second"'), cwd: second },
+		})) as PreparingTool;
+		await run(tool, 'commit');
+		const history = await createHistory({ root, stateDirectory });
+		const release = await new FolderClaims(realpathSync(stateDirectory)).claimRemoval(second);
+
+		await expect(history.undo({ commits: 'reset' })).rejects.toThrow(WorkspaceBusyError);
+		await release();
+		await expect(history.undo({ commits: 'reset' })).resolves.toMatchObject({
+			git: [{ repository: second, action: 'reset', outcome: 'done' }],
+		});
 	});
 
 	it('refuses an unknown policy before it moves anything', async () => {
