@@ -13,7 +13,7 @@ import type {
 	RecordedCommits,
 	RecoveryStore,
 } from '#src/recovery/domain/recoveryStore';
-import { changedFiles, showChanges } from '#src/recovery/domain/runChanges';
+import { changedFiles, type DiffSide, fileDiff } from '#src/recovery/domain/runChanges';
 import {
 	type BranchTip,
 	commitsBetween,
@@ -76,6 +76,8 @@ interface FrozenState {
 	branch: string;
 	head: string | undefined;
 	paths: Map<string, PathState>;
+	/** Whether git trusts the executable bit there, as `core.fileMode` says. */
+	fileModes: boolean;
 }
 
 /**
@@ -172,6 +174,7 @@ export class GitCommitter implements Committer {
 		if (branch === undefined) return refuse('no branch is checked out there');
 		const blocked = await readiness(repository, branch, ready(signal));
 		if (blocked !== undefined) return refuse(blocked);
+		const fileModes = await trustsFileModes(repository, signal);
 
 		const rel = (path: string) => relative(repository, path).split(sep).join('/');
 		const leftOut: { path: string; reason: string }[] = [];
@@ -206,11 +209,19 @@ export class GitCommitter implements Committer {
 		const paths = new Map<string, PathState>();
 		for (const { path, rel: name, change } of wanted) {
 			// A file the user changed before the run, or since its last change, is theirs too.
-			if (!(await this.held(path, change.after))) {
+			if (!(await this.held(path, change.after, fileModes))) {
 				leftOut.push({ path: name, reason: 'it changed after the task last changed it' });
 				continue;
 			}
-			if (!(await this.matches(repository, name, change.before, before.get(name), signal))) {
+			const start = before.get(name);
+			const startBlob = await this.blobOf(
+				repository,
+				name,
+				change.before,
+				modeFor(fileModes, start?.mode),
+				signal,
+			);
+			if (!sameEntry(startBlob, start)) {
 				leftOut.push({ path: name, reason: 'it held changes of yours before this task' });
 				continue;
 			}
@@ -219,13 +230,14 @@ export class GitCommitter implements Committer {
 				leftOut.push({ path: name, reason: 'git holds a link or a submodule there' });
 				continue;
 			}
-			const now = await stateOf(repository, name, path, signal);
+			const mode = modeFor(fileModes, headEntry?.mode);
+			const now = await stateOf(repository, name, path, mode, signal);
 			if (now.mode !== undefined && !isFile(now.mode)) {
 				leftOut.push({ path: name, reason: 'it is a link or a folder now' });
 				continue;
 			}
 			// What is frozen is what the history recorded, not what the file came to hold meanwhile.
-			if (!sameBlob(now, await this.blobOf(repository, name, change.after, signal))) {
+			if (!sameBlob(now, await this.blobOf(repository, name, change.after, mode, signal))) {
 				leftOut.push({ path: name, reason: 'it changed after the task last changed it' });
 				continue;
 			}
@@ -242,17 +254,12 @@ export class GitCommitter implements Committer {
 			}
 		}
 
-		const eligible = new Set(
-			wanted.filter(({ rel: name }) => paths.has(name)).map(({ path }) => path),
+		const diff = await this.messageDiff(
+			repository,
+			wanted.filter(({ rel: name }) => paths.has(name)),
+			paths,
+			signal,
 		);
-		const diff =
-			eligible.size === 0
-				? ''
-				: await showChanges(this.store, runId, {
-						maxLines: diffLines,
-						visible: path =>
-							eligible.has(path) ? this.readable(path, signal) : Promise.resolve(false),
-					});
 		return {
 			repository: {
 				repository,
@@ -262,12 +269,12 @@ export class GitCommitter implements Committer {
 				diff,
 				style: await styleOf(repository, head, signal),
 			},
-			state: { branch, head, paths },
+			state: { branch, head, paths, fileModes },
 		};
 	}
 
 	/** Whether the file holds what the run left in it, by the history's own hash, and its mode. */
-	private async held(path: string, after: FileState): Promise<boolean> {
+	private async held(path: string, after: FileState, fileModes: boolean): Promise<boolean> {
 		let content: Buffer;
 		let mode: number;
 		try {
@@ -279,26 +286,9 @@ export class GitCommitter implements Committer {
 		}
 		return (
 			after.exists &&
-			gitMode(mode) === gitMode(after.mode) &&
+			(!fileModes || gitMode(mode) === gitMode(after.mode)) &&
 			createHash('sha256').update(content).digest('hex') === after.hash
 		);
-	}
-
-	/**
-	 * Whether `before`, what the file held when the run first changed it, is what the branch held,
-	 * as git would store it, so a commit of the file holds the run's changes alone.
-	 */
-	private async matches(
-		repository: string,
-		name: string,
-		before: FileState,
-		entry: GitEntry | undefined,
-		signal: AbortSignal,
-	): Promise<boolean> {
-		const blob = await this.blobOf(repository, name, before, signal);
-		return blob === undefined
-			? entry === undefined
-			: entry?.sha === blob.sha && entry.mode === blob.mode;
 	}
 
 	/** What git would store at `name` for a state the history recorded, after git's filters. */
@@ -306,6 +296,7 @@ export class GitCommitter implements Committer {
 		repository: string,
 		name: string,
 		state: FileState,
+		mode: ModeOf,
 		signal: AbortSignal,
 	): Promise<GitEntry | undefined> {
 		if (!state.exists) return undefined;
@@ -314,10 +305,53 @@ export class GitCommitter implements Committer {
 			const copy = join(scratch, 'recorded');
 			await writeFile(copy, await this.store.readContent(state.hash));
 			const hashed = await git(['hash-object', `--path=${name}`, copy], repository, signal);
-			return { sha: firstLine(hashed), mode: gitMode(state.mode) };
+			return { sha: firstLine(hashed), mode: mode(state.mode) };
 		} finally {
 			await rm(scratch, { recursive: true, force: true });
 		}
+	}
+
+	/**
+	 * What a commit of `eligible` would change, from `HEAD` to what the run left, as a diff bounded
+	 * for the message: from `HEAD`, not from the run's start, which a commit of the run's may hold.
+	 * A file the policy keeps from the agents is named, not shown.
+	 */
+	private async messageDiff(
+		repository: string,
+		eligible: readonly { path: string; rel: string; change: FileChange }[],
+		paths: ReadonlyMap<string, PathState>,
+		signal: AbortSignal,
+	): Promise<string> {
+		const output: string[] = [];
+		let hidden = 0;
+		for (const { path, rel: name, change } of eligible) {
+			if (!(await this.readable(path, signal))) {
+				hidden++;
+				continue;
+			}
+			const state = paths.get(name);
+			const before: DiffSide | undefined = state?.inHead && {
+				mode: state.inHead.mode,
+				content: await gitBlob(repository, state.inHead.sha, signal),
+			};
+			const after: DiffSide | undefined =
+				state?.exists && change.after.exists
+					? {
+							mode: state.mode ?? '100644',
+							content: await this.store.readContent(change.after.hash),
+						}
+					: undefined;
+			const lines = fileDiff(name, before, after);
+			const room = diffLines - output.length;
+			if (lines.length > room) {
+				output.push(...lines.slice(0, Math.max(0, room)), '... the rest of the diff is not shown');
+				break;
+			}
+			output.push(...lines);
+		}
+		if (hidden > 0)
+			output.unshift(`# ${String(hidden)} changed files are not shown: they are secret`);
+		return output.join('\n');
 	}
 
 	private async readable(path: string, signal: AbortSignal): Promise<boolean> {
@@ -517,7 +551,13 @@ async function stillAsFrozen(
 	const changed: string[] = [];
 	const staged = await indexOf(repository, [...state.paths.keys()], signal);
 	for (const [name, frozenState] of state.paths) {
-		const now = await stateOf(repository, name, join(repository, ...name.split('/')), signal);
+		const now = await stateOf(
+			repository,
+			name,
+			join(repository, ...name.split('/')),
+			modeFor(state.fileModes, frozenState.inHead?.mode),
+			signal,
+		);
 		if (!sameState(now, frozenState) || stagedApart(staged.get(name), frozenState)) {
 			changed.push(name);
 		}
@@ -672,6 +712,7 @@ async function stateOf(
 	repository: string,
 	name: string,
 	path: string,
+	mode: ModeOf,
 	signal: AbortSignal,
 ): Promise<Omit<PathState, 'inHead'>> {
 	let found: Stats;
@@ -683,7 +724,7 @@ async function stateOf(
 	}
 	if (!found.isFile()) return { exists: true, mode: found.isSymbolicLink() ? '120000' : 'other' };
 	const hashed = await git(['hash-object', '--', name], repository, signal);
-	return { exists: true, sha: firstLine(hashed), mode: gitMode(found.mode) };
+	return { exists: true, sha: firstLine(hashed), mode: mode(found.mode) };
 }
 
 /** What the index holds at each of `names`, merged entries only. */
@@ -730,6 +771,27 @@ function isFile(mode: string): boolean {
 
 function gitMode(mode: number): string {
 	return (mode & 0o111) === 0 ? '100644' : '100755';
+}
+
+/** The mode git would store for a file, from the mode the file system gives it. */
+type ModeOf = (fileMode: number) => string;
+
+/**
+ * As git decides it: from the executable bit, unless `core.fileMode` says the bit is not to be
+ * trusted, and then the mode git holds already, `kept`, or a plain file's for a new one.
+ */
+function modeFor(fileModes: boolean, kept: string | undefined): ModeOf {
+	return fileMode => (fileModes ? gitMode(fileMode) : (kept ?? '100644'));
+}
+
+function sameEntry(a: GitEntry | undefined, b: GitEntry | undefined): boolean {
+	return a === undefined ? b === undefined : a.sha === b?.sha && a.mode === b.mode;
+}
+
+/** Whether git trusts the executable bit in `repository`: `core.fileMode`, true unless set false. */
+async function trustsFileModes(repository: string, signal: AbortSignal): Promise<boolean> {
+	const set = await runGit(['config', '--bool', '--get', 'core.fileMode'], repository, { signal });
+	return firstLine(set.stdout) !== 'false';
 }
 
 /** The subjects of the branch's latest commits, newest first. */
@@ -813,8 +875,18 @@ function ready(signal: AbortSignal): GitRunner {
 async function runGit(
 	args: string[],
 	repository: string,
-	{ literal = true, signal = uncancelled }: { literal?: boolean; signal?: AbortSignal } = {},
+	options: { literal?: boolean; signal?: AbortSignal } = {},
 ): Promise<ProcessResult> {
+	const { exitCode, stdout, stderr } = await runGitBytes(args, repository, options);
+	return { exitCode, stdout: stdout.toString('utf8'), stderr };
+}
+
+/** `runGit`, with what git printed on its standard output as it printed it, bytes. */
+async function runGitBytes(
+	args: string[],
+	repository: string,
+	{ literal = true, signal = uncancelled }: { literal?: boolean; signal?: AbortSignal } = {},
+): Promise<{ exitCode: number; stdout: Buffer; stderr: string }> {
 	const printed = { stdout: [] as Buffer[], stderr: [] as Buffer[] };
 	const result = await runCommandProcess('git', ['-c', 'color.ui=never', ...args], {
 		cwd: repository,
@@ -836,9 +908,16 @@ async function runGit(
 	}
 	return {
 		exitCode: result.exitCode ?? -1,
-		stdout: Buffer.concat(printed.stdout).toString('utf8'),
+		stdout: Buffer.concat(printed.stdout),
 		stderr: Buffer.concat(printed.stderr).toString('utf8'),
 	};
+}
+
+/** The content of the blob `sha`, as git stores it. */
+async function gitBlob(repository: string, sha: string, signal: AbortSignal): Promise<Buffer> {
+	const read = await runGitBytes(['cat-file', 'blob', sha], repository, { signal });
+	if (read.exitCode !== 0) throw gitFailed('read what HEAD holds', read);
+	return read.stdout;
 }
 
 function gitFailed(what: string, { stderr }: { stderr: string }): Error {

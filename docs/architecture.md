@@ -537,11 +537,13 @@ cheaper model, with no tools, a new one for each message. The stage runs only wh
 set. Before each review, `freeze` reads the run's changes from its journal, groups them by
 repository, and keeps those it may commit: the file holds what the run left, by the history's
 hash, and held what the run's start held, by git's own normalization (`hash-object --path`)
+and its modes, which follow `core.fileMode`,
 against the parent of the run's first commit there, or `HEAD`. Every other path is left out
 with a reason; a repository without a branch, or where `notReady` finds an operation in
 progress or a sparse checkout, is refused whole. Once the reviewer approves, the orchestrator
 asks through `ask`, unless `autoCommit` is set, then runs the committer agent once per
-repository with the request, the plan, the bounded diff and the branch's recent subjects.
+repository with the request, the plan, the bounded diff from `HEAD` of what it would commit,
+and the branch's recent subjects.
 `commit` takes the session's write lock (`exclusive`), opens a `CommandCheckpoint` named for
 the committer, and then checks that the tip, every frozen file and its index entry are as they
 were, so nothing changed while the checkpoint captured the files reaches the commit. It adds the

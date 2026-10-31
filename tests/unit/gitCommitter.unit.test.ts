@@ -499,6 +499,33 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		await expect(committer.freeze(options)).rejects.toThrow('git could not list the index');
 	});
 
+	it('commits a file whose executable bit git does not trust, with the mode git holds', async () => {
+		git('config', 'core.fileMode', 'false');
+		chmodSync(join(root, 'a.txt'), 0o755);
+		const { run, committer, options } = await workingRun({ edit: 'echo two > a.txt' });
+		await run('edit');
+
+		const frozen = await committer.freeze(options);
+		expect(frozen?.repositories[0]).toMatchObject({ paths: ['a.txt'], leftOut: [] });
+		await committer.commit(frozen ?? { repositories: [] }, new Map([[root, 'Change a']]), options);
+
+		expect(git('ls-tree', 'HEAD', 'a.txt')).toMatch(/^100644 /);
+	});
+
+	it('writes the message from what the commit would change, not what a commit of the run holds already', async () => {
+		const { run, committer, options } = await workingRun({
+			edit: `echo two > a.txt && git ${identity.join(' ')} commit --quiet -am "feat: two" && echo three > a.txt`,
+		});
+		await run('edit');
+
+		const frozen = await committer.freeze(options);
+
+		const diff = frozen?.repositories[0]?.diff ?? '';
+		expect(diff).toContain('-two');
+		expect(diff).toContain('+three');
+		expect(diff).not.toContain('-one');
+	});
+
 	it('refuses a repository with no branch checked out', async () => {
 		git('switch', '--quiet', '--detach');
 		const { run, committer, options } = await workingRun({ edit: 'echo two > a.txt' });

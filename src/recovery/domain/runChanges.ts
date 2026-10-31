@@ -1,6 +1,6 @@
 import { unifiedDiff } from '#src/diff/domain/unifiedDiff';
 import { type FileChange, fileChanges, sameState } from './fileChanges.ts';
-import type { JournalEntry, RecoveryStore, RunRecord } from './recoveryStore.ts';
+import type { FileState, JournalEntry, RecoveryStore, RunRecord } from './recoveryStore.ts';
 
 const binaryProbeBytes = 8000;
 
@@ -103,18 +103,46 @@ async function renderFile(
 		lines.push(`# ${name}: the run is changing this file now; that change is not shown`);
 		if (sameState(before, after)) return lines;
 	}
-	lines.push(`diff --git a/${name} b/${name}`);
-	if (!before.exists && after.exists) lines.push(`new file mode ${gitMode(after.mode)}`);
-	if (before.exists && !after.exists) lines.push(`deleted file mode ${gitMode(before.mode)}`);
-	if (before.exists && after.exists && before.mode !== after.mode) {
-		lines.push(`old mode ${gitMode(before.mode)}`, `new mode ${gitMode(after.mode)}`);
-	}
-	if (before.exists && after.exists && before.hash === after.hash) return lines;
+	// The same content needs no reading: only a change of mode can show.
+	const same = before.exists && after.exists && before.hash === after.hash;
+	const side = async (state: FileState): Promise<DiffSide | undefined> =>
+		state.exists
+			? {
+					mode: gitMode(state.mode),
+					content: same ? Buffer.alloc(0) : await store.readContent(state.hash),
+				}
+			: undefined;
+	lines.push(...fileDiff(name, await side(before), await side(after)));
+	return lines;
+}
 
-	const oldContent = before.exists ? await store.readContent(before.hash) : Buffer.alloc(0);
-	const newContent = after.exists ? await store.readContent(after.hash) : Buffer.alloc(0);
-	const oldName = before.exists ? `a/${name}` : '/dev/null';
-	const newName = after.exists ? `b/${name}` : '/dev/null';
+/** One side of a file's diff: its content, and its mode as git writes it, such as `100644`. */
+export interface DiffSide {
+	mode: string;
+	content: Buffer;
+}
+
+/**
+ * The git-style diff of the file `name` from `before` to `after`, each `undefined` when the file
+ * does not exist on that side, line by line.
+ */
+export function fileDiff(
+	name: string,
+	before: DiffSide | undefined,
+	after: DiffSide | undefined,
+): string[] {
+	const lines = [`diff --git a/${name} b/${name}`];
+	if (!before && after) lines.push(`new file mode ${after.mode}`);
+	if (before && !after) lines.push(`deleted file mode ${before.mode}`);
+	if (before && after && before.mode !== after.mode) {
+		lines.push(`old mode ${before.mode}`, `new mode ${after.mode}`);
+	}
+	if (before && after && before.content.equals(after.content)) return lines;
+
+	const oldContent = before?.content ?? Buffer.alloc(0);
+	const newContent = after?.content ?? Buffer.alloc(0);
+	const oldName = before ? `a/${name}` : '/dev/null';
+	const newName = after ? `b/${name}` : '/dev/null';
 
 	if (!isText(oldContent) || !isText(newContent)) {
 		lines.push(`Binary files ${oldName} and ${newName} differ`);
