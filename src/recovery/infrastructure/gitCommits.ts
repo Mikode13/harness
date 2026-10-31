@@ -405,9 +405,10 @@ async function keptOn(
  * Why git cannot change `branch` in `repository` now, or `undefined` when it can: it must still be
  * checked out there, with no merge, rebase, cherry-pick or revert in progress, which moving the
  * branch under would spoil, and no sparse checkout, whose `skip-worktree` entries an index
- * written entry by entry would lose, so git would show the files it leaves out as deleted.
+ * written entry by entry would lose, so git would show the files it leaves out as deleted. The
+ * committer of the orchestrator asks the same before it commits.
  */
-async function notReady(repository: string, branch: string): Promise<string | undefined> {
+export async function notReady(repository: string, branch: string): Promise<string | undefined> {
 	try {
 		const tip = await readTip(repository, uncancelled);
 		if (tip?.branch !== branch) return `${branch} is no longer checked out in ${repository}`;

@@ -1,5 +1,6 @@
 import type { Tokens } from '#src/shared/domain/tokens';
 import type { Approver } from './approval.ts';
+import type { CommitReport } from './commitReport.ts';
 import type { Inbox } from './inbox.ts';
 import type { Asker } from './question.ts';
 import type { Session } from '#src/shared/domain/session';
@@ -30,6 +31,11 @@ export interface AgentResponse {
 	 * again, to keep them in the same session. Every agent the harness builds sets it.
 	 */
 	session?: Session;
+	/**
+	 * What the committer did, from `createLLMOrchestrator`, once the reviewer approved a run that
+	 * changed files and the user could be asked, or `autoCommit` is on. Absent otherwise.
+	 */
+	commits?: CommitReport;
 }
 
 export type Callback = (item: ProgressEvent) => void;
@@ -233,8 +239,11 @@ export interface StepContext {
 	largestResults: { tool: string; characters: number; summary?: string }[];
 }
 
-/** A role in the fixed planner → executor → reviewer workflow. */
-export type ProgressAgent = 'planner' | 'executor' | 'reviewer';
+/**
+ * A role in the fixed planner → executor → reviewer workflow, or the committer that writes the
+ * message of the commit `createLLMOrchestrator` makes once the reviewer approves.
+ */
+export type ProgressAgent = 'planner' | 'executor' | 'reviewer' | 'committer';
 
 /**
  * The contract every engine (CodexAgent, ClaudeAgent, future providers) and every

@@ -30,7 +30,7 @@ src/engines/domain/ LLMAgent, the agent that owns its conversation and calls an 
 src/llm/            the stateless model boundary: LLMClient, Message, Conversation, ToolDefinition
 src/tools/          what an agent can run: Tool, defineTool, the repository tools, and the file tools that change files
 src/factory/        createAgent, createOrchestrator and their model-API pair, the only public way to build agents
-src/orchestration/  planner -> executor -> reviewer, with a validated reviewer decision
+src/orchestration/  planner -> executor -> reviewer, with a validated reviewer decision, then the commit
 src/workflow/       stages of the consumer's agents, each answer validated before its transition
 src/recovery/       what a writing run changed, recorded outside the repository so it can be undone
 src/retry/          the retry decorator
@@ -211,7 +211,9 @@ retry decorator.
 ### `src/orchestration/`
 
 Each role's default instructions and the data each round sends, `InstructedAgent`, the
-attempt loop, per-run usage totals, and the validated reviewer decision.
+attempt loop, per-run usage totals, and the validated reviewer decision. The `Committer` port
+commits what an approved run changed; `GitCommitter`, its infrastructure, takes the run's
+changes from the recovery store and commits them with git, inside the run's `WriteSession`.
 
 ### `src/workflow/`
 
@@ -363,13 +365,13 @@ for the failure contract and `Tokens`; only its `infrastructure` imports an SDK.
 `src/llm/`, and `src/llm/` knows nothing about agents. `ClaudeAgent` imports `claudeModelIds`
 from `src/llm/infrastructure/`, the one table of the model each Claude alias names, so both
 Claude paths run the same model for the same name. `LLMAgent` also reads the workspace's
-history through the `src/recovery/` domain; the conversation itself knows only an opaque run id. `src/workflow/` depends only on `src/agent/` and
+history through the `src/recovery/` domain; the conversation itself knows only an opaque run id. `OrchestratorAgent` knows only the `Committer` port; `GitCommitter`, in `src/orchestration/infrastructure/`, depends on the `src/recovery/` store and git, and on the write session and command checkpoint of `src/tools/infrastructure/`, and only `src/factory/` builds it. `src/workflow/` depends only on `src/agent/` and
 `src/shared/`: a stage creates an `Agent`, whatever builds it. No module imports `src/factory/`, which is
 why it is the only place that knows every provider.
 
 `src/index.ts` is the public API: `createAgent`, `createOrchestrator`, `createLLMAgent`,
 `createLLMOrchestrator`, the `Agent`, `RunOptions`, `AgentResponse`, `Callback`, `ProgressEvent`,
-`ProgressAgent`, `StepContext`, `Session` and `Tokens` types, the `Transcript` and `TranscriptCallback` types
+`ProgressAgent`, `StepContext`, `Session` and `Tokens` types, the `CommitReport`, `RepositoryCommit` and `MadeCommit` types of `AgentResponse.commits`, the `Transcript` and `TranscriptCallback` types
 of `onTranscript`, the `Asker`, `UserQuestion` and `QuestionOption` types of `RunOptions.ask`, `Inbox`, what
 `RunOptions.inbox` takes, `RunInProgressError`, the `UnrecoverableError` a run rejects with while another
 works on the same agent, the approval contract (`rememberApprovals` and the `Approver`,
@@ -424,7 +426,7 @@ Four contracts have rules of their own:
   correct. The result of a run travels in `AgentResponse`; progress is narration. Existing event
   shapes remain valid because `agent` is optional on every event and `summary`, `exitCode` and
   `error` are optional on `tool` events. `OrchestratorAgent` supplies
-  `agent: 'planner' | 'executor' | 'reviewer'` for every event received from a role, including
+  `agent: 'planner' | 'executor' | 'reviewer' | 'committer'` for every event received from a role, including
   retries and later rounds, and overwrites an inner value rather than trusting it. A
   `tool.summary` is owned by the tool and is only a short description of the model-supplied call;
   `tool.exitCode` narrates the exit code of a configured command that failed, and `tool.error`
@@ -526,6 +528,25 @@ options, carrying the own enumerable fields such as `signal`, `approve` and the 
 `RunContext`; only `onProgress` is replaced with the role's authoritative wrapper. The shared signal
 therefore lets one cancellation stop the whole workflow, and every wrapper forwards progress to the
 consumer through one stream.
+
+**Committing an approved run.** `createLLMOrchestrator` gives `OrchestratorAgent` a
+`GitCommitter` over a writable workspace, and a committer agent on the executor's provider's
+cheaper model, with no tools, a new one for each message. The stage runs only when the run has `ask` or `autoCommit` is
+set. Before each review, `freeze` reads the run's changes from its journal, groups them by
+repository, and keeps those it may commit: the file holds what the run left, by the history's
+hash, and held what the run's start held, by git's own normalization (`hash-object --path`)
+against the parent of the run's first commit there, or `HEAD`. Every other path is left out
+with a reason; a repository without a branch, or where `notReady` finds an operation in
+progress or a sparse checkout, is refused whole. Once the reviewer approves, the orchestrator
+asks through `ask`, unless `autoCommit` is set, then runs the committer agent once per
+repository with the request, the plan, the bounded diff and the branch's recent subjects.
+`commit` takes the session's write lock (`exclusive`), checks that the tip and every frozen
+file are as they were, and opens a `CommandCheckpoint` named for the committer: it adds the
+new files and runs `git commit --only` with `GIT_LITERAL_PATHSPECS`, so hooks run and the
+rest of the index stays. The commits it made go into the journal as the run's, and the move
+policies of `src/recovery/` apply to them. A hook's rejection unstages what it added and is
+reported, not thrown; a git state the committer cannot read is an `UnrecoverableError`.
+The result travels in `AgentResponse.commits`.
 
 **A workflow of the consumer's stages.** The consumer declares a map from each stage's name to
 what it receives. `defineWorkflowStages` binds stages to that map, so a `go` to a stage that does
@@ -720,6 +741,12 @@ at a time, and reads what the user sends meanwhile" in [`decisions.md`](decision
   `destructive`; `LLMAgent` asks the run's `approve` only about a `destructive` one, and denies
   it when there is none. A `mutating` call runs unasked, because git can undo it, so a tool
   that changes something git does not track must count as `destructive`.
+- **The committer writes a message; the harness commits.** The committer agent has no tools,
+  so it cannot run git or change what was reviewed, and the commit holds exactly the frozen
+  paths. The cost is that a commit that needs judgment, such as splitting a change, is the
+  user's. A hook that changes the commit can still add what the reviewer did not read, which
+  the report names as `unreviewed`. It does not run on Windows, where the commit path is not
+  tested.
 - **An API key in the environment can move an Agent SDK Claude agent off the subscription.**
   The Claude Agent SDK authenticates with `ANTHROPIC_API_KEY` when it is set, and the harness
   does not remove it from the environment it inherits, so a Claude agent from `createAgent` or

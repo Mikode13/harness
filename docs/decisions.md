@@ -2922,3 +2922,34 @@ tags: #mikode-harness #recovery #git #api-design
 - A merge commit is never taken back or re-applied.
 - A commit two runs both recorded, such as one a later command brought forward again, is taken back or put back once, and named for each run.
 - A branch that git moved before the process stopped may keep the index of its old tip, and the lock git takes on the index: the logger is told, and the user checks `git status`.
+
+## The orchestrator commits what the reviewer approved, with git, and a cheap model writes the message
+
+tags: #mikode-harness #orchestration #git #api-design
+
+**Decision:**
+
+- **The harness commits, a model writes only the message.** Once the reviewer approves a run of `createLLMOrchestrator` that changed files, a `committer` agent on the executor's provider's cheaper model, Claude Haiku 5.5 or `gpt-5.6-luna`, with no tools, writes the message from the request, the plan, the diff and the branch's recent subjects. The harness commits with `git commit --only -F <file> -- <paths>`, with `GIT_LITERAL_PATHSPECS`, after `git add` of the run's new files, so the repository's hooks run and the rest of the index stays as the user left it.
+- **The user's yes authorizes it.** The orchestrator asks through `ask`, and only the answer **Commit** commits. `autoCommit: true` commits without asking. With neither, the stage does not run, and nothing is frozen. No call goes through `approve`: the question already says what would be committed.
+- **The commit holds what the reviewer read.** The run's changes are frozen before each review, and the commit checks them again: a repository where the tip or any frozen file changed since is left. A path is left out, with its reason, when it held changes of the user's before the run, compared after git's own normalization, changed after the run last changed it, was being changed or changed by someone else while the run worked, the history could not copy it, or git holds a link or a submodule there. Ignored paths, and paths `HEAD` already holds, such as those a command of the run committed, are dropped. A repository with no branch, an operation in progress, or a sparse checkout is refused whole.
+- **The commit is one of the run's changes.** It runs inside the run's `WriteSession`, holding its write lock, under a `CommandCheckpoint` named for the committer, and its commits are recorded as the run's, so undo keeps, reverts or resets them as for a command's.
+- **The run succeeds whatever git does.** A hook that rejects the commit, or nothing left to commit, is reported in `AgentResponse.commits`, with the files changed and approved. A git state the committer cannot read ends the run with `UnrecoverableError`, and a committer whose model fails ends it as any role's failure does: the user chose that over a rule that would tell a provider's failure from a host's.
+- **`ProgressAgent` gains `committer`,** so the committer's narration is stamped like any role's. A consumer that switches over its values exhaustively breaks, so this ships as a breaking change.
+- **Only `createLLMOrchestrator`, and not on Windows,** where `autoCommit` is an `InvalidAgentConfigError` and the stage never runs.
+
+**Context:** #140, the third of three pull requests, designed with the user on 2026-10-31 (https://github.com/Mikode13/harness/issues/140#issuecomment-6546950305) and checked twice with Codex before it was written. The user chose the harness committing over a model that runs git, an answer of the user's over an approval, a success that reports a rejection, and leaving out the paths that held the user's changes.
+
+**Alternatives considered:**
+
+- **A committer model with the `runCommand` tool.** It could split a change or handle a hook's complaint, but it could commit what the reviewer never read, and its commands would need approving.
+- **Plumbing without hooks,** `commit-tree` and `update-ref` as the moves of `src/recovery/` use. No hook could change the commit, but the repository's own checks would be skipped.
+- **Committing everything staged.** What `git commit` does, but it takes the user's own staged work into the agent's commit.
+- **A rejected commit as a `RecoverableError`.** A retry would run the whole orchestrator again for a commit the user can make by hand, after the approved files were already written.
+- **Asking through `approve`.** One callback for every risk, but an approver sees one call, not what the commit would hold and leave out.
+
+**Consequences:**
+
+- Each committed run costs one call to the cheaper model per repository, billed in the run's usage.
+- A hook or a clean filter can still change what is committed; the report names those paths as `unreviewed`, and the logger is told.
+- A change that should be several commits arrives as one.
+- A consumer that never passes `ask` gets no commit unless it sets `autoCommit`.

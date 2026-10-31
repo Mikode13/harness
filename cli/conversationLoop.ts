@@ -1,4 +1,4 @@
-import type { Agent, Approver, Asker, Callback, Tokens } from '../src/index.ts';
+import type { Agent, Approver, Asker, Callback, CommitReport, Tokens } from '../src/index.ts';
 import { RecoverableError, UnrecoverableError, isAbortError } from '../src/index.ts';
 import type { IOutput } from './output.ts';
 import type { IPromptEmitter } from './promptEmitter.ts';
@@ -72,6 +72,7 @@ export class ConversationLoop {
 				});
 
 				if (agentResponse.runId) this.output.print(`run: ${agentResponse.runId}`);
+				for (const line of commitLines(agentResponse.commits)) this.output.print(line);
 				this.output.print('usage:');
 				this.output.print(`duration: ${String(agentResponse.duration)}s`);
 				this.printTokens(agentResponse.tokens);
@@ -119,4 +120,17 @@ export class ConversationLoop {
 		this.promptEmitter.close();
 		this.output.print('thanks, bye!');
 	}
+}
+
+/** One line per repository of what the committer did, or none when it did not run. */
+function commitLines(commits: CommitReport | undefined): string[] {
+	if (!commits) return [];
+	if (commits.outcome === 'declined') return ['commit: declined'];
+	return commits.repositories.map(({ repository, branch, outcome, reason, commits: made }) => {
+		const where = `${repository}${branch === undefined ? '' : ` (${branch})`}`;
+		const shas = made.map(({ sha, subject }) => `${sha.slice(0, 7)} ${subject}`).join('; ');
+		return outcome === 'done'
+			? `commit: ${where}: ${shas}`
+			: `commit: ${where}: ${outcome}, ${reason ?? 'no reason given'}`;
+	});
 }

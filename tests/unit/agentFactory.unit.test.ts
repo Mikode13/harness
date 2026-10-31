@@ -954,6 +954,18 @@ describe('createLLMOrchestrator', () => {
 		).rejects.toThrow('agents.executor must be a list');
 	});
 
+	it('refuses autoCommit on Windows, where it does not commit', async () => {
+		const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+		Object.defineProperty(process, 'platform', { value: 'win32' });
+		try {
+			await expect(
+				createLLMOrchestrator({ workspace, autoCommit: true, logger: createLogger() }),
+			).rejects.toThrow(InvalidAgentConfigError);
+		} finally {
+			if (platform) Object.defineProperty(process, 'platform', platform);
+		}
+	});
+
 	it('gives only the executor the configured commands', async () => {
 		const openAICreate = openAIReplying('plan');
 		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
