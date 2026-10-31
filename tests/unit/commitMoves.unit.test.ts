@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RunContext } from '../../src/agent/domain/runContext.ts';
 import { commitsNote } from '../../src/engines/domain/model/historyFollower.ts';
-import { createHistory, historyStart } from '../../src/index.ts';
+import { createHistory, historyStart, UnrecoverableError } from '../../src/index.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
 import * as gitCommits from '../../src/recovery/infrastructure/gitCommits.ts';
 import type { Commands } from '../../src/tools/domain/commands.ts';
@@ -747,6 +747,113 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 		expect(onOther.git?.[0]).toMatchObject({ branch: 'other', action: 'revert', outcome: 'done' });
 		expect(onMain.git?.[0]).toMatchObject({ branch: 'main', action: 'revert', outcome: 'done' });
 		expect(git('log', '-1', '--format=%s')).toBe('Revert "change a"');
+	});
+
+	it("re-applies the stored contents, whatever the user's diff configuration converts", async () => {
+		writeFileSync(join(root, '.git', 'info', 'attributes'), '*.txt diff=upper\n');
+		git('config', 'diff.upper.textconv', 'tr a-z A-Z');
+		git('config', 'diff.noprefix', 'true');
+		const { tool } = await commandTool({
+			add: shell('echo two > b.txt && git add b.txt && git commit --quiet -m "add b"'),
+		});
+		await run(tool, 'add');
+		const history = await createHistory({ root, stateDirectory: join(parent, 'state') });
+
+		const undone = await history.undo({ commits: 'revert' });
+		const redone = await history.redo();
+
+		expect(undone.git?.[0]).toMatchObject({ action: 'revert', outcome: 'done' });
+		expect(redone.git?.[0]).toMatchObject({ action: 'reapply', outcome: 'done' });
+		expect(git('show', 'HEAD:b.txt')).toBe('two');
+	});
+
+	it('brings both sides of a rename back in the index', async () => {
+		const { tool } = await commandTool({
+			rename: shell('git mv a.txt b.txt && git commit --quiet -m "rename a"'),
+		});
+		await run(tool, 'rename');
+		const history = await createHistory({ root, stateDirectory: join(parent, 'state') });
+
+		const undone = await history.undo({ commits: 'reset' });
+
+		expect(undone).toMatchObject({ complete: true, git: [{ action: 'reset', outcome: 'done' }] });
+		expect(readA()).toBe('one\n');
+		expect(git('status', '--porcelain')).toBe('');
+	});
+
+	it('updates the index of the paths the commits changed only, read literally', async () => {
+		writeFileSync(join(root, 'file1.txt'), 'one\n');
+		git('add', 'file1.txt');
+		git('commit', '--quiet', '-m', 'add file1');
+		const { tool } = await commandTool({
+			add: shell('echo two > \'file[1].txt\' && git add . && git commit --quiet -m "add file[1]"'),
+		});
+		await run(tool, 'add');
+		writeFileSync(join(root, 'file1.txt'), 'staged\n');
+		git('add', 'file1.txt');
+		const history = await createHistory({ root, stateDirectory: join(parent, 'state') });
+
+		const undone = await history.undo({ commits: 'reset' });
+
+		expect(undone.git?.[0]).toMatchObject({ action: 'reset', outcome: 'done' });
+		expect(git('diff', '--cached', '--name-only')).toBe('file1.txt');
+	});
+
+	it('reverts and re-applies an empty commit with the others', async () => {
+		const { tool } = await commandTool({
+			commit: shell(
+				'git commit --quiet --allow-empty -m empty && echo two > a.txt && git commit --quiet -am "change a"',
+			),
+		});
+		await run(tool, 'commit');
+		const history = await createHistory({ root, stateDirectory: join(parent, 'state') });
+
+		const undone = await history.undo({ commits: 'revert' });
+		const redone = await history.redo();
+
+		expect(undone.git?.[0]).toMatchObject({ action: 'revert', outcome: 'done' });
+		expect(redone.git?.[0]).toMatchObject({ action: 'reapply', outcome: 'done' });
+		expect(git('log', '--format=%s', '-4').split('\n')).toEqual([
+			'change a',
+			'empty',
+			'Revert "empty"',
+			'Revert "change a"',
+		]);
+		expect(readA()).toBe('two\n');
+	});
+
+	it('ends the move when the logger fails to report an index it could not update', async () => {
+		const { runId, sha } = await committedRun();
+		const start = git('rev-parse', `${sha}^`);
+		const store = await FileRecoveryStore.open({
+			root,
+			directory: join(parent, 'state'),
+			logger: {
+				warn: () => {
+					throw new Error('logger broke');
+				},
+			},
+		});
+		writeFileSync(join(root, '.git', 'index.lock'), '');
+
+		await expect(store.undo({ commits: 'reset' })).rejects.toBeInstanceOf(UnrecoverableError);
+
+		// The branch moved before the index failed: the next move says it left it, and runs no git.
+		expect(head()).toBe(start);
+		rmSync(join(root, '.git', 'index.lock'));
+		await store.redo();
+		const revisions = await store.listRevisions();
+		const finished = revisions.find(revision => revision.git?.[0]?.action === 'reset');
+		expect(finished?.git).toEqual([
+			{
+				repository: root,
+				branch: 'main',
+				action: 'reset',
+				outcome: 'left',
+				reason: 'the move stopped while git ran on this branch, so the harness left it as it was',
+				commits: [{ sha, subject: 'change a', runId, direction: 'undo' }],
+			},
+		]);
 	});
 
 	it('refuses an unknown policy before it moves anything', async () => {
