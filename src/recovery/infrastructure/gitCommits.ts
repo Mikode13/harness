@@ -685,9 +685,10 @@ async function authorOf(
 /**
  * Moves `branch` from `from` to `to`, only if it is still at `from`, then brings the index of the
  * paths that differ to `to`, so git shows the files against the new tip: the files themselves
- * are left as they are. What the user staged in one of those paths, matching neither tip, is kept
- * and goes to `warn`. Returns why it could not move the branch; once the branch moved, a failure
- * to update the index goes to `warn`, and only what `warn` throws escapes.
+ * are left as they are. What the user staged in one of those paths, matching neither tip, or
+ * under or above one, is kept and goes to `warn`. Returns why it could not move the branch; once
+ * the branch moved, a failure to update the index goes to `warn`, and only what `warn` throws
+ * escapes.
  */
 async function moveBranch(
 	repository: string,
@@ -696,23 +697,9 @@ async function moveBranch(
 	to: string,
 	warn: BranchWarning,
 ): Promise<string | undefined> {
-	let paths;
-	let kept;
+	let update;
 	try {
-		// Both sides of a rename: the index must drop the old path and take the new one.
-		const changed = await git(
-			['diff-tree', '-r', '-z', '--name-only', '--no-renames', from, to],
-			repository,
-			uncancelled,
-		);
-		if (changed.exitCode !== 0) return gitReason('compare the branch before and after', changed);
-		// The index of a path that matches the old tip follows the branch; one that matches the new
-		// tip already has; any other holds what the user staged.
-		const offOld = await stagedAgainst(repository, from);
-		const offNew = await stagedAgainst(repository, to);
-		const differing = nulSeparated(changed.stdout);
-		paths = differing.filter(path => !offOld.has(path));
-		kept = differing.filter(path => offOld.has(path) && offNew.has(path));
+		update = await indexUpdate(repository, from, to);
 		const moved = await git(
 			[
 				'update-ref',
@@ -729,18 +716,76 @@ async function moveBranch(
 	} catch (error) {
 		return `git could not move the branch: ${errorText(error)}`;
 	}
-	if (kept.length > 0) {
+	if (update.kept.length > 0) {
 		warn(
-			`The history moved ${branch} in ${repository} and kept what was staged in ${kept.join(', ')}, which git now shows against the new tip`,
+			`The history moved ${branch} in ${repository} and kept what was staged in ${update.kept.join(', ')}, which git now shows against the new tip`,
 		);
 	}
-	const unindexed = await indexAt(repository, to, paths);
+	const unindexed = await writeIndex(repository, update);
 	if (unindexed !== undefined) {
 		warn(
 			`The history moved ${branch} in ${repository}, but could not bring its index to the new tip, so git may show those files as staged: ${unindexed}`,
 		);
 	}
 	return undefined;
+}
+
+/** The exact entries of the index that follow a branch from one tip to another. */
+interface IndexUpdate {
+	/** Paths `to` does not hold. */
+	remove: string[];
+	add: { mode: string; sha: string; path: string }[];
+	/** Paths left as the user staged them. */
+	kept: string[];
+}
+
+/**
+ * What brings the index of the paths that differ between `from` and `to` to `to`. A path whose
+ * entry matches `from` follows the branch; one that matches `to` already has; any other holds
+ * what the user staged, and so does one whose new file or folder would take the place of an entry
+ * the user staged above or under it.
+ */
+async function indexUpdate(repository: string, from: string, to: string): Promise<IndexUpdate> {
+	// Both sides of a rename: the index must drop the old path and take the new one.
+	const changed = await git(
+		['diff-tree', '-r', '-z', '--name-only', '--no-renames', from, to],
+		repository,
+		uncancelled,
+	);
+	if (changed.exitCode !== 0) throw gitFailed('compare the branch before and after', changed);
+	const offOld = await stagedAgainst(repository, from);
+	const offNew = await stagedAgainst(repository, to);
+	const differing = nulSeparated(changed.stdout);
+	const following = new Set(differing.filter(path => !offOld.has(path)));
+	const kept = differing.filter(path => offOld.has(path) && offNew.has(path));
+	const entries = await treeEntries(repository, to, following);
+
+	// The user's entries, and every folder they sit in.
+	const others = new Set<string>();
+	const folders = new Set<string>();
+	for (const path of await indexedPaths(repository)) {
+		if (following.has(path)) continue;
+		others.add(path);
+		for (let end = path.indexOf('/'); end !== -1; end = path.indexOf('/', end + 1)) {
+			folders.add(path.slice(0, end));
+		}
+	}
+	const clashes = (path: string) => {
+		if (folders.has(path)) return true;
+		for (let end = path.indexOf('/'); end !== -1; end = path.indexOf('/', end + 1)) {
+			if (others.has(path.slice(0, end))) return true;
+		}
+		return false;
+	};
+
+	const update: IndexUpdate = { remove: [], add: [], kept };
+	for (const path of following) {
+		const entry = entries.get(path);
+		if (entry === undefined) update.remove.push(path);
+		else if (clashes(path)) kept.push(path);
+		else update.add.push({ ...entry, path });
+	}
+	return update;
 }
 
 /** The paths whose entry in the index differs from `tree`. */
@@ -754,35 +799,71 @@ async function stagedAgainst(repository: string, tree: string): Promise<Set<stri
 	return new Set(nulSeparated(compared.stdout));
 }
 
+/** The mode and object of each of `paths` that `tree` holds as a file. */
+async function treeEntries(
+	repository: string,
+	tree: string,
+	paths: ReadonlySet<string>,
+): Promise<Map<string, { mode: string; sha: string }>> {
+	const entries = new Map<string, { mode: string; sha: string }>();
+	if (paths.size === 0) return entries;
+	const listed = await git(['ls-tree', '-r', '-z', '--full-tree', tree], repository, uncancelled);
+	if (listed.exitCode !== 0) throw gitFailed('list the new tip', listed);
+	for (const line of nulSeparated(listed.stdout)) {
+		const tab = line.indexOf('\t');
+		const path = line.slice(tab + 1);
+		if (!paths.has(path)) continue;
+		const [mode = '', , sha = ''] = line.slice(0, tab).split(' ');
+		entries.set(path, { mode, sha });
+	}
+	return entries;
+}
+
+async function indexedPaths(repository: string): Promise<Set<string>> {
+	const listed = await git(['ls-files', '-z'], repository, uncancelled);
+	if (listed.exitCode !== 0) throw gitFailed('list the index', listed);
+	return new Set(nulSeparated(listed.stdout));
+}
+
 function nulSeparated(text: string): string[] {
 	return text.split('\0').filter(path => path !== '');
 }
 
-/** Brings the index of `paths`, taken literally, to `to`, or returns why it could not. */
-async function indexAt(
-	repository: string,
-	to: string,
-	paths: readonly string[],
-): Promise<string | undefined> {
-	if (paths.length === 0) return undefined;
+// Paths per update-index, well within any system's limit on arguments.
+const perCall = 500;
+
+/**
+ * Writes `update` to the index, entry by entry, never as a pathspec, which would reach whatever
+ * the index holds under a folder. Returns why it could not.
+ */
+async function writeIndex(repository: string, update: IndexUpdate): Promise<string | undefined> {
 	try {
-		const scratch = await mkdtemp(join(tmpdir(), 'harness-git-'));
-		try {
-			const listed = join(scratch, 'paths');
-			await writeFile(listed, `${paths.join('\0')}\0`);
-			const indexed = await git(
-				['reset', '-q', to, `--pathspec-from-file=${listed}`, '--pathspec-file-nul'],
+		for (let at = 0; at < update.remove.length; at += perCall) {
+			const removed = await git(
+				['update-index', '--force-remove', '--', ...update.remove.slice(at, at + perCall)],
 				repository,
 				uncancelled,
-				{ GIT_LITERAL_PATHSPECS: '1' },
 			);
-			return indexed.exitCode === 0 ? undefined : gitReason('update the index', indexed);
-		} finally {
-			await rm(scratch, { recursive: true, force: true });
+			if (removed.exitCode !== 0) return gitReason('update the index', removed);
+		}
+		for (let at = 0; at < update.add.length; at += perCall) {
+			const added = await git(
+				[
+					'update-index',
+					'--add',
+					...update.add
+						.slice(at, at + perCall)
+						.flatMap(({ mode, sha, path }) => ['--cacheinfo', mode, sha, path]),
+				],
+				repository,
+				uncancelled,
+			);
+			if (added.exitCode !== 0) return gitReason('update the index', added);
 		}
 	} catch (error) {
 		return errorText(error);
 	}
+	return undefined;
 }
 
 /**

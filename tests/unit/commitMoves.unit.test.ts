@@ -823,6 +823,33 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 		]);
 	});
 
+	it('keeps what the user staged under a folder the commits made of a file', async () => {
+		writeFileSync(join(root, 'f'), 'file\n');
+		git('add', 'f');
+		git('commit', '--quiet', '-m', 'add f');
+		const { opened, tool } = await commandTool({
+			fold: shell(
+				'git rm --quiet f && mkdir f && echo b > f/b && git add f/b && git commit --quiet -m "fold f"',
+			),
+		});
+		await run(tool, 'fold');
+		writeFileSync(join(root, 'f', 'c'), 'c\n');
+		git('add', 'f/c');
+
+		const undone = await opened.store.undo({ commits: 'reset' });
+
+		expect(undone.git?.[0]).toMatchObject({ action: 'reset', outcome: 'done' });
+		expect(
+			git('ls-files', '--stage')
+				.split('\n')
+				.map(line => line.split('\t')[1]),
+		).toEqual(['a.txt', 'f/c']);
+		expect(git('show', ':f/c')).toBe('c');
+		expect(warnings).toContainEqual(
+			`The history moved main in ${root} and kept what was staged in f, which git now shows against the new tip`,
+		);
+	});
+
 	it('warns of nothing staged that already matches the new tip', async () => {
 		const { opened } = await committedRun();
 		writeFileSync(join(root, 'a.txt'), 'one\n');
