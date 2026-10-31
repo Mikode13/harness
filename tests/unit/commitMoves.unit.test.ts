@@ -982,7 +982,36 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 		expect(readA()).toBe('two\n');
 	});
 
-	it('ends the move when the logger fails to report an index it could not update', async () => {
+	it('brings a split index to the new tip, whole', async () => {
+		git('config', 'core.splitIndex', 'true');
+		git('update-index', '--split-index');
+		const { history, sha } = await committedRun();
+
+		const undone = await history.undo({ commits: 'reset' });
+
+		expect(undone.git?.[0]).toMatchObject({ action: 'reset', outcome: 'done' });
+		expect(head()).toBe(git('rev-parse', `${sha}^`));
+		expect(git('status', '--porcelain')).toBe('');
+		expect(git('ls-files', '--stage')).toMatch(/\ta\.txt$/);
+	});
+
+	it('leaves the branch while another git process holds the index, and leaves its lock', async () => {
+		const { history, sha } = await committedRun();
+		const lock = join(root, '.git', 'index.lock');
+		writeFileSync(lock, 'theirs');
+
+		const undone = await history.undo({ commits: 'reset' });
+
+		expect(head()).toBe(sha);
+		expect(readFileSync(lock, 'utf8')).toBe('theirs');
+		expect(undone.git?.[0]).toMatchObject({
+			action: 'reset',
+			outcome: 'left',
+			reason: `another git process is changing the index of ${root} (${lock} exists)`,
+		});
+	});
+
+	it('releases the index, and ends the move, when the logger fails once the branch moved', async () => {
 		const { runId, sha } = await committedRun();
 		const start = git('rev-parse', `${sha}^`);
 		const store = await FileRecoveryStore.open({
@@ -994,13 +1023,17 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 				},
 			},
 		});
-		writeFileSync(join(root, '.git', 'index.lock'), '');
+		// What the user staged makes the move warn, once the branch has moved.
+		writeFileSync(join(root, 'a.txt'), 'three\n');
+		git('add', 'a.txt');
+		writeFileSync(join(root, 'a.txt'), 'two\n');
 
 		await expect(store.undo({ commits: 'reset' })).rejects.toBeInstanceOf(UnrecoverableError);
 
-		// The branch moved before the index failed: the next move says it left it, and runs no git.
+		// The branch moved before the logger failed: the next move says it left it, and runs no git.
 		expect(head()).toBe(start);
-		rmSync(join(root, '.git', 'index.lock'));
+		expect(existsSync(join(root, '.git', 'index.lock'))).toBe(false);
+		expect(git('show', ':a.txt')).toBe('three');
 		await store.redo();
 		const revisions = await store.listRevisions();
 		const finished = revisions.find(revision => revision.git?.[0]?.action === 'reset');

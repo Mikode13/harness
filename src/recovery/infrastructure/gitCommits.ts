@@ -1,4 +1,15 @@
-import { mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import {
+	copyFile,
+	type FileHandle,
+	mkdtemp,
+	open,
+	readFile,
+	realpath,
+	rename,
+	rm,
+	stat,
+	writeFile,
+} from 'node:fs/promises';
 import { devNull, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type {
@@ -712,37 +723,125 @@ async function moveBranch(
 	const { warn } = moving;
 	const staged = moving.staged.get(repository) ?? new Set<string>();
 	moving.staged.set(repository, staged);
-	let update;
+	// The index stays locked from the moment it is read until the one written replaces it, as git's
+	// own commands hold it, so what another process stages meanwhile waits rather than is lost.
+	let index;
 	try {
-		update = await indexUpdate(repository, from, to, staged);
-		const moved = await git(
-			[
-				'update-ref',
-				'-m',
-				'harness: move through the history',
-				`${branchPrefix}${branch}`,
-				to,
-				from,
-			],
-			repository,
-			uncancelled,
-		);
-		if (moved.exitCode !== 0) return gitReason('move the branch', moved);
+		index = await lockIndex(repository);
 	} catch (error) {
-		return `git could not move the branch: ${errorText(error)}`;
+		return errorText(error);
 	}
-	if (update.kept.length > 0) {
-		warn(
-			`The history moved ${branch} in ${repository} and kept what was staged in ${update.kept.join(', ')}, which git now shows against the new tip`,
-		);
+	try {
+		let update;
+		try {
+			update = await indexUpdate(repository, from, to, staged, index.env);
+			const moved = await git(
+				[
+					'update-ref',
+					'-m',
+					'harness: move through the history',
+					`${branchPrefix}${branch}`,
+					to,
+					from,
+				],
+				repository,
+				uncancelled,
+			);
+			if (moved.exitCode !== 0) return gitReason('move the branch', moved);
+		} catch (error) {
+			return `git could not move the branch: ${errorText(error)}`;
+		}
+		if (update.kept.length > 0) {
+			warn(
+				`The history moved ${branch} in ${repository} and kept what was staged in ${update.kept.join(', ')}, which git now shows against the new tip`,
+			);
+		}
+		const unindexed = await writeIndex(repository, update, index);
+		if (unindexed !== undefined) {
+			warn(
+				`The history moved ${branch} in ${repository}, but could not bring its index to the new tip, so git may show those files as staged: ${unindexed}`,
+			);
+		}
+		return undefined;
+	} finally {
+		const unlocked = await index.release();
+		if (unlocked !== undefined) {
+			warn(
+				`The history could not remove the lock it took on the index of ${repository}, so git may refuse to change the index until it is removed: ${unlocked}`,
+			);
+		}
 	}
-	const unindexed = await writeIndex(repository, update);
-	if (unindexed !== undefined) {
-		warn(
-			`The history moved ${branch} in ${repository}, but could not bring its index to the new tip, so git may show those files as staged: ${unindexed}`,
-		);
+}
+
+/** The index of a repository, locked as git locks it, with a copy to read and change. */
+interface LockedIndex {
+	/** Points git at the copy. */
+	env: NodeJS.ProcessEnv;
+	/** Replaces the index with the copy, through the lock. */
+	publish(): Promise<void>;
+	/** Removes the lock, unless the copy replaced the index, and the copy. Returns why it could not. */
+	release(): Promise<string | undefined>;
+}
+
+/**
+ * Takes `index.lock` as git does, created only if no one holds it, and copies the index beside it.
+ *
+ * @throws when git holds the lock, or the index cannot be found or copied.
+ */
+async function lockIndex(repository: string): Promise<LockedIndex> {
+	const located = await git(['rev-parse', '--git-path', 'index'], repository, uncancelled);
+	if (located.exitCode !== 0) throw gitFailed('find the index', located);
+	const path = resolve(repository, located.stdout.replace(/\n$/, ''));
+	const lock = `${path}.lock`;
+	let handle: FileHandle;
+	try {
+		handle = await open(lock, 'wx');
+	} catch (error) {
+		if (code(error) !== 'EEXIST') throw error;
+		throw new Error(`another git process is changing the index of ${repository} (${lock} exists)`, {
+			cause: error,
+		});
 	}
-	return undefined;
+	let unclosed = true;
+	const close = async () => {
+		if (!unclosed) return;
+		unclosed = false;
+		await handle.close();
+	};
+	let scratch: string | undefined;
+	let published = false;
+	const release = async (): Promise<string | undefined> => {
+		try {
+			await close();
+			if (!published) await rm(lock, { force: true });
+			if (scratch !== undefined) await rm(scratch, { recursive: true, force: true });
+			return undefined;
+		} catch (error) {
+			return errorText(error);
+		}
+	};
+	try {
+		scratch = await mkdtemp(join(tmpdir(), 'harness-git-'));
+		const copy = join(scratch, 'index');
+		await copyFile(path, copy).catch((error: unknown) => {
+			// A repository with nothing staged yet has no index.
+			if (code(error) !== 'ENOENT') throw error;
+		});
+		return {
+			env: { GIT_INDEX_FILE: copy },
+			publish: async () => {
+				await handle.writeFile(await readFile(copy));
+				await handle.sync();
+				await close();
+				await rename(lock, path);
+				published = true;
+			},
+			release,
+		};
+	} catch (error) {
+		await release();
+		throw error;
+	}
 }
 
 /** The exact entries of the index that follow a branch from one tip to another. */
@@ -766,6 +865,7 @@ async function indexUpdate(
 	from: string,
 	to: string,
 	staged: Set<string>,
+	index: NodeJS.ProcessEnv,
 ): Promise<IndexUpdate> {
 	// Both sides of a rename: the index must drop the old path and take the new one.
 	const changed = await git(
@@ -774,8 +874,8 @@ async function indexUpdate(
 		uncancelled,
 	);
 	if (changed.exitCode !== 0) throw gitFailed('compare the branch before and after', changed);
-	const offOld = await stagedAgainst(repository, from);
-	const offNew = await stagedAgainst(repository, to);
+	const offOld = await stagedAgainst(repository, from, index);
+	const offNew = await stagedAgainst(repository, to, index);
 	const differing = nulSeparated(changed.stdout);
 	for (const path of differing) if (offOld.has(path)) staged.add(path);
 	const following = new Set(differing.filter(path => !staged.has(path)));
@@ -785,7 +885,7 @@ async function indexUpdate(
 	// The user's entries, and every folder they sit in.
 	const others = new Set<string>();
 	const folders = new Set<string>();
-	for (const path of await indexedPaths(repository)) {
+	for (const path of await indexedPaths(repository, index)) {
 		if (following.has(path)) continue;
 		others.add(path);
 		for (let end = path.indexOf('/'); end !== -1; end = path.indexOf('/', end + 1)) {
@@ -811,11 +911,16 @@ async function indexUpdate(
 }
 
 /** The paths whose entry in the index differs from `tree`. */
-async function stagedAgainst(repository: string, tree: string): Promise<Set<string>> {
+async function stagedAgainst(
+	repository: string,
+	tree: string,
+	index: NodeJS.ProcessEnv,
+): Promise<Set<string>> {
 	const compared = await git(
 		['diff-index', '--cached', '-z', '--name-only', '--no-renames', tree],
 		repository,
 		uncancelled,
+		index,
 	);
 	if (compared.exitCode !== 0) throw gitFailed('compare the index', compared);
 	return new Set(nulSeparated(compared.stdout));
@@ -841,8 +946,8 @@ async function treeEntries(
 	return entries;
 }
 
-async function indexedPaths(repository: string): Promise<Set<string>> {
-	const listed = await git(['ls-files', '-z'], repository, uncancelled);
+async function indexedPaths(repository: string, index: NodeJS.ProcessEnv): Promise<Set<string>> {
+	const listed = await git(['ls-files', '-z'], repository, uncancelled, index);
 	if (listed.exitCode !== 0) throw gitFailed('list the index', listed);
 	return new Set(nulSeparated(listed.stdout));
 }
@@ -855,23 +960,31 @@ function nulSeparated(text: string): string[] {
 const perCall = 500;
 
 /**
- * Writes `update` to the index, entry by entry, never as a pathspec, which would reach whatever
- * the index holds under a folder. Returns why it could not.
+ * Writes `update` to the copy of the index, entry by entry, never as a pathspec, which would reach
+ * whatever the index holds under a folder, then puts the copy in place of the index. The copy is
+ * written whole, not split, whatever the repository's configuration. Returns why it could not.
  */
-async function writeIndex(repository: string, update: IndexUpdate): Promise<string | undefined> {
+async function writeIndex(
+	repository: string,
+	update: IndexUpdate,
+	index: LockedIndex,
+): Promise<string | undefined> {
+	if (update.remove.length === 0 && update.add.length === 0) return undefined;
+	const unsplit = ['-c', 'core.splitIndex=false', 'update-index'];
 	try {
 		for (let at = 0; at < update.remove.length; at += perCall) {
 			const removed = await git(
-				['update-index', '--force-remove', '--', ...update.remove.slice(at, at + perCall)],
+				[...unsplit, '--force-remove', '--', ...update.remove.slice(at, at + perCall)],
 				repository,
 				uncancelled,
+				index.env,
 			);
 			if (removed.exitCode !== 0) return gitReason('update the index', removed);
 		}
 		for (let at = 0; at < update.add.length; at += perCall) {
 			const added = await git(
 				[
-					'update-index',
+					...unsplit,
 					'--add',
 					...update.add
 						.slice(at, at + perCall)
@@ -879,9 +992,11 @@ async function writeIndex(repository: string, update: IndexUpdate): Promise<stri
 				],
 				repository,
 				uncancelled,
+				index.env,
 			);
 			if (added.exitCode !== 0) return gitReason('update the index', added);
 		}
+		await index.publish();
 	} catch (error) {
 		return errorText(error);
 	}
