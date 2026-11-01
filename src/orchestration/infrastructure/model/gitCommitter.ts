@@ -12,6 +12,7 @@ import type {
 	FileState,
 	RecordedCommits,
 	RecoveryStore,
+	RunJournal,
 } from '#src/recovery/domain/recoveryStore';
 import { changedFiles, type DiffSide, fileDiff } from '#src/recovery/domain/runChanges';
 import {
@@ -34,7 +35,7 @@ import {
 	type ProcessResult,
 } from '#src/shared/infrastructure/runProcess';
 import { AccessDeniedError, type AccessPolicy } from '#src/tools/domain/accessPolicy';
-import { EditUnconfirmedError } from '#src/tools/domain/fileEdits';
+import { EditRefusedError, EditUnconfirmedError } from '#src/tools/domain/fileEdits';
 import { CommandCheckpoint, type CoveredFiles } from '#src/tools/infrastructure/commandCheckpoint';
 import { withoutColors } from '#src/tools/infrastructure/commandOutput';
 import { runCommandProcess } from '#src/tools/infrastructure/commandProcess';
@@ -341,7 +342,12 @@ export class GitCommitter implements Committer {
 			);
 			return { sha: firstLine(hashed), mode: mode(state.mode) };
 		} finally {
-			await rm(scratch, { recursive: true, force: true });
+			// A copy left in the temporary folder harms nothing the run did.
+			await rm(scratch, { recursive: true, force: true }).catch((error: unknown) => {
+				this.warn(
+					`The committer could not remove ${scratch}, which held a copy of ${name}: ${describeFailure(error)}`,
+				);
+			});
 		}
 	}
 
@@ -482,7 +488,14 @@ export class GitCommitter implements Committer {
 		if (message === undefined) return left('the committer wrote no message');
 
 		signal.throwIfAborted();
-		const journal = await session.journalForChange();
+		let journal: RunJournal;
+		try {
+			journal = await session.journalForChange();
+		} catch (error) {
+			// Such as a run that made the most changes one run may: the commit would be one more.
+			if (error instanceof EditRefusedError) return left(error.message);
+			throw error;
+		}
 		const checkpoint = await CommandCheckpoint.begin({
 			journal,
 			covered: this.covered,
@@ -630,10 +643,16 @@ async function stillAsFrozen(
 	const changed: string[] = [];
 	const staged = await indexOf(repository, [...state.paths.keys()], signal);
 	for (const [name, frozenState] of state.paths) {
+		const path = join(repository, ...name.split('/'));
+		// `lstat` follows a link above the file, which git refuses to commit beyond.
+		if (await linkAbove(repository, path)) {
+			changed.push(name);
+			continue;
+		}
 		const now = await stateOf(
 			repository,
 			name,
-			join(repository, ...name.split('/')),
+			path,
 			modeFor(state.fileModes, frozenState.inHead?.mode),
 			signal,
 		);

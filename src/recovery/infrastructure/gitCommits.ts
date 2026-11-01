@@ -413,7 +413,7 @@ async function keptOn(
  * written entry by entry would lose, so git would show the files it leaves out as deleted. A
  * failure to read that is a reason too.
  */
-export async function notReady(repository: string, branch: string): Promise<string | undefined> {
+async function notReady(repository: string, branch: string): Promise<string | undefined> {
 	try {
 		return await readiness(repository, branch, (args, cwd) => git(args, cwd, uncancelled));
 	} catch (error) {

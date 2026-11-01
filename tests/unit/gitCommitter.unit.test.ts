@@ -318,6 +318,51 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		expect(head()).toBe(start);
 	});
 
+	it('leaves the repository, with the reason, when the run may write no more', async () => {
+		const { opened, run, committer, options, context } = await workingRun({
+			edit: 'echo two > a.txt',
+		});
+		await run('edit');
+		const frozen = await committer.freeze(options);
+		const start = head();
+		opened.writes.sessionFor(context).stop('Writing stopped: a test stopped it');
+
+		const reports = await committer.commit(
+			frozen ?? { repositories: [] },
+			new Map([[root, 'Change a']]),
+			options,
+		);
+
+		expect(reports[0]).toMatchObject({
+			outcome: 'left',
+			reason: 'Writing stopped: a test stopped it',
+		});
+		expect(head()).toBe(start);
+	});
+
+	it('leaves the repository when a folder above a file to commit became a link after the review', async () => {
+		const { run, committer, options } = await workingRun({ edit: 'mkdir d && echo d > d/f.txt' });
+		await run('edit');
+		const frozen = await committer.freeze(options);
+		const start = head();
+		mkdirSync(join(root, 'e'));
+		writeFileSync(join(root, 'e', 'f.txt'), 'd\n');
+		rmSync(join(root, 'd'), { recursive: true });
+		symlinkSync('e', join(root, 'd'));
+
+		const reports = await committer.commit(
+			frozen ?? { repositories: [] },
+			new Map([[root, 'Add d']]),
+			options,
+		);
+
+		expect(reports[0]).toMatchObject({
+			outcome: 'left',
+			reason: 'files changed since the review: d/f.txt',
+		});
+		expect(head()).toBe(start);
+	});
+
 	it('leaves out a file under a folder a link replaced after the run', async () => {
 		const { run, committer, options } = await workingRun({
 			edit: 'mkdir d e && echo d > d/f.txt && echo e > e/f.txt',

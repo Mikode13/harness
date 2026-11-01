@@ -651,12 +651,13 @@ never the provider keys. Its progress arrives with
 `agent: 'committer'`, and its usage counts in the run's.
 
 A commit holds what the reviewer read: the run's changes are taken before each review, and a
-repository where any of them changed since is left uncommitted. It holds only the run's own
+repository where any of them changed since, or where the run changed another file since, as a
+command of the reviewer's can, is left uncommitted. It holds only the run's own
 files, never what else is staged. A file is left out, and the report says why, when it held
 changes of yours before the run, or a version of yours staged, changed after the run last
-changed it, was changed by someone else while the run worked, or is a link or a submodule in
-git; ignored files and files a command of the run already committed are not
-committed again. A repository is left whole when no branch is checked out, or when git is in
+changed it, was changed by someone else while the run worked, is a link or a submodule in
+git, or sits under a folder that became a link; files git ignores are not committed, and files
+a command of the run already committed are not committed again. A repository is left whole when no branch is checked out, or when git is in
 the middle of a merge, a rebase or another operation, or in a sparse checkout.
 
 The commit is one of the run's changes: undoing the run keeps, reverts or resets it, as for
