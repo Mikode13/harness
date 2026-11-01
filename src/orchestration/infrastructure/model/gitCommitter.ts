@@ -132,7 +132,10 @@ export class GitCommitter implements Committer {
 	}
 
 	async freeze(options: RunOptions): Promise<FrozenChanges | undefined> {
-		const runId = runContextOf(options)?.historyRun.runId;
+		const context = runContextOf(options);
+		if (!context) return undefined;
+		// From this history's own session: the run's id is the last history any of its tools wrote to.
+		const runId = await this.writes.sessionFor(context).runId();
 		if (runId === undefined) return undefined;
 		const { record, entries, unrecorded, commits } = await this.store.readRun(runId);
 		const changes = changedFiles(record, entries);
@@ -370,7 +373,9 @@ export class GitCommitter implements Committer {
 			output.push(...lines);
 		}
 		if (hidden > 0)
-			output.unshift(`# ${String(hidden)} changed files are not shown: they are secret`);
+			output.unshift(
+				`# ${String(hidden)} changed files are not shown: the agents may not read them`,
+			);
 		const diff = output.join('\n');
 		if (diff.length <= diffCharacters) return diff;
 		return `${diff.slice(0, diffCharacters)}\n... the rest of the diff is not shown`;

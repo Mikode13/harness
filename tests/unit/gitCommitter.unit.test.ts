@@ -186,6 +186,39 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		expect(undone.git?.[0]).toMatchObject({ action: 'revert', outcome: 'done' });
 	});
 
+	it("freezes its own history's run when a tool of the run wrote to another history last", async () => {
+		mkdirSync(join(root, 'sub'));
+		const { run, committer, options, context } = await workingRun({ edit: 'echo two > a.txt' });
+		await run('edit');
+		const other = await openWorkspace(
+			{
+				roots: [{ path: join(root, 'sub'), access: 'write' }],
+				stateDirectory: join(parent, 'other'),
+			},
+			{ warn: () => undefined },
+		);
+		const tool = (await commandToolFor(other, {
+			note: {
+				description: 'A test command',
+				executable: 'sh',
+				args: ['-c', 'echo note > note.txt'],
+			},
+		})) as PreparingTool;
+		const call = await tool.prepare({ command: { name: 'note' } }, signal, {
+			run: context,
+			reads: new ReadRegistry().begin(),
+			callId: 'call',
+			onProgress: () => undefined,
+			spend: () => undefined,
+			depth: 0,
+		});
+		await call.run(signal);
+
+		const frozen = await committer.freeze(options);
+
+		expect(frozen?.repositories[0]).toMatchObject({ paths: ['a.txt'], leftOut: [] });
+	});
+
 	it('leaves out a file that held changes of yours before the run, and one changed after the run did', async () => {
 		writeFileSync(join(root, 'a.txt'), 'yours\n');
 		writeFileSync(join(root, 'c.txt'), 'three\n');
