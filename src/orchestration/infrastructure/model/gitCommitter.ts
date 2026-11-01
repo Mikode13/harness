@@ -199,6 +199,11 @@ export class GitCommitter implements Committer {
 				leftOut.push({ path: rel(path), reason: reason ?? 'the history could not copy it' });
 				continue;
 			}
+			// git refuses a path beyond a link, and the history recorded none there.
+			if (await linkAbove(repository, path)) {
+				leftOut.push({ path: rel(path), reason: 'a folder above it is a link now' });
+				continue;
+			}
 			candidates.push({ path, rel: rel(path), change });
 		}
 		const ignored = await ignoredOf(
@@ -771,6 +776,18 @@ async function stateOf(
 	if (!found.isFile()) return { exists: true, mode: found.isSymbolicLink() ? '120000' : 'other' };
 	const hashed = await git(['hash-object', '--', name], repository, signal);
 	return { exists: true, sha: firstLine(hashed), mode: mode(found.mode) };
+}
+
+/** Whether a folder between `repository` and `path` is a link: one that is gone is not. */
+async function linkAbove(repository: string, path: string): Promise<boolean> {
+	for (let folder = dirname(path); folder.length > repository.length; folder = dirname(folder)) {
+		try {
+			if ((await lstat(folder)).isSymbolicLink()) return true;
+		} catch (error) {
+			if (!absent(error)) throw error;
+		}
+	}
+	return false;
 }
 
 /** Whether a filesystem call failed because nothing is at the path, a file standing in for a folder above it included. */

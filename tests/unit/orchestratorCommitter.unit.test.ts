@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Agent, AgentResponse } from '../../src/agent/domain/agent.ts';
 import type { RepositoryCommit } from '../../src/agent/domain/commitReport.ts';
+import { Inbox } from '../../src/agent/domain/inbox.ts';
 import type { Asker } from '../../src/agent/domain/question.ts';
 import { RunContext, withRunContext } from '../../src/agent/domain/runContext.ts';
 import type {
@@ -155,6 +156,19 @@ describe("the orchestrator's committer", () => {
 		});
 
 		expect(events).toContainEqual({ type: 'reasoning', message: 'writing', agent: 'committer' });
+	});
+
+	it('keeps the inbox from the committer, so what the user sends meanwhile stays for the next run', async () => {
+		const { agent, run } = scripted('Change a');
+		const inbox = new Inbox();
+		const ask: Asker = () => {
+			inbox.send('also rename b');
+			return ['Commit'];
+		};
+
+		await orchestrator({ committerAgent: agent }).run('task', { signal, ask, inbox });
+
+		expect(run.mock.calls[0]?.[1].inbox).toBeUndefined();
 	});
 
 	it('commits nothing, and reports it declined, when the user answers anything but Commit', async () => {
