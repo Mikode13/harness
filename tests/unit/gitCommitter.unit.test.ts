@@ -208,6 +208,43 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		});
 	});
 
+	it('leaves out a file a folder replaced after the run, and one under a folder a file replaced', async () => {
+		const { run, committer, options } = await workingRun({
+			edit: 'echo two > a.txt && mkdir d && echo e > d/e.txt',
+		});
+		await run('edit');
+		rmSync(join(root, 'a.txt'));
+		mkdirSync(join(root, 'a.txt'));
+		rmSync(join(root, 'd'), { recursive: true });
+		writeFileSync(join(root, 'd'), 'a file now\n');
+
+		const frozen = await committer.freeze(options);
+
+		expect(frozen?.repositories[0]).toMatchObject({
+			paths: [],
+			leftOut: [
+				{ path: 'a.txt', reason: 'it changed after the task last changed it' },
+				{ path: 'd/e.txt', reason: 'it changed after the task last changed it' },
+			],
+		});
+	});
+
+	it('commits a file the run normalized with the attributes it added', async () => {
+		git('config', 'core.autocrlf', 'false');
+		writeFileSync(join(root, 'c.txt'), 'x\r\ny\r\n');
+		git('add', 'c.txt');
+		git('commit', '--quiet', '-m', 'feat: c');
+		const { run, committer, options } = await workingRun({
+			edit: "printf '* text=auto\\n' > .gitattributes && printf 'x\\ny\\n' > c.txt",
+		});
+		await run('edit');
+
+		const frozen = await committer.freeze(options);
+
+		expect(frozen?.repositories[0]).toMatchObject({ leftOut: [] });
+		expect([...(frozen?.repositories[0]?.paths ?? [])].sort()).toEqual(['.gitattributes', 'c.txt']);
+	});
+
 	it('names a file a hook left out of the commit, not as committed', async () => {
 		hook('pre-commit', 'git reset -q HEAD -- a.txt');
 		const { run, committer, options } = await workingRun({
@@ -478,6 +515,8 @@ describe('the git committer', { timeout: 20_000 }, () => {
 			'c=$(cat); if [ "$c" = one ] && [ -f race ]; then rm race; echo yours > a.txt; fi; printf "%s\\n" "$c"',
 		);
 		writeFileSync(join(root, '.gitattributes'), 'a.txt filter=racy\n');
+		// Clean only through the filter, which adds the newline git holds, so the filter hashes it.
+		writeFileSync(join(root, 'a.txt'), 'one');
 		const { run, committer, options } = await workingRun({ edit: 'echo two > a.txt' });
 		await run('edit');
 		writeFileSync(join(root, 'race'), '');

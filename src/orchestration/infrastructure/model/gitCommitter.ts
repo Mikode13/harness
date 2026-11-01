@@ -214,14 +214,15 @@ export class GitCommitter implements Committer {
 				continue;
 			}
 			const start = before.get(name);
-			const startBlob = await this.blobOf(
-				repository,
-				name,
-				change.before,
-				modeFor(fileModes, start?.mode),
-				signal,
-			);
-			if (!sameEntry(startBlob, start)) {
+			const startMode = modeFor(fileModes, start?.mode);
+			// A clean file holds its blob as is, even after the run changed the filters that read it.
+			const clean =
+				sameEntry(
+					await this.blobOf(repository, name, change.before, startMode, signal, false),
+					start,
+				) ||
+				sameEntry(await this.blobOf(repository, name, change.before, startMode, signal), start);
+			if (!clean) {
 				leftOut.push({ path: name, reason: 'it held changes of yours before this task' });
 				continue;
 			}
@@ -278,10 +279,13 @@ export class GitCommitter implements Committer {
 		let content: Buffer;
 		let mode: number;
 		try {
-			mode = (await stat(path)).mode;
+			const found = await stat(path);
+			// A folder, or anything but a file, is not what the run left.
+			if (!found.isFile()) return false;
+			mode = found.mode;
 			content = await readFile(path);
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === 'ENOENT') return !after.exists;
+			if (absent(error)) return !after.exists;
 			throw error;
 		}
 		return (
@@ -291,20 +295,25 @@ export class GitCommitter implements Committer {
 		);
 	}
 
-	/** What git would store at `name` for a state the history recorded, after git's filters. */
+	/** What git would store at `name` for a state the history recorded, after git's filters unless not `filtered`. */
 	private async blobOf(
 		repository: string,
 		name: string,
 		state: FileState,
 		mode: ModeOf,
 		signal: AbortSignal,
+		filtered = true,
 	): Promise<GitEntry | undefined> {
 		if (!state.exists) return undefined;
 		const scratch = await mkdtemp(join(tmpdir(), 'harness-commit-'));
 		try {
 			const copy = join(scratch, 'recorded');
 			await writeFile(copy, await this.store.readContent(state.hash));
-			const hashed = await git(['hash-object', `--path=${name}`, copy], repository, signal);
+			const hashed = await git(
+				['hash-object', filtered ? `--path=${name}` : '--no-filters', copy],
+				repository,
+				signal,
+			);
 			return { sha: firstLine(hashed), mode: mode(state.mode) };
 		} finally {
 			await rm(scratch, { recursive: true, force: true });
@@ -611,14 +620,13 @@ async function tipOf(
 	for (;;) {
 		if (tips.has(folder)) return tips.get(folder);
 		try {
-			await stat(folder);
-			break;
+			if ((await stat(folder)).isDirectory()) break;
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-			const parent = dirname(folder);
-			if (parent === folder) return undefined;
-			folder = parent;
+			if (!absent(error)) throw error;
 		}
+		const parent = dirname(folder);
+		if (parent === folder) return undefined;
+		folder = parent;
 	}
 	const tip = await readTip(folder, signal);
 	// Git found no repository, though one is there: it cannot read it, which is not "outside".
@@ -719,12 +727,18 @@ async function stateOf(
 	try {
 		found = await lstat(path);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { exists: false };
+		if (absent(error)) return { exists: false };
 		throw error;
 	}
 	if (!found.isFile()) return { exists: true, mode: found.isSymbolicLink() ? '120000' : 'other' };
 	const hashed = await git(['hash-object', '--', name], repository, signal);
 	return { exists: true, sha: firstLine(hashed), mode: mode(found.mode) };
+}
+
+/** Whether a filesystem call failed because nothing is at the path, a file standing in for a folder above it included. */
+function absent(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException).code;
+	return code === 'ENOENT' || code === 'ENOTDIR';
 }
 
 /** What the index holds at each of `names`, merged entries only. */
