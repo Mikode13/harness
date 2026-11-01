@@ -551,6 +551,29 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		expect(git('ls-tree', 'HEAD', 'a.txt')).toMatch(/^100644 /);
 	});
 
+	it('commits a file whose group or others may execute it, which git holds as not executable', async () => {
+		chmodSync(join(root, 'a.txt'), 0o645);
+		const { run, committer, options } = await workingRun({ edit: 'echo two > a.txt' });
+		await run('edit');
+
+		const frozen = await committer.freeze(options);
+
+		expect(frozen?.repositories[0]).toMatchObject({ paths: ['a.txt'], leftOut: [] });
+	});
+
+	it('bounds the diff for the message by its characters, for a change on one long line', async () => {
+		const { run, committer, options } = await workingRun({
+			edit: "head -c 200000 /dev/zero | tr '\\0' x > long.txt",
+		});
+		await run('edit');
+
+		const frozen = await committer.freeze(options);
+
+		const diff = frozen?.repositories[0]?.diff ?? '';
+		expect(diff.length).toBeLessThan(50_000);
+		expect(diff).toMatch(/\.\.\. the rest of the diff is not shown$/);
+	});
+
 	it('writes the message from what the commit would change, not what a commit of the run holds already', async () => {
 		const { run, committer, options } = await workingRun({
 			edit: `echo two > a.txt && git ${identity.join(' ')} commit --quiet -am "feat: two" && echo three > a.txt`,

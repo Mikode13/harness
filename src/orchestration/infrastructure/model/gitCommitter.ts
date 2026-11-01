@@ -52,6 +52,8 @@ const commitOutputBytes = 16 * 1024;
 const reasonCharacters = 2000;
 // The diff the message is written from: enough to say what changed, not the whole change.
 const diffLines = 400;
+// And in characters, which a minified file or one long line would otherwise fill on its own.
+const diffCharacters = 40_000;
 const styleSubjects = 10;
 // Each git call that reads or stages, which a filter of the repository's may slow down.
 const gitTimeoutMs = 2 * 60_000;
@@ -360,7 +362,9 @@ export class GitCommitter implements Committer {
 		}
 		if (hidden > 0)
 			output.unshift(`# ${String(hidden)} changed files are not shown: they are secret`);
-		return output.join('\n');
+		const diff = output.join('\n');
+		if (diff.length <= diffCharacters) return diff;
+		return `${diff.slice(0, diffCharacters)}\n... the rest of the diff is not shown`;
 	}
 
 	private async readable(path: string, signal: AbortSignal): Promise<boolean> {
@@ -783,8 +787,9 @@ function isFile(mode: string): boolean {
 	return mode === '100644' || mode === '100755';
 }
 
+// As git does: the owner's executable bit alone.
 function gitMode(mode: number): string {
-	return (mode & 0o111) === 0 ? '100644' : '100755';
+	return (mode & 0o100) === 0 ? '100644' : '100755';
 }
 
 /** The mode git would store for a file, from the mode the file system gives it. */
