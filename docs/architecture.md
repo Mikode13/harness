@@ -544,8 +544,9 @@ progress or a sparse checkout, is refused whole. Once the reviewer approves, the
 asks through `ask`, unless `autoCommit` is set, then runs the committer agent once per
 repository with the request, the plan, the bounded diff from `HEAD` of what it would commit,
 and the branch's recent subjects.
-`commit` takes the session's write lock (`exclusive`), opens a `CommandCheckpoint` named for
-the committer, and then checks that the tip, every frozen file and its index entry are as they
+`commit` takes the session's write lock (`exclusive`), leaves a repository where the run's
+history recorded a change since the freeze, such as a reviewer's command made, opens a
+`CommandCheckpoint` named for the committer, and then checks that the tip, every frozen file and its index entry are as they
 were, so nothing changed while the checkpoint captured the files reaches the commit. It adds the
 new files the index lacks and runs `git commit --only` with `GIT_LITERAL_PATHSPECS`, so hooks run
 and the rest of the index stays. Every git call runs in a process group of its own, as a command

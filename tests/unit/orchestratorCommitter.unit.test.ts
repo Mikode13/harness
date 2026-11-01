@@ -122,6 +122,29 @@ describe("the orchestrator's committer", () => {
 		expect(response.tokens?.inputTokens).toBe(4);
 	});
 
+	it('names in the question a repository nothing would be committed in, and what it leaves out', async () => {
+		const { committer } = fakeCommitter({
+			repositories: [
+				repository,
+				{
+					repository: '/other',
+					branch: 'main',
+					paths: [],
+					leftOut: [{ path: 'c.txt', reason: 'it changed after the task last changed it' }],
+					diff: '',
+					style: [],
+				},
+			],
+		});
+		const ask = vi.fn(yes);
+
+		await orchestrator({ committer }).run('task', { signal, ask });
+
+		expect(ask.mock.calls[0]?.[0][0]?.question).toBe(
+			'The reviewer approved the change. Commit it? It would commit 1 file in /repo on main. Nothing would be committed in /other: nothing the run changed there can be committed. 2 files the task changed would be left out: b.txt (it held changes of yours before this task), c.txt (it changed after the task last changed it).',
+		);
+	});
+
 	it('writes each message with a new committer, so none carries an earlier commit', async () => {
 		const createCommitter = vi.fn(() => scripted('Change a').agent);
 		const agent = new OrchestratorAgent({

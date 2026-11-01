@@ -295,6 +295,29 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		});
 	});
 
+	it('leaves the repository when the run changes another file after the review, as a command of the reviewer can', async () => {
+		const { run, committer, options } = await workingRun({
+			edit: 'echo two > a.txt',
+			review: 'echo generated > c.txt',
+		});
+		await run('edit');
+		const frozen = await committer.freeze(options);
+		const start = head();
+		await run('review');
+
+		const reports = await committer.commit(
+			frozen ?? { repositories: [] },
+			new Map([[root, 'Change a']]),
+			options,
+		);
+
+		expect(reports[0]).toMatchObject({
+			outcome: 'left',
+			reason: 'the task changed files after the review: c.txt',
+		});
+		expect(head()).toBe(start);
+	});
+
 	it('leaves out a file under a folder a link replaced after the run', async () => {
 		const { run, committer, options } = await workingRun({
 			edit: 'mkdir d e && echo d > d/f.txt && echo e > e/f.txt',

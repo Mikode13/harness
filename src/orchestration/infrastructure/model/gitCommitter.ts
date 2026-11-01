@@ -85,6 +85,8 @@ interface FrozenState {
 	paths: Map<string, PathState>;
 	/** Whether git trusts the executable bit there, as `core.fileMode` says. */
 	fileModes: boolean;
+	/** What the history recorded of each path the run changed in the repository, by `recordedAs`. */
+	recorded: Map<string, string>;
 }
 
 /**
@@ -137,9 +139,8 @@ export class GitCommitter implements Committer {
 		// From this history's own session: the run's id is the last history any of its tools wrote to.
 		const runId = await this.writes.sessionFor(context).runId();
 		if (runId === undefined) return undefined;
-		const { record, entries, unrecorded, commits } = await this.store.readRun(runId);
-		const changes = changedFiles(record, entries);
-		if (changes.length === 0 && unrecorded.length === 0) return undefined;
+		const { items, commits } = await this.recordedIn(runId);
+		if (items.length === 0) return undefined;
 
 		const groups = new Map<string, { tip: BranchTip; items: Item[] }>();
 		const tips = new Map<string, BranchTip | undefined>();
@@ -151,8 +152,7 @@ export class GitCommitter implements Committer {
 			group.items.push(item);
 			groups.set(tip.repository, group);
 		};
-		for (const change of changes) await add({ path: change.path, change });
-		for (const { path } of unrecorded) await add({ path });
+		for (const item of items) await add(item);
 
 		const repositories: FrozenRepository[] = [];
 		const states = new Map<string, FrozenState>();
@@ -289,7 +289,13 @@ export class GitCommitter implements Committer {
 				diff,
 				style: await styleOf(repository, head, signal),
 			},
-			state: { branch, head, paths, fileModes },
+			state: {
+				branch,
+				head,
+				paths,
+				fileModes,
+				recorded: new Map(items.map(item => [item.path, recordedAs(item)])),
+			},
 		};
 	}
 
@@ -417,22 +423,41 @@ export class GitCommitter implements Committer {
 		const session = this.writes.sessionFor(context);
 		// Alone, as a command: a change another agent of the run made meanwhile would be taken for its.
 		return session.exclusive(async () => {
+			const { signal } = options;
+			const runId = await session.runId();
+			const now = runId === undefined ? [] : (await this.recordedIn(runId)).items;
+			const tips = new Map<string, BranchTip | undefined>();
 			const reports: RepositoryCommit[] = [];
 			for (const each of frozen.repositories) {
 				const state = states.get(each.repository);
 				if (!state || each.paths.length === 0 || each.refused !== undefined) continue;
+				// Such as by a command of the reviewer's: what changed since the review was never reviewed.
+				const later = await changedSince(each.repository, state.recorded, now, tips, signal);
 				reports.push(
-					await this.commitIn(each, state, messages.get(each.repository), session, options.signal),
+					await this.commitIn(each, state, messages.get(each.repository), later, session, signal),
 				);
 			}
 			return reports;
 		}, options.signal);
 	}
 
+	/** Each file the run's history recorded, changed or changed in a way it could not copy. */
+	private async recordedIn(
+		runId: string,
+	): Promise<{ items: Item[]; commits: readonly RecordedCommits[] }> {
+		const { record, entries, unrecorded, commits } = await this.store.readRun(runId);
+		const items: Item[] = [
+			...changedFiles(record, entries).map(change => ({ path: change.path, change })),
+			...unrecorded.map(({ path }) => ({ path })),
+		];
+		return { items, commits };
+	}
+
 	private async commitIn(
 		frozen: FrozenRepository,
 		state: FrozenState,
 		message: string | undefined,
+		later: readonly string[],
 		session: WriteSession,
 		signal: AbortSignal,
 	): Promise<RepositoryCommit> {
@@ -452,6 +477,8 @@ export class GitCommitter implements Committer {
 			...fields,
 		});
 		const left = (reason: string) => report('left', { reason });
+		if (later.length > 0)
+			return left(`the task changed files after the review: ${later.join(', ')}`);
 		if (message === undefined) return left('the committer wrote no message');
 
 		signal.throwIfAborted();
@@ -643,6 +670,30 @@ class UnstoppedGitError extends Error {}
 interface Item {
 	path: string;
 	change?: FileChange;
+}
+
+/** What the history recorded of a path, to compare one reading of the run with a later one. */
+function recordedAs({ change }: Item): string {
+	if (!change) return 'uncopied';
+	const { after, continuous, uncertain, pending } = change;
+	return JSON.stringify([after, continuous, uncertain, pending]);
+}
+
+/** The paths in `repository` the history recorded otherwise than `recorded` holds. */
+async function changedSince(
+	repository: string,
+	recorded: ReadonlyMap<string, string>,
+	now: readonly Item[],
+	tips: Map<string, BranchTip | undefined>,
+	signal: AbortSignal,
+): Promise<string[]> {
+	const changed: string[] = [];
+	for (const item of now) {
+		if (recorded.get(item.path) === recordedAs(item)) continue;
+		if ((await tipOf(item.path, tips, signal))?.repository !== repository) continue;
+		changed.push(relative(repository, item.path).split(sep).join('/'));
+	}
+	return changed;
 }
 
 /** Why a change cannot be committed as the run's, or `undefined` when it can. */

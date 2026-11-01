@@ -152,7 +152,7 @@ function leftIn({ repository, branch, leftOut, refused }: FrozenRepository): Rep
 		repository,
 		...(branch === undefined ? {} : { branch }),
 		outcome: 'left',
-		reason: refused ?? 'nothing the run changed there can be committed',
+		reason: refused ?? nothingThere,
 		commits: [],
 		paths: [],
 		leftOut: [...leftOut],
@@ -160,8 +160,16 @@ function leftIn({ repository, branch, leftOut, refused }: FrozenRepository): Rep
 	};
 }
 
-/** The question that asks whether to commit: what would be committed, and what left out. */
-function describeCommit(ready: readonly FrozenRepository[]): string {
+const nothingThere = 'nothing the run changed there can be committed';
+
+/**
+ * The question that asks whether to commit: what would be committed, and what left out, in the
+ * repositories nothing would be committed in too.
+ */
+function describeCommit(
+	ready: readonly FrozenRepository[],
+	others: readonly FrozenRepository[],
+): string {
 	const files = (count: number) => `${String(count)} ${count === 1 ? 'file' : 'files'}`;
 	const where = ready
 		.map(
@@ -169,12 +177,18 @@ function describeCommit(ready: readonly FrozenRepository[]): string {
 				`${files(paths.length)} in ${repository}${branch === undefined ? '' : ` on ${branch}`}`,
 		)
 		.join('; ');
-	const leftOut = ready.flatMap(({ leftOut }) => leftOut);
+	const nothing = others
+		.map(
+			({ repository, refused }) =>
+				` Nothing would be committed in ${repository}: ${refused ?? nothingThere}.`,
+		)
+		.join('');
+	const leftOut = [...ready, ...others].flatMap(({ leftOut }) => leftOut);
 	const left =
 		leftOut.length === 0
 			? ''
 			: ` ${files(leftOut.length)} the task changed would be left out: ${leftOut.map(({ path, reason }) => `${path} (${reason})`).join(', ')}.`;
-	return `The reviewer approved the change. Commit it? It would commit ${where}.${left}`;
+	return `The reviewer approved the change. Commit it? It would commit ${where}.${nothing}${left}`;
 }
 
 function stripCodeFence(text: string): string {
@@ -478,12 +492,13 @@ export class OrchestratorAgent implements Agent {
 		const ready = frozen.repositories.filter(
 			({ paths, refused }) => paths.length > 0 && refused === undefined,
 		);
-		const unready = frozen.repositories.filter(each => !ready.includes(each)).map(leftIn);
+		const others = frozen.repositories.filter(each => !ready.includes(each));
+		const unready = others.map(leftIn);
 		if (ready.length === 0) {
 			this.warnLeft(unready);
 			return { outcome: 'nothing', repositories: unready };
 		}
-		if (!this.autoCommit && !(await this.userCommits(ready, options))) {
+		if (!this.autoCommit && !(await this.userCommits(ready, others, options))) {
 			return { outcome: 'declined', repositories: [] };
 		}
 
@@ -512,11 +527,12 @@ export class OrchestratorAgent implements Agent {
 	 */
 	private async userCommits(
 		ready: readonly FrozenRepository[],
+		others: readonly FrozenRepository[],
 		{ ask, signal }: RunOptions,
 	): Promise<boolean> {
 		if (!ask) return false;
 		const question: UserQuestion = {
-			question: describeCommit(ready),
+			question: describeCommit(ready, others),
 			options: [
 				{ label: commitLabel, description: 'Commit the files this task changed' },
 				{ label: 'Do not commit', description: 'Leave the changes uncommitted' },
