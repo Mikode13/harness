@@ -22,7 +22,12 @@ import {
 	readTip,
 } from '#src/recovery/infrastructure/gitCommits';
 import { isAbortError } from '#src/shared/domain/isAbortError';
-import { describeFailure } from '#src/shared/domain/providerFailure';
+import type { ILogger } from '#src/shared/domain/logger';
+import {
+	classifyHostFailure,
+	describeFailure,
+	treatErrors,
+} from '#src/shared/domain/providerFailure';
 import {
 	firstLine,
 	gitEnvironment,
@@ -95,6 +100,7 @@ export class GitCommitter implements Committer {
 	private readonly writes: WorkspaceWrites;
 	private readonly covered: CoveredFiles;
 	private readonly policy: AccessPolicy;
+	private readonly logger: ILogger;
 	private readonly runCommit: typeof runCommandProcess;
 	// What each freeze found, kept here so the orchestrator never handles git's state.
 	private readonly states = new WeakMap<FrozenChanges, Map<string, FrozenState>>();
@@ -104,6 +110,7 @@ export class GitCommitter implements Committer {
 		writes,
 		covered,
 		policy,
+		logger,
 		runCommit = runCommandProcess,
 	}: {
 		store: RecoveryStore;
@@ -112,6 +119,7 @@ export class GitCommitter implements Committer {
 		covered: CoveredFiles;
 		/** What the message's diff may show. */
 		policy: AccessPolicy;
+		logger: ILogger;
 		/** Runs `git commit`. Replaced in tests. */
 		runCommit?: typeof runCommandProcess;
 	}) {
@@ -119,6 +127,7 @@ export class GitCommitter implements Committer {
 		this.writes = writes;
 		this.covered = covered;
 		this.policy = policy;
+		this.logger = logger;
 		this.runCommit = runCommit;
 	}
 
@@ -367,6 +376,16 @@ export class GitCommitter implements Committer {
 		return `${diff.slice(0, diffCharacters)}\n... the rest of the diff is not shown`;
 	}
 
+	private warn(message: string): void {
+		treatErrors(
+			() => {
+				this.logger.warn(message);
+			},
+			classifyHostFailure,
+			"The committer's logger failed while reporting a folder it could not remove",
+		);
+	}
+
 	private async readable(path: string, signal: AbortSignal): Promise<boolean> {
 		try {
 			await this.policy.check(path, 'read', signal);
@@ -454,8 +473,10 @@ export class GitCommitter implements Committer {
 
 		let result: Awaited<ReturnType<typeof runCommandProcess>> | undefined;
 		let failure: unknown;
-		const scratch = await mkdtemp(join(tmpdir(), 'harness-commit-'));
+		let scratch: string | undefined;
+		let leftover: string | undefined;
 		try {
+			scratch = await mkdtemp(join(tmpdir(), 'harness-commit-'));
 			const messageFile = join(scratch, 'message');
 			await writeFile(messageFile, message.endsWith('\n') ? message : `${message}\n`);
 			// A new file is not known to git, which `--only` commits from.
@@ -475,7 +496,14 @@ export class GitCommitter implements Committer {
 		} catch (error) {
 			failure = error;
 		} finally {
-			await rm(scratch, { recursive: true, force: true });
+			// What git made must reach the history whether or not its message's folder goes.
+			if (scratch !== undefined) {
+				try {
+					await rm(scratch, { recursive: true, force: true });
+				} catch (error) {
+					leftover = `The committer could not remove ${scratch}, which held its message: ${describeFailure(error)}`;
+				}
+			}
 		}
 
 		let stopped = result?.stopped ?? !(failure instanceof UnstoppedGitError);
@@ -507,6 +535,7 @@ export class GitCommitter implements Committer {
 			}
 		}
 		await close(checkpoint, stopped, session);
+		if (leftover !== undefined) this.warn(leftover);
 		if (!stopped) {
 			session.stop('Writing stopped: a hook or a filter of the commit could not be stopped');
 			throw new EditUnconfirmedError(

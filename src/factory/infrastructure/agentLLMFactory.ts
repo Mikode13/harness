@@ -940,6 +940,7 @@ export async function createLLMOrchestrator({
 						writes: opened.writes,
 						covered: opened.covered,
 						policy: opened.policy,
+						logger,
 					}),
 					createCommitter: () =>
 						buildLLMAgent(executor.provider, {

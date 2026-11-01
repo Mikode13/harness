@@ -86,13 +86,15 @@ async function workingRun(commands: Record<string, string>) {
 		});
 		await call.run(signal);
 	};
+	const warnings: string[] = [];
 	const committer = new GitCommitter({
 		store: opened.store,
 		writes: opened.writes,
 		covered: opened.covered,
 		policy: opened.policy,
+		logger: { warn: (...args: unknown[]) => warnings.push(args.map(String).join(' ')) },
 	});
-	return { opened, context, options, run, committer };
+	return { opened, context, options, run, committer, warnings };
 }
 
 function hook(name: string, script: string): void {
@@ -147,6 +149,37 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		expect(git('status', '--porcelain', '--', 'a.txt', 'b.txt')).toBe('');
 
 		// Undoing the run takes the commit back, as for any command's.
+		await context.finish('completed');
+		const history = await createHistory({ root, stateDirectory: join(parent, 'state') });
+		const undone = await history.undo({ commits: 'revert' });
+		expect(undone.git?.[0]).toMatchObject({ action: 'revert', outcome: 'done' });
+	});
+
+	it('records the commit it made when it cannot remove the folder that held its message, and warns', async () => {
+		const temporary = join(parent, 'tmp');
+		mkdirSync(temporary);
+		// Locks the message's folder once git committed, so removing what it holds fails.
+		hook('post-commit', `chmod 500 "${temporary}"/harness-commit-*`);
+		const { run, committer, options, context, warnings } = await workingRun({
+			edit: 'echo two > a.txt',
+		});
+		await run('edit');
+		const frozen = await committer.freeze(options);
+
+		vi.stubEnv('TMPDIR', temporary);
+		try {
+			const reports = await committer.commit(
+				frozen ?? { repositories: [] },
+				new Map([[root, 'Change a']]),
+				options,
+			);
+			expect(reports[0]).toMatchObject({ outcome: 'done', commits: [{ sha: head() }] });
+		} finally {
+			vi.unstubAllEnvs();
+			execFileSync('chmod', ['-R', 'u+w', temporary]);
+		}
+		expect(warnings).toEqual([expect.stringContaining('which held its message')]);
+
 		await context.finish('completed');
 		const history = await createHistory({ root, stateDirectory: join(parent, 'state') });
 		const undone = await history.undo({ commits: 'revert' });
@@ -278,6 +311,7 @@ describe('the git committer', { timeout: 20_000 }, () => {
 			writes: opened.writes,
 			covered: opened.covered,
 			policy: opened.policy,
+			logger: { warn: () => undefined },
 			runCommit: () => {
 				controller.abort();
 				return Promise.reject(new DOMException('The run was cancelled', 'AbortError'));
@@ -310,6 +344,7 @@ describe('the git committer', { timeout: 20_000 }, () => {
 				return opened.covered(signal);
 			},
 			policy: opened.policy,
+			logger: { warn: () => undefined },
 		});
 		const frozen = await committer.freeze(options);
 		const start = head();
