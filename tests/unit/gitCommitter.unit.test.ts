@@ -318,6 +318,18 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		expect(head()).toBe(start);
 	});
 
+	it("runs the commit's hooks with git's own patterns, so a hook's pathspec matches", async () => {
+		hook('pre-commit', `git diff --cached --name-only -- '*.txt' > "${join(parent, 'hook-saw')}"`);
+		const { run, committer, options } = await workingRun({ edit: 'echo two > a.txt' });
+		await run('edit');
+		const frozen = await committer.freeze(options);
+
+		await committer.commit(frozen ?? { repositories: [] }, new Map([[root, 'Change a']]), options);
+
+		expect(readFileSync(join(parent, 'hook-saw'), 'utf8')).toBe('a.txt\n');
+		expect(git('show', '--format=', '--name-only', 'HEAD')).toBe('a.txt');
+	});
+
 	it('leaves the repository, with the reason, when the run may write no more', async () => {
 		const { opened, run, committer, options, context } = await workingRun({
 			edit: 'echo two > a.txt',

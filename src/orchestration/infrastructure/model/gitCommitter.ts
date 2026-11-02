@@ -533,11 +533,21 @@ export class GitCommitter implements Committer {
 			if (added.length > 0) await git(['add', '--', ...added], repository, signal);
 			result = await this.runCommit(
 				'git',
-				// `--only`: these paths, from the files, whatever else the index holds.
-				['-c', 'color.ui=never', 'commit', '--only', '-F', messageFile, '--', ...paths],
+				// `--only`: these paths, from the files, whatever else the index holds. Each one literal
+				// by its own prefix: `GIT_LITERAL_PATHSPECS` would reach the hooks, and their patterns.
+				[
+					'-c',
+					'color.ui=never',
+					'commit',
+					'--only',
+					'-F',
+					messageFile,
+					'--',
+					...paths.map(name => `:(literal)${name}`),
+				],
 				{
 					cwd: repository,
-					env: { ...gitEnvironment(), GIT_LITERAL_PATHSPECS: '1' },
+					env: gitEnvironment(),
 					timeoutMs: commitTimeoutMs,
 					outputBytes: commitOutputBytes,
 					signal,

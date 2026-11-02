@@ -548,7 +548,7 @@ and the branch's recent subjects.
 history recorded a change since the freeze, such as a reviewer's command made, opens a
 `CommandCheckpoint` named for the committer, and then checks that the tip, every frozen file and its index entry are as they
 were, so nothing changed while the checkpoint captured the files reaches the commit. It adds the
-new files the index lacks and runs `git commit --only` with `GIT_LITERAL_PATHSPECS`, so hooks run
+new files the index lacks and runs `git commit --only` with each path `:(literal)`, so hooks run, with their own patterns,
 and the rest of the index stays. Every git call runs in a process group of its own, as a command
 does, so a filter it starts stops with it. The commits it made go into the journal as the run's, and the move
 policies of `src/recovery/` apply to them. A hook's rejection unstages what it added and is
