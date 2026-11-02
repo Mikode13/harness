@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RunOptions } from '../../src/agent/domain/agent.ts';
 import { RunContext, withDelegation, withRunContext } from '../../src/agent/domain/runContext.ts';
 import {
@@ -339,6 +339,51 @@ describe('the command verifier', { timeout: 20_000 }, () => {
 			},
 		]);
 		expect(runs('test')).toBe(1);
+	});
+
+	it('reports a check it ran itself unknown when the harness could not record what it changed', async () => {
+		const { options, verifier } = await verifiedRun(
+			{
+				lint: counted('lint', 'exit 0'),
+				test: counted('test', 'echo two > a.txt; chmod 000 a.txt; echo ok'),
+			},
+			[{ command: 'test' }, { command: 'lint' }],
+		);
+
+		const result = await verifier.verify(options);
+
+		expect(result.checks).toEqual([
+			{
+				command: 'test',
+				status: 'unknown',
+				how: '"test" ran, but the harness could not record what it changed; writing has stopped for this run',
+				output: 'ok\n',
+			},
+			{
+				command: 'lint',
+				status: 'missing',
+				how: 'could not run: Writing stopped: the harness could not record what a command changed',
+			},
+		]);
+		expect(runs('lint')).toBe(0);
+	});
+
+	it('waits for a command of the run still running before it judges the checks', async () => {
+		const { options, run, verifier } = await verifiedRun(
+			{ slow: counted('slow', 'echo two > a.txt; sleep 1'), test: counted('test', 'exit 0') },
+			[{ command: 'test' }],
+		);
+		await run('test');
+		const slow = run('slow');
+		await vi.waitFor(() => {
+			expect(runs('slow')).toBe(1);
+		});
+
+		const result = await verifier.verify(options);
+		await slow;
+
+		expect(result.met).toBe(true);
+		expect(runs('test')).toBe(2);
 	});
 
 	it('runs no check beyond the write limit of the agent that delegated the run', async () => {

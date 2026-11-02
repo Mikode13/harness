@@ -68,8 +68,9 @@ export interface Verifier {
 	 * harness, with no model: a check that already failed for these files is not run again. One the
 	 * harness could not run says why in `how`.
 	 *
-	 * @throws whatever stopped a check before it ran to an end, other than a refusal to write,
-	 * unclassified: the caller classifies it, as the run's own failure.
+	 * @throws whatever stopped a check before it ran to an end, other than a refusal to write or a
+	 * change the harness could not record, unclassified: the caller classifies it, as the run's own
+	 * failure.
 	 */
 	verify(options: RunOptions): Promise<Verification>;
 }

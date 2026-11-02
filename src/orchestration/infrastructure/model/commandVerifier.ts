@@ -9,7 +9,7 @@ import {
 	type ParameterValue,
 	parametersOf,
 } from '#src/tools/domain/commands';
-import { EditRefusedError } from '#src/tools/domain/fileEdits';
+import { EditRefusedError, EditUnconfirmedError } from '#src/tools/domain/fileEdits';
 import {
 	ToolExecutionError,
 	type PreparedCall,
@@ -157,14 +157,18 @@ export class CommandVerifier implements Verifier {
 			prepared.push({ check, call, line: call.command });
 		}
 
-		const refused = new Map<RequiredCheck, string>();
-		for (const { check, call, line } of prepared) {
-			const { status } = assessCheck(
-				check.command,
-				line,
-				checkRuns(session),
-				await session.contentState(),
+		// Once every write of the run in progress has ended, so a command still running is never read
+		// through: what it changed is only known once it ends.
+		const evidence = () =>
+			session.exclusive(
+				async () => ({ runs: checkRuns(session), current: await session.contentState() }),
+				signal,
 			);
+
+		const why = new Map<RequiredCheck, string>();
+		for (const { check, call, line } of prepared) {
+			const { runs, current } = await evidence();
+			const { status } = assessCheck(check.command, line, runs, current);
 			if (status === 'passed' || status === 'failed') continue;
 			try {
 				// Here, not in `prepare`, which only says what the check runs: a run another agent
@@ -178,7 +182,13 @@ export class CommandVerifier implements Verifier {
 				if (error instanceof ToolExecutionError) continue;
 				// One the harness may not run, such as when the run may write no more, keeps its status.
 				if (error instanceof EditRefusedError) {
-					refused.set(check, `could not run: ${error.message}`);
+					why.set(check, `could not run: ${error.message}`);
+					continue;
+				}
+				// One that ran but whose changes the harness could not all record stopped writing; it
+				// is recorded, if it ended, with no state, and the others are refused from here.
+				if (error instanceof EditUnconfirmedError) {
+					why.set(check, error.message);
 					continue;
 				}
 				throw error;
@@ -186,14 +196,13 @@ export class CommandVerifier implements Verifier {
 		}
 
 		// Again for every check: running one may have changed what another checked.
-		const runs = checkRuns(session);
-		const current = await session.contentState();
+		const { runs, current } = await evidence();
 		signal.throwIfAborted();
 		const results: CheckResult[] = prepared.map(({ check, line }) => {
 			const result = assessCheck(check.command, line, runs, current);
 			// Why it could not run now says more than how its last run ended; what that printed stays.
-			const why = refused.get(check);
-			return why === undefined ? result : { ...result, how: why };
+			const reason = why.get(check);
+			return reason === undefined ? result : { ...result, how: reason };
 		});
 		return verification(results);
 	}
