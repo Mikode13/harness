@@ -5,7 +5,7 @@ import { Logger } from '#src/shared/infrastructure/logger';
 import type { Workspace } from '../domain/workspace.ts';
 import { GitWorkspace } from './gitWorkspace.ts';
 import { RipgrepWorkspace } from './ripgrepWorkspace.ts';
-import { runProcess } from '#src/shared/infrastructure/runProcess';
+import { gitEnvironment, runProcess } from '#src/shared/infrastructure/runProcess';
 
 // Long enough for a slow disk; short enough that a hung git does not hold up building an agent.
 const gitCheckTimeoutMs = 5_000;
@@ -25,6 +25,7 @@ async function isGitWorkTree(root: string): Promise<boolean> {
 		const { stdout, exitCode } = await runProcess('git', ['rev-parse', '--is-inside-work-tree'], {
 			cwd: root,
 			signal: AbortSignal.timeout(gitCheckTimeoutMs),
+			env: gitEnvironment(),
 		});
 		return exitCode === 0 && stdout.trim() === 'true';
 	} catch {

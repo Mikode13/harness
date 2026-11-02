@@ -18,7 +18,12 @@ import type {
 	CommitsPolicy,
 	MovedCommit,
 } from '#src/recovery/domain/recoveryStore';
-import { firstLine, gitEnvironment, runProcess } from '#src/shared/infrastructure/runProcess';
+import {
+	firstLine,
+	gitEnvironment,
+	type ProcessResult,
+	runProcess,
+} from '#src/shared/infrastructure/runProcess';
 
 const branchPrefix = 'refs/heads/';
 // SHA-1 or SHA-256.
@@ -405,35 +410,49 @@ async function keptOn(
  * Why git cannot change `branch` in `repository` now, or `undefined` when it can: it must still be
  * checked out there, with no merge, rebase, cherry-pick or revert in progress, which moving the
  * branch under would spoil, and no sparse checkout, whose `skip-worktree` entries an index
- * written entry by entry would lose, so git would show the files it leaves out as deleted.
+ * written entry by entry would lose, so git would show the files it leaves out as deleted. A
+ * failure to read that is a reason too.
  */
 async function notReady(repository: string, branch: string): Promise<string | undefined> {
 	try {
-		const tip = await readTip(repository, uncancelled);
-		if (tip?.branch !== branch) return `${branch} is no longer checked out in ${repository}`;
-		for (const name of inProgress) {
-			const path = await git(['rev-parse', '--git-path', name], repository, uncancelled);
-			if (path.exitCode !== 0) return gitReason('find what is in progress', path);
-			if (await exists(resolve(repository, path.stdout.replace(/\n$/, '')))) {
-				return `a merge, rebase, cherry-pick or revert is in progress in ${repository}`;
-			}
-		}
-		const sparse = await git(
-			['config', '--bool', '--get', 'core.sparseCheckout'],
-			repository,
-			uncancelled,
-		);
-		if (firstLine(sparse.stdout) === 'true') {
-			return `${repository} uses a sparse checkout, which the history does not follow`;
-		}
-		// Set by a sparse checkout, or by hand with `git update-index --skip-worktree`.
-		const entries = await git(['ls-files', '-t', '-z'], repository, uncancelled);
-		if (entries.exitCode !== 0) return gitReason('list the index', entries);
-		if (nulSeparated(entries.stdout).some(entry => entry.startsWith('S '))) {
-			return `the index of ${repository} holds skip-worktree entries, which the history does not follow`;
-		}
+		return await readiness(repository, branch, (args, cwd) => git(args, cwd, uncancelled));
 	} catch (error) {
 		return `the harness could not read the state of ${repository}: ${errorText(error)}`;
+	}
+}
+
+/** Runs git in a repository, as its caller needs git run. */
+export type GitRunner = (args: string[], repository: string) => Promise<ProcessResult>;
+
+/**
+ * Why git cannot change `branch` in `repository` now, as `notReady` says, with `run`: the
+ * committer of the orchestrator runs it as it runs every git call of its own.
+ *
+ * @throws when git cannot tell, such as with an index it cannot read.
+ */
+export async function readiness(
+	repository: string,
+	branch: string,
+	run: GitRunner,
+): Promise<string | undefined> {
+	const tip = await readTip(repository, uncancelled);
+	if (tip?.branch !== branch) return `${branch} is no longer checked out in ${repository}`;
+	for (const name of inProgress) {
+		const path = await run(['rev-parse', '--git-path', name], repository);
+		if (path.exitCode !== 0) throw new Error(gitReason('find what is in progress', path));
+		if (await exists(resolve(repository, path.stdout.replace(/\n$/, '')))) {
+			return `a merge, rebase, cherry-pick or revert is in progress in ${repository}`;
+		}
+	}
+	const sparse = await run(['config', '--bool', '--get', 'core.sparseCheckout'], repository);
+	if (firstLine(sparse.stdout) === 'true') {
+		return `${repository} uses a sparse checkout, which the history does not follow`;
+	}
+	// Set by a sparse checkout, or by hand with `git update-index --skip-worktree`.
+	const entries = await run(['ls-files', '-t', '-z'], repository);
+	if (entries.exitCode !== 0) throw new Error(gitReason('list the index', entries));
+	if (nulSeparated(entries.stdout).some(entry => entry.startsWith('S '))) {
+		return `the index of ${repository} holds skip-worktree entries, which the history does not follow`;
 	}
 	return undefined;
 }

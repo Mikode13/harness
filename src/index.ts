@@ -56,6 +56,7 @@ export {
 	type StepContext,
 	type RunOptions,
 } from './agent/domain/agent.ts';
+export type { CommitReport, MadeCommit, RepositoryCommit } from './agent/domain/commitReport.ts';
 export type { Transcript, TranscriptCallback } from './agent/domain/transcript.ts';
 export { Inbox } from './agent/domain/inbox.ts';
 export { RunInProgressError } from './agent/domain/oneRunAtATime.ts';

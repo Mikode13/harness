@@ -559,7 +559,7 @@ run stays as it ended.
 
 `createLLMOrchestrator()` takes the options of `createOrchestrator()` plus `workspace`,
 `maxSteps`, `compactAt`, `commands`, `formatter`, `summarizeUndone`, `onTranscript`,
-`removeWorktree` and `agents`, and returns a promise. Every role runs on the
+`removeWorktree`, `agents` and `autoCommit`, and returns a promise. Every role runs on the
 model APIs:
 
 - the planner and the reviewer read, with a `showChanges` tool that gives the current task's
@@ -638,6 +638,46 @@ harness's summary is written. The summary's tokens count in the run's.
 
 Without `workspace` it works on the current directory, read only. One run of the
 orchestrator is one run of the history, every round included.
+
+Once the reviewer approves a run that changed files in a `write` root, the orchestrator can
+commit them. It asks first, through `ask`: only the answer **Commit** commits, and anything
+else, words of your own included, leaves the files changed and uncommitted. `autoCommit: true`
+commits without asking, for CI; without `ask` and without it, nothing is committed. The
+`committer`, on the executor's provider's cheaper model, with no tools, writes the message
+from the request, the plan, the diff and the branch's recent subjects, and the harness
+commits with git, so the repository's hooks run, with a command's environment and what
+signing needs, `SSH_AUTH_SOCK`, `GPG_TTY`, `GNUPGHOME`, `GPG_AGENT_INFO` and `XDG_CONFIG_HOME`,
+and the author git's identity variables name, `GIT_AUTHOR_*`, `GIT_COMMITTER_*` and `EMAIL`:
+never the provider keys. Its progress arrives with
+`agent: 'committer'`, and its usage counts in the run's.
+
+A commit holds what the reviewer read: the run's changes are taken before each review, and a
+repository where any of them changed since, or where the run changed another file since, as a
+command of the reviewer's can, is left uncommitted. It holds only the run's own
+files, never what else is staged. A file is left out, and the report says why, when it held
+changes of yours before the run, or a version of yours staged, there or in its way above or below it, changed after the run last
+changed it, was changed by someone else while the run worked, is a link or a submodule in
+git, or sits under a folder that became a link; files git ignores are not committed, and files
+a command of the run already committed are not committed again. A repository is left whole when no branch is checked out, or when git is in
+the middle of a merge, a rebase or another operation, or in a sparse checkout.
+
+The commit is one of the run's changes: undoing the run keeps, reverts or resets it, as for
+the commits of a command, and redoing puts it back. `AgentResponse.commits` reports it:
+`committed`, `declined`, `nothing` when no file could be committed, or `failed` when git
+refused every commit, as a hook that rejects it does. The run succeeds either way, with the
+files changed. Each repository says its `outcome`, the commits made, the paths they hold and
+those left out, a hook's included, and `unreviewed`, the paths a hook, a filter or an edit made while git committed changed beyond
+what was reviewed. When git cannot be read, the run fails with `UnrecoverableError`, and so it does when
+the committer fails, as any role's failure ends the run. An orchestrator that runs inside another agent's run, as an agent of `agentAsTool`, never
+commits: that run holds the other agent's changes too. It does not commit
+on Windows, where `autoCommit` is an `InvalidAgentConfigError`.
+
+```ts
+const { commits } = await orchestrator.run(task, { ask });
+for (const { repository, outcome, reason, commits: made } of commits?.repositories ?? []) {
+	console.log(`${repository}: ${outcome}${reason ? ` (${reason})` : ''}`, made);
+}
+```
 
 ### Agents that hand work to other agents
 

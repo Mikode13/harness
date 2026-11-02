@@ -4,6 +4,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	realpathSync,
 	rmSync,
 	writeFileSync,
@@ -141,6 +142,23 @@ describe('createWorktree', () => {
 		expect(git(created.path, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('feat/export');
 		expect(git(created.path, 'show', 'HEAD:README.md')).toBe('first\n');
 		expect(branches(repository)).toEqual(['feat/export', 'main']);
+	});
+
+	it("runs the repository's post-checkout hook without the harness's secrets", async () => {
+		const seen = join(parent, 'hook-env');
+		const hooks = join(parent, 'hooks');
+		mkdirSync(hooks);
+		writeFileSync(join(hooks, 'post-checkout'), `#!/bin/sh\nenv > "${seen}"\n`);
+		chmodSync(join(hooks, 'post-checkout'), 0o755);
+		git(repository, 'config', 'core.hooksPath', hooks);
+		vi.stubEnv('OPENAI_API_KEY', 'a secret');
+		try {
+			await createWorktree({ repository, branch: 'feat/hooked', from: 'main' });
+		} finally {
+			vi.unstubAllEnvs();
+		}
+
+		expect(readFileSync(seen, 'utf8')).not.toContain('OPENAI_API_KEY');
 	});
 
 	it('goes where it is told, and names the main folder from any worktree', async () => {

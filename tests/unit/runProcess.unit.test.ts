@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { runProcess } from '../../src/shared/infrastructure/runProcess.ts';
+import { gitEnvironment, runProcess } from '../../src/shared/infrastructure/runProcess.ts';
 
 // Node itself is the one program every machine running these tests has.
 const node = process.execPath;
@@ -85,5 +85,31 @@ describe('runProcess', () => {
 		controller.abort();
 
 		await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+	});
+});
+
+describe('gitEnvironment', () => {
+	it("gives git a command's variables, what signing needs and who commits, never a secret or another GIT_ variable", () => {
+		vi.stubEnv('OPENAI_API_KEY', 'a secret');
+		vi.stubEnv('GIT_DIR', '/elsewhere');
+		vi.stubEnv('SSH_AUTH_SOCK', '/tmp/agent.sock');
+		vi.stubEnv('LC_ALL', 'C');
+		vi.stubEnv('GIT_AUTHOR_NAME', 'CI Bot');
+		vi.stubEnv('EMAIL', 'ci@example.com');
+		try {
+			const env = gitEnvironment();
+
+			expect(env).not.toHaveProperty('OPENAI_API_KEY');
+			expect(env).not.toHaveProperty('GIT_DIR');
+			expect(env).toMatchObject({
+				SSH_AUTH_SOCK: '/tmp/agent.sock',
+				LC_ALL: 'C',
+				GIT_AUTHOR_NAME: 'CI Bot',
+				EMAIL: 'ci@example.com',
+			});
+			expect(env.PATH).toBe(process.env.PATH);
+		} finally {
+			vi.unstubAllEnvs();
+		}
 	});
 });
