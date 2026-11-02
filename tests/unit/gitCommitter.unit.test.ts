@@ -747,8 +747,9 @@ describe('the git committer', { timeout: 20_000 }, () => {
 
 		await committer.commit(frozen ?? { repositories: [] }, new Map([[root, 'Add b']]), options);
 
-		expect(git('status', '--porcelain')).toBe('?? b.txt');
+		// Checked first: git status may write the index too, and so run the hook.
 		expect(existsSync(join(root, '.git', 'unstaged-seen'))).toBe(false);
+		expect(git('status', '--porcelain')).toBe('?? b.txt');
 	});
 
 	it('fails to freeze a repository git cannot read, rather than take it for none', async () => {

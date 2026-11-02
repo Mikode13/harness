@@ -2939,7 +2939,7 @@ tags: #mikode-harness #orchestration #git #api-design
 - **Only a run of its own.** An orchestrator that runs inside another agent's run, through `agentAsTool`, shares that run, which holds the other agent's changes too, so it never commits.
 - **Only `createLLMOrchestrator`, and not on Windows,** where `autoCommit` is an `InvalidAgentConfigError` and the stage never runs.
 
-**Context:** #140, the third of three pull requests, designed with the user on 2026-10-31 (https://github.com/Mikode13/harness/issues/140#issuecomment-6546950305) and checked twice with Codex before it was written. The user chose the harness committing over a model that runs git, an answer of the user's over an approval, a success that reports a rejection, and leaving out the paths that held the user's changes.
+**Context:** #140, the third of three pull requests, designed with the user on 2026-10-31 (<https://github.com/Mikode13/harness/issues/140#issuecomment-6546950305>) and checked twice with Codex before it was written. The user chose the harness committing over a model that runs git, an answer of the user's over an approval, a success that reports a rejection, and leaving out the paths that held the user's changes.
 
 **Alternatives considered:**
 
@@ -2957,6 +2957,6 @@ tags: #mikode-harness #orchestration #git #api-design
 - Any commit that reaches the branch while git commits counts as the run's, as for a command: one an orchestrator over another folder of the same repository makes at that moment too, which an undo with `revert` or `reset` would then take back with this run. Runs over different folders of one checkout write at the same time, since each holds only its own workspace; a worktree each keeps their commits apart.
 - A version of a frozen file that another process stages between the commit's last check of the index and `git commit` is replaced by the file's, with no copy and no report. `git commit` takes the index's lock itself, so the harness cannot hold it from the check to the commit; the window is that of git's own run, as for any tool that commits. The user accepted it on 2026-11-02.
 - A hook that needs a variable beyond those, such as `NVM_DIR`, fails, and the commit is reported as rejected with what it printed.
-- On Windows, which the harness does not support yet, that environment matches `PATH` by its exact name, which Node gives as `Path`, and leaves out `SystemRoot` and the other variables Windows programs expect, so every git call of the harness would miss them. The user chose on 2026-11-02 to leave it to Windows support, https://github.com/Mikode13/harness/issues/96.
+- On Windows, which the harness does not support yet, that environment matches `PATH` by its exact name, which Node gives as `Path`, and leaves out `SystemRoot` and the other variables Windows programs expect, so every git call of the harness would miss them. The user chose on 2026-11-02 to leave it to Windows support, <https://github.com/Mikode13/harness/issues/96>.
 - Each git call that reads or stages stops with the run, and fails after two minutes, so a filter that hangs ends the run instead of holding it.
 - A consumer that never passes `ask` gets no commit unless it sets `autoCommit`.
