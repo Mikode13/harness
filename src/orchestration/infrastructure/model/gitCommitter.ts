@@ -456,9 +456,13 @@ export class GitCommitter implements Committer {
 		runId: string,
 	): Promise<{ items: Item[]; commits: readonly RecordedCommits[] }> {
 		const { record, entries, unrecorded, commits } = await this.store.readRun(runId);
+		// One item a path: a change the history could not copy outweighs one it recorded there.
+		const uncopied = new Set(unrecorded.map(({ path }) => path));
 		const items: Item[] = [
-			...changedFiles(record, entries).map(change => ({ path: change.path, change })),
-			...unrecorded.map(({ path }) => ({ path })),
+			...changedFiles(record, entries)
+				.filter(change => !uncopied.has(change.path))
+				.map(change => ({ path: change.path, change })),
+			...[...uncopied].map(path => ({ path })),
 		];
 		return { items, commits };
 	}

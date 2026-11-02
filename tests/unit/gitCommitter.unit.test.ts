@@ -417,6 +417,29 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		expect(git('cat-file', 'commit', 'HEAD')).not.toContain('encoding ISO-8859-1');
 	});
 
+	it('commits the rest when a later command makes a file the history cannot copy', async () => {
+		const { run, committer, options } = await workingRun({
+			edit: 'echo two > a.txt && echo new > b.txt',
+			// Sparse: past the 64 MB the checkpoint copies, without writing them.
+			grow: 'dd if=/dev/null of=a.txt bs=1 seek=68157440 2>/dev/null',
+		});
+		await run('edit');
+		await run('grow');
+
+		const frozen = await committer.freeze(options);
+		expect(frozen?.repositories[0]).toMatchObject({
+			paths: ['b.txt'],
+			leftOut: [{ path: 'a.txt', reason: 'the history could not copy it' }],
+		});
+		const reports = await committer.commit(
+			frozen ?? { repositories: [] },
+			new Map([[root, 'Add b']]),
+			options,
+		);
+
+		expect(reports[0]).toMatchObject({ outcome: 'done', paths: ['b.txt'] });
+	});
+
 	it('leaves the repository, with the reason, when the run may write no more', async () => {
 		const { opened, run, committer, options, context } = await workingRun({
 			edit: 'echo two > a.txt',
