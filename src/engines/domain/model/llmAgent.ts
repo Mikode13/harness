@@ -32,7 +32,7 @@ import {
 	describeFailure,
 	treatErrors,
 } from '#src/shared/domain/providerFailure';
-import { Conversation } from '#src/llm/domain/conversation';
+import { Conversation, type TurnRun } from '#src/llm/domain/conversation';
 import { keptScore } from '#src/llm/domain/contextTriage';
 import { MaxContextError } from '#src/llm/domain/errors';
 import type { LLMClient, LLMResponse } from '#src/llm/domain/llm';
@@ -1210,6 +1210,26 @@ export class LLMAgent implements Agent {
 		return this.runs.run(() => this.runAlone(prompt, options));
 	}
 
+	/**
+	 * This agent's run in the history it follows, which its turns belong to: an agent it delegated
+	 * to may have written to another history in the same run. One that follows none takes the
+	 * first history the run wrote to.
+	 */
+	private async runIn(context: RunContext): Promise<TurnRun> {
+		if (!this.history) {
+			return {
+				get runId() {
+					return context.firstRunId;
+				},
+			};
+		}
+		try {
+			return context.historyRunOf(await this.history.workspaceId);
+		} catch (error) {
+			throw classifyLocalFailure(error, 'The workspace history could not be read');
+		}
+	}
+
 	private async runAlone(prompt: string, options: RunOptions): Promise<AgentResponse> {
 		const session = sessionOf(options) ?? this.session;
 		// Returned as copies: a consumer changing one must not change what later runs record.
@@ -1231,7 +1251,7 @@ export class LLMAgent implements Agent {
 			await this.finishContext(context, end);
 		}
 		// Read once the run ended: a run that changed nothing left the history then.
-		const { runId } = context.historyRun;
+		const { runId } = await this.runIn(context);
 		return { ...response, ...(runId ? { runId } : {}), session: { ...session } };
 	}
 
@@ -1400,6 +1420,7 @@ export class LLMAgent implements Agent {
 				}
 			}
 
+			const ownRun = await this.runIn(context);
 			// After following the history, which may have made every earlier read stale.
 			const reads = this.reads.begin();
 			const repeats = new RepeatedCalls();
@@ -1423,7 +1444,7 @@ export class LLMAgent implements Agent {
 			// without its result; a run that is not kept gives its note on what was undone again.
 			const remember = () => {
 				unkept.length = 0;
-				this.conversation.addRunAfter(after, runMessages, context.historyRun);
+				this.conversation.addRunAfter(after, runMessages, ownRun);
 				// With the turns that read them, and only then.
 				reads.commit();
 				if (followed) this.seenRevision = followed.latestRevision;

@@ -96,16 +96,17 @@ export class WorkspaceWrites {
 			}
 			return started.session;
 		}
+		const run = context.historyRunOf(this.store.workspaceId);
 		const session = new WriteSession({
 			store: this.store,
 			session: context.session,
 			// So every turn of the run, in every role, can be tied to what it wrote.
 			onStart: runId => {
-				context.historyRun.runId = runId;
+				run.runId = runId;
 			},
 			// A run that changed nothing is not in the history, so its turns wrote nothing.
 			onDiscard: () => {
-				delete context.historyRun.runId;
+				delete run.runId;
 			},
 		});
 		context.onFinish(end => session.finish(end));

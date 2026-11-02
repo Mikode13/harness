@@ -140,7 +140,7 @@ export class WorkflowRunner<Input, Result> implements Workflow<Input, Result> {
 		}
 
 		// Read once the run ended: a run that changed nothing left the history then.
-		const { runId } = context.historyRun;
+		const runId = context.firstRunId;
 		return {
 			...outcome,
 			tokens: knownTokens(totals),

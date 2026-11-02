@@ -3,8 +3,13 @@ import type { Message } from '#src/llm/domain/message';
 import type { BranchMove, RecoveryStore, Revision } from '#src/recovery/domain/recoveryStore';
 import { HistoryExpiredError } from '#src/recovery/domain/runTree';
 
-/** What an agent reads of its workspace's history. */
-export type HistoryReader = Pick<RecoveryStore, 'listRuns' | 'listRevisions' | 'readRun'>;
+/**
+ * What an agent reads of its workspace's history, and which history it is, which a history opened
+ * on the first run can tell only then.
+ */
+export type HistoryReader = Pick<RecoveryStore, 'listRuns' | 'listRevisions' | 'readRun'> & {
+	readonly workspaceId: string | Promise<string>;
+};
 
 /** Where the conversation goes on after the workspace moved, and what the moves left behind. */
 export interface Followed {

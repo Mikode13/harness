@@ -641,7 +641,7 @@ describe('workflow', () => {
 			run: (_prompt, options) => {
 				const context = runContextOf(options);
 				if (context) {
-					context.historyRun.runId = 'run-1';
+					context.historyRunOf('workspace').runId = 'run-1';
 					context.onFinish(finished);
 				}
 				return Promise.resolve(answer({ value: 'done' }));

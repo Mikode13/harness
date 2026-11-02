@@ -316,7 +316,7 @@ export class OrchestratorAgent implements Agent {
 		}
 
 		// Read once the run ended: a run that changed nothing left the history then.
-		const { runId } = context.historyRun;
+		const runId = context.firstRunId;
 		return {
 			response: 'All job has finished',
 			tokens: runTokens(totals),
