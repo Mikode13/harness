@@ -120,8 +120,20 @@ export function firstLine(text: string): string {
 // Only what a toolchain needs to find itself and its locale. Everything else, the provider
 // keys included, stays in this process.
 const inheritedVariables = ['PATH', 'HOME', 'TMPDIR', 'USER', 'SHELL', 'LANG'];
-// What git needs to find its own configuration and to sign a commit, with gpg or ssh.
-const gitVariables = ['XDG_CONFIG_HOME', 'SSH_AUTH_SOCK', 'GPG_TTY', 'GNUPGHOME', 'GPG_AGENT_INFO'];
+// What git needs to find its own configuration, to sign a commit, with gpg or ssh, and to name
+// who made it, as a CI that sets no `user.name` names it.
+const gitVariables = [
+	'XDG_CONFIG_HOME',
+	'SSH_AUTH_SOCK',
+	'GPG_TTY',
+	'GNUPGHOME',
+	'GPG_AGENT_INFO',
+	'GIT_AUTHOR_NAME',
+	'GIT_AUTHOR_EMAIL',
+	'GIT_COMMITTER_NAME',
+	'GIT_COMMITTER_EMAIL',
+	'EMAIL',
+];
 
 /** What a program of the repository's, such as a configured command, gets of `env`. */
 export function inheritedEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
@@ -131,8 +143,8 @@ export function inheritedEnvironment(env: NodeJS.ProcessEnv = process.env): Node
 /**
  * git's environment: a command's, since git runs the repository's own programs, its hooks,
  * filters, merge drivers, `core.fsmonitor` and `gpg.program`, and what git needs to find its
- * configuration and sign. No `GIT_*`: `GIT_DIR` or `GIT_WORK_TREE` inherited from the host would
- * make it answer about another repository.
+ * configuration, sign and name the commit's author. No other `GIT_*`: `GIT_DIR` or `GIT_WORK_TREE`
+ * inherited from the host would make it answer about another repository.
  */
 export function gitEnvironment(): NodeJS.ProcessEnv {
 	return {

@@ -330,6 +330,26 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		expect(git('show', '--format=', '--name-only', 'HEAD')).toBe('a.txt');
 	});
 
+	it('commits as the author the environment names, as a CI with no user.name does', async () => {
+		const { run, committer, options } = await workingRun({ edit: 'echo two > a.txt' });
+		await run('edit');
+		const frozen = await committer.freeze(options);
+
+		vi.stubEnv('GIT_AUTHOR_NAME', 'CI Bot');
+		vi.stubEnv('GIT_AUTHOR_EMAIL', 'ci@example.com');
+		try {
+			await committer.commit(
+				frozen ?? { repositories: [] },
+				new Map([[root, 'Change a']]),
+				options,
+			);
+		} finally {
+			vi.unstubAllEnvs();
+		}
+
+		expect(git('log', '-1', '--format=%an <%ae>')).toBe('CI Bot <ci@example.com>');
+	});
+
 	it('leaves the repository, with the reason, when the run may write no more', async () => {
 		const { opened, run, committer, options, context } = await workingRun({
 			edit: 'echo two > a.txt',

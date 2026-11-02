@@ -297,7 +297,7 @@ into the next call.
 `ILogger` and its stderr implementation, `runProcess`, which runs a program with its
 arguments as an array and never through a shell, `inheritedEnvironment`, the few variables
 a program of the repository's gets, and `gitEnvironment`, those and what git needs to find its
-configuration and sign, never a secret, since git runs the repository's hooks, filters and
+configuration, sign and name the author, never a secret, since git runs the repository's hooks, filters and
 drivers, nor the `GIT_` variables that would point it at another repository, `isAbortError`,
 `isOneOf`, `Tokens`, `Session`, which the agents answer with and the history records,
 `Validator`, the error types and the functions that classify a failure. The failure contract

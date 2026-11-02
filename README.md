@@ -646,7 +646,8 @@ commits without asking, for CI; without `ask` and without it, nothing is committ
 `committer`, on the executor's provider's cheaper model, with no tools, writes the message
 from the request, the plan, the diff and the branch's recent subjects, and the harness
 commits with git, so the repository's hooks run, with a command's environment and what
-signing needs, `SSH_AUTH_SOCK`, `GPG_TTY`, `GNUPGHOME`, `GPG_AGENT_INFO` and `XDG_CONFIG_HOME`:
+signing needs, `SSH_AUTH_SOCK`, `GPG_TTY`, `GNUPGHOME`, `GPG_AGENT_INFO` and `XDG_CONFIG_HOME`,
+and the author git's identity variables name, `GIT_AUTHOR_*`, `GIT_COMMITTER_*` and `EMAIL`:
 never the provider keys. Its progress arrives with
 `agent: 'committer'`, and its usage counts in the run's.
 
