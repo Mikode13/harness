@@ -708,8 +708,10 @@ export class FileRecoveryStore implements RecoveryStore {
 			reached = parents.get(runId);
 			await save();
 		}
+		// A commit runs on both sides recorded, which the undo half just took back, goes back too.
+		const takenNow = takenBack(pending.gitUndo?.reports ?? []);
 		await gitPhase('gitRedo', async phase =>
-			redoCommits(await this.commitsOver(redo, 'redo', states), phase, moving),
+			redoCommits(await this.commitsOver(redo, 'redo', states, takenNow), phase, moving),
 		);
 		for (const runId of redo) {
 			pending.conflicts.push(...(await this.step(runId, 'redo', announce)));
@@ -740,12 +742,14 @@ export class FileRecoveryStore implements RecoveryStore {
 
 	/**
 	 * The commits the runs made, in the order a move goes over them, newest first when it undoes
-	 * them, each where the moves so far left it.
+	 * them, each where the moves so far left it, or as `takenNow` says the undo half of this move
+	 * took it back for another run.
 	 */
 	private async commitsOver(
 		runIds: readonly string[],
 		direction: 'undo' | 'redo',
 		states: ReadonlyMap<string, CommitState>,
+		takenNow: ReadonlyMap<string, TakenBack> = new Map(),
 	): Promise<BranchCommit[]> {
 		const over: BranchCommit[] = [];
 		for (const runId of runIds) {
@@ -754,6 +758,8 @@ export class FileRecoveryStore implements RecoveryStore {
 				run.map(({ sha, subject }): BranchCommit => {
 					const by = madeIn ?? runId;
 					const state = states.get(commitKey(repository, branch, sha, by));
+					const taken =
+						takenNow.get(onBranch(repository, branch, state?.sha ?? sha)) ?? state?.taken;
 					return {
 						repository,
 						branch,
@@ -762,7 +768,7 @@ export class FileRecoveryStore implements RecoveryStore {
 						subject,
 						runId: by,
 						direction,
-						...(state?.taken ? { taken: state.taken } : {}),
+						...(taken ? { taken } : {}),
 					};
 				}),
 			);
@@ -1358,6 +1364,23 @@ export class FileRecoveryStore implements RecoveryStore {
 		// Only its own lock: one cleared as stale and taken by another run is not this run's.
 		if ((await readLock(path))?.runId === runId) await unlink(path);
 	}
+}
+
+type TakenBack = NonNullable<CommitState['taken']>;
+
+/** Where a commit is, on its branch, to tell it apart from the same commit on another. */
+function onBranch(repository: string, branch: string, sha: string): string {
+	return JSON.stringify([repository, branch, sha]);
+}
+
+/** How the moves in `reports` took each commit back, by `onBranch`. */
+function takenBack(reports: readonly BranchMove[]): Map<string, TakenBack> {
+	const taken = new Map<string, TakenBack>();
+	for (const { repository, branch, action, outcome, commits } of reports) {
+		if (outcome !== 'done' || (action !== 'revert' && action !== 'reset')) continue;
+		for (const { sha } of commits) taken.set(onBranch(repository, branch, sha), action);
+	}
+	return taken;
 }
 
 /**

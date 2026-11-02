@@ -435,12 +435,13 @@ export class GitCommitter implements Committer {
 		return session.exclusive(async () => {
 			const { signal } = options;
 			const runId = await session.runId();
-			const now = runId === undefined ? [] : (await this.recordedIn(runId)).items;
 			const tips = new Map<string, BranchTip | undefined>();
 			const reports: RepositoryCommit[] = [];
 			for (const each of frozen.repositories) {
 				const state = states.get(each.repository);
 				if (!state || each.paths.length === 0 || each.refused !== undefined) continue;
+				// Read again for each: a hook of an earlier repository's commit may have changed this one.
+				const now = runId === undefined ? [] : (await this.recordedIn(runId)).items;
 				// Such as by a command of the reviewer's: what changed since the review was never reviewed.
 				const later = await changedSince(each.repository, state.recorded, now, tips, signal);
 				reports.push(

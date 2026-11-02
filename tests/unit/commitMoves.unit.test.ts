@@ -1077,6 +1077,32 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 		);
 	});
 
+	it('puts back a commit that runs on both sides of a goTo recorded', async () => {
+		const { tool } = await commandTool({
+			two: shell('echo two > a.txt && git commit --quiet -am "two"'),
+			take: shell('git merge --quiet --ff-only saved'),
+		});
+		const { runId: first } = await run(tool, 'two');
+		const made = head();
+		git('branch', 'saved', made);
+		const store = await FileRecoveryStore.open({
+			root,
+			directory: join(parent, 'state'),
+			logger: { warn: (message: unknown) => warnings.push(String(message)) },
+		});
+		await store.undo();
+		git('reset', '--quiet', '--hard', 'HEAD^');
+		await run(tool, 'take');
+
+		const moved = await store.goTo(first, { commits: 'reset' });
+
+		expect(moved.git?.map(({ action, outcome }) => `${action} ${outcome}`)).toEqual([
+			'reset done',
+			'reapply done',
+		]);
+		expect(head()).toBe(made);
+	});
+
 	it('warns of nothing staged that already matches the new tip', async () => {
 		const { opened } = await committedRun();
 		writeFileSync(join(root, 'a.txt'), 'one\n');
