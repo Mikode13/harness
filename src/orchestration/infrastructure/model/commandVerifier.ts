@@ -4,6 +4,7 @@ import { runContextOf, type RunContext } from '#src/agent/domain/runContext';
 import { InvalidAgentConfigError } from '#src/shared/domain/errors';
 import {
 	buildArguments,
+	type CommandDefinition,
 	type Commands,
 	type ParameterValue,
 	parametersOf,
@@ -36,22 +37,51 @@ import {
  * @throws {InvalidAgentConfigError} for the first thing that is wrong.
  */
 export function validateRequiredChecks(checks: readonly RequiredCheck[], commands: Commands): void {
+	// Unknown throughout, as `validateCommands`: the configuration may come from a JSON file.
+	if (!Array.isArray(checks)) {
+		throw new InvalidAgentConfigError('The required checks must be a list');
+	}
 	const seen = new Set<string>();
-	for (const { command, values = {} } of checks) {
-		const definition = commands[command];
+	for (const check of checks as unknown[]) {
+		if (typeof check !== 'object' || check === null) {
+			throw new InvalidAgentConfigError('A required check must be an object');
+		}
+		const { command, values = {} } = check as Record<string, unknown>;
+		if (typeof command !== 'string') {
+			throw new InvalidAgentConfigError('A required check needs the name of a command');
+		}
+		// Own entries only: an inherited name such as "constructor" is no configured command.
+		const definition = Object.hasOwn(commands, command) ? commands[command] : undefined;
 		if (!definition) {
 			throw new InvalidAgentConfigError(
 				`The required check "${command}" is not a configured command`,
 			);
 		}
-		const parameters = new Set(parametersOf(definition).map(({ name }) => name));
-		const unknown = Object.keys(values).filter(name => !parameters.has(name));
-		if (unknown.length > 0) {
-			throw new InvalidAgentConfigError(
-				`The required check "${command}" gives values for what is not a parameter of it: ${unknown.join(', ')}`,
-			);
+		const fail = (problem: string) => {
+			throw new InvalidAgentConfigError(`The required check "${command}" ${problem}`);
+		};
+		if (typeof values !== 'object' || values === null || Array.isArray(values)) {
+			fail('needs its values by parameter name');
 		}
-		const given = valuesFor(command, values, commands);
+		const parameters = new Map(parametersOf(definition).map(p => [p.name, p]));
+		const entries = Object.entries(values as Record<string, unknown>);
+		const unknown = entries.filter(([name]) => !parameters.has(name)).map(([name]) => name);
+		if (unknown.length > 0) {
+			fail(`gives values for what is not a parameter of it: ${unknown.join(', ')}`);
+		}
+		for (const [name, value] of entries) {
+			if (parameters.get(name)?.type === 'paths') {
+				if (!Array.isArray(value) || !value.every(path => typeof path === 'string')) {
+					fail(`gives "${name}" something other than a list of paths`);
+				}
+			} else if (typeof value !== 'string') {
+				fail(`gives "${name}" something other than one value`);
+			}
+		}
+		const given = valuesFor(
+			definition,
+			values as Readonly<Record<string, string | readonly string[]>>,
+		);
 		try {
 			buildArguments(definition, given);
 		} catch (error) {
@@ -103,16 +133,17 @@ export class CommandVerifier implements Verifier {
 		if (!context) throw new Error('A run is verified inside its own context');
 		const session = this.writes.sessionFor(context);
 		const { signal } = options;
+		// Checked here and before the answer too: a verification that runs nothing reaches no other
+		// point that notices a cancellation.
+		signal.throwIfAborted();
 
 		const prepared: { check: RequiredCheck; call: PreparedCall; line: CommandLine }[] = [];
 		for (const check of this.checks) {
+			const definition = this.commands[check.command];
+			// The constructor validated every check against the commands.
+			if (!definition) throw new Error(`"${check.command}" is not a configured command`);
 			const call = await this.tool.prepare(
-				{
-					command: {
-						name: check.command,
-						...valuesFor(check.command, check.values ?? {}, this.commands),
-					},
-				},
+				{ command: { name: check.command, ...valuesFor(definition, check.values ?? {}) } },
 				signal,
 				callContext(context, check.command),
 			);
@@ -147,24 +178,26 @@ export class CommandVerifier implements Verifier {
 		// Again for every check: running one may have changed what another checked.
 		const runs = checkRuns(session);
 		const current = await session.contentState();
+		signal.throwIfAborted();
 		const results: CheckResult[] = prepared.map(({ check, line }) => {
 			const result = assessCheck(check.command, line, runs, current);
+			// Why it could not run says more than how an earlier run, for other files, ended.
 			const why = refused.get(check);
-			return result.status === 'missing' && why !== undefined ? { ...result, how: why } : result;
+			return why === undefined
+				? result
+				: { command: check.command, status: result.status, how: why };
 		});
 		return verification(results);
 	}
 }
 
-/** The values `check` runs `command` with: every parameter it leaves out, not given. */
+/** The values a check runs `definition` with: every parameter it leaves out, not given. */
 function valuesFor(
-	command: string,
+	definition: CommandDefinition,
 	values: Readonly<Record<string, string | readonly string[]>>,
-	commands: Commands,
 ): Record<string, ParameterValue> {
-	const definition = commands[command];
 	const given: Record<string, ParameterValue> = {};
-	for (const parameter of definition ? parametersOf(definition) : []) {
+	for (const parameter of parametersOf(definition)) {
 		const value = values[parameter.name];
 		given[parameter.name] =
 			value === undefined

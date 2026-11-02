@@ -141,9 +141,11 @@ export class WriteSession {
 
 	/**
 	 * What the files this run changed hold now, as `RunJournal.contentState` gives it. `undefined`
-	 * before its first change, and once it finished.
+	 * before its first change, once it finished, and once writing stopped: every stop is a change
+	 * the history may not hold, so what the files hold is not known.
 	 */
 	async contentState(): Promise<string | undefined> {
+		if (this.stopped !== undefined) return undefined;
 		const journal = await this.journal?.catch(() => undefined);
 		return journal?.contentState();
 	}

@@ -21,7 +21,7 @@ export interface RequiredCheck {
  * - `stale`: a file the run changed is different since its last run.
  * - `missing`: it never ran to an end in this run.
  * - `unknown`: what the files held when it ran, or since, is not known, because the history could
- *   not record all a command changed.
+ *   not record all the run changed.
  */
 export type CheckStatus = 'passed' | 'failed' | 'stale' | 'missing' | 'unknown';
 
@@ -62,7 +62,8 @@ export interface CheckRun {
 export interface Verifier {
 	/**
 	 * Where each required check stands now. Those missing, stale or unknown are run first, by the
-	 * harness, with no model: a check that already failed for these files is not run again.
+	 * harness, with no model: a check that already failed for these files is not run again. One the
+	 * harness could not run says why in `how`.
 	 *
 	 * @throws whatever stopped a check before it ran to an end, other than a refusal to write,
 	 * unclassified: the caller classifies it, as the run's own failure.

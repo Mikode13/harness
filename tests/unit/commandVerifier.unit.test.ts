@@ -295,6 +295,39 @@ describe('the command verifier', { timeout: 20_000 }, () => {
 		expect(runs('test')).toBe(0);
 	});
 
+	it('reports a check that passed unknown, with why, once the run may write no more', async () => {
+		const { context, options, run, verifier, writes } = await verifiedRun(
+			{ test: counted('test', 'exit 0') },
+			[{ command: 'test' }],
+		);
+		await run('test');
+		// As when the harness could not record what a later command changed.
+		writes.sessionFor(context).stop('Writing stopped for a test');
+
+		const result = await verifier.verify(options);
+
+		expect(result).toEqual({
+			met: false,
+			checks: [
+				{ command: 'test', status: 'unknown', how: 'could not run: Writing stopped for a test' },
+			],
+		});
+		expect(runs('test')).toBe(1);
+	});
+
+	it('propagates a cancellation when every check already has its evidence', async () => {
+		const { context, run, verifier } = await verifiedRun({ test: counted('test', 'exit 0') }, [
+			{ command: 'test' },
+		]);
+		await run('test');
+		const controller = new AbortController();
+		controller.abort();
+
+		await expect(
+			verifier.verify(withRunContext({ signal: controller.signal }, context)),
+		).rejects.toThrow(expect.objectContaining({ name: 'AbortError' }) as Error);
+	});
+
 	it('propagates a cancellation', async () => {
 		const { context, verifier } = await verifiedRun({ test: counted('test', 'exit 0') }, [
 			{ command: 'test' },
@@ -323,12 +356,34 @@ describe('the required checks a configuration names', () => {
 					pattern: '[a-z]+',
 					required: true,
 				},
+				{ type: 'paths', name: 'files', description: 'Files' },
 			],
 		},
 	};
 
-	it.each([
+	it.each<[unknown, string]>([
 		[[{ command: 'format' }], 'The required check "format" is not a configured command'],
+		[[{ command: 'constructor' }], 'The required check "constructor" is not a configured command'],
+		[[{ command: 'toString' }], 'The required check "toString" is not a configured command'],
+		[{ command: 'test' }, 'The required checks must be a list'],
+		[['test'], 'A required check must be an object'],
+		[[{ command: 7 }], 'A required check needs the name of a command'],
+		[
+			[{ command: 'test', values: ['core'] }],
+			'The required check "test" needs its values by parameter name',
+		],
+		[
+			[{ command: 'test', values: { project: 'core', files: [123] } }],
+			'The required check "test" gives "files" something other than a list of paths',
+		],
+		[
+			[{ command: 'test', values: { project: 'core', files: 'a.ts' } }],
+			'The required check "test" gives "files" something other than a list of paths',
+		],
+		[
+			[{ command: 'test', values: { project: ['core'] } }],
+			'The required check "test" gives "project" something other than one value',
+		],
 		[
 			[{ command: 'test', values: { project: 'core', reporter: 'dot' } }],
 			'The required check "test" gives values for what is not a parameter of it: reporter',
@@ -347,7 +402,8 @@ describe('the required checks a configuration names', () => {
 		],
 	])('refuses %j', (checks, message) => {
 		expect(() => {
-			validateRequiredChecks(checks, commands);
+			// As a JSON configuration may hold them, whatever the type says.
+			validateRequiredChecks(checks as RequiredCheck[], commands);
 		}).toThrow(new InvalidAgentConfigError(message));
 	});
 
@@ -357,6 +413,7 @@ describe('the required checks a configuration names', () => {
 				[
 					{ command: 'test', values: { project: 'core' } },
 					{ command: 'test', values: { project: 'core', suite: 'e2e' } },
+					{ command: 'test', values: { project: 'core', files: ['a.ts'] } },
 				],
 				commands,
 			);
