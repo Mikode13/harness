@@ -2528,7 +2528,7 @@ partially superseded by: "An agent is offered to another agent as a tool, and wo
 
 - Another run has another `RunContext`, so it gets another session, and is still refused while the workspace is busy.
 - Sharing a session does not make writes from two stages at once to the same files safe; that needs coordination of its own.
-- `RunContext.historyRun` holds one run id. A run that writes to two histories would have each session overwrite it; allowing that means tying the reference to each history.
+- A run that writes to two histories records a run in each. `RunContext` keeps one run id per history, by `workspaceId`, so neither session overwrites the other's; an agent answers with its own history's, and one that follows none, such as an orchestrator, with the first history the run reached and wrote to.
 
 ---
 
@@ -2861,3 +2861,102 @@ tags: #mikode-harness #llm #cost #api-design
 - The threshold of 2 and the questions are the harness's, from one probe, not measured on real runs.
 - A failed or missing Jev compacts as `recent` does, so the mode never fails because of Jev.
 - What the tools read leaves for TypeSafe: Jev is sent each tool result it judges.
+
+## A command's commits belong to the run that ran it, and a move keeps them and names them
+
+tags: #mikode-harness #recovery #git #api-design
+
+**Decision:**
+
+- **Commits are attributed per command.** Around each configured command, the harness reads the branch checked out in the command's folder and its tip. The commits new on it after the command are the run's, counted only when the same branch is checked out before and after and its new tip descends from the old one. A commit made with no branch checked out, or on a branch the command switched to, is not counted, and neither are commits the user makes while the run works, outside its commands.
+- **The journal records them,** as one more kind of line, `committed`, so they travel with the run: retention carries them into the run it chains into, and a run that made a commit stays in the history even if it changed no file.
+- **A move restores files, not commits: `keep`.** The commits stay on their branch, and the move's `git` names them, one entry per branch of each repository, each commit with the run that made it and whether the move undid or redid it, in every move that goes over such a run. A commit the branch no longer holds is left out.
+- **A failure to read git does not stop a command,** since it has run either way: the model is told the history names no commits for it. A failure to record them in the journal stops writing for the run, as for a change.
+
+**Context:** #140, decided with the user on 2026-10-29 and 2026-10-30. Before this, undoing a run that committed restored its files and left its commit unmentioned. This is the first of three pull requests: the `revert` and `reset` policies, and redo and goTo after a revert, come next, then the orchestrator's committer stage. The user chose one `git` entry per branch, so a `revert` that fails in one repository does not hide one that worked in another, and a report in every move, not only in undo.
+
+**Alternatives considered:**
+
+- **Attributing by time,** every commit on the branch between the run's start and end. Simpler, but a commit the user makes meanwhile becomes the agent's.
+- **One `git` block for the whole move.** Simpler for a single repository, but one action and one outcome cannot describe several branches.
+- **Reporting only when undoing.** Less to read, but a host does not see which commits match the files again after a redo.
+
+**Consequences:**
+
+- Any commit that reaches the branch while a command runs counts as the run's, whoever made it: the commits a `git pull` brings in, one the user makes in that folder meanwhile, or, on a branch with no commit before, every commit a reset brings. The user chose this rule as it is, on 2026-10-30, over excluding what other references already held, which would also leave out a commit the command pushed.
+- Each command costs a few `git` calls before and after it, a few milliseconds each.
+- A process that dies between a command's commit and its record loses the attribution: the commit stays, unnamed.
+- After an undo with `keep`, git shows the restored files as changes against a commit that still holds the run's: the host decides what to tell the user, from `git`.
+
+## Undoing reverts or resets a run's commits on request, and redoing always puts them back
+
+tags: #mikode-harness #recovery #git #api-design
+
+**Decision:**
+
+- **`MoveOptions.commits` chooses what undoing does:** `keep`, the default, `revert`, which adds commits that take them back, or `reset`, which moves the branch back to before them only when no other commit is among them or on top, none is a merge, which a redo could not cherry-pick back, the branch's upstream holds none of them, and the branch is still checked out.
+- **Redoing always puts back what an earlier move took back,** whatever the option says: files and commits come back together. After a reset, the branch goes forward to the same commits when it has not moved since; otherwise they are cherry-picked, as new commits, as after a revert. `BranchMove.action` gains `reapply`, and `MovedCommit.original` names the commit a cherry-picked one re-applies.
+- **Git never touches the files, only the branch and the index.** A revert or a cherry-pick is merged in memory with `git merge-tree --merge-base`, three ways, as `git revert` and `git cherry-pick` merge, and committed with `commit-tree`; a commit with no parent is merged against a commit of the empty tree. A conflict leaves the branch. This needs git 2.40; with an older git, a revert or a cherry-pick is reported as left, naming the version, while `keep`, a reset and a redo that goes forward after one still work. The branch moves with `update-ref`, only if it is still where the move read it; then the index of the paths that changed is brought to the new tip, except where the user staged something that matches neither tip, or something under or above a path that turns from a file into a folder or back: that is kept, and the logger is told which paths, since the user chose it and nothing in the history holds a copy. Those paths come from `diff-tree`, which compares the stored trees with no rename detection, so a rename updates the index of both paths, and each entry is written exactly with `update-index`, never as a pathspec, which would reach whatever the index holds under a folder. The index is locked as git locks it, from before it is read until the one written replaces it: `index.lock` is created only if no one holds it, the entries are read and written in a copy, written whole rather than split, and the copy replaces the index through the lock. While another git process holds the lock, the branch is left. No hook of the repository runs: a `reference-transaction` or `post-index-change` hook that changed files would write outside the journal while the move restores them. Once the branch has moved, a failure to update the index is a warning, and only a failing logger ends the move, which the next move then reports as stopped. The files are the history's to move, as the journal says: a run that only committed an earlier run's edit, once undone, leaves that edit in place, now a change git shows.
+- **When git cannot follow, the branch is left as it was,** and the move reports `outcome: 'left'` with the reason: the branch is not checked out, a merge, rebase, cherry-pick or revert is in progress, the worktree is a sparse checkout or its index holds `skip-worktree` entries, which an index written entry by entry would lose, another git process holds the index, a change does not apply, a commit is a merge, or a reset would drop other commits or published ones. The files move either way.
+- **Where each commit is now is read from the moves recorded,** not stored apart, per repository, branch, commit and the run that recorded it: a revert or reset that was done took it back from that branch, and a re-apply put it, or its new commit, back.
+- **A move whose process stopped goes on from where git stopped,** recorded branch by branch in the move in progress, with each branch's move recorded before git makes it. A finished branch is not moved again; the one git was moving is reported as moved when it is where git was taking it, and left otherwise; those after it are moved as usual. So the move's report, and the commit states read from it, say what git did.
+- **The model is told after every move with commits,** one line per branch and action, in the note about undone turns, or in a note of its own when nothing was undone.
+
+**Context:** #140, decided with the user on 2026-10-29 and 2026-10-30. The second of three pull requests; the orchestrator's committer stage is the third. The first version ran git's own commands before moving the files; the review showed they rewrote files the journal decides, and could abort a cherry-pick of the user's. The second applied each commit's patch to an index of its own; the review showed that a patch placed by its context can land on another block that matches it, changing what the commit never touched, and on 2026-10-31 the user chose `merge-tree` and git 2.40.
+
+**Alternatives considered:**
+
+- **Redo following the option too,** so `keep` would leave reverted commits reverted. The consumer chooses per move, but the default would leave files and commits apart after a redo.
+- **Reporting every branch of a cut phase as left.** No state beyond the phase begun, but a branch git had moved was reported as not moved, its commits' state was lost, and a redo then left them off the branch.
+- **Always cherry-picking after a reset.** One path, but new SHAs where the originals could come back.
+- **`git revert`, `git reset --keep` and `git cherry-pick` in the workspace.** Git's own commands, with its messages and hooks, but they write the files, which may not be what the journal says, and aborting a failed one could abort an operation of the user's.
+- **Applying each commit's patch with `git apply --cached`.** It runs on git 2.36, but a hunk is placed where its context matches, which may be another block than the one the commit changed.
+- **A temporary worktree for `git revert` and `git cherry-pick`.** Git's own merge on git 2.36, but a checkout of the whole tree on every move, and a worktree to clean up when the process dies.
+- **A merge of our own, with `read-tree -m` and `merge-file`.** No newer git, but more code that merges unlike git, with no rename detection or merge drivers.
+- **Storing each commit's state apart.** Direct, but a second record that the moves already hold.
+
+**Consequences:**
+
+- A revert or a cherry-pick makes commits as the user, signed when `commit.gpgsign` says so, and no hook runs; an identity git lacks makes the branch left. A revert's message is git's own; a re-applied commit keeps its author and message. Each commit it makes is written in UTF-8, whatever `i18n.commitEncoding` says.
+- A change that later commits touched in the same lines does not apply, and the branch is left: there is no merge to resolve it.
+- A merge commit is never taken back or re-applied.
+- A commit two runs both recorded, such as one a later command brought forward again, is taken back or put back once, and named for each run.
+- A branch that git moved before the process stopped may keep the index of its old tip, and the lock git takes on the index: the logger is told, and the user checks `git status`.
+
+## The orchestrator commits what the reviewer approved, with git, and a cheap model writes the message
+
+tags: #mikode-harness #orchestration #git #api-design
+
+**Decision:**
+
+- **The harness commits, a model writes only the message.** Once the reviewer approves a run of `createLLMOrchestrator` that changed files, a `committer` agent on the executor's provider's cheaper model, Claude Haiku 5.5 or `gpt-5.6-luna`, with no tools, writes the message from the request, the plan, the diff and the branch's recent subjects. The harness commits with `git commit --only -F <file> -- <paths>`, each path `:(literal)`, not `GIT_LITERAL_PATHSPECS`, which would reach the hooks and make their own patterns match nothing, and with `i18n.commitEncoding=UTF-8`, the message's encoding, after `git add` of the run's new files, so the repository's hooks run and the rest of the index stays as the user left it.
+- **The user's yes authorizes it.** The orchestrator asks through `ask`, and only the answer **Commit** commits. The question names what would be committed, every path left out with its reason, and each repository nothing would be committed in. `autoCommit: true` commits without asking. With neither, the stage does not run, and nothing is frozen. No call goes through `approve`: the question already says what would be committed.
+- **The commit holds what the reviewer read.** The run's changes are frozen before each review, and the commit checks them again: a repository where the tip or any frozen file changed since, or where the run's history recorded another change since, such as a command of the reviewer's, is left. A path is left out, with its reason, when it held changes of the user's before the run, compared after git's own normalization, or the index holds a version that is neither `HEAD`'s nor the one to commit, which `--only` would replace, or a file of the user's above or below a new one, which its `git add` would drop, changed after the run last changed it, content or mode, was being changed or changed by someone else while the run worked, the history could not copy it, or git holds a link or a submodule there. Paths git ignores, and paths `HEAD` already holds, such as those a command of the run committed, are dropped. A tracked file that a rule the run added names is not ignored to git, so it is committed, though the agents can no longer read it: the user chose git's rule on 2026-11-01, over leaving it out as the workspace's tools do, which would leave an approved change uncommitted. A repository with no branch, an operation in progress, or a sparse checkout is refused whole.
+- **Hooks and filters get a command's environment, and what signing needs.** Every git call of the harness, the committer's, its check that git is ready, which can run `core.fsmonitor`, the moves' `merge-tree`, which runs the repository's merge drivers, and `commit-tree`, which runs `gpg.program`, the ignore rules' `ls-files`, the file tools' git listing and search, which can run `core.fsmonitor`, and `worktree add`, which runs `post-checkout`, runs with the variables a configured command gets, `PATH`, `HOME`, `TMPDIR`, `USER`, `SHELL`, `LANG` and `LC_*`, plus `SSH_AUTH_SOCK`, `GPG_TTY`, `GNUPGHOME`, `GPG_AGENT_INFO` and `XDG_CONFIG_HOME`, so `commit.gpgsign` still works with gpg or ssh, and `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` and `EMAIL`, so a CI that names the author there, not in `user.name`, commits as it, which the user chose on 2026-11-02. The provider keys, and every other secret of the process, never reach the repository's hooks and filters. The user chose this on 2026-10-31 over a command's environment alone, which breaks signing, and over the whole environment, which hands the keys to the repository's code.
+- **The commit is one of the run's changes.** It runs inside the run's `WriteSession`, holding its write lock, under a `CommandCheckpoint` named for the committer, and its commits are recorded as the run's, so undo keeps, reverts or resets them as for a command's.
+- **The run succeeds whatever git does.** A hook that rejects the commit, or nothing left to commit, is reported in `AgentResponse.commits`, with the files changed and approved. A git state the committer cannot read, a `.git` that git does not take for a repository or an index it cannot list included, ends the run with `UnrecoverableError`, and a committer whose model fails ends it as any role's failure does: the user chose that over a rule that would tell a provider's failure from a host's.
+- **`ProgressAgent` gains `committer`,** so the committer's narration is stamped like any role's. A consumer that switches over its values exhaustively breaks, so this ships as a breaking change.
+- **Only a run of its own.** An orchestrator that runs inside another agent's run, through `agentAsTool`, shares that run, which holds the other agent's changes too, so it never commits.
+- **Only `createLLMOrchestrator`, and not on Windows,** where `autoCommit` is an `InvalidAgentConfigError` and the stage never runs.
+
+**Context:** #140, the third of three pull requests, designed with the user on 2026-10-31 (<https://github.com/Mikode13/harness/issues/140#issuecomment-6546950305>) and checked twice with Codex before it was written. The user chose the harness committing over a model that runs git, an answer of the user's over an approval, a success that reports a rejection, and leaving out the paths that held the user's changes.
+
+**Alternatives considered:**
+
+- **A committer model with the `runCommand` tool.** It could split a change or handle a hook's complaint, but it could commit what the reviewer never read, and its commands would need approving.
+- **Plumbing without hooks,** `commit-tree` and `update-ref` as the moves of `src/recovery/` use. No hook could change the commit, but the repository's own checks would be skipped.
+- **Committing everything staged.** What `git commit` does, but it takes the user's own staged work into the agent's commit.
+- **A rejected commit as a `RecoverableError`.** A retry would run the whole orchestrator again for a commit the user can make by hand, after the approved files were already written.
+- **Asking through `approve`.** One callback for every risk, but an approver sees one call, not what the commit would hold and leave out.
+
+**Consequences:**
+
+- Each committed run costs one call to the cheaper model per repository, billed in the run's usage.
+- A hook or a clean filter can still change what is committed; the report names those paths as `unreviewed`, and the logger is told.
+- A change that should be several commits arrives as one.
+- Any commit that reaches the branch while git commits counts as the run's, as for a command: one an orchestrator over another folder of the same repository makes at that moment too, which an undo with `revert` or `reset` would then take back with this run. Runs over different folders of one checkout write at the same time, since each holds only its own workspace; a worktree each keeps their commits apart.
+- A version of a frozen file that another process stages between the commit's last check of the index and `git commit` is replaced by the file's, with no copy and no report. `git commit` takes the index's lock itself, so the harness cannot hold it from the check to the commit; the window is that of git's own run, as for any tool that commits. The user accepted it on 2026-11-02.
+- A hook that needs a variable beyond those, such as `NVM_DIR`, fails, and the commit is reported as rejected with what it printed.
+- On Windows, which the harness does not support yet, that environment matches `PATH` by its exact name, which Node gives as `Path`, and leaves out `SystemRoot` and the other variables Windows programs expect, so every git call of the harness would miss them. The user chose on 2026-11-02 to leave it to Windows support, <https://github.com/Mikode13/harness/issues/96>.
+- Each git call that reads or stages stops with the run, and fails after two minutes, so a filter that hangs ends the run instead of holding it.
+- A consumer that never passes `ask` gets no commit unless it sets `autoCommit`.

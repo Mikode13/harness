@@ -19,6 +19,7 @@ import {
 	openAIReasoningEfforts,
 } from '#src/llm/infrastructure/openAILLMClient';
 import {
+	committerInstructions,
 	executorInstructions,
 	executorInstructionsWithoutCommands,
 	OrchestratorAgent,
@@ -26,6 +27,7 @@ import {
 	reviewerInstructions,
 	reviewerInstructionsWithoutCommands,
 } from '#src/orchestration/domain/model/orchestratorAgent';
+import { GitCommitter } from '#src/orchestration/infrastructure/model/gitCommitter';
 import { ReviewerDecisionValidator } from '#src/orchestration/infrastructure/model/reviewerDecisionValidator';
 import type { RecoveryStore } from '#src/recovery/domain/recoveryStore';
 import { RetryingAgent } from '#src/retry/domain/model/retryingAgent';
@@ -291,6 +293,15 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	 * the role that calls it, so only the executor's may write, within the `write` roots.
 	 */
 	agents?: RoleAgents;
+	/**
+	 * Commits what an approved run changed without asking. Without it, once the reviewer approves
+	 * a run that changed files, the run asks the user through its `ask` whether to commit, and a
+	 * run with no `ask` commits nothing. The harness makes the commit with `git commit --only`,
+	 * so what else is staged stays staged and git's hooks run, and the committer, on the
+	 * executor's provider's cheaper model, writes its message. See `AgentResponse.commits`.
+	 * Not supported on Windows yet. Defaults to `false`.
+	 */
+	autoCommit?: boolean;
 }
 
 const defaultLLMAgentModels = {
@@ -431,6 +442,9 @@ function historyOf(workspace: WorkspaceOptions, logger: ILogger): HistoryReader 
 		listRuns: async () => (await open()).listRuns(),
 		listRevisions: async () => (await open()).listRevisions(),
 		readRun: async runId => (await open()).readRun(runId),
+		get workspaceId() {
+			return open().then(store => store.workspaceId);
+		},
 	};
 }
 
@@ -747,6 +761,9 @@ const explorerRoles = {
 
 const explorerSteps = 30;
 
+// It answers with a message and calls no tool: one step, and room for a retry.
+const committerSteps = 3;
+
 const explorerInstructions = `You find things in a repository for another agent, which is planning or reviewing a change and asked you one question, as a reader asks a librarian where a book is. Find where the answer is with listFiles, searchText, readFile and readFiles, reading only what you need to be sure. Answer with where it is: each file and the line ranges that matter, and in a sentence what each range holds and why it answers the question. The other agent reads those ranges itself, so do not copy code beyond a line that marks a place. Say what you looked for and could not find. Do not propose changes or a plan. ${batchingReads}`;
 
 // How each role finds its way, sent after the workspace's roots, so it stays short. Only the
@@ -801,7 +818,13 @@ export async function createLLMOrchestrator({
 	onTranscript,
 	removeWorktree = false,
 	agents = {},
+	autoCommit = false,
 }: CreateLLMOrchestratorOptions = {}): Promise<Agent> {
+	// Its commit stops the hooks it runs as a command is stopped, which Windows cannot do.
+	const canCommit = process.platform !== 'win32';
+	if (autoCommit && !canCommit) {
+		throw new InvalidAgentConfigError('autoCommit is not supported on Windows yet');
+	}
 	const roles = orchestratorRolesFor(provider);
 	const agentsOf = roleAgents(agents);
 	const steps = perRole('maxSteps', maxSteps, defaultRoleSteps, {
@@ -912,5 +935,28 @@ export async function createLLMOrchestrator({
 		),
 		reviewerDecisionValidator: new ReviewerDecisionValidator(),
 		logger,
+		// Only a workspace it may write can hold a run's changes to commit.
+		...(opened.writable && canCommit
+			? {
+					committer: new GitCommitter({
+						store: opened.store,
+						writes: opened.writes,
+						covered: opened.covered,
+						policy: opened.policy,
+						logger,
+					}),
+					createCommitter: () =>
+						buildLLMAgent(executor.provider, {
+							...explorerRoles[executor.provider],
+							systemPrompt: committerInstructions,
+							tools: [],
+							maxSteps: committerSteps,
+							compaction: compactionMode,
+							logger,
+							onTranscript: transcriptsOf('committer'),
+						}),
+					autoCommit,
+				}
+			: {}),
 	});
 }

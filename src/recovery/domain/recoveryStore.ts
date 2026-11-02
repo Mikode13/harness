@@ -53,6 +53,34 @@ export interface UnrecordedChange {
 	by: string;
 }
 
+/** One commit, as git names it. */
+export interface Commit {
+	sha: string;
+	/** The first line of its message. */
+	subject: string;
+}
+
+/**
+ * Commits a command made on one branch while a run ran it: those new on the branch after it,
+ * counted only when the branch was the same one before and after and its new tip descends from
+ * the old one. A commit made with no branch checked out is not counted.
+ */
+export interface RecordedCommits {
+	/** The real path of the folder the repository, or its worktree, is checked out in. */
+	repository: string;
+	/** The branch's short name, such as `main`. */
+	branch: string;
+	/** Oldest first. */
+	commits: Commit[];
+	/** The command that made them. */
+	by: string;
+	/**
+	 * The run that made them, once retention chained it into the run whose journal holds them now.
+	 * Absent while they are in the journal of the run that made them.
+	 */
+	runId?: string;
+}
+
 /** What one observation cost: before and after together. */
 export interface ObservationMeasure {
 	/** Files captured before, and compared after. */
@@ -135,6 +163,11 @@ export interface RunJournal {
 	 * over the run leaves it as it is, and is not complete.
 	 */
 	unrecorded(path: string, by: string): Promise<void>;
+	/**
+	 * Records the commits a command made. A run that made one stays in the history even if it
+	 * changed no file, so a move over it can name them.
+	 */
+	committed(commits: RecordedCommits): Promise<void>;
 	/** How many bytes of content this run stored that the store did not hold yet. */
 	readonly storedBytes: number;
 	/** The path of every change it recorded as applied, in order: each one reached a file. */
@@ -147,9 +180,9 @@ export interface RunJournal {
 	contentState(): string;
 	/**
 	 * Whether a change it recorded may have reached a file: one prepared and not abandoned, or one
-	 * it could not copy. It holds whatever happens to the record afterwards, except once `finish`
-	 * settled an observation the run left open and found that the run changed nothing: the run
-	 * left the history, so it is `false`.
+	 * it could not copy, or whether it recorded a commit. It holds whatever happens to the record
+	 * afterwards, except once `finish` settled an observation the run left open and found that the
+	 * run changed nothing: the run left the history, so it is `false`.
 	 */
 	readonly changed: boolean;
 	/**
@@ -175,6 +208,68 @@ export interface MoveConflict {
 	runId: string;
 }
 
+/** A commit a move went over: one a run it undid or redid made. */
+export interface MovedCommit {
+	/** The commit on the branch: for `reapply`, the new one, unless the branch went back to it. */
+	sha: string;
+	/**
+	 * The commit the run made, when `sha` is another one that re-applies it: a commit a later move
+	 * cherry-picked after a revert, or after a reset the branch had moved on from.
+	 */
+	original?: string;
+	/** The first line of its message. */
+	subject: string;
+	/**
+	 * The run that made it: the run the move went over, or one retention chained into it, which
+	 * that run's `absorbed` names.
+	 */
+	runId: string;
+	/** Whether the move undid that run or redid it. */
+	direction: 'undo' | 'redo';
+}
+
+/**
+ * What a move does with the commits of the runs it undoes:
+ * - `keep` leaves them on their branch;
+ * - `revert` adds commits that take them back, newest first;
+ * - `reset` moves the branch back to before them, only when no other commit is among them or on
+ *   top, none is published, which is when the branch's upstream holds it, and the branch is
+ *   still checked out.
+ *
+ * Redoing a run whose commits a move took back always puts them back: see `BranchMove`.
+ */
+export type CommitsPolicy = 'keep' | 'revert' | 'reset';
+
+/**
+ * What a move did with the commits of the runs it went over, on one branch of one repository.
+ * The files are moved either way; this reports the commits, separately.
+ */
+export interface BranchMove {
+	/** The real path of the folder the repository, or its worktree, is checked out in. */
+	repository: string;
+	/** The branch's short name, such as `main`. */
+	branch: string;
+	/**
+	 * `keep`, `revert` or `reset` when undoing, as `MoveOptions.commits` asked. `reapply` when
+	 * redoing a run whose commits an earlier move reverted or reset: the branch goes forward to them
+	 * again when it has not moved since a reset, and they are cherry-picked otherwise. A redo over
+	 * commits no move took back reports them as `keep`.
+	 */
+	action: CommitsPolicy | 'reapply';
+	/**
+	 * `done`: the action was taken. `left`: git could not follow, such as when the branch is no
+	 * longer checked out, a revert conflicts, or a reset would drop other commits; the commits stay
+	 * as they were, and `reason` says why. The files are moved either way.
+	 */
+	outcome: 'done' | 'left';
+	reason?: string;
+	/**
+	 * Those the action concerned, in the order the move went over them: for `keep`, those still on
+	 * the branch.
+	 */
+	commits: MovedCommit[];
+}
+
 /**
  * One move of the workspace through its history, kept so an agent that runs next can tell
  * that its conversation is about a state the workspace has left.
@@ -192,6 +287,8 @@ export interface Revision {
 	/** Every file reached the state the history expected. Otherwise `conflicts` names those that did not. */
 	complete: boolean;
 	conflicts: MoveConflict[];
+	/** What it did with the commits of the runs it went over, per branch. Absent when they made none. */
+	git?: BranchMove[];
 }
 
 export interface MoveOptions {
@@ -202,6 +299,8 @@ export interface MoveOptions {
 	 * the workspace lock, so a move confirmed against one state never runs from another.
 	 */
 	from?: string;
+	/** What undoing does with the commits the undone runs made: `keep` by default. */
+	commits?: CommitsPolicy;
 }
 
 /** There is nothing to undo at the start of the history, or nothing to redo at its tip. */
@@ -273,15 +372,19 @@ export interface RecoveryStore {
 	/** Every move of the workspace, oldest first. */
 	listRevisions(): Promise<Revision[]>;
 	/**
-	 * A run's record, its changes, in the order they were prepared, and the changes it could not
-	 * copy.
+	 * A run's record, its changes, in the order they were prepared, the changes it could not
+	 * copy, and the commits it made.
 	 *
 	 * @throws {UnknownRunError} when `runId` was never a run of this workspace.
 	 * @throws {HistoryExpiredError} when retention removed `runId` or chained it into a later run.
 	 */
-	readRun(
-		runId: string,
-	): Promise<{ record: RunRecord; entries: JournalEntry[]; unrecorded: UnrecordedChange[] }>;
+	readRun(runId: string): Promise<{
+		record: RunRecord;
+		entries: JournalEntry[];
+		unrecorded: UnrecordedChange[];
+		/** The commits its commands made, in the order they were recorded. */
+		commits: RecordedCommits[];
+	}>;
 	/** The bytes a hash names. */
 	readContent(hash: string): Promise<Buffer>;
 }

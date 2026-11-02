@@ -64,6 +64,8 @@ export interface OpenedWorkspace {
 	readonly stateDirectory: string;
 	/** What a command's checkpoint captures and compares: see `CoveredFiles`. */
 	readonly covered: CoveredFiles;
+	/** Where the tools over it log a failure they absorb. */
+	readonly logger: ILogger;
 }
 
 /**
@@ -162,6 +164,7 @@ export async function openWorkspace(
 		base: root,
 		stateDirectory,
 		covered: coveredFiles(roots, policy, logger),
+		logger,
 	};
 }
 
@@ -212,8 +215,8 @@ function coveredFiles(
  * @throws {InvalidAgentConfigError} for an invalid configuration, or on Windows.
  */
 export function commandToolFor(workspace: OpenedWorkspace, commands: Commands): Promise<AgentTool> {
-	const { policy, writes, covered, base } = workspace;
-	return createCommandTool({ commands, policy, writes, covered, base });
+	const { policy, writes, covered, base, logger } = workspace;
+	return createCommandTool({ commands, policy, writes, covered, base, logger });
 }
 
 /**

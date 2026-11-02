@@ -1,14 +1,19 @@
 import { mkdir, readdir, realpath, rmdir } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { UnrecoverableError } from '#src/shared/domain/errors';
-import { runProcess } from './runProcess.ts';
+import { gitEnvironment, runProcess } from '#src/shared/infrastructure/runProcess';
 
 // Never cancelled: creating a worktree is short, and the consumer waits for it.
 const uncancelled = new AbortController().signal;
 
 /** Runs git in `cwd`, its output unaffected by the user's colour settings. */
 export function git(args: string[], cwd: string, signal: AbortSignal = uncancelled) {
-	return runProcess('git', ['-c', 'color.ui=never', ...args], { cwd, signal });
+	// Without the harness's secrets: `worktree add` runs the repository's `post-checkout` hook.
+	return runProcess('git', ['-c', 'color.ui=never', ...args], {
+		cwd,
+		signal,
+		env: gitEnvironment(),
+	});
 }
 
 function firstLine(text: string): string {

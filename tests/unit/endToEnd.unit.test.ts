@@ -344,6 +344,64 @@ describe('the write tools, end to end through the public exports', () => {
 		expect(read('src/math.ts')).toBe(broken);
 	});
 
+	it('commits what the reviewer approved once the user says so, with the message the committer wrote, and undo reverts it', async () => {
+		for (const [key, value] of [
+			['user.name', 'Test'],
+			['user.email', 'test@example.com'],
+			['commit.gpgsign', 'false'],
+			['core.hooksPath', join(parent, 'no-hooks')],
+		] as const) {
+			execFileSync('git', ['config', key, value], { cwd: repo });
+		}
+		execFileSync('git', ['add', '.'], { cwd: repo });
+		execFileSync('git', ['commit', '--quiet', '-m', 'feat: add add'], { cwd: repo });
+		const openAI = scriptOpenAI(
+			openAIResponse(text('Make add add.')),
+			openAIResponse(
+				call('e1', 'readFile', { path: 'src/math.ts', fromLine: null, lineCount: null }),
+			),
+			openAIResponse(
+				patch('e2', {
+					type: 'update_file',
+					path: 'src/math.ts',
+					diff: `@@\n-${broken.trimEnd()}\n+${fixed.trimEnd()}`,
+				}),
+			),
+			openAIResponse(text('add adds now.')),
+			// The committer writes the message.
+			openAIResponse(text('fix: make add add')),
+		);
+		scriptClaude(claudeResponse(say('{"decision":"approved"}')));
+		const ask = vi.fn(() => ['Commit']);
+
+		const agent = await createLLMOrchestrator({ workspace, logger: { warn: vi.fn() } });
+		const response = await agent.run('Fix add.', { signal, ask });
+
+		const log = (format: string) =>
+			execFileSync('git', ['log', '-1', `--format=${format}`], { cwd: repo, encoding: 'utf8' });
+		expect(log('%s')).toBe('fix: make add add\n');
+		expect(response.commits).toEqual({
+			outcome: 'committed',
+			repositories: [
+				expect.objectContaining({
+					repository: repo,
+					outcome: 'done',
+					commits: [{ sha: log('%H').trim(), subject: 'fix: make add add' }],
+					paths: ['src/math.ts'],
+				}),
+			],
+		});
+		const committer = JSON.stringify(openAI.mock.calls[4]?.[0]);
+		expect(committer).toContain('gpt-5.6-luna');
+		expect(committer).toContain('- feat: add add');
+		expect(committer).toContain('+export const add = (a: number, b: number) => a + b;');
+
+		const history = await createHistory({ root: repo, stateDirectory: workspace.stateDirectory });
+		const undone = await history.undo({ commits: 'revert' });
+		expect(undone.git?.[0]).toMatchObject({ action: 'revert', outcome: 'done' });
+		expect(read('src/math.ts')).toBe(broken);
+	});
+
 	it('lets the planner send an explorer, which reads on a cheaper model and reports back', async () => {
 		const openAI = scriptOpenAIApart(
 			[

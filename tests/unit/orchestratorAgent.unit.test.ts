@@ -986,7 +986,7 @@ describe('OrchestratorAgent', () => {
 
 			expect(failure).toBeInstanceOf(UnrecoverableError);
 			expect(failure).toMatchObject({
-				message: 'Orchestrator logger failed while reporting a retry',
+				message: 'Orchestrator logger failed while reporting a retry or a commit',
 				cause: 'the log sink is gone',
 			});
 			expect(reviewer.run).toHaveBeenCalledOnce();

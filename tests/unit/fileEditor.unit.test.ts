@@ -379,6 +379,7 @@ describe('FileEditor', () => {
 						observe: (manifest, by) => journal.observe(manifest, by),
 						observed: (sequence, measure) => journal.observed(sequence, measure),
 						unrecorded: (path, by) => journal.unrecorded(path, by),
+						committed: commits => journal.committed(commits),
 						storedBytes: 0,
 						appliedPaths: [],
 						contentState: () => journal.contentState(),

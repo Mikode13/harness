@@ -198,6 +198,65 @@ describe('LLMAgent following moves through the workspace history', () => {
 		expect(seen.some(text => text.startsWith('Note from the harness'))).toBe(false);
 	});
 
+	it('tells the model what git did with the commits of the runs a move went over', async () => {
+		const model = new ScriptedModel().writes('a.txt', 'one').answers('back').answers('forward');
+		const commit = { sha: 'a'.repeat(40), subject: 'change a', runId: 'r1' };
+		// Moves whose runs committed, as a store reports them.
+		const history: HistoryReader = {
+			workspaceId: store.workspaceId,
+			listRuns: () => store.listRuns(),
+			readRun: runId => store.readRun(runId),
+			listRevisions: async () =>
+				(await store.listRevisions()).map(revision => ({
+					...revision,
+					git: [
+						revision.revision === 1
+							? {
+									repository: repo,
+									branch: 'main',
+									action: 'revert' as const,
+									outcome: 'done' as const,
+									commits: [{ ...commit, direction: 'undo' as const }],
+								}
+							: {
+									repository: repo,
+									branch: 'main',
+									action: 'reapply' as const,
+									outcome: 'done' as const,
+									commits: [
+										{
+											...commit,
+											sha: 'b'.repeat(40),
+											original: commit.sha,
+											direction: 'redo' as const,
+										},
+									],
+								},
+					],
+				})),
+		};
+		const agent = await agentOver(model, { history });
+		await agent.run('first', { signal });
+
+		await store.undo();
+		await agent.run('while back', { signal });
+		await store.redo();
+		await agent.run('after redo', { signal });
+
+		const [undone] = prompt(model.firstContexts[1]);
+		expect(undone).toContain(
+			`- main in ${repo}: aaaaaaa change a reverted, by new commits that take them back.`,
+		);
+		const [redone] = prompt(model.firstContexts[2]);
+		expect(redone).toContain(
+			'Note from the harness: the user moved the workspace through its history.',
+		);
+		expect(redone).toContain(
+			`- main in ${repo}: aaaaaaa change a, now bbbbbbb put back on the branch.`,
+		);
+		expect(redone).not.toContain('reverted');
+	});
+
 	it('names, in a later note, the prompt of an undone turn that carried a note, and only new reasons', async () => {
 		const model = new ScriptedModel().writes('a.txt', 'one').writes('a.txt', 'two').answers('ok');
 		const agent = await agentOver(model);
@@ -368,3 +427,38 @@ function readRunOf(history: HistoryReader, override: (runId: string) => undefine
 		},
 	});
 }
+
+describe('LLMAgent whose run also writes to another history', () => {
+	it("answers with its own history's run, and goes back with it", async () => {
+		const elsewhere = join(parent, 'elsewhere');
+		mkdirSync(elsewhere);
+		writeFileSync(join(elsewhere, 'b.txt'), 'original');
+		const other = await FileRecoveryStore.open({
+			root: elsewhere,
+			directory: join(parent, 'other-state'),
+		});
+		const model = new FakeLLMClient(
+			assistantResponse([toolCall('a', 'replace', { path: 'a.txt', content: 'one' })]),
+			assistantResponse([toolCall('b', 'replaceElsewhere', { path: 'b.txt', content: 'two' })]),
+			textResponse('done'),
+			textResponse('ok'),
+		);
+		const agent = new LLMAgent({
+			llmClient: model,
+			tools: [
+				replaceTool(await writesOver(repo, store)),
+				{ ...replaceTool(await writesOver(elsewhere, other)), name: 'replaceElsewhere' },
+			],
+			history: store,
+		});
+
+		const response = await agent.run('write both', { signal });
+		const { runs } = await store.listRuns();
+		expect(response.runId).toBe(runs[0]?.runId);
+		await store.undo({ reason: 'a.txt was wrong' });
+		await agent.run('next', { signal });
+
+		const note = texts(model.contexts[3]).find(text => text.startsWith('Note from the harness'));
+		expect(note).toContain('«write both»');
+	});
+});

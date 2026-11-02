@@ -1,5 +1,6 @@
 import type { Tokens } from '#src/shared/domain/tokens';
 import type { Approver } from './approval.ts';
+import type { CommitReport } from './commitReport.ts';
 import type { Inbox } from './inbox.ts';
 import type { Asker } from './question.ts';
 import type { Session } from '#src/shared/domain/session';
@@ -20,8 +21,11 @@ export interface AgentResponse {
 	duration: number;
 	/**
 	 * The run the workspace's history recorded, when this run wrote through the harness's write
-	 * tools. Absent for a run that wrote nothing, and from the Agent SDK engines, whose changes
-	 * the history does not record.
+	 * tools. A run can write to several histories, through an agent it delegated to that works in
+	 * another folder: this is the run of the history the agent follows, or, for one that follows
+	 * none such as an orchestrator, of the first history the run reached and wrote to. Absent for
+	 * a run that wrote nothing there, and from the Agent SDK engines, whose changes the history
+	 * does not record.
 	 */
 	runId?: string;
 	/**
@@ -30,6 +34,11 @@ export interface AgentResponse {
 	 * again, to keep them in the same session. Every agent the harness builds sets it.
 	 */
 	session?: Session;
+	/**
+	 * What the committer did, from `createLLMOrchestrator`, once the reviewer approved a run that
+	 * changed files and the user could be asked, or `autoCommit` is on. Absent otherwise.
+	 */
+	commits?: CommitReport;
 }
 
 export type Callback = (item: ProgressEvent) => void;
@@ -233,8 +242,11 @@ export interface StepContext {
 	largestResults: { tool: string; characters: number; summary?: string }[];
 }
 
-/** A role in the fixed planner → executor → reviewer workflow. */
-export type ProgressAgent = 'planner' | 'executor' | 'reviewer';
+/**
+ * A role in the fixed planner → executor → reviewer workflow, or the committer that writes the
+ * message of the commit `createLLMOrchestrator` makes once the reviewer approves.
+ */
+export type ProgressAgent = 'planner' | 'executor' | 'reviewer' | 'committer';
 
 /**
  * The contract every engine (CodexAgent, ClaudeAgent, future providers) and every

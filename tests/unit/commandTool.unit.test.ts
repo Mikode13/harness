@@ -169,7 +169,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		expect(output).toContain('"format" exited with code 0');
 		expect(output).toContain('Files it changed, recorded in the history: src/a.ts.');
 		expect(read('src/a.ts')).toBe('export const a = 1;\n');
-		const runId = context.historyRun.runId ?? '';
+		const runId = context.firstRunId ?? '';
 		const { entries } = await opened.store.readRun(runId);
 		expect(entries).toMatchObject([
 			{ path: join(root, 'src', 'a.ts'), status: 'applied', observedBy: 'format' },
@@ -444,7 +444,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 
 		expect(output).toContain('It changed no file the history covers.');
 		// Nothing it recorded may have changed a file, so the run is not in the history.
-		expect(context.historyRun.runId).toBeUndefined();
+		expect(context.firstRunId).toBeUndefined();
 		// The capture never copied the secret into the history.
 		const stored = readdirSync(join(parent, 'state'), { recursive: true, withFileTypes: true })
 			.filter(entry => entry.isFile())
@@ -483,7 +483,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		expect(output).toContain('history cannot copy them (a folder, a link, or a file over 64 MB)');
 		expect(output).toContain('before or after: big.bin.');
 		// The run stays in the history, though it recorded no change it could take back.
-		const runId = context.historyRun.runId ?? '';
+		const runId = context.firstRunId ?? '';
 		await expect(opened.store.readRun(runId)).resolves.toMatchObject({
 			entries: [],
 			unrecorded: [{ path: join(root, 'big.bin'), by: 'shrink' }],
@@ -657,7 +657,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			'"slow" ran past its limit of 0.3 s and was stopped.',
 		);
 		expect((error as Error).message).toContain('src/a.ts');
-		const { entries } = await opened.store.readRun(context.historyRun.runId ?? '');
+		const { entries } = await opened.store.readRun(context.firstRunId ?? '');
 		expect(entries).toMatchObject([{ path: join(root, 'src', 'a.ts'), observedBy: 'slow' }]);
 	});
 
@@ -683,7 +683,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 
 		await expect(running).rejects.toHaveProperty('name', 'AbortError');
 		await context.finish('cancelled');
-		const { entries } = await opened.store.readRun(context.historyRun.runId ?? '');
+		const { entries } = await opened.store.readRun(context.firstRunId ?? '');
 		expect(entries.map(entry => entry.path)).toContain(join(root, 'src', 'a.ts'));
 	});
 
@@ -695,6 +695,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			writes: opened.writes,
 			covered: () => Promise.reject(new Error('listing failed')),
 			base: opened.base,
+			logger: opened.logger,
 		});
 
 		const { error } = await call(tool, { command: { name: 'mark' } });
@@ -719,13 +720,14 @@ describe('runCommand', { timeout: 20_000 }, () => {
 				return opened.covered(listSignal);
 			},
 			base: opened.base,
+			logger: opened.logger,
 		});
 
 		const { error, context } = await call(tool, { command: { name: 'format' } });
 
 		expect(error).toBeInstanceOf(EditUnconfirmedError);
 		expect(read('src/a.ts')).toBe('export const a = 1;\n');
-		const runId = context.historyRun.runId ?? '';
+		const runId = context.firstRunId ?? '';
 		// The run keeps how it ended, and its journal holds what the command changed.
 		await expect(opened.store.readRun(runId)).resolves.toMatchObject({
 			record: { status: 'failed' },
@@ -749,13 +751,14 @@ describe('runCommand', { timeout: 20_000 }, () => {
 				return opened.covered(listSignal);
 			},
 			base: opened.base,
+			logger: opened.logger,
 		});
 
 		const { error, context } = await call(tool, { command: { name: 'check' } });
 
 		expect(error).toBeInstanceOf(EditUnconfirmedError);
 		// Settling as the run finished found nothing changed, so the run is out of the history.
-		expect(context.historyRun.runId).toBeUndefined();
+		expect(context.firstRunId).toBeUndefined();
 		await expect(opened.store.listRuns()).resolves.toMatchObject({ runs: [] });
 	});
 
@@ -781,6 +784,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 				throw new Error('listing failed');
 			},
 			base: opened.base,
+			logger: opened.logger,
 		});
 		const llmClient = new FakeLLMClient(
 			assistantResponse([toolCall('call-1', 'runCommand', { command: { name: 'check' } })]),
@@ -812,6 +816,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			writes: opened.writes,
 			covered: opened.covered,
 			base: opened.base,
+			logger: opened.logger,
 			runProcess: async (...args) => {
 				truncateSync(join(root, 'src', 'a.ts'), 65 * 1024 * 1024);
 				const result = await runCommandProcess(...args);
@@ -823,7 +828,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 
 		expect(error).toBeInstanceOf(EditUnconfirmedError);
 		// Recorded when the command ended, and not again when the run settled what it left open.
-		await expect(opened.store.readRun(context.historyRun.runId ?? '')).resolves.toMatchObject({
+		await expect(opened.store.readRun(context.firstRunId ?? '')).resolves.toMatchObject({
 			unrecorded: [{ path: join(root, 'src', 'a.ts'), by: 'grow' }],
 		});
 	});
@@ -837,7 +842,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		const { error, context } = await call(tool as PreparingTool, { command: { name: 'missing' } });
 
 		expect((error as Error).message).toBe('"missing" could not be started');
-		expect(context.historyRun.runId).toBeUndefined();
+		expect(context.firstRunId).toBeUndefined();
 	});
 
 	it('stops writing for the run when a command cannot be confirmed stopped', async () => {
@@ -848,6 +853,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			writes: opened.writes,
 			covered: opened.covered,
 			base: opened.base,
+			logger: opened.logger,
 			runProcess: async (...args) => {
 				write('src/a.ts', 'changed by something still running\n');
 				const result = await runCommandProcess(...args);
@@ -886,6 +892,7 @@ describe('createCommandTool', () => {
 				writes: opened.writes,
 				covered: opened.covered,
 				base: opened.base,
+				logger: opened.logger,
 				platform: 'win32',
 			}),
 		).rejects.toBeInstanceOf(InvalidAgentConfigError);

@@ -1,6 +1,12 @@
 import type { Session } from '#src/shared/domain/session';
 import { changedFiles, displayPath, showChanges } from './runChanges.ts';
-import type { MoveOptions, RecoveryStore, Revision, RunStatus } from './recoveryStore.ts';
+import type {
+	BranchMove,
+	MoveOptions,
+	RecoveryStore,
+	Revision,
+	RunStatus,
+} from './recoveryStore.ts';
 import { HistoryExpiredError } from './runTree.ts';
 
 /** One run that wrote to the workspace. */
@@ -45,6 +51,13 @@ export interface Move {
 	 * command changed into, or from, something the history cannot copy, such as a file over 64 MB.
 	 */
 	conflicts: { path: string; runId: string }[];
+	/**
+	 * What the move did with the commits that the commands of the runs it went over made, per
+	 * branch of each repository. The files move either way: a commit kept while its run is undone
+	 * holds changes the files no longer do. Absent when those runs made no commit, or none of them
+	 * is on its branch any more.
+	 */
+	git?: BranchMove[];
 }
 
 /**
@@ -164,6 +177,14 @@ export class StoreHistory implements History {
 				path: displayPath(this.root, path),
 				runId,
 			})),
+			...(revision.git
+				? {
+						git: revision.git.map(branch => ({
+							...branch,
+							commits: branch.commits.map(commit => ({ ...commit })),
+						})),
+					}
+				: {}),
 		};
 	}
 }

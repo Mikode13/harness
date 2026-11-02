@@ -1,6 +1,6 @@
 import type { TextMatch } from '../domain/workspace.ts';
 import { BoundedWorkspace } from './boundedWorkspace.ts';
-import { firstLine, runProcess } from './runProcess.ts';
+import { firstLine, gitEnvironment, runProcess } from '#src/shared/infrastructure/runProcess';
 
 /**
  * The fallback `Workspace`, on the git the repository already has. git applies `.gitignore`
@@ -74,7 +74,8 @@ export class GitWorkspace extends BoundedWorkspace {
 		return runProcess(
 			'git',
 			['-c', 'color.ui=never', '-c', 'grep.column=false', '-c', 'grep.fullName=false', ...args],
-			{ cwd: this.root, signal, onLine },
+			// Without the harness's secrets: listing can run the repository's `core.fsmonitor`.
+			{ cwd: this.root, signal, onLine, env: gitEnvironment() },
 		);
 	}
 }
