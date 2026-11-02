@@ -17,14 +17,35 @@ export class RunContext {
 	/** The session the run belongs to, which every agent inside it answers with. */
 	readonly session: Session;
 
-	/**
-	 * The run the workspace's history recorded for this run, once it first wrote. The object is
-	 * shared, not copied: a turn recorded before the first write still learns its run.
-	 */
-	readonly historyRun: { runId?: string } = {};
+	// Each history's run, by `workspaceId`, in the order the run first reached each.
+	private readonly historyRuns = new Map<string, { runId?: string }>();
 
 	constructor(session: Session) {
 		this.session = session;
+	}
+
+	/**
+	 * The run the history `workspaceId` recorded for this run, once it first wrote there. One run
+	 * can write to several histories, such as through an agent it delegated to that works in
+	 * another folder, and each records a run of its own. The object is shared, not copied: a turn
+	 * recorded before the first write still learns its run.
+	 */
+	historyRunOf(workspaceId: string): { runId?: string } {
+		let run = this.historyRuns.get(workspaceId);
+		if (!run) {
+			run = {};
+			this.historyRuns.set(workspaceId, run);
+		}
+		return run;
+	}
+
+	/**
+	 * The run of the first history this run reached and wrote to, for an agent that follows no
+	 * history of its own, such as an orchestrator, whose roles reach their workspace's first.
+	 */
+	get firstRunId(): string | undefined {
+		for (const { runId } of this.historyRuns.values()) if (runId !== undefined) return runId;
+		return undefined;
 	}
 
 	/** Ends something the run started, when the run ends. */

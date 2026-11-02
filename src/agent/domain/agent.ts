@@ -21,8 +21,11 @@ export interface AgentResponse {
 	duration: number;
 	/**
 	 * The run the workspace's history recorded, when this run wrote through the harness's write
-	 * tools. Absent for a run that wrote nothing, and from the Agent SDK engines, whose changes
-	 * the history does not record.
+	 * tools. A run can write to several histories, through an agent it delegated to that works in
+	 * another folder: this is the run of the history the agent follows, or, for one that follows
+	 * none such as an orchestrator, of the first history the run reached and wrote to. Absent for
+	 * a run that wrote nothing there, and from the Agent SDK engines, whose changes the history
+	 * does not record.
 	 */
 	runId?: string;
 	/**

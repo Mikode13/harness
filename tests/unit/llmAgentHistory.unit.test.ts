@@ -203,6 +203,7 @@ describe('LLMAgent following moves through the workspace history', () => {
 		const commit = { sha: 'a'.repeat(40), subject: 'change a', runId: 'r1' };
 		// Moves whose runs committed, as a store reports them.
 		const history: HistoryReader = {
+			workspaceId: store.workspaceId,
 			listRuns: () => store.listRuns(),
 			readRun: runId => store.readRun(runId),
 			listRevisions: async () =>
@@ -426,3 +427,38 @@ function readRunOf(history: HistoryReader, override: (runId: string) => undefine
 		},
 	});
 }
+
+describe('LLMAgent whose run also writes to another history', () => {
+	it("answers with its own history's run, and goes back with it", async () => {
+		const elsewhere = join(parent, 'elsewhere');
+		mkdirSync(elsewhere);
+		writeFileSync(join(elsewhere, 'b.txt'), 'original');
+		const other = await FileRecoveryStore.open({
+			root: elsewhere,
+			directory: join(parent, 'other-state'),
+		});
+		const model = new FakeLLMClient(
+			assistantResponse([toolCall('a', 'replace', { path: 'a.txt', content: 'one' })]),
+			assistantResponse([toolCall('b', 'replaceElsewhere', { path: 'b.txt', content: 'two' })]),
+			textResponse('done'),
+			textResponse('ok'),
+		);
+		const agent = new LLMAgent({
+			llmClient: model,
+			tools: [
+				replaceTool(await writesOver(repo, store)),
+				{ ...replaceTool(await writesOver(elsewhere, other)), name: 'replaceElsewhere' },
+			],
+			history: store,
+		});
+
+		const response = await agent.run('write both', { signal });
+		const { runs } = await store.listRuns();
+		expect(response.runId).toBe(runs[0]?.runId);
+		await store.undo({ reason: 'a.txt was wrong' });
+		await agent.run('next', { signal });
+
+		const note = texts(model.contexts[3]).find(text => text.startsWith('Note from the harness'));
+		expect(note).toContain('«write both»');
+	});
+});

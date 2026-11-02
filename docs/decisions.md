@@ -2528,7 +2528,7 @@ partially superseded by: "An agent is offered to another agent as a tool, and wo
 
 - Another run has another `RunContext`, so it gets another session, and is still refused while the workspace is busy.
 - Sharing a session does not make writes from two stages at once to the same files safe; that needs coordination of its own.
-- `RunContext.historyRun` holds one run id. A run that writes to two histories would have each session overwrite it; allowing that means tying the reference to each history.
+- A run that writes to two histories records a run in each. `RunContext` keeps one run id per history, by `workspaceId`, so neither session overwrites the other's; an agent answers with its own history's, and one that follows none, such as an orchestrator, with the first history the run reached and wrote to.
 
 ---
 

@@ -442,6 +442,9 @@ function historyOf(workspace: WorkspaceOptions, logger: ILogger): HistoryReader 
 		listRuns: async () => (await open()).listRuns(),
 		listRevisions: async () => (await open()).listRevisions(),
 		readRun: async runId => (await open()).readRun(runId),
+		get workspaceId() {
+			return open().then(store => store.workspaceId);
+		},
 	};
 }
 

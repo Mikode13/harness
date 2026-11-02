@@ -38,6 +38,29 @@ describe('RunContext', () => {
 	});
 });
 
+describe('RunContext history runs', () => {
+	it("keeps each history's run apart, and shares it with whoever asked before", () => {
+		const context = new RunContext({ id: 'test-session' });
+		const early = context.historyRunOf('here');
+
+		context.historyRunOf('elsewhere').runId = 'run-elsewhere';
+		context.historyRunOf('here').runId = 'run-here';
+
+		expect(early.runId).toBe('run-here');
+		expect(context.historyRunOf('elsewhere').runId).toBe('run-elsewhere');
+	});
+
+	it('takes the first history reached that recorded a run, not the first written', () => {
+		const context = new RunContext({ id: 'test-session' });
+		context.historyRunOf('first');
+		context.historyRunOf('second').runId = 'run-second';
+
+		expect(context.firstRunId).toBe('run-second');
+		context.historyRunOf('first').runId = 'run-first';
+		expect(context.firstRunId).toBe('run-first');
+	});
+});
+
 describe('withRunContext', () => {
 	it('carries the context without changing the options it was given', () => {
 		const options = { signal };

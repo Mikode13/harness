@@ -32,7 +32,8 @@ export function createShowChangesTool({
 			Promise.resolve({
 				risk: 'safe',
 				run: async signal => {
-					const { runId } = run.historyRun;
+					// This history's: the run may have written to another's too.
+					const { runId } = run.historyRunOf(store.workspaceId);
 					if (runId === undefined) return nothingYet;
 					const diff = await showChanges(store, runId, {
 						maxLines,

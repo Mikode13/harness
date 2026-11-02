@@ -178,7 +178,7 @@ describe('showChanges for the planner and the reviewer', () => {
 	it("shows the current run's changes it may read, and only counts the others", async () => {
 		const store = await FileRecoveryStore.open({ root, directory: join(parent, 'state') });
 		const context = new RunContext({ id: 'test-session' });
-		context.historyRun.runId = await recordRun(store, root, [
+		context.historyRunOf(store.workspaceId).runId = await recordRun(store, root, [
 			['src/a.ts', 'export const token = "changed";\n'],
 			['.envrc', 'export TOKEN=leaked\n'],
 		]);
@@ -191,13 +191,25 @@ describe('showChanges for the planner and the reviewer', () => {
 		expect(shown).not.toContain('leaked');
 	});
 
+	it("shows this history's run when the task also wrote to another", async () => {
+		const store = await FileRecoveryStore.open({ root, directory: join(parent, 'state') });
+		const context = new RunContext({ id: 'test-session' });
+		context.historyRunOf('another workspace').runId = 'run-elsewhere';
+		context.historyRunOf(store.workspaceId).runId = await recordRun(store, root, [
+			['src/a.ts', 'export const token = "changed";\n'],
+		]);
+		context.historyRunOf('a later workspace').runId = 'run-later';
+
+		await expect(showChanges(context)).resolves.toContain('+export const token = "changed";');
+	});
+
 	it.each([
 		['a cancellation', new DOMException('The operation was aborted', 'AbortError')],
 		['an operational policy failure', new Error('git failed')],
 	])('propagates %s while deciding which changes may be shown', async (_, failure) => {
 		const store = await FileRecoveryStore.open({ root, directory: join(parent, 'state') });
 		const context = new RunContext({ id: 'test-session' });
-		context.historyRun.runId = await recordRun(store, root, [
+		context.historyRunOf(store.workspaceId).runId = await recordRun(store, root, [
 			['src/a.ts', 'export const token = "changed";\n'],
 		]);
 		vi.spyOn(policy, 'check').mockRejectedValueOnce(failure);

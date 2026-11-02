@@ -112,7 +112,7 @@ async function run(tool: PreparingTool, name: string) {
 	});
 	const output = await call.run(signal);
 	await context.finish('completed');
-	return { output, runId: context.historyRun.runId ?? '' };
+	return { output, runId: context.firstRunId ?? '' };
 }
 
 describe('the commits between two tips of a branch', () => {
@@ -263,7 +263,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		await context.finish('failed');
 
 		// Settling found no file changed, and the commit keeps the run.
-		const runId = context.historyRun.runId ?? '';
+		const runId = context.firstRunId ?? '';
 		await expect(opened.store.readRun(runId)).resolves.toMatchObject({
 			commits: [{ commits: [{ sha: head(), subject: 'kept' }] }],
 		});
@@ -340,7 +340,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		await expect(call.run(signal)).rejects.toBeInstanceOf(RunEndingToolError);
 		await context.finish('failed');
 
-		const { entries } = await opened.store.readRun(context.historyRun.runId ?? '');
+		const { entries } = await opened.store.readRun(context.firstRunId ?? '');
 		expect(entries).toMatchObject([{ path: join(root, 'a.txt'), status: 'applied' }]);
 	});
 
