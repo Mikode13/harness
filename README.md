@@ -655,7 +655,7 @@ A commit holds what the reviewer read: the run's changes are taken before each r
 repository where any of them changed since, or where the run changed another file since, as a
 command of the reviewer's can, is left uncommitted. It holds only the run's own
 files, never what else is staged. A file is left out, and the report says why, when it held
-changes of yours before the run, or a version of yours staged, changed after the run last
+changes of yours before the run, or a version of yours staged, there or in its way above or below it, changed after the run last
 changed it, was changed by someone else while the run worked, is a link or a submodule in
 git, or sits under a folder that became a link; files git ignores are not committed, and files
 a command of the run already committed are not committed again. A repository is left whole when no branch is checked out, or when git is in

@@ -350,6 +350,73 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		expect(git('log', '-1', '--format=%an <%ae>')).toBe('CI Bot <ci@example.com>');
 	});
 
+	it('leaves out a new file whose folder is where the index holds a file of yours', async () => {
+		writeFileSync(join(root, 'd'), 'staged by you\n');
+		git('add', 'd');
+		rmSync(join(root, 'd'));
+		mkdirSync(join(root, 'd'));
+		const { run, committer, options } = await workingRun({
+			edit: 'echo two > a.txt && echo new > d/new.txt',
+		});
+		await run('edit');
+
+		const frozen = await committer.freeze(options);
+		expect(frozen?.repositories[0]).toMatchObject({
+			paths: ['a.txt'],
+			leftOut: [{ path: 'd/new.txt', reason: 'the index holds a file of yours above or below it' }],
+		});
+		await committer.commit(frozen ?? { repositories: [] }, new Map([[root, 'Change a']]), options);
+
+		expect(git('show', ':d')).toBe('staged by you');
+	});
+
+	it('leaves out a new file where the index holds files of yours below it', async () => {
+		mkdirSync(join(root, 'e'));
+		writeFileSync(join(root, 'e', 'x.txt'), 'staged by you\n');
+		git('add', 'e/x.txt');
+		rmSync(join(root, 'e'), { recursive: true });
+		const { run, committer, options } = await workingRun({ edit: 'echo new > e' });
+		await run('edit');
+
+		const frozen = await committer.freeze(options);
+
+		expect(frozen?.repositories[0]).toMatchObject({
+			paths: [],
+			leftOut: [{ path: 'e', reason: 'the index holds a file of yours above or below it' }],
+		});
+	});
+
+	it("keeps literal pathspecs out of the hooks git's staging runs", async () => {
+		hook(
+			'post-index-change',
+			`echo "\${GIT_LITERAL_PATHSPECS:-unset}" >> "${join(parent, 'hook-env')}"`,
+		);
+		const { run, committer, options } = await workingRun({ edit: 'echo new > b.txt' });
+		await run('edit');
+		const frozen = await committer.freeze(options);
+
+		await committer.commit(frozen ?? { repositories: [] }, new Map([[root, 'Add b']]), options);
+
+		expect(git('show', '--format=', '--name-only', 'HEAD')).toBe('b.txt');
+		expect(readFileSync(join(parent, 'hook-env'), 'utf8')).not.toContain('1');
+	});
+
+	it('commits the message as UTF-8 whatever encoding the repository is set to', async () => {
+		git('config', 'i18n.commitEncoding', 'ISO-8859-1');
+		const { run, committer, options } = await workingRun({ edit: 'echo two > a.txt' });
+		await run('edit');
+		const frozen = await committer.freeze(options);
+
+		const reports = await committer.commit(
+			frozen ?? { repositories: [] },
+			new Map([[root, 'Fix café parsing']]),
+			options,
+		);
+
+		expect(reports[0]?.commits[0]?.subject).toBe('Fix café parsing');
+		expect(git('cat-file', 'commit', 'HEAD')).not.toContain('encoding ISO-8859-1');
+	});
+
 	it('leaves the repository, with the reason, when the run may write no more', async () => {
 		const { opened, run, committer, options, context } = await workingRun({
 			edit: 'echo two > a.txt',

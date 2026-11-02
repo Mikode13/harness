@@ -274,6 +274,10 @@ export class GitCommitter implements Committer {
 				leftOut.push({ path: name, reason: 'its staged version holds changes of yours' });
 			}
 		}
+		for (const name of await inTheWay(repository, paths, staged, signal)) {
+			paths.delete(name);
+			leftOut.push({ path: name, reason: 'the index holds a file of yours above or below it' });
+		}
 
 		const diff = await this.messageDiff(
 			repository,
@@ -530,7 +534,10 @@ export class GitCommitter implements Committer {
 			const messageFile = join(scratch, 'message');
 			await writeFile(messageFile, message.endsWith('\n') ? message : `${message}\n`);
 			// A new file is not known to git, which `--only` commits from.
-			if (added.length > 0) await git(['add', '--', ...added], repository, signal);
+			// Literal by prefix, as the commit's paths: a `post-index-change` hook runs with its patterns.
+			if (added.length > 0) {
+				await git(['add', '--', ...added.map(literally)], repository, signal, false);
+			}
 			result = await this.runCommit(
 				'git',
 				// `--only`: these paths, from the files, whatever else the index holds. Each one literal
@@ -538,12 +545,15 @@ export class GitCommitter implements Committer {
 				[
 					'-c',
 					'color.ui=never',
+					// The message file is UTF-8, which git does not convert to another encoding it is told.
+					'-c',
+					'i18n.commitEncoding=UTF-8',
 					'commit',
 					'--only',
 					'-F',
 					messageFile,
 					'--',
-					...paths.map(name => `:(literal)${name}`),
+					...paths.map(literally),
 				],
 				{
 					cwd: repository,
@@ -670,6 +680,7 @@ async function stillAsFrozen(
 			changed.push(name);
 		}
 	}
+	changed.push(...(await inTheWay(repository, state.paths, staged, signal)));
 	if (changed.length > 0)
 		return { reason: `files changed since the review: ${changed.join(', ')}` };
 	return { tip, staged };
@@ -858,6 +869,38 @@ async function stateOf(
 	return { exists: true, sha: firstLine(hashed), mode: mode(found.mode) };
 }
 
+/** `name` as a pathspec git takes literally, with no `GIT_LITERAL_PATHSPECS` for a hook to inherit. */
+function literally(name: string): string {
+	return `:(literal)${name}`;
+}
+
+/**
+ * The new files among `paths` whose `git add` would drop what the index holds of the user's in
+ * their way: a file where a folder above one goes, or files below where one goes. Nothing else
+ * holds what was staged there. An entry the commit holds itself, such as a deletion, is not in
+ * the way.
+ */
+async function inTheWay(
+	repository: string,
+	paths: ReadonlyMap<string, PathState>,
+	staged: ReadonlyMap<string, GitEntry>,
+	signal: AbortSignal,
+): Promise<string[]> {
+	const added = [...paths].filter(([name, state]) => state.exists && !staged.has(name));
+	if (added.length === 0) return [];
+	const index = nulSeparated(await git(['ls-files', '-z'], repository, signal));
+	const entries = new Set(index);
+	const theirs = (entry: string) => !paths.has(entry);
+	return added
+		.map(([name]) => name)
+		.filter(name => {
+			const parts = name.split('/');
+			const above = parts.slice(0, -1).map((_, at) => parts.slice(0, at + 1).join('/'));
+			if (above.some(folder => entries.has(folder) && theirs(folder))) return true;
+			return index.some(entry => entry.startsWith(`${name}/`) && theirs(entry));
+		});
+}
+
 /** Whether a folder between `repository` and `path` is a link: one that is gone is not. */
 async function linkAbove(repository: string, path: string): Promise<boolean> {
 	for (let folder = dirname(path); folder.length > repository.length; folder = dirname(folder)) {
@@ -1004,8 +1047,9 @@ async function git(
 	args: string[],
 	repository: string,
 	signal: AbortSignal = uncancelled,
+	literal = true,
 ): Promise<string> {
-	const result = await runGit(args, repository, { signal });
+	const result = await runGit(args, repository, { signal, literal });
 	if (result.exitCode !== 0) throw gitFailed(`run git ${args[0] ?? ''}`, result);
 	return result.stdout;
 }
