@@ -19,13 +19,24 @@ import type { Validator } from '#src/shared/domain/validator';
 import type { Workflow, WorkflowResult, WorkflowStageReport } from './workflow.ts';
 
 /** A stage with its types erased: the factory checked them, and the runner only passes values on. */
-export interface RunnableStage {
+export type RunnableStage = RunnableAgentStage | RunnableCodeStage;
+
+export interface RunnableAgentStage {
 	readonly name: string;
 	agent(): Agent | PromiseLike<Agent>;
 	prompt(input: unknown): string | PromiseLike<string>;
 	readonly validator: Validator<unknown>;
 	transition(output: unknown, input: unknown): unknown;
 	readonly maxAttempts?: number;
+}
+
+export interface RunnableCodeStage {
+	readonly name: string;
+	run(input: unknown, options: RunOptions): unknown;
+}
+
+function isCodeStage(stage: RunnableStage): stage is RunnableCodeStage {
+	return 'run' in stage;
 }
 
 type Transition<Result> =
@@ -165,16 +176,13 @@ export class WorkflowRunner<Input, Result> implements Workflow<Input, Result> {
 		for (let transitions = 0; ; transitions++) {
 			const started = Date.now();
 			const stageTotals: Totals = { tokens: undefined, unreported: false };
-			const agent = await this.agentOf(stage, agents);
-			const { output, attempts } = await this.answer(
-				stage,
-				agent,
-				stageInput,
-				options,
-				totals,
-				stageTotals,
-			);
-			const transition = await this.transition(stage, output, stageInput);
+			const { output, attempts, transition } = isCodeStage(stage)
+				? {
+						output: undefined,
+						attempts: 1,
+						transition: await this.runCode(stage, stageInput, options),
+					}
+				: await this.runAgentStage(stage, stageInput, options, totals, stageTotals, agents);
 			options.signal.throwIfAborted();
 
 			const tokens = knownTokens(stageTotals);
@@ -210,8 +218,51 @@ export class WorkflowRunner<Input, Result> implements Workflow<Input, Result> {
 		}
 	}
 
+	/** One answer of the stage's agent, valid, and the transition it chose. */
+	private async runAgentStage(
+		stage: RunnableAgentStage,
+		input: unknown,
+		options: RunOptions,
+		totals: Totals,
+		stageTotals: Totals,
+		agents: Map<string, Agent>,
+	): Promise<{ output: unknown; attempts: number; transition: Transition<Result> }> {
+		const agent = await this.agentOf(stage, agents);
+		const { output, attempts } = await this.answer(
+			stage,
+			agent,
+			input,
+			options,
+			totals,
+			stageTotals,
+		);
+		return { output, attempts, transition: await this.transition(stage, output, input) };
+	}
+
+	/** Runs a code stage once, failing as an agent does, and checks the transition it chose. */
+	private async runCode(
+		stage: RunnableCodeStage,
+		input: unknown,
+		options: RunOptions,
+	): Promise<Transition<Result>> {
+		options.signal.throwIfAborted();
+		this.emit(options, { type: 'workflowStage', stage: stage.name, attempt: 1 });
+		let transition: unknown;
+		try {
+			transition = await stage.run(input, options);
+		} catch (error) {
+			options.signal.throwIfAborted();
+			if (isAbortError(error)) throw error;
+			if (error instanceof RecoverableError || error instanceof UnrecoverableError) throw error;
+			throw new UnrecoverableError(`Workflow stage "${stage.name}" failed`, {
+				cause: describeFailure(error),
+			});
+		}
+		return this.checkedTransition(stage, transition);
+	}
+
 	/** The stage's agent in this run: created the first time the stage runs, then reused. */
-	private async agentOf(stage: RunnableStage, agents: Map<string, Agent>): Promise<Agent> {
+	private async agentOf(stage: RunnableAgentStage, agents: Map<string, Agent>): Promise<Agent> {
 		const existing = agents.get(stage.name);
 		if (existing) return existing;
 		let agent: Agent;
@@ -230,7 +281,7 @@ export class WorkflowRunner<Input, Result> implements Workflow<Input, Result> {
 	 * run's when `run` rethrows it.
 	 */
 	private async answer(
-		stage: RunnableStage,
+		stage: RunnableAgentStage,
 		agent: Agent,
 		input: unknown,
 		options: RunOptions,
@@ -291,7 +342,7 @@ export class WorkflowRunner<Input, Result> implements Workflow<Input, Result> {
 	}
 
 	private async runAgent(
-		stage: RunnableStage,
+		stage: RunnableAgentStage,
 		agent: Agent,
 		prompt: string,
 		options: RunOptions,
@@ -312,7 +363,7 @@ export class WorkflowRunner<Input, Result> implements Workflow<Input, Result> {
 	}
 
 	private async transition(
-		stage: RunnableStage,
+		stage: RunnableAgentStage,
 		output: unknown,
 		input: unknown,
 	): Promise<Transition<Result>> {
@@ -325,6 +376,10 @@ export class WorkflowRunner<Input, Result> implements Workflow<Input, Result> {
 				`Workflow stage "${stage.name}" could not choose its transition`,
 			);
 		}
+		return this.checkedTransition(stage, transition);
+	}
+
+	private checkedTransition(stage: RunnableStage, transition: unknown): Transition<Result> {
 		if (!isTransition<Result>(transition)) {
 			throw new UnrecoverableError('Workflow transition is invalid', {
 				cause: `Stage "${stage.name}" returned something that is not a transition.`,

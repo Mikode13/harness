@@ -680,3 +680,119 @@ describe('workflow', () => {
 		expect(logger.warn).toHaveBeenCalledWith('The run could not close its records: cleanup failed');
 	});
 });
+
+describe('a code stage', () => {
+	it('checks at compile time the go it chooses, as an agent stage does', () => {
+		interface Inputs {
+			check: string;
+			draft: { topic: string };
+		}
+		const typed = defineWorkflowStages<Inputs, string>();
+		typed.code('check', {
+			run: input => ({ type: 'go', stage: 'draft', input: { topic: input } }),
+		});
+		// @ts-expect-error The draft stage receives `{ topic }`, not a string.
+		typed.code('check', { run: input => ({ type: 'go', stage: 'draft', input }) });
+	});
+
+	it("runs with its input and the run's own options, once, and goes where it chooses", async () => {
+		const ask = vi.fn();
+		const seen: { input: unknown; options: RunOptions }[] = [];
+		const check = stage.code('check', {
+			run: (input, options) => {
+				seen.push({ input, options });
+				return { type: 'go', stage: 'finish', input: `${String(input)}!` };
+			},
+		});
+		const finish = fakeAgent(answer({ value: 'done' }, 3));
+		const events: ProgressEvent[] = [];
+
+		const result = await createWorkflow({
+			initialStage: 'check',
+			stages: { check, finish: finalStage('finish', finish.agent) },
+		}).run('ready', { signal, ask, onProgress: event => events.push(event) });
+
+		expect(seen).toHaveLength(1);
+		expect(seen[0]?.input).toBe('ready');
+		expect(seen[0]?.options).toMatchObject({ signal, ask });
+		expect(runContextOf(seen[0]?.options ?? { signal })).toBeDefined();
+		expect(finish.run).toHaveBeenCalledWith('finish:ready!', expect.anything());
+		expect(result.stages[0]).toMatchObject({
+			stage: 'check',
+			input: 'ready',
+			output: undefined,
+			attempts: 1,
+			transition: 'go',
+			nextStage: 'finish',
+		});
+		expect(result.stages[0]).not.toHaveProperty('tokens');
+		expect(result.tokens).toEqual(tokens(3));
+		expect(events.slice(0, 2)).toEqual([
+			{ type: 'workflowStage', stage: 'check', attempt: 1 },
+			{ type: 'workflowTransition', stage: 'check', transition: 'go', nextStage: 'finish' },
+		]);
+	});
+
+	it('ends the run with what it chooses', async () => {
+		const result = await createWorkflow({
+			initialStage: 'check',
+			stages: { check: stage.code('check', { run: () => ({ type: 'stop', result: 'enough' }) }) },
+		}).run(null, { signal });
+
+		expect(result).toMatchObject({ status: 'stopped', result: 'enough' });
+	});
+
+	it('keeps a classified failure or a cancellation, and classifies anything else', async () => {
+		const failing = (error: unknown) =>
+			createWorkflow({
+				initialStage: 'check',
+				stages: {
+					check: stage.code('check', {
+						run: () => {
+							throw error;
+						},
+					}),
+				},
+			}).run(null, { signal });
+		const recoverable = new RecoverableError('try again', { cause: 'busy' });
+		const aborted = new DOMException('stopped', 'AbortError');
+
+		await expect(failing(recoverable)).rejects.toBe(recoverable);
+		await expect(failing(aborted)).rejects.toBe(aborted);
+		await expect(failing(new Error('broke'))).rejects.toThrow(
+			new UnrecoverableError('Workflow stage "check" failed', { cause: 'broke' }),
+		);
+		await expect(failing(new Error('broke'))).rejects.toMatchObject({ cause: 'broke' });
+	});
+
+	it('rejects a transition that is not one', async () => {
+		await expect(
+			createWorkflow({
+				initialStage: 'check',
+				stages: {
+					check: stage.code('check', {
+						run: () => ({ type: 'finish' }) as unknown as WorkflowTransition<Loose, string>,
+					}),
+				},
+			}).run(null, { signal }),
+		).rejects.toThrow(
+			new UnrecoverableError('Workflow transition is invalid', {
+				cause: 'Stage "check" returned something that is not a transition.',
+			}),
+		);
+	});
+
+	it('does not run once the run is cancelled', async () => {
+		const run = vi.fn(() => ({ type: 'complete' as const, result: 'done' }));
+		const controller = new AbortController();
+		controller.abort();
+
+		await expect(
+			createWorkflow({
+				initialStage: 'check',
+				stages: { check: stage.code('check', { run }) },
+			}).run(null, { signal: controller.signal }),
+		).rejects.toSatisfy(isAbortError);
+		expect(run).not.toHaveBeenCalled();
+	});
+});

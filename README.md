@@ -46,17 +46,19 @@ chat loop itself never knows the difference.
   configure, such as the tests, recording what each one changed too. `agentAsTool` offers
   one agent to another as a tool, such as a cheaper committer to a coding agent, working
   inside the caller's run.
-- **`OrchestratorAgent`**: coordinates a planner, an executor, and a reviewer
-  (each an injected `Agent`) in a plan → execute → review loop. The reviewer's
-  decision is a Zod-validated structured `{decision, feedback}`, not free text —
-  a rejected or malformed decision retries with the reason fed back, bounded by
-  `maxAttempts`, converting to `UnrecoverableError` only once exhausted. A
-  malformed reviewer response retries only the reviewer call, not the whole
-  cycle. Because it implements `Agent` itself, the chat loop drives it exactly
-  like it drives a bare engine.
+- **The orchestrators**: coordinate a planner, an executor, and a reviewer.
+  `createLLMOrchestrator` runs them in phases, on the workflow primitive: the
+  planner plans the task in phases, which the user approves; each phase goes to
+  the executor, which gets the plan and never the request, then to the reviewer
+  with the phase's own diff. A rejection goes back to the executor, and the second
+  in a row to the planner, which replaces what is left of the plan. Every answer
+  is JSON, validated before it is used. `createOrchestrator`, on the Agent SDKs,
+  still runs one plan → execute → review round per attempt. Because both implement
+  `Agent`, the chat loop drives them exactly like it drives a bare engine.
 - **Workflows** (`createWorkflow`): stages you define, each with an agent and a context
-  of its own. A stage's JSON answer is validated before its transition picks the next
-  stage, stops the run on purpose, or completes it. Only the data a transition hands
+  of its own, or code of yours, such as a check or a question to the user. A stage's JSON
+  answer is validated before its transition picks the next stage, stops the run on purpose,
+  or completes it. Only the data a transition hands
   over crosses to the next stage, and the types check it against what that stage takes.
 - **Live progress streaming**: every engine reports ongoing activity (tool
   calls, searches, file changes, reasoning) through a typed `ProgressEvent`
@@ -270,8 +272,16 @@ console.log(result.status, result.result, result.stages, result.tokens);
   `undefined`, is asked for again with the reason. The stage's agent answers at most
   `maxAttempts` times, 3 by default and settable per stage. Then the run fails with an
   `UnrecoverableError` carrying every answer's usage.
+- **Code stages:** `stage.code(name, { run })` binds a stage that runs your code instead of an
+  agent, such as a check, a question to the user or a read of what the run changed. `run`
+  receives the stage's input and the run's own options, with its `signal` and `ask`, and
+  returns the transition itself, checked as an agent stage's is. It runs once: there is no
+  answer to validate. A failure ends the run as an agent's does: a cancellation or a
+  `RecoverableError` or `UnrecoverableError` as it is, anything else as an
+  `UnrecoverableError`.
 - **What the run knows:** `result.stages` records, for each stage run in order, its input,
-  its validated output, its attempts, usage and duration, and the transition it chose.
+  its validated output, its attempts, usage and duration, and the transition it chose; a code
+  stage's output is `undefined`, after one attempt.
 - **Bounds:** `maxTransitions`, 100 by default, ends a loop of stages. Without the types, from
   JavaScript, `createWorkflow` checks the stage names and the initial stage; a `go` to a stage
   that does not exist fails the run when it is taken.

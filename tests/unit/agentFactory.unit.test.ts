@@ -89,6 +89,23 @@ vi.mock('@anthropic-ai/sdk', async importOriginal => ({
 	default: vi.fn(),
 }));
 
+/**
+ * One answer for the planner and the executor on the same fake model: a plan of one phase, and
+ * the report that phase is done. Each validator keeps its own fields and drops the others.
+ */
+const planAndReport = JSON.stringify({
+	summary: 'plan',
+	phases: [{ goal: 'Change it', files: [], done: 'It is changed' }],
+	status: 'done',
+});
+
+/** The same, also approving: an answer for every role on one fake model. */
+const everyRole = JSON.stringify({
+	...(JSON.parse(planAndReport) as object),
+	decision: 'approved',
+});
+
+const finishedPlan = 'Carried out the plan in 1 phase:\n1. Change it: plan';
 const signal = new AbortController().signal;
 
 function createLogger() {
@@ -850,14 +867,14 @@ describe('createLLMOrchestrator', () => {
 		((request as { tools?: ToolDeclaration[] }).tools ?? []).map(tool => tool.name ?? tool.type);
 
 	it('plans, executes and reviews on the model APIs, none on an Agent SDK', async () => {
-		const openAICreate = openAIReplying('plan');
+		const openAICreate = openAIReplying(planAndReport);
 		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
 
 		await expect(
 			(await createLLMOrchestrator({ workspace, logger: createLogger() })).run('ship it', {
 				signal,
 			}),
-		).resolves.toMatchObject({ response: 'All job has finished' });
+		).resolves.toMatchObject({ response: finishedPlan });
 
 		const [planner, executor] = requestsOf(openAICreate);
 		expect(planner).toMatchObject({
@@ -877,7 +894,7 @@ describe('createLLMOrchestrator', () => {
 	});
 
 	it('gives the planner and reviewer the reading tools and explore, and the executor its file tools', async () => {
-		const openAICreate = openAIReplying('plan');
+		const openAICreate = openAIReplying(planAndReport);
 		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
 
 		await (
@@ -897,7 +914,7 @@ describe('createLLMOrchestrator', () => {
 	});
 
 	it("gives each role the consumer's agents beside its own tools", async () => {
-		const openAICreate = openAIReplying('plan');
+		const openAICreate = openAIReplying(planAndReport);
 		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
 		const agent = (name: string) =>
 			agentAsTool({
@@ -967,7 +984,7 @@ describe('createLLMOrchestrator', () => {
 	});
 
 	it('gives only the executor the configured commands', async () => {
-		const openAICreate = openAIReplying('plan');
+		const openAICreate = openAIReplying(planAndReport);
 		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
 		const commands = { test: { description: 'Runs the tests', executable: 'true' } };
 
@@ -981,7 +998,7 @@ describe('createLLMOrchestrator', () => {
 	});
 
 	it('gives each role the commands whose roles name it, the executor by default', async () => {
-		const openAICreate = openAIReplying('plan');
+		const openAICreate = openAIReplying(planAndReport);
 		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
 		const commands = {
 			issue: { description: 'Shows an issue', executable: 'true', roles: ['planner' as const] },
@@ -1005,7 +1022,7 @@ describe('createLLMOrchestrator', () => {
 	});
 
 	it('gives the executor only reading tools in a workspace with no write root', async () => {
-		const openAICreate = openAIReplying('plan');
+		const openAICreate = openAIReplying(planAndReport);
 		claudeAPIReplying('{"decision":"approved"}');
 
 		await (
@@ -1024,7 +1041,7 @@ describe('createLLMOrchestrator', () => {
 	});
 
 	it('gives every role its instructions as the system prompt, then the workspace and its own guidance', async () => {
-		const openAICreate = openAIReplying('plan');
+		const openAICreate = openAIReplying(planAndReport);
 		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
 
 		await (
@@ -1064,7 +1081,7 @@ describe('createLLMOrchestrator', () => {
 	] as const)(
 		'tells the executor and the reviewer whether the tests are run, %s',
 		async (_, commands, executorSays, reviewerSays) => {
-			const openAICreate = openAIReplying('plan');
+			const openAICreate = openAIReplying(planAndReport);
 			const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
 
 			await (
@@ -1089,7 +1106,7 @@ describe('createLLMOrchestrator', () => {
 	);
 
 	it("uses a caller's own system prompt word for word, followed by the workspace, and keeps ours for the rest", async () => {
-		const openAICreate = openAIReplying('plan');
+		const openAICreate = openAIReplying(planAndReport);
 		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
 
 		await (
@@ -1113,7 +1130,7 @@ describe('createLLMOrchestrator', () => {
 	});
 
 	it('tells the planner and the reviewer to answer only once every explorer has, whatever their prompt', async () => {
-		const openAICreate = openAIReplying('plan');
+		const openAICreate = openAIReplying(planAndReport);
 		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
 
 		await (
@@ -1137,13 +1154,13 @@ describe('createLLMOrchestrator', () => {
 	});
 
 	it('runs every role on Anthropic when asked to, the executor with the text editor', async () => {
-		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
+		const claudeCreate = claudeAPIReplying(everyRole);
 
 		await expect(
 			(
 				await createLLMOrchestrator({ provider: 'anthropic', workspace, logger: createLogger() })
 			).run('ship it', { signal }),
-		).resolves.toMatchObject({ response: 'All job has finished' });
+		).resolves.toMatchObject({ response: finishedPlan });
 
 		const requests = requestsOf(claudeCreate);
 		expect(requests.map(request => request.model)).toEqual([
@@ -1169,7 +1186,7 @@ describe('createLLMOrchestrator', () => {
 			status: 'completed',
 			operation: { type: 'create_file', path: 'notes.md', diff: '+written by the executor\n' },
 		};
-		const openAICreate = openAIReplying('plan');
+		const openAICreate = openAIReplying(planAndReport);
 		// The planner answers; the executor writes, then answers.
 		openAICreate
 			.mockImplementationOnce(openAICreate.getMockImplementation() as never)
@@ -1209,7 +1226,7 @@ describe('createLLMOrchestrator', () => {
 	] as const)(
 		'closes the run and frees the workspace when it %s after the executor wrote',
 		async (_, status) => {
-			const openAICreate = openAIReplying('plan');
+			const openAICreate = openAIReplying(planAndReport);
 			openAICreate
 				.mockImplementationOnce(openAICreate.getMockImplementation() as never)
 				.mockImplementationOnce(() => Promise.resolve(patchResponse('notes.md')));
@@ -1243,7 +1260,7 @@ describe('createLLMOrchestrator', () => {
 	 * so only the executor's step limit ends the run. Returns the spy that counts the calls.
 	 */
 	function executorThatNeverStops({ planFirst = true } = {}) {
-		const create = openAIReplying('plan');
+		const create = openAIReplying(planAndReport);
 		let call = 0;
 		if (planFirst) create.mockImplementationOnce(create.getMockImplementation() as never);
 		create.mockImplementation(() =>
@@ -1348,7 +1365,7 @@ describe('createLLMOrchestrator', () => {
 	});
 
 	it("has each role compact at its own compactAt, and the others at their model's threshold", async () => {
-		const openAICreate = openAIReplying('plan');
+		const openAICreate = openAIReplying(planAndReport);
 		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
 
 		await (
@@ -1377,7 +1394,7 @@ describe('createLLMOrchestrator', () => {
 	});
 
 	it('has no role compact with compactAt false', async () => {
-		const openAICreate = openAIReplying('plan');
+		const openAICreate = openAIReplying(planAndReport);
 		const claudeCreate = claudeAPIReplying('{"decision":"approved"}');
 
 		await (
