@@ -295,6 +295,37 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		});
 	});
 
+	it("leaves a repository when an earlier repository's commit changed another of its files", async () => {
+		const nested = join(root, 'nested');
+		execFileSync('git', ['init', '--quiet', '--initial-branch=main', nested]);
+		execFileSync('git', [...identity, 'commit', '--quiet', '--allow-empty', '-m', 'start'], {
+			cwd: nested,
+		});
+		const { run, committer, options } = await workingRun({
+			edit: 'echo two > a.txt && echo two > nested/n.txt',
+		});
+		await run('edit');
+		const frozen = await committer.freeze(options);
+		expect(frozen?.repositories.map(({ repository }) => repository)).toEqual([root, nested]);
+		hook('pre-commit', `echo generated > "${join(nested, 'generated.txt')}"`);
+
+		const reports = await committer.commit(
+			frozen ?? { repositories: [] },
+			new Map([
+				[root, 'Change a'],
+				[nested, 'Add n'],
+			]),
+			options,
+		);
+
+		expect(reports[0]).toMatchObject({ repository: root, outcome: 'done' });
+		expect(reports[1]).toMatchObject({
+			repository: nested,
+			outcome: 'left',
+			reason: 'the task changed files after the review: generated.txt',
+		});
+	});
+
 	it('leaves the repository when the run changes another file after the review, as a command of the reviewer can', async () => {
 		const { run, committer, options } = await workingRun({
 			edit: 'echo two > a.txt',
