@@ -338,6 +338,10 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			depth: 0,
 		});
 		await expect(call.run(signal)).rejects.toBeInstanceOf(RunEndingToolError);
+		// Its evidence too: the files it changed are recorded, only its commits went unread.
+		expect(opened.writes.sessionFor(context).commandsRun).toMatchObject([
+			{ name: 'commit', ending: { passed: true } },
+		]);
 		await context.finish('failed');
 
 		const { entries } = await opened.store.readRun(context.firstRunId ?? '');
