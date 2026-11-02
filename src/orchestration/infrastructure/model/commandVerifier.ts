@@ -1,6 +1,6 @@
 import type { RunOptions } from '#src/agent/domain/agent';
 import type { CommandLine } from '#src/agent/domain/approval';
-import { runContextOf, type RunContext } from '#src/agent/domain/runContext';
+import { delegationOf, runContextOf, type RunContext } from '#src/agent/domain/runContext';
 import { InvalidAgentConfigError } from '#src/shared/domain/errors';
 import {
 	buildArguments,
@@ -74,6 +74,10 @@ export function validateRequiredChecks(checks: readonly RequiredCheck[], command
 				if (!Array.isArray(value) || !value.every(path => typeof path === 'string')) {
 					fail(`gives "${name}" something other than a list of paths`);
 				}
+				// What no workspace accepts; whether the rest are inside it is checked where it runs.
+				if ((value as string[]).some(path => path === '' || path.includes('\0'))) {
+					fail(`gives "${name}" a path that is empty or holds a NUL character`);
+				}
 			} else if (typeof value !== 'string') {
 				fail(`gives "${name}" something other than one value`);
 			}
@@ -133,6 +137,7 @@ export class CommandVerifier implements Verifier {
 		if (!context) throw new Error('A run is verified inside its own context');
 		const session = this.writes.sessionFor(context);
 		const { signal } = options;
+		const delegation = delegationOf(options);
 		// Checked here and before the answer too: a verification that runs nothing reaches no other
 		// point that notices a cancellation.
 		signal.throwIfAborted();
@@ -145,7 +150,7 @@ export class CommandVerifier implements Verifier {
 			const call = await this.tool.prepare(
 				{ command: { name: check.command, ...valuesFor(definition, check.values ?? {}) } },
 				signal,
-				callContext(context, check.command),
+				callContext(context, check.command, delegation?.depth ?? 0),
 			);
 			// The tool always says what it runs; a tool that does not is not `runCommand`.
 			if (!call.command) throw new Error(`"${check.command}" did not prepare a command`);
@@ -162,11 +167,16 @@ export class CommandVerifier implements Verifier {
 			);
 			if (status === 'passed' || status === 'failed') continue;
 			try {
+				// Here, not in `prepare`, which only says what the check runs: a run another agent
+				// delegated to never writes beyond its caller's limit, a check included.
+				await this.writes.checkCeiling(
+					delegation?.writeCeiling ? { writeCeiling: delegation.writeCeiling } : {},
+				);
 				await call.run(signal);
 			} catch (error) {
 				// A check that ran and did not pass is evidence, recorded with how it ended.
 				if (error instanceof ToolExecutionError) continue;
-				// One the harness could not start, such as when the run may write no more, stays missing.
+				// One the harness may not run, such as when the run may write no more, keeps its status.
 				if (error instanceof EditRefusedError) {
 					refused.set(check, `could not run: ${error.message}`);
 					continue;
@@ -198,7 +208,8 @@ function valuesFor(
 ): Record<string, ParameterValue> {
 	const given: Record<string, ParameterValue> = {};
 	for (const parameter of parametersOf(definition)) {
-		const value = values[parameter.name];
+		// Own values only: a parameter may be named as something every object inherits.
+		const value = Object.hasOwn(values, parameter.name) ? values[parameter.name] : undefined;
 		given[parameter.name] =
 			value === undefined
 				? parameter.type === 'paths'
@@ -222,13 +233,13 @@ function checkRuns(session: WriteSession): CheckRun[] {
 	}));
 }
 
-function callContext(run: RunContext, command: string) {
+function callContext(run: RunContext, command: string, depth: number) {
 	return {
 		run,
 		reads: new ReadRegistry().begin(),
 		callId: `check-${command}`,
 		onProgress: () => undefined,
 		spend: () => undefined,
-		depth: 0,
+		depth,
 	};
 }

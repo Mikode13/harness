@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { RunOptions } from '../../src/agent/domain/agent.ts';
-import { RunContext, withRunContext } from '../../src/agent/domain/runContext.ts';
+import { RunContext, withDelegation, withRunContext } from '../../src/agent/domain/runContext.ts';
 import {
 	assessCheck,
 	type CheckRun,
@@ -315,6 +315,29 @@ describe('the command verifier', { timeout: 20_000 }, () => {
 		expect(runs('test')).toBe(1);
 	});
 
+	it('runs no check beyond the write limit of the agent that delegated the run', async () => {
+		const { context, options, run, verifier } = await verifiedRun(
+			{ lint: counted('lint', 'exit 0'), test: counted('test', 'exit 0') },
+			[{ command: 'lint' }, { command: 'test' }],
+		);
+		await run('lint');
+		const delegated = withDelegation(options, {
+			tool: 'specialist',
+			callId: 'call',
+			subagent: 1,
+			depth: 1,
+			writeCeiling: [],
+		});
+
+		const result = await verifier.verify(withRunContext(delegated, context));
+
+		expect(result.met).toBe(false);
+		expect(result.checks[0]).toMatchObject({ command: 'lint', status: 'passed' });
+		expect(result.checks[1]).toMatchObject({ command: 'test', status: 'missing' });
+		expect(result.checks[1]?.how).toMatch(/^could not run: /);
+		expect(runs('test')).toBe(0);
+	});
+
 	it('propagates a cancellation when every check already has its evidence', async () => {
 		const { context, run, verifier } = await verifiedRun({ test: counted('test', 'exit 0') }, [
 			{ command: 'test' },
@@ -381,6 +404,14 @@ describe('the required checks a configuration names', () => {
 			'The required check "test" gives "files" something other than a list of paths',
 		],
 		[
+			[{ command: 'test', values: { project: 'core', files: [''] } }],
+			'The required check "test" gives "files" a path that is empty or holds a NUL character',
+		],
+		[
+			[{ command: 'test', values: { project: 'core', files: ['a\0b'] } }],
+			'The required check "test" gives "files" a path that is empty or holds a NUL character',
+		],
+		[
 			[{ command: 'test', values: { project: ['core'] } }],
 			'The required check "test" gives "project" something other than one value',
 		],
@@ -417,6 +448,23 @@ describe('the required checks a configuration names', () => {
 				],
 				commands,
 			);
+		}).not.toThrow();
+	});
+
+	it('leaves out a parameter the check does not give, whatever its name', () => {
+		const named: Commands = {
+			build: {
+				description: 'Builds',
+				executable: 'pnpm',
+				args: [
+					'build',
+					{ type: 'choice', name: 'constructor', description: 'Mode', values: ['fast'] },
+					{ type: 'paths', name: 'toString', description: 'Files' },
+				],
+			},
+		};
+		expect(() => {
+			validateRequiredChecks([{ command: 'build' }], named);
 		}).not.toThrow();
 	});
 });
