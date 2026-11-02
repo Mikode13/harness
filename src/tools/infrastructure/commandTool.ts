@@ -228,6 +228,21 @@ export async function createCommandTool({
 		}
 
 		const complete = result?.stopped ?? true;
+		const endingOf = (ran: CommandProcessResult, state?: string): CommandEnding => ({
+			passed: ran.outcome === 'exited' && ran.exitCode === 0,
+			how: howItEnded(ran),
+			output: withoutColors(ran.output),
+			fingerprint: fingerprint.digest(),
+			...(state === undefined ? {} : { state }),
+			changed: journal.appliedPaths.map(path => displayPath(base, path)),
+		});
+		// One that ended is evidence that it ran even when the harness could not record all it
+		// changed: of files no longer known, so with no state.
+		const recordUnknownEnding = () => {
+			if (result?.stopped === true && result.outcome !== 'cancelled') {
+				session.recordCommand({ name, line, ending: endingOf(result) });
+			}
+		};
 		// Before the files: a failure comparing them must not lose the commits, and with them a run
 		// that changed nothing else.
 		let commits: CommitsSeen = { made: [] };
@@ -247,6 +262,7 @@ export async function createCommandTool({
 			observed = await checkpoint.end({ complete });
 		} catch (error) {
 			session.stop('Writing stopped: the harness could not record what a command changed');
+			recordUnknownEnding();
 			logAbsorbed(absorbed);
 			throw new EditUnconfirmedError(
 				`"${name}" ran, but the harness could not record what it changed; writing has stopped for this run`,
@@ -255,7 +271,10 @@ export async function createCommandTool({
 		}
 		logAbsorbed(absorbed);
 
-		if (unrecordedCommits !== undefined) throw unrecordedCommits;
+		if (unrecordedCommits !== undefined) {
+			recordUnknownEnding();
+			throw unrecordedCommits;
+		}
 		if (!result) {
 			signal.throwIfAborted();
 			throw new EditRefusedError(`"${name}" could not be started`, { cause: startFailure });
@@ -269,14 +288,10 @@ export async function createCommandTool({
 		}
 		// After its changes are recorded: a cancelled command is never reported as finished.
 		if (result.outcome === 'cancelled') signal.throwIfAborted();
-		const ending: CommandEnding = {
-			passed: result.outcome === 'exited' && result.exitCode === 0,
-			how: howItEnded(result),
-			output: withoutColors(result.output),
-			fingerprint: fingerprint.digest(),
-			...(observed.unrecorded.length === 0 ? { state: journal.contentState() } : {}),
-			changed: journal.appliedPaths.map(path => displayPath(base, path)),
-		};
+		const ending = endingOf(
+			result,
+			observed.unrecorded.length === 0 ? journal.contentState() : undefined,
+		);
 		session.recordCommand({ name, line, ending });
 		ended(ending);
 		if (result.outcome !== 'exited') throw new ToolExecutionError(report);

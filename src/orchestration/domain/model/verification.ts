@@ -29,7 +29,10 @@ export type CheckStatus = 'passed' | 'failed' | 'stale' | 'missing' | 'unknown';
 export interface CheckResult {
 	readonly command: string;
 	readonly status: CheckStatus;
-	/** How its last run ended, such as "exited with code 1". Absent when it never ran. */
+	/**
+	 * How its last run ended, such as "exited with code 1", or why the harness could not run it
+	 * now. Absent when it never ran and nothing stopped it.
+	 */
 	readonly how?: string;
 	/** What its last run printed, or the end of it. Absent when it never ran. */
 	readonly output?: string;

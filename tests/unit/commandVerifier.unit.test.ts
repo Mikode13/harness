@@ -309,9 +309,35 @@ describe('the command verifier', { timeout: 20_000 }, () => {
 		expect(result).toEqual({
 			met: false,
 			checks: [
-				{ command: 'test', status: 'unknown', how: 'could not run: Writing stopped for a test' },
+				{
+					command: 'test',
+					status: 'unknown',
+					how: 'could not run: Writing stopped for a test',
+					output: '',
+				},
 			],
 		});
+		expect(runs('test')).toBe(1);
+	});
+
+	it('keeps a check that ran as unknown when the harness could not record what it changed', async () => {
+		const { options, run, verifier } = await verifiedRun(
+			// Unreadable once it ends, so what it changed cannot be compared.
+			{ test: counted('test', 'echo two > a.txt; chmod 000 a.txt; echo ok') },
+			[{ command: 'test' }],
+		);
+		await run('test');
+
+		const result = await verifier.verify(options);
+
+		expect(result.checks).toEqual([
+			{
+				command: 'test',
+				status: 'unknown',
+				how: expect.stringMatching(/^could not run: Writing stopped/) as string,
+				output: 'ok\n',
+			},
+		]);
 		expect(runs('test')).toBe(1);
 	});
 

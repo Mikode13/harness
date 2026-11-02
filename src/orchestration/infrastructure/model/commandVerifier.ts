@@ -191,11 +191,9 @@ export class CommandVerifier implements Verifier {
 		signal.throwIfAborted();
 		const results: CheckResult[] = prepared.map(({ check, line }) => {
 			const result = assessCheck(check.command, line, runs, current);
-			// Why it could not run says more than how an earlier run, for other files, ended.
+			// Why it could not run now says more than how its last run ended; what that printed stays.
 			const why = refused.get(check);
-			return why === undefined
-				? result
-				: { command: check.command, status: result.status, how: why };
+			return why === undefined ? result : { ...result, how: why };
 		});
 		return verification(results);
 	}
