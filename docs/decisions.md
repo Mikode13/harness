@@ -2956,5 +2956,6 @@ tags: #mikode-harness #orchestration #git #api-design
 - A change that should be several commits arrives as one.
 - Any commit that reaches the branch while git commits counts as the run's, as for a command: one an orchestrator over another folder of the same repository makes at that moment too, which an undo with `revert` or `reset` would then take back with this run. Runs over different folders of one checkout write at the same time, since each holds only its own workspace; a worktree each keeps their commits apart.
 - A hook that needs a variable beyond those, such as `NVM_DIR`, fails, and the commit is reported as rejected with what it printed.
+- On Windows, which the harness does not support yet, that environment matches `PATH` by its exact name, which Node gives as `Path`, and leaves out `SystemRoot` and the other variables Windows programs expect, so every git call of the harness would miss them. The user chose on 2026-11-02 to leave it to Windows support, https://github.com/Mikode13/harness/issues/96.
 - Each git call that reads or stages stops with the run, and fails after two minutes, so a filter that hangs ends the run instead of holding it.
 - A consumer that never passes `ask` gets no commit unless it sets `autoCommit`.
