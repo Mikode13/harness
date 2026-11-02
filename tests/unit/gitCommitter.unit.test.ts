@@ -501,6 +501,24 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		});
 	});
 
+	it('leaves out a file under a folder a link to outside the repository replaced', async () => {
+		const { run, committer, options } = await workingRun({
+			edit: 'echo two > a.txt && mkdir d && echo d > d/f.txt',
+		});
+		await run('edit');
+		mkdirSync(join(parent, 'outside'));
+		writeFileSync(join(parent, 'outside', 'f.txt'), 'd\n');
+		rmSync(join(root, 'd'), { recursive: true });
+		symlinkSync(join(parent, 'outside'), join(root, 'd'));
+
+		const frozen = await committer.freeze(options);
+
+		expect(frozen?.repositories[0]).toMatchObject({
+			paths: ['a.txt'],
+			leftOut: [{ path: 'd/f.txt', reason: 'a folder above it is a link now' }],
+		});
+	});
+
 	it('commits a file the run normalized with the attributes it added', async () => {
 		git('config', 'core.autocrlf', 'false');
 		writeFileSync(join(root, 'c.txt'), 'x\r\ny\r\n');

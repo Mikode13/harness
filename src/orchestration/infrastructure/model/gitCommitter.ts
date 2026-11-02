@@ -748,7 +748,11 @@ function whyNotTheRuns(change: FileChange): string | undefined {
 	return undefined;
 }
 
-/** The tip of the repository `path` is in, from its nearest folder that exists. */
+/**
+ * The tip of the repository `path` is in, from its nearest folder that exists. A link is not
+ * followed: the history records real paths, so a folder that became one is the user's, and the
+ * path stays in the repository it was in, to be left out there.
+ */
 async function tipOf(
 	path: string,
 	tips: Map<string, BranchTip | undefined>,
@@ -758,7 +762,7 @@ async function tipOf(
 	for (;;) {
 		if (tips.has(folder)) return tips.get(folder);
 		try {
-			if ((await stat(folder)).isDirectory()) break;
+			if ((await lstat(folder)).isDirectory()) break;
 		} catch (error) {
 			if (!absent(error)) throw error;
 		}
