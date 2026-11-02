@@ -1,0 +1,201 @@
+import type { RunOptions } from '#src/agent/domain/agent';
+import type { CommandLine } from '#src/agent/domain/approval';
+import { runContextOf, type RunContext } from '#src/agent/domain/runContext';
+import { InvalidAgentConfigError } from '#src/shared/domain/errors';
+import {
+	buildArguments,
+	type Commands,
+	type ParameterValue,
+	parametersOf,
+} from '#src/tools/domain/commands';
+import { EditRefusedError } from '#src/tools/domain/fileEdits';
+import {
+	ToolExecutionError,
+	type PreparedCall,
+	type PreparingTool,
+} from '#src/tools/domain/preparedCall';
+import { ReadRegistry } from '#src/tools/domain/readRegistry';
+import type { WorkspaceWrites } from '#src/tools/infrastructure/workspaceWrites';
+import type { RecordedCommand, WriteSession } from '#src/tools/infrastructure/writeSession';
+import {
+	assessCheck,
+	type CheckResult,
+	type CheckRun,
+	type RequiredCheck,
+	type Verification,
+	type Verifier,
+	verification,
+} from '../../domain/model/verification.ts';
+
+/**
+ * Checks `checks` against `commands` before an agent is built, so a mistake in the configuration
+ * fails there and never in the middle of a run: each names a configured command, gives only
+ * values for its parameters, of the right kind, and every one it requires. Paths are checked
+ * where the check runs, as the model's are.
+ *
+ * @throws {InvalidAgentConfigError} for the first thing that is wrong.
+ */
+export function validateRequiredChecks(checks: readonly RequiredCheck[], commands: Commands): void {
+	const seen = new Set<string>();
+	for (const { command, values = {} } of checks) {
+		const definition = commands[command];
+		if (!definition) {
+			throw new InvalidAgentConfigError(
+				`The required check "${command}" is not a configured command`,
+			);
+		}
+		const parameters = new Set(parametersOf(definition).map(({ name }) => name));
+		const unknown = Object.keys(values).filter(name => !parameters.has(name));
+		if (unknown.length > 0) {
+			throw new InvalidAgentConfigError(
+				`The required check "${command}" gives values for what is not a parameter of it: ${unknown.join(', ')}`,
+			);
+		}
+		const given = valuesFor(command, values, commands);
+		try {
+			buildArguments(definition, given);
+		} catch (error) {
+			throw new InvalidAgentConfigError(
+				`The required check "${command}": ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		const key = JSON.stringify([command, given]);
+		if (seen.has(key)) {
+			throw new InvalidAgentConfigError(`The required check "${command}" is listed twice`);
+		}
+		seen.add(key);
+	}
+}
+
+/**
+ * Verifies a run's required checks with the runs of its configured commands, through the
+ * `runCommand` tool, so a check the harness runs is captured, recorded and attributed as one the
+ * model runs. The consumer declared each check, so running it asks nobody.
+ */
+export class CommandVerifier implements Verifier {
+	private readonly checks: readonly RequiredCheck[];
+	private readonly commands: Commands;
+	private readonly tool: PreparingTool;
+	private readonly writes: WorkspaceWrites;
+
+	constructor({
+		checks,
+		commands,
+		tool,
+		writes,
+	}: {
+		checks: readonly RequiredCheck[];
+		/** The commands `tool` runs, which every check names. */
+		commands: Commands;
+		/** The `runCommand` tool over `commands`, writing through `writes`. */
+		tool: PreparingTool;
+		writes: WorkspaceWrites;
+	}) {
+		validateRequiredChecks(checks, commands);
+		this.checks = checks;
+		this.commands = commands;
+		this.tool = tool;
+		this.writes = writes;
+	}
+
+	async verify(options: RunOptions): Promise<Verification> {
+		const context = runContextOf(options);
+		if (!context) throw new Error('A run is verified inside its own context');
+		const session = this.writes.sessionFor(context);
+		const { signal } = options;
+
+		const prepared: { check: RequiredCheck; call: PreparedCall; line: CommandLine }[] = [];
+		for (const check of this.checks) {
+			const call = await this.tool.prepare(
+				{
+					command: {
+						name: check.command,
+						...valuesFor(check.command, check.values ?? {}, this.commands),
+					},
+				},
+				signal,
+				callContext(context, check.command),
+			);
+			// The tool always says what it runs; a tool that does not is not `runCommand`.
+			if (!call.command) throw new Error(`"${check.command}" did not prepare a command`);
+			prepared.push({ check, call, line: call.command });
+		}
+
+		const refused = new Map<RequiredCheck, string>();
+		for (const { check, call, line } of prepared) {
+			const { status } = assessCheck(
+				check.command,
+				line,
+				checkRuns(session),
+				await session.contentState(),
+			);
+			if (status === 'passed' || status === 'failed') continue;
+			try {
+				await call.run(signal);
+			} catch (error) {
+				// A check that ran and did not pass is evidence, recorded with how it ended.
+				if (error instanceof ToolExecutionError) continue;
+				// One the harness could not start, such as when the run may write no more, stays missing.
+				if (error instanceof EditRefusedError) {
+					refused.set(check, `could not run: ${error.message}`);
+					continue;
+				}
+				throw error;
+			}
+		}
+
+		// Again for every check: running one may have changed what another checked.
+		const runs = checkRuns(session);
+		const current = await session.contentState();
+		const results: CheckResult[] = prepared.map(({ check, line }) => {
+			const result = assessCheck(check.command, line, runs, current);
+			const why = refused.get(check);
+			return result.status === 'missing' && why !== undefined ? { ...result, how: why } : result;
+		});
+		return verification(results);
+	}
+}
+
+/** The values `check` runs `command` with: every parameter it leaves out, not given. */
+function valuesFor(
+	command: string,
+	values: Readonly<Record<string, string | readonly string[]>>,
+	commands: Commands,
+): Record<string, ParameterValue> {
+	const definition = commands[command];
+	const given: Record<string, ParameterValue> = {};
+	for (const parameter of definition ? parametersOf(definition) : []) {
+		const value = values[parameter.name];
+		given[parameter.name] =
+			value === undefined
+				? parameter.type === 'paths'
+					? []
+					: null
+				: typeof value === 'string'
+					? value
+					: [...value];
+	}
+	return given;
+}
+
+function checkRuns(session: WriteSession): CheckRun[] {
+	return session.commandsRun.map(({ name, line, ending }: RecordedCommand) => ({
+		name,
+		line,
+		passed: ending.passed,
+		how: ending.how,
+		output: ending.output,
+		...(ending.state === undefined ? {} : { state: ending.state }),
+	}));
+}
+
+function callContext(run: RunContext, command: string) {
+	return {
+		run,
+		reads: new ReadRegistry().begin(),
+		callId: `check-${command}`,
+		onProgress: () => undefined,
+		spend: () => undefined,
+		depth: 0,
+	};
+}

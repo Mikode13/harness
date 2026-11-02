@@ -214,6 +214,13 @@ Each role's default instructions and the data each round sends, `InstructedAgent
 attempt loop, per-run usage totals, and the validated reviewer decision. The `Committer` port
 commits what an approved run changed; `GitCommitter`, its infrastructure, takes the run's
 changes from the recovery store and commits them with git, inside the run's `WriteSession`.
+The `Verifier` port tells where each of a run's required checks stands, `passed`, `failed`,
+`stale`, `missing` or `unknown`, from real command results, with the pure `assessCheck` deciding
+one from the run's command runs and what its changed files hold now. `CommandVerifier`, its
+infrastructure, reads the runs the `WriteSession` recorded, from the model or the harness, and
+runs a missing, stale or unknown check itself through the same `runCommand` tool, so the harness's
+run is captured, recorded and attributed as the model's. Nothing uses it yet: the phased
+orchestrator of #167 will.
 
 ### `src/workflow/`
 

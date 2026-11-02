@@ -2960,3 +2960,30 @@ tags: #mikode-harness #orchestration #git #api-design
 - On Windows, which the harness does not support yet, that environment matches `PATH` by its exact name, which Node gives as `Path`, and leaves out `SystemRoot` and the other variables Windows programs expect, so every git call of the harness would miss them. The user chose on 2026-11-02 to leave it to Windows support, <https://github.com/Mikode13/harness/issues/96>.
 - Each git call that reads or stages stops with the run, and fails after two minutes, so a filter that hangs ends the run instead of holding it.
 - A consumer that never passes `ask` gets no commit unless it sets `autoCommit`.
+
+---
+
+## A coding run's required checks are verified with real command runs, and the harness runs what is missing
+
+tags: #mikode-harness #orchestration #verification #api-design
+
+**Decision:**
+
+- **The consumer names the checks a task requires,** as an option of the orchestrator, `requiredChecks`, not as a field of the command: the same command can be required in one flow and not in another. Each names a configured command with the exact values of its parameters, `{ command: 'test', values: { suite: 'unit' } }`, and a parameter left out is not given, so `'test'` alone is the whole run, and a run of it on one file never counts for it. An unknown command, a value for what is not a parameter, a wrong value or a missing required one is an `InvalidAgentConfigError` before the agent is built. The formatter is not a command, so it can never count as a check.
+- **The evidence is the run's own record of its commands.** Every configured command that runs to an end, whether the model or the harness ran it, is recorded in the run's `WriteSession` with its exact program, arguments and folder, how it ended, and what the files the run changed held then, the history's content hash. A model's account of its checks is never evidence.
+- **Stale means the content changed.** A check is stale when what the files the run changed hold now differs from what they held when it ran. A change put back to what the check saw keeps it current. A later command that changed something the history could not record makes it `unknown`.
+- **The harness runs what is missing.** A check that is missing, stale or unknown is run by the harness, with no model, through the same `runCommand` tool, so its changes are captured and its commits attributed as for the model's runs. It asks nobody, since the consumer declared it. A check that failed for the files as they are is not run again: the executor has to change something first. Every check is assessed again once the others ran, since one may change what another saw.
+
+**Context:** #121, delivered inside the phased orchestrator of #167. The user chose on 2026-11-02 the option on the orchestrator over a field of the command, any change over changes inside the check's folder, the harness running what is missing over sending the executor back to run it, the exact values in the configuration over counting only the run with no parameters, and the content hash over any later change.
+
+**Alternatives considered:**
+
+- **A `check` field on `CommandDefinition`.** Everything about a command in one place, but the command's definition, which `createFileTools` shares outside the orchestrator, would carry one flow's policy.
+- **Only the whole run counts,** with no values in the configuration. Simpler, but a command with a required parameter could never be a check.
+- **Any later change makes a check stale.** Simpler to explain, but an edit and its own revert would run every check again.
+- **The executor runs what is missing.** The harness never runs a command on its own, but a model turn would be spent only to start a command.
+
+**Consequences:**
+
+- The checks the harness runs take the time they take, with no tokens.
+- A change the run does not record, such as the user's own edit while the run works, does not make a check stale.

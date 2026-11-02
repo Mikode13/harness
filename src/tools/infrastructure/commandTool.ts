@@ -269,14 +269,16 @@ export async function createCommandTool({
 		}
 		// After its changes are recorded: a cancelled command is never reported as finished.
 		if (result.outcome === 'cancelled') signal.throwIfAborted();
-		ended({
+		const ending: CommandEnding = {
 			passed: result.outcome === 'exited' && result.exitCode === 0,
 			how: howItEnded(result),
 			output: withoutColors(result.output),
 			fingerprint: fingerprint.digest(),
 			...(observed.unrecorded.length === 0 ? { state: journal.contentState() } : {}),
 			changed: journal.appliedPaths.map(path => displayPath(base, path)),
-		});
+		};
+		session.recordCommand({ name, line, ending });
+		ended(ending);
 		if (result.outcome !== 'exited') throw new ToolExecutionError(report);
 		if (result.exitCode !== 0) {
 			throw new ToolExecutionError(report, {

@@ -1,0 +1,109 @@
+import type { RunOptions } from '#src/agent/domain/agent';
+import type { CommandLine } from '#src/agent/domain/approval';
+
+/**
+ * A configured command whose passing a coding task requires, run with exactly these values for
+ * its parameters. A parameter left out is not given, so `{ command: 'test' }` is the whole run of
+ * `test`, and a run of it on some files never counts for it.
+ */
+export interface RequiredCheck {
+	/** The command's name, as configured. */
+	readonly command: string;
+	/** By parameter name: a `paths` parameter takes a list, a `choice` or a `text` one value. */
+	readonly values?: Readonly<Record<string, string | readonly string[]>>;
+}
+
+/**
+ * Where a required check stands, for the files as they are now:
+ *
+ * - `passed`: its last run exited with code 0, and no file the run changed is different since.
+ * - `failed`: its last run did not pass, and no file the run changed is different since.
+ * - `stale`: a file the run changed is different since its last run.
+ * - `missing`: it never ran to an end in this run.
+ * - `unknown`: what the files held when it ran, or since, is not known, because the history could
+ *   not record all a command changed.
+ */
+export type CheckStatus = 'passed' | 'failed' | 'stale' | 'missing' | 'unknown';
+
+/** A required check, and where it stands. */
+export interface CheckResult {
+	readonly command: string;
+	readonly status: CheckStatus;
+	/** How its last run ended, such as "exited with code 1". Absent when it never ran. */
+	readonly how?: string;
+	/** What its last run printed, or the end of it. Absent when it never ran. */
+	readonly output?: string;
+}
+
+/** Whether every required check passed for the files as they are now, and where each stands. */
+export interface Verification {
+	readonly met: boolean;
+	readonly checks: readonly CheckResult[];
+}
+
+/** One run of a configured command, as the evidence of what the run checked. */
+export interface CheckRun {
+	readonly name: string;
+	readonly line: CommandLine;
+	readonly passed: boolean;
+	readonly how: string;
+	readonly output: string;
+	/**
+	 * What the files the run changed held when it ended, as one hash. Absent when it changed
+	 * something the history could not record.
+	 */
+	readonly state?: string;
+}
+
+/**
+ * Verifies a run's required checks with real command results, never with what a model says of
+ * them. Git, the commands and the workspace's history stay behind it, in infrastructure.
+ */
+export interface Verifier {
+	/**
+	 * Where each required check stands now. Those missing, stale or unknown are run first, by the
+	 * harness, with no model: a check that already failed for these files is not run again.
+	 *
+	 * @throws whatever stopped a check before it ran to an end, other than a refusal to write,
+	 * unclassified: the caller classifies it, as the run's own failure.
+	 */
+	verify(options: RunOptions): Promise<Verification>;
+}
+
+/**
+ * Where the check that runs as `expected` stands, from `runs`, every command the run ran in order,
+ * and `current`, what the files the run changed hold now. Only a run with the same program,
+ * arguments and folder counts. A later run of any command that changed something the history could
+ * not record makes it `unknown`, since the files may differ in a way no hash shows.
+ */
+export function assessCheck(
+	command: string,
+	expected: CommandLine,
+	runs: readonly CheckRun[],
+	current: string | undefined,
+): CheckResult {
+	const last = runs.findLastIndex(run => run.name === command && sameLine(run.line, expected));
+	const run = runs[last];
+	if (!run) return { command, status: 'missing' };
+	const ran = { command, how: run.how, output: run.output };
+	const unrecordedSince = runs.slice(last + 1).some(later => later.state === undefined);
+	if (run.state === undefined || current === undefined || unrecordedSince) {
+		return { ...ran, status: 'unknown' };
+	}
+	if (run.state !== current) return { ...ran, status: 'stale' };
+	return { ...ran, status: run.passed ? 'passed' : 'failed' };
+}
+
+/** Whether `checks` meet the requirement: every one passed. */
+export function verification(checks: readonly CheckResult[]): Verification {
+	return { met: checks.every(({ status }) => status === 'passed'), checks };
+}
+
+function sameLine(a: CommandLine, b: CommandLine): boolean {
+	return (
+		a.executable === b.executable &&
+		a.cwd === b.cwd &&
+		a.args.length === b.args.length &&
+		a.args.every((arg, at) => arg === b.args[at])
+	);
+}
