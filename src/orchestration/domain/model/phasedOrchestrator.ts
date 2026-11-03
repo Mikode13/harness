@@ -197,12 +197,15 @@ function asRole(agent: Agent, role: ProgressAgent): Agent {
 
 /**
  * Keep the options object extensible and the private run context intact while making the
- * orchestrator's attribution authoritative over anything a nested agent supplied.
+ * orchestrator's attribution authoritative over anything a nested agent supplied. No role
+ * reads the inbox, the committer included, which runs from a code stage: what was sent stays
+ * for the next run.
  */
 function roleOptions(options: RunOptions, agent: ProgressAgent): RunOptions {
 	const { onProgress } = options;
 	return {
 		...options,
+		inbox: undefined,
 		onProgress: onProgress
 			? (event: ProgressEvent) => {
 					treatErrors(

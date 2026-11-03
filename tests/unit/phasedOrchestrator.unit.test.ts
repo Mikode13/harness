@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Agent, AgentResponse, ProgressEvent } from '../../src/agent/domain/agent.ts';
 import type { RepositoryCommit } from '../../src/agent/domain/commitReport.ts';
+import { Inbox } from '../../src/agent/domain/inbox.ts';
 import type { Asker } from '../../src/agent/domain/question.ts';
 import { RunContext, withRunContext } from '../../src/agent/domain/runContext.ts';
 import type { ChangeLog } from '../../src/orchestration/domain/model/changeLog.ts';
@@ -411,6 +412,24 @@ describe('the phased orchestrator', () => {
 			// The committer's answer is paid for too.
 			expect(result.tokens).toEqual({ ...tokens, inputTokens: 6, outputTokens: 6 });
 			expect(committerAgent.prompts[0]).toContain('1. parse');
+		});
+
+		it('keeps the inbox from the committer, so what the user sends meanwhile stays for the next run', async () => {
+			const committerAgent = scripted('Parse');
+			const inbox = new Inbox();
+			inbox.send('also rename b');
+
+			await orchestrator({
+				planner: scripted(planOf('parse')).agent,
+				executor: scripted(done('a')).agent,
+				reviewer: scripted(approved).agent,
+				committer: fakeCommitter().committer,
+				committerAgent: committerAgent.agent,
+				autoCommit: true,
+			}).run('task', { signal, inbox });
+
+			expect(committerAgent.run.mock.calls[0]?.[1].inbox).toBeUndefined();
+			expect(inbox.close()).toEqual(['also rename b']);
 		});
 
 		it('commits without asking with autoCommit, and not at all inside another run', async () => {
