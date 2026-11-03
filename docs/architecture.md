@@ -565,10 +565,12 @@ phase's review `CommitFlow` freezes what a commit would hold. The reviewer gets 
 the plan, the phase, the executor's summary, the checks' results and the diff. Its approval
 begins the next phase, or, after the last, commits through the `commit` code stage, or
 completes. A rejection goes back to the executor, and once `limits.rejections` in a row are
-reached, to the planner, as an executor's or a reviewer's `replan` does; the planner's phases
-replace the plan from the phase in progress on, and the phase keeps its mark. A phase that has
-gone to the planner `limits.replans` times, or a plan that grows past `limits.phases`, stops the
-run with a response that says what is unfinished, logged as a warning: what the phases changed
+reached, to the planner's `replan` stage, as an executor's or a reviewer's `replan` does; the
+planner's phases replace the plan from the phase in progress on, and the phase keeps its mark.
+A first plan past the limit is asked again, as any invalid answer is; a replan's answer is not
+held to it, and a plan it grows past the limit ends the run. A phase that has
+gone to the planner `limits.replans` times, or a replan that grows the plan past
+`limits.phases`, stops the run with a response that says what is unfinished, logged as a warning: what the phases changed
 stays on disk, and nothing is committed. Every prompt ends with the JSON its answer takes, so a
 role's own instructions need not describe it.
 

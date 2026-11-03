@@ -95,6 +95,7 @@ type Planning =
 
 interface Stages {
 	plan: Planning;
+	replan: Planning;
 	approve: Plan;
 	begin: Course;
 	execute: Course;
@@ -233,6 +234,7 @@ export class PhasedOrchestrator implements Agent {
 	private readonly executor: Agent;
 	private readonly reviewer: Agent;
 	private readonly planValidator: Validator<Plan>;
+	private readonly replanValidator: Validator<Plan>;
 	private readonly reportValidator: Validator<PhaseReport>;
 	private readonly reviewValidator: Validator<PhaseReview>;
 	private readonly changes: ChangeLog;
@@ -290,6 +292,9 @@ export class PhasedOrchestrator implements Agent {
 		this.executor = asRole(executor, 'executor');
 		this.reviewer = asRole(reviewer, 'reviewer');
 		this.planValidator = validators.plan(chosen.phases);
+		// A replan's phases count with the ones done, so `planned` holds it to the limit: a plan
+		// grown past it ends the run unfinished instead of being asked again.
+		this.replanValidator = validators.plan(Number.MAX_SAFE_INTEGER);
 		this.reportValidator = validators.report;
 		this.reviewValidator = validators.review;
 		this.changes = changes;
@@ -362,13 +367,15 @@ export class PhasedOrchestrator implements Agent {
 		spent: Totals,
 	): ReadonlyMap<string, RunnableStage> {
 		const stage = defineWorkflowStages<Stages, Outcome>();
+		const plan = (validator: Validator<Plan>) => ({
+			agent: () => this.planner,
+			prompt: (planning: Planning) => plannerPrompt(request, planning, this.limits.phases),
+			validator,
+			transition: (answer: Plan, planning: Planning) => this.planned(answer, planning),
+		});
 		const stages = [
-			stage('plan', {
-				agent: () => this.planner,
-				prompt: planning => plannerPrompt(request, planning, this.limits.phases),
-				validator: this.planValidator,
-				transition: (plan, planning) => this.planned(plan, planning),
-			}),
+			stage('plan', plan(this.planValidator)),
+			stage('replan', plan(this.replanValidator)),
 			stage.code('approve', { run: (plan, options) => this.approve(plan, options) }),
 			stage.code('begin', {
 				run: async (course, options): Promise<Transition> => ({
@@ -557,7 +564,7 @@ export class PhasedOrchestrator implements Agent {
 		if (course.replans >= this.limits.replans) return this.unfinished(course, reason);
 		return {
 			type: 'go',
-			stage: 'plan',
+			stage: 'replan',
 			input: { kind: 'replan', course: courseOf(course), reason },
 		};
 	}

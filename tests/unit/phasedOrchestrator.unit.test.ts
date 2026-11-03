@@ -268,6 +268,20 @@ describe('the phased orchestrator', () => {
 		expect(result.response).toContain('the plan grew past 2 phases, the most a run may hold');
 	});
 
+	it('ends a replan past the phase limit on its own, without asking the planner again', async () => {
+		const planner = scripted(planOf('a'), planOf('b', 'c'));
+
+		const result = await orchestrator({
+			planner: planner.agent,
+			executor: scripted(done('a')).agent,
+			reviewer: scripted({ decision: 'replan', feedback: 'split it' }).agent,
+			limits: { phases: 1 },
+		}).run('task', { signal });
+
+		expect(planner.run).toHaveBeenCalledTimes(2);
+		expect(result.response).toContain('the plan grew past 1 phases, the most a run may hold');
+	});
+
 	describe('with the user to approve the plan', () => {
 		it('asks once, and carries out the plan the user approves', async () => {
 			const ask = vi.fn<Asker>(() => ['Approve']);
