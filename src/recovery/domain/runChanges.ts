@@ -16,16 +16,19 @@ export interface ShowChangesOptions {
 	visible?: (path: string) => Promise<boolean>;
 	/**
 	 * Only what the run changed after the change of this sequence number, each file from what it
-	 * held then, such as since a phase of a task began. A change the history could not copy is
-	 * named whenever it happened, since it has no sequence. Defaults to the whole run.
+	 * held then, such as since a phase of a task began; a change the history could not copy is
+	 * named only when it came after too. Defaults to the whole run.
 	 */
 	since?: number;
 }
 
 /** The sequence number of the run's latest change, 0 before its first: a point `since` takes. */
 export async function latestChange(store: RecoveryStore, runId: string): Promise<number> {
-	const { entries } = await store.readRun(runId);
-	return entries.reduce((latest, { sequence }) => Math.max(latest, sequence), 0);
+	const { entries, unrecorded } = await store.readRun(runId);
+	return [...entries, ...unrecorded].reduce(
+		(latest, { sequence }) => Math.max(latest, sequence),
+		0,
+	);
 }
 
 /**
@@ -40,11 +43,12 @@ export async function showChanges(
 	runId: string,
 	{ maxLines = 1000, visible, since }: ShowChangesOptions = {},
 ): Promise<string> {
-	const { record, entries, unrecorded } = await store.readRun(runId);
-	const all = changedFiles(
-		record,
-		since === undefined ? entries : entries.filter(({ sequence }) => sequence > since),
-	);
+	const { record, ...recorded } = await store.readRun(runId);
+	const after = <Change extends { sequence: number }>(changes: Change[]): Change[] =>
+		since === undefined ? changes : changes.filter(({ sequence }) => sequence > since);
+	const entries = after(recorded.entries);
+	const unrecorded = after(recorded.unrecorded);
+	const all = changedFiles(record, entries);
 	const changes: FileChange[] = [];
 	for (const change of all) if (!visible || (await visible(change.path))) changes.push(change);
 	const uncopied: typeof unrecorded = [];

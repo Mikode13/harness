@@ -61,6 +61,18 @@ describe('showChanges', () => {
 		await run.finish('completed');
 	});
 
+	it('names only the changes it could not copy that came after the point, which counts them too', async () => {
+		await run.unrecorded(join(root, 'old'), 'build');
+		const since = await latestChange(store, run.runId);
+		expect(since).toBe(1);
+		await run.unrecorded(join(root, 'new'), 'build');
+
+		const shown = await showChanges(store, run.runId, { since });
+		expect(shown).toContain('# new: changed while the command "build" ran');
+		expect(shown).not.toContain('# old:');
+		await run.finish('completed');
+	});
+
 	it('counts no change before the first', async () => {
 		await expect(latestChange(store, run.runId)).resolves.toBe(0);
 		await change('a.txt', await state('one\n'), await state('two\n'));
