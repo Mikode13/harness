@@ -90,13 +90,25 @@ interface Reviewing extends Executed {
 /** Why the planner plans: the request, the user's correction of a plan, or a phase it must rethink. */
 type Planning =
 	| { readonly kind: 'request' }
-	| { readonly kind: 'correction'; readonly plan: Plan; readonly correction: string }
+	| {
+			readonly kind: 'correction';
+			readonly plan: Plan;
+			readonly correction: string;
+			/** The user's corrections so far, this one included. */
+			readonly corrections: number;
+	  }
 	| { readonly kind: 'replan'; readonly course: Course; readonly reason: string };
+
+/** A plan for the user to approve, after the corrections the user has made so far. */
+interface Proposed {
+	readonly plan: Plan;
+	readonly corrections: number;
+}
 
 interface Stages {
 	plan: Planning;
 	replan: Planning;
-	approve: Plan;
+	approve: Proposed;
 	begin: Course;
 	execute: Course;
 	verify: Executed;
@@ -332,7 +344,8 @@ export class PhasedOrchestrator implements Agent {
 			initialStage: 'plan',
 			stages: this.stagesFor(request, ownRun, spent),
 			maxAttempts: 3,
-			// The phases' own limits end the run; this only keeps the runner from ending it first.
+			// The corrections' and the phases' own limits end the run; this only keeps the runner
+			// from ending it first.
 			maxTransitions: Number.MAX_SAFE_INTEGER,
 			logger: this.logger,
 		});
@@ -376,7 +389,7 @@ export class PhasedOrchestrator implements Agent {
 		const stages = [
 			stage('plan', plan(this.planValidator)),
 			stage('replan', plan(this.replanValidator)),
-			stage.code('approve', { run: (plan, options) => this.approve(plan, options) }),
+			stage.code('approve', { run: (proposed, options) => this.approve(proposed, options) }),
 			stage.code('begin', {
 				run: async (course, options): Promise<Transition> => ({
 					type: 'go',
@@ -415,7 +428,10 @@ export class PhasedOrchestrator implements Agent {
 
 	/** A first plan, or a corrected one, goes to the user; a replan replaces what is left. */
 	private planned(plan: Plan, planning: Planning): Transition {
-		if (planning.kind !== 'replan') return { type: 'go', stage: 'approve', input: plan };
+		if (planning.kind !== 'replan') {
+			const corrections = planning.kind === 'correction' ? planning.corrections : 0;
+			return { type: 'go', stage: 'approve', input: { plan, corrections } };
+		}
 		const { course } = planning;
 		const phases = [...course.plan.phases.slice(0, course.at), ...plan.phases];
 		if (phases.length > this.limits.phases) {
@@ -443,7 +459,10 @@ export class PhasedOrchestrator implements Agent {
 	 * Asks the user to approve the plan when the run can ask: `Approve` carries it out, `Stop`
 	 * ends the run with nothing done, and anything else is a correction the planner plans with.
 	 */
-	private async approve(plan: Plan, { ask, signal }: RunOptions): Promise<Transition> {
+	private async approve(
+		{ plan, corrections }: Proposed,
+		{ ask, signal }: RunOptions,
+	): Promise<Transition> {
 		const begin: Transition = {
 			type: 'go',
 			stage: 'begin',
@@ -477,7 +496,16 @@ export class PhasedOrchestrator implements Agent {
 		if (answer === stopLabel) {
 			return { type: 'stop', result: { response: 'The user stopped the task before it began.' } };
 		}
-		return { type: 'go', stage: 'plan', input: { kind: 'correction', plan, correction: answer } };
+		if (corrections >= this.limits.corrections) {
+			const response = `The task ends with nothing changed: the plan was corrected ${String(corrections)} ${corrections === 1 ? 'time' : 'times'}, the most a run may take, and the last answer was not to approve it either:\n${answer}`;
+			this.warn(response);
+			return { type: 'stop', result: { response } };
+		}
+		return {
+			type: 'go',
+			stage: 'plan',
+			input: { kind: 'correction', plan, correction: answer, corrections: corrections + 1 },
+		};
 	}
 
 	/**

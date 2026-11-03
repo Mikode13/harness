@@ -788,7 +788,8 @@ const repositoryGuidance: Record<CommandRole, string> = {
  *
  * - The planner plans the task in phases, at most 50, which the user approves through `ask`
  *   when the run has one: `Approve` carries them out, `Stop` ends the run with nothing done, and
- *   any other answer is a correction the planner plans again with.
+ *   any other answer is a correction the planner plans again with, up to 3, after which such an
+ *   answer ends the run with nothing done.
  * - Each phase goes to the executor, which gets the plan, never the request, then to the
  *   reviewer, with the phase's own diff. A rejection goes back to the executor with its
  *   feedback, and the second in a row to the planner, which replaces what is left of the plan,

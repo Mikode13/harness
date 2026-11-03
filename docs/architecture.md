@@ -556,7 +556,9 @@ none. Each stage returns the role agent the orchestrator holds, so each role goe
 conversation across phases and across the orchestrator's runs, and every role's events carry
 its name. The planner's plan, at most `limits.phases` phases, goes to the `approve` code stage:
 with no `ask` it begins at once; with one, `Approve` begins, `Stop` ends the run stopped, and
-any other answer goes back to the planner as a correction. `begin` marks where the run's record
+any other answer goes back to the planner as a correction; past `limits.corrections`
+corrections, such an answer ends the run stopped with nothing done, logged as a warning, so an
+asker that never approves cannot keep the planner planning. `begin` marks where the run's record
 stands, and the executor gets the plan with the phase in progress and any feedback, never the
 request. Its `done` goes to `verify`: the `Verifier`, when there is one, must find every
 required check passed, or the phase goes back to the executor with the checks' results, as a

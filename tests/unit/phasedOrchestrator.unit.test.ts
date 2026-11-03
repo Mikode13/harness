@@ -318,6 +318,27 @@ describe('the phased orchestrator', () => {
 			expect(result.response).toContain('2 phases');
 		});
 
+		it('ends with nothing done once the corrections run out, so an asker that never approves cannot loop', async () => {
+			const planner = scripted(planOf('a'), planOf('b'), planOf('c'));
+			const executor = scripted();
+			const logger = { warn: vi.fn() };
+
+			const result = await orchestrator({
+				planner: planner.agent,
+				executor: executor.agent,
+				reviewer: scripted().agent,
+				limits: { corrections: 2 },
+				logger,
+			}).run('task', { signal, ask: () => ['Commit'] });
+
+			expect(planner.run).toHaveBeenCalledTimes(3);
+			expect(executor.run).not.toHaveBeenCalled();
+			expect(result.response).toBe(
+				'The task ends with nothing changed: the plan was corrected 2 times, the most a run may take, and the last answer was not to approve it either:\nCommit',
+			);
+			expect(logger.warn).toHaveBeenCalledWith(result.response);
+		});
+
 		it('ends with nothing done when the user stops it', async () => {
 			const executor = scripted();
 

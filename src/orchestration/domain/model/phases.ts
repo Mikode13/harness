@@ -35,6 +35,17 @@ export interface PhaseLimits {
 	readonly replans: number;
 	/** The most phases a plan may hold: only there to stop a planner that never finishes. */
 	readonly phases: number;
+	/**
+	 * The user's corrections of the plan before it is carried out: past them, an answer that
+	 * neither approves nor stops ends the run, so an asker that never approves cannot keep the
+	 * planner planning.
+	 */
+	readonly corrections: number;
 }
 
-export const defaultPhaseLimits: PhaseLimits = { rejections: 2, replans: 2, phases: 50 };
+export const defaultPhaseLimits: PhaseLimits = {
+	rejections: 2,
+	replans: 2,
+	phases: 50,
+	corrections: 3,
+};
