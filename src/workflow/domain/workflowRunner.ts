@@ -210,6 +210,8 @@ export class WorkflowRunner<Input, Result> implements Workflow<Input, Result> {
 				const status = transition.type === 'complete' ? 'completed' : 'stopped';
 				return { status, result: transition.result };
 			}
+			// A code stage's `go` stands, but a cancelled run goes no further, whatever it names.
+			options.signal.throwIfAborted();
 			if (transitions + 1 > this.maxTransitions) {
 				throw new UnrecoverableError('Workflow transition limit exhausted', {
 					cause: `The run went to another stage more than ${String(this.maxTransitions)} times.`,

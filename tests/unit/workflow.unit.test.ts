@@ -848,4 +848,28 @@ describe('a code stage', () => {
 		).rejects.toSatisfy(isAbortError);
 		expect(finish.run).not.toHaveBeenCalled();
 	});
+
+	it('ends a cancelled run with the cancellation, even when its go names no stage or passes the transition limit', async () => {
+		// The second run of the stage, past the one transition allowed, is the one cancelled.
+		const cancelling = (target: string) => {
+			const controller = new AbortController();
+			let runs = 0;
+			return createWorkflow({
+				initialStage: 'check',
+				maxTransitions: 1,
+				stages: {
+					check: stage.code('check', {
+						run: () => {
+							if (++runs === 1) return { type: 'go', stage: 'check', input: 'x' };
+							controller.abort();
+							return { type: 'go', stage: target, input: 'x' };
+						},
+					}),
+				},
+			}).run(null, { signal: controller.signal });
+		};
+
+		await expect(cancelling('check')).rejects.toSatisfy(isAbortError);
+		await expect(cancelling('missing')).rejects.toSatisfy(isAbortError);
+	});
 });
