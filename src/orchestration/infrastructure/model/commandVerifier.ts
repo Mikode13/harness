@@ -18,12 +18,11 @@ import {
 import { ReadRegistry } from '#src/tools/domain/readRegistry';
 import type { WorkspaceWrites } from '#src/tools/infrastructure/workspaceWrites';
 import type { RecordedCommand, WriteSession } from '#src/tools/infrastructure/writeSession';
+import type { CheckResult, Verification } from '#src/agent/domain/phaseResult';
 import {
 	assessCheck,
-	type CheckResult,
 	type CheckRun,
 	type RequiredCheck,
-	type Verification,
 	type Verifier,
 	verification,
 } from '../../domain/model/verification.ts';

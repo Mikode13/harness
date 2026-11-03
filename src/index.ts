@@ -57,6 +57,14 @@ export {
 	type RunOptions,
 } from './agent/domain/agent.ts';
 export type { CommitReport, MadeCommit, RepositoryCommit } from './agent/domain/commitReport.ts';
+export type {
+	CheckResult,
+	CheckStatus,
+	PhaseResult,
+	Verification,
+} from './agent/domain/phaseResult.ts';
+export type { CommitQuestion, PhaseLimits } from './orchestration/domain/model/phases.ts';
+export type { RequiredCheck } from './orchestration/domain/model/verification.ts';
 export type { Transcript, TranscriptCallback } from './agent/domain/transcript.ts';
 export { Inbox } from './agent/domain/inbox.ts';
 export { RunInProgressError } from './agent/domain/oneRunAtATime.ts';

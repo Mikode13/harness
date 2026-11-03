@@ -651,3 +651,43 @@ was measured call by call.
   integration branch was 163K characters.
 - **What changed:** the module table became a section per module, each a paragraph or a list
   wrapped like the rest of the document, so a change shows only the lines it touches.
+
+## Sol and Opus as reviewers of the phased flow (2026-11-03)
+
+Codex had no quota, so the second pull request of #167, #169, was reviewed through the harness
+itself. A single-stage workflow gave each reviewer read-only file tools over the repository, the
+pull request's diff, and the change's decisions in the prompt. The prompt was the same for both,
+except for decisions taken between rounds. The reviewers were `gpt-6.1-sol` and Claude Opus 5.5,
+both at `high`. Sol ran rounds 1, 2 and 6, and Opus rounds 1 to 5. Every finding was fixed before
+the next round. The costs are estimates from the tokens at list prices, since `gpt-6.1-sol`'s are
+taken as `gpt-5.6-sol`'s.
+
+### Opus found more of the bugs, at about twice the cost per round
+
+- **What happened:** in the two rounds both reviewed, Opus found 4 bugs and sol 2, and they
+  shared only one: the inbox reaching the committer. Over its five rounds, only Opus found:
+  - a commit lost after a cancellation;
+  - a plan-correction loop with no limit, which kept the planner paying;
+  - a replan past the phase limit that was asked again instead of ending the run;
+  - a wrong message when a replan grew the plan past the limit;
+  - a phase's diff repeating earlier phases' uncopyable changes.
+
+  Only sol found a code stage that still ran after its progress event cancelled the run. Sol's
+  sixth round, after Opus's fifth, found nothing.
+
+- **Evidence:**
+
+  | Reviewer | Rounds | Bugs per round | False positives | Cost per round | Time per round |
+  | -------- | ------ | -------------- | --------------- | -------------- | -------------- |
+  | Sol      | 3      | 1, 1, 0        | none            | $0.97–1.18     | 2–3 minutes    |
+  | Opus     | 5      | 2, 2, 1, 1, 1  | none            | $1.81–2.98     | 6–12 minutes   |
+  - In all, sol cost $3.23 and Opus $12.63.
+  - In round 1, Opus made 31 model calls to sol's 13.
+  - Opus's summaries also listed what it had checked and found correct; sol's said only that it
+    found nothing.
+  - One of Opus's findings was partly wrong: the replan's prompt already gave the phases left.
+  - One of its findings was a bug the fix of an earlier round had introduced.
+
+- **What changed:** no harness decision changed. The rounds led to decisions in decisions.md
+  under "The model-API orchestrator runs in phases, as a workflow with code stages". The
+  comparison covers one pull request, so it is evidence for choosing a reviewer, not a rule.

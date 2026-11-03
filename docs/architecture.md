@@ -220,16 +220,19 @@ one from the run's command runs and what its changed files hold now. `CommandVer
 infrastructure, reads the runs the `WriteSession` recorded, from the model or the harness, and
 runs a missing, stale or unknown check itself through the same `runCommand` tool, so the harness's
 run is captured, recorded and attributed as the model's. `PhasedOrchestrator` takes one as its
-barrier before each review; `createLLMOrchestrator` gives it none until its `requiredChecks`
-option arrives. `PhasedOrchestrator` is the phased flow of `createLLMOrchestrator`, built as a
+barrier before each review and before each commit; `createLLMOrchestrator` builds one when
+`requiredChecks` names any, over a `runCommand` of its own. The result types the barrier
+returns, `Verification` and `CheckResult`, live in `src/agent/domain/phaseResult.ts` with
+`PhaseResult`, since `AgentResponse` carries them. `PhasedOrchestrator` is the phased flow of `createLLMOrchestrator`, built as a
 workflow of its own stages: the planner's, the executor's and the reviewer's, each answering
 JSON its `Validator` checks (`planValidator`, `phaseReportValidator`, `phaseReviewValidator`,
 in infrastructure), and code stages that ask the user to approve the plan, mark where a phase
 begins, run the barrier and read the phase's diff, and commit. The `ChangeLog` port gives that
 diff; `RecordedChangeLog`, its infrastructure, reads it from the run's record in the recovery
-store, from the mark on. `CommitFlow` freezes, asks, has the committer write each message and
-commits, for both orchestrators. `OrchestratorAgent`, the round-based flow, remains for
-`createOrchestrator` on the Agent SDKs.
+store, from the mark on. `CommitFlow` freezes, asks unless told not to, has the committer write
+each message and commits. `OrchestratorAgent`, the round-based flow, remains for
+`createOrchestrator` on the Agent SDKs, whose changes the history does not record, so it
+neither commits nor verifies.
 
 ### `src/workflow/`
 
@@ -385,14 +388,14 @@ for the failure contract and `Tokens`; only its `infrastructure` imports an SDK.
 `src/llm/`, and `src/llm/` knows nothing about agents. `ClaudeAgent` imports `claudeModelIds`
 from `src/llm/infrastructure/`, the one table of the model each Claude alias names, so both
 Claude paths run the same model for the same name. `LLMAgent` also reads the workspace's
-history through the `src/recovery/` domain; the conversation itself knows only an opaque run id. `OrchestratorAgent` knows only the `Committer` port; `GitCommitter`, in `src/orchestration/infrastructure/`, depends on the `src/recovery/` store and git, and on the write session and command checkpoint of `src/tools/infrastructure/`, and only `src/factory/` builds it. `src/workflow/` depends only on `src/agent/` and
+history through the `src/recovery/` domain; the conversation itself knows only an opaque run id. `PhasedOrchestrator` knows only the `Committer` port; `GitCommitter`, in `src/orchestration/infrastructure/`, depends on the `src/recovery/` store and git, and on the write session and command checkpoint of `src/tools/infrastructure/`, and only `src/factory/` builds it. `src/workflow/` depends only on `src/agent/` and
 `src/shared/`: a stage creates an `Agent`, whatever builds it. `src/orchestration/` depends on
 `src/workflow/`'s domain, whose `WorkflowRunner` runs `PhasedOrchestrator`'s stages. No module imports `src/factory/`, which is
 why it is the only place that knows every provider.
 
 `src/index.ts` is the public API: `createAgent`, `createOrchestrator`, `createLLMAgent`,
 `createLLMOrchestrator`, the `Agent`, `RunOptions`, `AgentResponse`, `Callback`, `ProgressEvent`,
-`ProgressAgent`, `StepContext`, `Session` and `Tokens` types, the `CommitReport`, `RepositoryCommit` and `MadeCommit` types of `AgentResponse.commits`, the `Transcript` and `TranscriptCallback` types
+`ProgressAgent`, `StepContext`, `Session` and `Tokens` types, the `CommitReport`, `RepositoryCommit` and `MadeCommit` types of `AgentResponse.commits`, the `PhaseResult`, `Verification`, `CheckResult` and `CheckStatus` types of `AgentResponse.phases` and `verification`, the `CommitQuestion`, `RequiredCheck` and `PhaseLimits` types of `createLLMOrchestrator`'s options, the `Transcript` and `TranscriptCallback` types
 of `onTranscript`, the `Asker`, `UserQuestion` and `QuestionOption` types of `RunOptions.ask`, `Inbox`, what
 `RunOptions.inbox` takes, `RunInProgressError`, the `UnrecoverableError` a run rejects with while another
 works on the same agent, the approval contract (`rememberApprovals` and the `Approver`,
@@ -562,31 +565,42 @@ asker that never approves cannot keep the planner planning. `begin` marks where 
 stands, and the executor gets the plan with the phase in progress and any feedback, never the
 request. Its `done` goes to `verify`: the `Verifier`, when there is one, must find every
 required check passed, or the phase goes back to the executor with the checks' results, as a
-rejection; then the `ChangeLog` reads the phase's diff since the mark, and before the last
-phase's review `CommitFlow` freezes what a commit would hold. The reviewer gets the request,
+rejection; then the `ChangeLog` reads the phase's diff since the mark, and before a review a
+commit follows, `CommitFlow` freezes what that commit would hold. The reviewer gets the request,
 the plan, the phase, the executor's summary, the checks' results and the diff. Its approval
-begins the next phase, or, after the last, commits through the `commit` code stage, or
-completes. A rejection goes back to the executor, and once `limits.rejections` in a row are
+goes to the `commit` code stage when a commit follows it: the barrier runs again, since a command
+of the reviewer's may have changed what the checks saw, and a check that no longer passes sends
+the phase back to the executor as a rejection; otherwise `CommitFlow` commits. Then the next
+phase begins, or the run completes. Whether a commit follows is decided at `approve`, for a run
+of its own that may commit: after the last phase or after each, as `commitQuestion` says, asked
+before each commit unless `autoCommit` is set; with `plan`, the user's answer to the plan
+chooses after the last, after each, or none, and nothing is asked again. A rejection goes back to the executor, and once `limits.rejections` in a row are
 reached, to the planner's `replan` stage, as an executor's or a reviewer's `replan` does; the
 planner's phases replace the plan from the phase in progress on, and the phase keeps its mark.
 A first plan past the limit is asked again, as any invalid answer is; a replan's answer is not
 held to it, and a plan it grows past the limit ends the run. A phase that has
 gone to the planner `limits.replans` times, or a replan that grows the plan past
-`limits.phases`, stops the run with a response that says what is unfinished, logged as a warning: what the phases changed
-stays on disk, and nothing is committed. Every prompt ends with the JSON its answer takes, so a
-role's own instructions need not describe it.
+`limits.phases`, stops the run with a response that says what is unfinished and which required
+checks do not pass, logged as a warning: what the phases changed stays on disk, and nothing more
+is committed. Every result carries `phases`, each approved, unfinished or pending, and the last
+barrier's `verification`; the commits of a run that commits each phase report as one. Every
+prompt ends with the JSON its answer takes, so a role's own instructions need not describe it.
 
 **Committing an approved run.** `createLLMOrchestrator` gives its orchestrator a
 `GitCommitter` over a writable workspace, and a committer agent on the executor's provider's
 cheaper model, with no tools, a new one for each message. The stage runs only when the run has `ask` or `autoCommit` is
-set. Before each review, `freeze` reads the run's changes from its journal, groups them by
+set. Before each review a commit follows, `freeze` reads the run's changes from its journal, groups them by
 repository, and keeps those it may commit: the file holds what the run left, by the history's
 hash, and held what the run's start held, by git's own normalization (`hash-object --path`)
 and its modes, which follow `core.fileMode`,
 against the parent of the run's first commit there, or `HEAD`. Every other path is left out
 with a reason; a repository without a branch, or where `notReady` finds an operation in
-progress or a sparse checkout, is refused whole. Once the reviewer approves, the orchestrator
-asks through `ask`, unless `autoCommit` is set, then runs the committer agent once per
+progress or a sparse checkout, is refused whole. A file a commit of the run already holds, as
+`HEAD` does, is not frozen again, so a later phase's commit holds only what changed since. A
+file the run put back as it found it is frozen only where a commit of the run holds it
+otherwise, so a phase that undoes what an earlier phase committed commits that too. Once
+the reviewer approves, the orchestrator asks through `ask`, unless the user or `autoCommit`
+already said yes, then runs the committer agent once per
 repository with the request, the plan, the bounded diff from `HEAD` of what it would commit,
 and the branch's recent subjects.
 `commit` takes the session's write lock (`exclusive`), leaves a repository where the run's

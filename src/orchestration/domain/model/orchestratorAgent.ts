@@ -7,9 +7,6 @@ import type {
 } from '#src/agent/domain/agent';
 import { addTokens, type Tokens } from '#src/shared/domain/tokens';
 import { RecoverableError, UnrecoverableError, withSpentTokens } from '#src/shared/domain/errors';
-import type { CommitReport } from '#src/agent/domain/commitReport';
-import type { Committer, FrozenChanges } from './committer.ts';
-import { CommitFlow } from './commitFlow.ts';
 import type { ReviewerDecision } from './reviewerDecision.ts';
 import type { Validator } from '#src/shared/domain/validator';
 import type { ILogger } from '#src/shared/domain/logger';
@@ -162,7 +159,6 @@ export class OrchestratorAgent implements Agent {
 	private reviewerDecisionValidator: Validator<ReviewerDecision>;
 	private maxAttempts: number;
 	private logger: ILogger;
-	private readonly commits: CommitFlow;
 	private readonly runs = new OneRunAtATime();
 	// The session its runs belong to when their options name none.
 	private readonly session = newSession();
@@ -174,9 +170,6 @@ export class OrchestratorAgent implements Agent {
 		reviewerDecisionValidator,
 		maxAttempts = 3,
 		logger,
-		committer,
-		createCommitter,
-		autoCommit = false,
 	}: {
 		plannerAgent: Agent;
 		executorAgent: Agent;
@@ -184,12 +177,6 @@ export class OrchestratorAgent implements Agent {
 		reviewerDecisionValidator: Validator<ReviewerDecision>;
 		maxAttempts?: number;
 		logger: ILogger;
-		/** Commits what an approved run changed; with `createCommitter`, whose agent writes the message. */
-		committer?: Committer;
-		/** A new agent for each message, so none carries an earlier commit's diff. */
-		createCommitter?: () => Agent;
-		/** Commits without asking. Without it, a run with no `ask` commits nothing. */
-		autoCommit?: boolean;
 	}) {
 		if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
 			throw new RangeError('maxAttempts must be a positive integer');
@@ -201,14 +188,6 @@ export class OrchestratorAgent implements Agent {
 		this.reviewerDecisionValidator = reviewerDecisionValidator;
 		this.maxAttempts = maxAttempts;
 		this.logger = logger;
-		this.commits = new CommitFlow({
-			committer,
-			createCommitter,
-			autoCommit,
-			warn: message => {
-				this.warn(message);
-			},
-		});
 	}
 
 	/**
@@ -231,25 +210,10 @@ export class OrchestratorAgent implements Agent {
 		const inherited = runContextOf(options);
 		const context = inherited ?? new RunContext(session);
 		let end: RunEnd = 'failed';
-		let commits: CommitReport | undefined;
 
 		try {
 			const runOptions = inherited ? options : withRunContext(options, context);
-			// Only a run of its own: inside another agent's, the run holds that agent's changes too.
-			const approved = await this.runRounds(prompt, runOptions, totals, !inherited);
-			// Before the run's records end: its commit is one of its changes.
-			commits =
-				approved.frozen &&
-				(await this.commits.commit({
-					prompt,
-					plan: approved.plan,
-					frozen: approved.frozen,
-					options: runOptions,
-					committerOptions: this.optionsForRole(runOptions, 'committer'),
-					onResponse: response => {
-						addToTotals(totals, response);
-					},
-				}));
+			await this.runRounds(prompt, runOptions, totals);
 			end = 'completed';
 		} catch (error) {
 			if (isAbortError(error)) end = 'cancelled';
@@ -269,7 +233,6 @@ export class OrchestratorAgent implements Agent {
 			...(!inherited && runId ? { runId } : {}),
 			// A copy: a consumer changing it must not change what later runs record.
 			session: { ...session },
-			...(commits ? { commits } : {}),
 		};
 	}
 
@@ -282,13 +245,8 @@ export class OrchestratorAgent implements Agent {
 		}
 	}
 
-	/** The plan the reviewer approved, and what a commit would hold, frozen before that review. */
-	private async runRounds(
-		prompt: string,
-		options: RunOptions,
-		totals: RunTotals,
-		ownRun: boolean,
-	): Promise<{ plan: string; frozen: FrozenChanges | undefined }> {
+	/** Rounds until the reviewer approves one, or the attempts run out. */
+	private async runRounds(prompt: string, options: RunOptions, totals: RunTotals): Promise<void> {
 		let lastFailureReason: string | undefined;
 
 		for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
@@ -329,8 +287,6 @@ export class OrchestratorAgent implements Agent {
 				continue;
 			}
 
-			// Before the review, so what is committed is what the reviewer read.
-			const frozen = ownRun ? await this.commits.freeze(options) : undefined;
 			const reviewerDecision = await this.getReviewerDecision(
 				prompt,
 				plannerResponse.response,
@@ -339,9 +295,7 @@ export class OrchestratorAgent implements Agent {
 				totals,
 			);
 
-			if (reviewerDecision.decision === 'approved') {
-				return { plan: plannerResponse.response, frozen };
-			}
+			if (reviewerDecision.decision === 'approved') return;
 
 			lastFailureReason = reviewerDecision.feedback;
 			if (isLastAttempt) {
@@ -407,7 +361,7 @@ export class OrchestratorAgent implements Agent {
 				this.logger.warn(...args);
 			},
 			classifyHostFailure,
-			'Orchestrator logger failed while reporting a retry or a commit',
+			'Orchestrator logger failed while reporting a retry',
 		);
 	}
 

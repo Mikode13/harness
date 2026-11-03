@@ -50,6 +50,7 @@ function leftIn({ repository, branch, leftOut, refused }: FrozenRepository): Rep
  * repositories nothing would be committed in too.
  */
 function describeCommit(
+	approved: string,
 	ready: readonly FrozenRepository[],
 	others: readonly FrozenRepository[],
 ): string {
@@ -71,7 +72,7 @@ function describeCommit(
 		leftOut.length === 0
 			? ''
 			: ` ${files(leftOut.length)} the task changed would be left out: ${leftOut.map(({ path, reason }) => `${path} (${reason})`).join(', ')}.`;
-	return `The reviewer approved the change. Commit it? It would commit ${where}.${nothing}${left}`;
+	return `The reviewer approved ${approved}. Commit it? It would commit ${where}.${nothing}${left}`;
 }
 
 function stripCodeFence(text: string): string {
@@ -86,6 +87,10 @@ export interface CommitRequest {
 	plan: string;
 	/** What the reviewer read, frozen before its review. */
 	frozen: FrozenChanges;
+	/** Whether the user is asked first; when not, the user or `autoCommit` already said yes. */
+	asks: boolean;
+	/** What the reviewer approved, as the question names it, such as "the change". */
+	approved: string;
 	options: RunOptions;
 	/** The committer's options: the run's, attributed to it. */
 	committerOptions: RunOptions;
@@ -94,9 +99,9 @@ export interface CommitRequest {
 }
 
 /**
- * Commits what an approved run changed, once the user says so, or without asking with
- * `autoCommit`: freezes the changes before the review, asks, has the committer write each
- * message, and reports what git did.
+ * Commits what an approved run changed, once the user says so, or without asking: freezes the
+ * changes before the review, asks, has the committer write each message, and reports what git
+ * did.
  */
 export class CommitFlow {
 	private readonly committer: Committer | undefined;
@@ -153,6 +158,8 @@ export class CommitFlow {
 		prompt,
 		plan,
 		frozen,
+		asks,
+		approved,
 		options,
 		committerOptions,
 		onResponse,
@@ -168,7 +175,7 @@ export class CommitFlow {
 			this.warnLeft(unready);
 			return { outcome: 'nothing', repositories: unready };
 		}
-		if (!this.autoCommit && !(await this.userCommits(ready, others, options))) {
+		if (asks && !(await this.userCommits(approved, ready, others, options))) {
 			return { outcome: 'declined', repositories: [] };
 		}
 
@@ -196,13 +203,14 @@ export class CommitFlow {
 	 * answers, and an asker that fails or answers wrongly is host code, which ends it too.
 	 */
 	private async userCommits(
+		approved: string,
 		ready: readonly FrozenRepository[],
 		others: readonly FrozenRepository[],
 		{ ask, signal }: RunOptions,
 	): Promise<boolean> {
 		if (!ask) return false;
 		const question: UserQuestion = {
-			question: describeCommit(ready, others),
+			question: describeCommit(approved, ready, others),
 			options: [
 				{ label: commitLabel, description: 'Commit the files this task changed' },
 				{ label: 'Do not commit', description: 'Leave the changes uncommitted' },

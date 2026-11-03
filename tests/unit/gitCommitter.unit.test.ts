@@ -936,6 +936,34 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		expect(frozen?.repositories[0]).toMatchObject({ paths: [], leftOut: [] });
 	});
 
+	it('commits a file the run put back as it found it after a commit of the run changed it', async () => {
+		// Two commands, as two phases: the first commits a change, the second puts the file back.
+		const { run, committer, options } = await workingRun({
+			edit: `echo two > a.txt && git ${identity.join(' ')} commit --quiet -am "feat: two"`,
+			revert: 'echo one > a.txt',
+		});
+		await run('edit');
+		await run('revert');
+
+		const frozen = await committer.freeze(options);
+
+		expect(frozen?.repositories[0]).toMatchObject({ paths: ['a.txt'], leftOut: [] });
+		expect(frozen?.repositories[0]?.diff).toContain('-two');
+		expect(frozen?.repositories[0]?.diff).toContain('+one');
+	});
+
+	it('names nothing of a file the run put back as it found it where no commit of the run holds it', async () => {
+		writeFileSync(join(root, '.gitignore'), 'ignored.txt\nmine\n');
+		const { run, committer, options } = await workingRun({
+			edit: `cp .gitignore saved && echo other > .gitignore && mv saved .gitignore && echo two > a.txt && git ${identity.join(' ')} commit --quiet -m "feat: two" -- a.txt`,
+		});
+		await run('edit');
+
+		const frozen = await committer.freeze(options);
+
+		expect(frozen?.repositories[0]).toMatchObject({ paths: [], leftOut: [] });
+	});
+
 	it('freezes nothing for a run that changed no file', async () => {
 		const { committer, options } = await workingRun({ idle: 'true' });
 

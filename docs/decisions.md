@@ -2927,6 +2927,8 @@ tags: #mikode-harness #recovery #git #api-design
 
 tags: #mikode-harness #orchestration #git #api-design
 
+partially superseded by: "The phased orchestrator commits at the end, after each phase or as the user chooses, and checks before each commit" (below) — the commit can follow each phase, a barrier of required checks runs before it, and `createOrchestrator`, on the Agent SDKs, never commits.
+
 **Decision:**
 
 - **The harness commits, a model writes only the message.** Once the reviewer approves a run of `createLLMOrchestrator` that changed files, a `committer` agent on the executor's provider's cheaper model, Claude Haiku 5.5 or `gpt-5.6-luna`, with no tools, writes the message from the request, the plan, the diff and the branch's recent subjects. The harness commits with `git commit --only -F <file> -- <paths>`, each path `:(literal)`, not `GIT_LITERAL_PATHSPECS`, which would reach the hooks and make their own patterns match nothing, and with `i18n.commitEncoding=UTF-8`, the message's encoding, after `git add` of the run's new files, so the repository's hooks run and the rest of the index stays as the user left it.
@@ -2994,6 +2996,8 @@ tags: #mikode-harness #orchestration #verification #api-design
 
 tags: #mikode-harness #orchestration #workflow #api-design
 
+partially superseded by: "The phased orchestrator commits at the end, after each phase or as the user chooses, and checks before each commit" (below) — the commit is no longer asked only once, at the end, and the limits are configurable.
+
 **Decision:**
 
 - **`createLLMOrchestrator` is a workflow of its own stages.** The planner's, the executor's and the reviewer's answers are JSON a validator checks, as any workflow stage's. What is not an agent runs as a code stage: asking the user to approve the plan, marking where a phase begins, the barrier of required checks with the phase's diff, and the commit.
@@ -3025,3 +3029,34 @@ tags: #mikode-harness #orchestration #workflow #api-design
 - A model has to notice that the plan is wrong for the planner to run before 2 rejections.
 - `createOrchestrator`, on the Agent SDKs, still runs `OrchestratorAgent`'s rounds.
 - `WorkflowStageReport.output` is `undefined` for a code stage, and its `attempts` is 1.
+
+---
+
+## The phased orchestrator commits at the end, after each phase or as the user chooses, and checks before each commit
+
+tags: #mikode-harness #orchestration #git #api-design
+
+**Decision:**
+
+- **`commitQuestion` says when the commit is asked:** `'end'`, the default, once the last phase is approved; `'phase'`, after each phase the reviewer approves; `'plan'`, the user chooses when approving the plan, between committing at the end, after each phase, or not at all. With `autoCommit`, `'end'` and `'phase'` commit without asking, and `'plan'` is an `InvalidAgentConfigError`, since there is no user to choose. A run that cannot commit offers only `Approve` and `Stop`. The user chose on 2026-11-03 to let the user choose in plan mode over an approval that authorizes one commit at the end, which commits a diff the user never saw, and over one that authorizes a commit per phase, which ties when to ask to how many commits.
+- **A phase whose commit is declined accumulates into the next.** Its changes stay on disk, uncommitted, and the next commit holds them with that phase's own, since the freeze skips only the files `HEAD` already holds. The user chose this on 2026-11-03 over a decline that stops the commits for the rest of the run, which loses the later phases when only one was unwanted, and over keeping each commit to its own phase, which cannot separate a file two phases changed.
+- **Required checks run again before each commit,** not only before the review, since a command of the reviewer's may have changed files. A check that fails then sends the phase back to the executor and counts as a rejection, as a failure before the review does. The user chose this on 2026-11-03 over committing nothing and ending the run unmet, which leaves approved work uncommitted even when the fix is trivial, and over asking whether to commit anyway, which `autoCommit` has nobody to ask.
+- **The result reports each phase.** `AgentResponse.phases` holds each phase's goal, its status, `approved`, `unfinished` or `pending`, the reviewer's summary, its last verification and its commits. `AgentResponse.verification` is the last barrier's, and `AgentResponse.commits` merges every commit of the run, by repository. The user chose this shape on 2026-11-03 over phases with only their goal, status and summary.
+- **The limits are configurable,** `limits: { rejections, replans, phases, corrections }`, each a positive integer, with the defaults of the previous entry. An unknown name or any other value is an `InvalidAgentConfigError`.
+- **`requiredChecks` need `commands`.** The harness runs a check through the same `runCommand` tool as the model's, so a run with checks and no commands is an `InvalidAgentConfigError`.
+- **`OrchestratorAgent` stays, without the commit.** It runs `createOrchestrator`, on the Agent SDKs, so the subscription keeps working. #167 had planned to remove it; the user chose on 2026-11-03 to keep it for compatibility and to revisit the subscription path once the model APIs work better. The commit and the required checks are only on `createLLMOrchestrator`, since only its executor writes through the harness's own tools.
+
+**Context:** #167, the third of its three pull requests.
+
+**Alternatives considered:**
+
+- **A plan approval that authorizes a fixed commit,** one at the end or one per phase. One question less, but the user commits without seeing the diff, or gets a commit per phase whether wanted or not.
+- **Ending the run when the barrier before a commit fails,** or asking whether to commit anyway. Each is simpler, but the first leaves approved work uncommitted, and the second cannot work with `autoCommit`.
+- **Removing `OrchestratorAgent`,** as #167 planned. One orchestrator fewer, but the Agent SDK path, and with it the subscription, would lose its orchestrator.
+
+**Consequences:**
+
+- In `'phase'` mode each committed phase costs one call to the committer's model per repository.
+- A phase committed before the run ends unfinished stays committed; the response says so.
+- A commit can hold several phases, when the user declined an earlier one.
+- A check a command of the reviewer's broke costs another executor round and review.

@@ -49,3 +49,19 @@ export const defaultPhaseLimits: PhaseLimits = {
 	phases: 50,
 	corrections: 3,
 };
+
+/**
+ * When a phased run asks the user about committing what it changed:
+ *
+ * - `end`: once the last phase is approved, for one commit with everything.
+ * - `phase`: after each approved phase, for a commit of its own. What the user declines is
+ *   asked about again with the next phase.
+ * - `plan`: with the plan, where the user chooses one commit at the end, one after each phase,
+ *   or none, and is not asked again.
+ *
+ * With `autoCommit`, nothing is asked: `end` and `phase` commit as they say, and `plan`, which
+ * only asks, is refused.
+ */
+export type CommitQuestion = 'end' | 'phase' | 'plan';
+
+export const commitQuestions: readonly CommitQuestion[] = ['end', 'phase', 'plan'];
