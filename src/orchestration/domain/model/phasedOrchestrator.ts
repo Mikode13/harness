@@ -6,11 +6,16 @@ import type {
 	RunOptions,
 } from '#src/agent/domain/agent';
 import type { CommitReport } from '#src/agent/domain/commitReport';
+import type { PhaseResult, Verification } from '#src/agent/domain/phaseResult';
 import { OneRunAtATime } from '#src/agent/domain/oneRunAtATime';
 import { readAnswers, type UserQuestion } from '#src/agent/domain/question';
 import { runContextOf } from '#src/agent/domain/runContext';
 import { newSession, sessionOf } from '#src/agent/domain/session';
-import { UnrecoverableError, withSpentTokens } from '#src/shared/domain/errors';
+import {
+	InvalidAgentConfigError,
+	UnrecoverableError,
+	withSpentTokens,
+} from '#src/shared/domain/errors';
 import type { ILogger } from '#src/shared/domain/logger';
 import {
 	classifyHostFailure,
@@ -25,13 +30,15 @@ import type { ChangeLog } from './changeLog.ts';
 import { CommitFlow } from './commitFlow.ts';
 import type { Committer, FrozenChanges } from './committer.ts';
 import {
+	type CommitQuestion,
+	commitQuestions,
 	defaultPhaseLimits,
 	type PhaseLimits,
 	type PhaseReport,
 	type PhaseReview,
 	type Plan,
 } from './phases.ts';
-import type { Verification, Verifier } from './verification.ts';
+import type { Verifier } from './verification.ts';
 
 const conciseCommunication =
 	'Communicate tersely and professionally. In reasoning updates, state only the next concrete action or a verified finding, in one short sentence. Do not narrate routine intentions, uncertainty, self-reflection, encouragement, or a desire to be thorough. Do not restate tool results. Once you decide what to do, act immediately. Use only the detail required by your role in the final response.';
@@ -53,23 +60,41 @@ export const phasedReviewerInstructions = `You are the reviewer agent. The execu
 
 export const phasedReviewerInstructionsWithoutCommands = `You are the reviewer agent. Nobody has run the tests or checks: the executor had no command for them. Judge from the code whether the tests it added or changed would pass, and do not approve a phase whose tests could not. ${phasedReviewerTask}`;
 
-// The one answer that approves a plan: anything else is the user's correction, but for a stop.
+// The answers that approve a plan: anything else is the user's correction, but for a stop.
 const approveLabel = 'Approve';
 const stopLabel = 'Stop';
+// With the commit asked about with the plan, approving also says how to commit.
+const atEndLabel = 'Approve, commit at the end';
+const eachPhaseLabel = 'Approve, commit each phase';
+const uncommittedLabel = 'Approve, do not commit';
+
+/** How the run commits what its phases change, as the configuration or the user chose. */
+interface Committing {
+	/** After each approved phase, or once the last is. */
+	readonly each: boolean;
+	/** Whether the user is asked before each commit. */
+	readonly asks: boolean;
+}
 
 /** Where a phased run stands: the plan, the phase in progress and what the run knows of it. */
 interface Course {
 	readonly plan: Plan;
 	/** The phase in progress, by its index in the plan. */
 	readonly at: number;
-	/** What the executor said of each phase approved so far, in order. */
-	readonly summaries: readonly string[];
+	/** Each phase approved so far, in order. */
+	readonly done: readonly PhaseResult[];
 	/** Rejections in a row of the phase in progress, by the checks or the reviewer. */
 	readonly rejections: number;
 	/** Times the phase in progress went back to the planner. */
 	readonly replans: number;
 	/** Where the run's record stood when the phase began, for its diff. */
 	readonly mark: number;
+	/** How the run commits; absent when it commits nothing. */
+	readonly committing?: Committing;
+	/** What each commit so far did, in order. */
+	readonly commits: readonly CommitReport[];
+	/** The required checks at the phase in progress's last barrier. */
+	readonly verification?: Verification;
 	/** What the executor must fix first, from the checks or the reviewer. */
 	readonly feedback?: string;
 }
@@ -82,8 +107,7 @@ interface Executed extends Course {
 /** A phase ready for its review: what it changed, and the evidence of its checks. */
 interface Reviewing extends Executed {
 	readonly diff: string;
-	readonly verification?: Verification;
-	/** What a commit would hold, frozen before the last phase's review. */
+	/** What a commit after its review would hold, frozen before it. */
 	readonly frozen?: FrozenChanges;
 }
 
@@ -119,6 +143,8 @@ interface Stages {
 interface Outcome {
 	readonly response: string;
 	readonly commits?: CommitReport;
+	readonly phases?: PhaseResult[];
+	readonly verification?: Verification;
 }
 
 type Transition = WorkflowTransition<Stages, Outcome>;
@@ -128,11 +154,11 @@ interface Totals {
 	unreported: boolean;
 }
 
-function renderPlan(plan: Plan, at?: number, summaries: readonly string[] = []): string {
+function renderPlan(plan: Plan, at?: number, done: readonly PhaseResult[] = []): string {
 	const phases = plan.phases.map((phase, index) => {
 		const state =
 			at === undefined ? '' : index < at ? ' (done)' : index === at ? ' (in progress)' : '';
-		const said = summaries[index];
+		const said = done[index]?.summary;
 		return [
 			`${String(index + 1)}. ${phase.goal}${state}`,
 			`   Files: ${phase.files.length > 0 ? phase.files.join(', ') : 'none named'}`,
@@ -180,18 +206,18 @@ const plannerPrompt = (request: string, planning: Planning, maxPhases: number): 
 			return `${asked}\n\nYour plan:\n---\n${renderPlan(planning.plan)}\n---\n\nThe user's answer to it:\n---\n${planning.correction}\n---\n\nPlan again, with what the user said. ${format}`;
 		case 'replan': {
 			const { course, reason } = planning;
-			return `${asked}\n\nThe plan so far:\n---\n${renderPlan(course.plan, course.at, course.summaries)}\n---\n\nPhase ${String(course.at + 1)} cannot be finished as planned:\n---\n${reason}\n---\n\nGive the phases that remain, starting with the one that replaces phase ${String(course.at + 1)}. The phases already done stay as they are; what was changed so far stays on disk. ${planFormat(maxPhases - course.at)}`;
+			return `${asked}\n\nThe plan so far:\n---\n${renderPlan(course.plan, course.at, course.done)}\n---\n\nPhase ${String(course.at + 1)} cannot be finished as planned:\n---\n${reason}\n---\n\nGive the phases that remain, starting with the one that replaces phase ${String(course.at + 1)}. The phases already done stay as they are; what was changed so far stays on disk. ${planFormat(maxPhases - course.at)}`;
 		}
 	}
 };
 
 const executorPrompt = (course: Course): string =>
-	`The plan:\n---\n${renderPlan(course.plan, course.at, course.summaries)}\n---\n\nYour phase now:\n---\n${phaseOf(course)}\n---${course.feedback === undefined ? '' : `\n\nFix this first:\n---\n${course.feedback}\n---`}\n\n${reportFormat}`;
+	`The plan:\n---\n${renderPlan(course.plan, course.at, course.done)}\n---\n\nYour phase now:\n---\n${phaseOf(course)}\n---${course.feedback === undefined ? '' : `\n\nFix this first:\n---\n${course.feedback}\n---`}\n\n${reportFormat}`;
 
 const reviewerPrompt = (request: string, input: Reviewing): string =>
 	[
 		`Original user request:\n---\n${request}\n---`,
-		`The plan:\n---\n${renderPlan(input.plan, input.at, input.summaries)}\n---`,
+		`The plan:\n---\n${renderPlan(input.plan, input.at, input.done)}\n---`,
 		`The phase to review:\n---\n${phaseOf(input)}\n---`,
 		`Executor summary (context only; verify it independently):\n---\n${input.summary}\n---`,
 		...(input.verification
@@ -238,8 +264,9 @@ function roleOptions(options: RunOptions, agent: ProgressAgent): RunOptions {
  * the task in phases, which the user approves through `ask` when there is one. Each phase goes to
  * the executor, then to the required checks, which the harness runs itself, then to the reviewer
  * with the phase's diff. A rejection goes back to the executor with its feedback, and after a few
- * in a row to the planner, as does an executor or reviewer that says the plan is wrong. Once the
- * last phase is approved, the run commits what it changed, as `CommitFlow` does.
+ * in a row to the planner, as does an executor or reviewer that says the plan is wrong. The run
+ * commits once at the end, after each phase, or as the user chose with the plan, as `CommitFlow`
+ * does, once the required checks pass again.
  */
 export class PhasedOrchestrator implements Agent {
 	private readonly planner: Agent;
@@ -252,12 +279,18 @@ export class PhasedOrchestrator implements Agent {
 	private readonly changes: ChangeLog;
 	private readonly verifier: Verifier | undefined;
 	private readonly commits: CommitFlow;
+	private readonly autoCommit: boolean;
+	private readonly commitQuestion: CommitQuestion;
 	private readonly limits: PhaseLimits;
 	private readonly logger: ILogger;
 	private readonly runs = new OneRunAtATime();
 	// The session its runs belong to when their options name none.
 	private readonly session = newSession();
 
+	/**
+	 * @throws {InvalidAgentConfigError} for a limit that is not a positive integer, or names no
+	 * limit, a `commitQuestion` that is not one, or `plan` with `autoCommit`.
+	 */
 	constructor({
 		planner,
 		executor,
@@ -267,7 +300,8 @@ export class PhasedOrchestrator implements Agent {
 		verifier,
 		committer,
 		createCommitter,
-		autoCommit,
+		autoCommit = false,
+		commitQuestion = 'end',
 		limits = {},
 		logger,
 	}: {
@@ -283,7 +317,10 @@ export class PhasedOrchestrator implements Agent {
 		};
 		/** What each phase changed, for its reviewer. */
 		changes: ChangeLog;
-		/** The required checks every phase must pass before its review. None without it. */
+		/**
+		 * The required checks every phase must pass before its review, and again before a commit.
+		 * None without it.
+		 */
 		verifier?: Verifier;
 		/** Commits what an approved run changed; with `createCommitter`, whose agent writes the message. */
 		committer?: Committer;
@@ -291,14 +328,20 @@ export class PhasedOrchestrator implements Agent {
 		createCommitter?: () => Agent;
 		/** Commits without asking. Without it, a run with no `ask` commits nothing. */
 		autoCommit?: boolean;
+		commitQuestion?: CommitQuestion;
 		limits?: Partial<PhaseLimits>;
 		logger: ILogger;
 	}) {
-		const chosen = { ...defaultPhaseLimits, ...limits };
-		for (const [name, value] of Object.entries(chosen)) {
-			if (!Number.isInteger(value) || value < 1) {
-				throw new RangeError(`limits.${name} must be a positive integer`);
-			}
+		const chosen = phaseLimits(limits);
+		if (!commitQuestions.includes(commitQuestion)) {
+			throw new InvalidAgentConfigError(
+				`commitQuestion must be one of: ${commitQuestions.join(', ')}`,
+			);
+		}
+		if (autoCommit && commitQuestion === 'plan') {
+			throw new InvalidAgentConfigError(
+				'commitQuestion "plan" asks the user how to commit, and autoCommit asks nothing',
+			);
 		}
 		this.planner = asRole(planner, 'planner');
 		this.executor = asRole(executor, 'executor');
@@ -311,6 +354,8 @@ export class PhasedOrchestrator implements Agent {
 		this.reviewValidator = validators.review;
 		this.changes = changes;
 		this.verifier = verifier;
+		this.autoCommit = autoCommit;
+		this.commitQuestion = commitQuestion;
 		this.limits = chosen;
 		this.logger = logger;
 		this.commits = new CommitFlow({
@@ -359,7 +404,7 @@ export class PhasedOrchestrator implements Agent {
 			// The committer's answers, which no stage of the workflow counts.
 			throw withSpentTokens(error, spent.tokens, spent.unreported);
 		}
-		const { commits } = result.result;
+		const { commits, phases, verification } = result.result;
 		return {
 			response: result.result.response,
 			tokens:
@@ -370,6 +415,8 @@ export class PhasedOrchestrator implements Agent {
 			...(result.runId === undefined ? {} : { runId: result.runId }),
 			...(result.session ? { session: result.session } : {}),
 			...(commits ? { commits } : {}),
+			...(phases ? { phases } : {}),
+			...(verification ? { verification } : {}),
 		};
 	}
 
@@ -389,7 +436,9 @@ export class PhasedOrchestrator implements Agent {
 		const stages = [
 			stage('plan', plan(this.planValidator)),
 			stage('replan', plan(this.replanValidator)),
-			stage.code('approve', { run: (proposed, options) => this.approve(proposed, options) }),
+			stage.code('approve', {
+				run: (proposed, options) => this.approve(proposed, ownRun, options),
+			}),
 			stage.code('begin', {
 				run: async (course, options): Promise<Transition> => ({
 					type: 'go',
@@ -406,7 +455,7 @@ export class PhasedOrchestrator implements Agent {
 						? { type: 'go', stage: 'verify', input: { ...course, summary: report.summary } }
 						: this.toPlanner(course, `The executor: ${report.reason}`),
 			}),
-			stage.code('verify', { run: (executed, options) => this.verify(executed, ownRun, options) }),
+			stage.code('verify', { run: (executed, options) => this.verify(executed, options) }),
 			stage('review', {
 				agent: () => this.reviewer,
 				prompt: input => reviewerPrompt(request, input),
@@ -414,13 +463,7 @@ export class PhasedOrchestrator implements Agent {
 				transition: (review, input) => this.reviewed(review, input),
 			}),
 			stage.code('commit', {
-				run: async (input, options): Promise<Transition> => ({
-					type: 'complete',
-					result: {
-						response: finished(input),
-						...(await this.commit(request, input, options, spent)),
-					},
-				}),
+				run: (input, options) => this.commit(request, input, options, spent),
 			}),
 		];
 		return new Map(stages.map(each => [each.name, each as RunnableStage]));
@@ -445,12 +488,10 @@ export class PhasedOrchestrator implements Agent {
 			type: 'go',
 			stage: 'execute',
 			input: {
+				...courseOf(course),
 				plan: { summary: plan.summary, phases },
-				at: course.at,
-				summaries: course.summaries,
 				rejections: 0,
 				replans: course.replans + 1,
-				mark: course.mark,
 			},
 		};
 	}
@@ -458,23 +499,54 @@ export class PhasedOrchestrator implements Agent {
 	/**
 	 * Asks the user to approve the plan when the run can ask: `Approve` carries it out, `Stop`
 	 * ends the run with nothing done, and anything else is a correction the planner plans with.
+	 * When the commit is asked about with the plan, approving also says how to commit.
 	 */
 	private async approve(
 		{ plan, corrections }: Proposed,
-		{ ask, signal }: RunOptions,
+		ownRun: boolean,
+		options: RunOptions,
 	): Promise<Transition> {
-		const begin: Transition = {
+		const { ask, signal } = options;
+		// Only a run of its own commits: inside another agent's, the run holds that agent's changes
+		// too.
+		const commits = ownRun && this.commits.committing(options);
+		const choosing = commits && this.commitQuestion === 'plan';
+		const configured: Committing | undefined =
+			commits && !choosing
+				? { each: this.commitQuestion === 'phase', asks: !this.autoCommit }
+				: undefined;
+		const begin = (committing: Committing | undefined): Transition => ({
 			type: 'go',
 			stage: 'begin',
-			input: { plan, at: 0, summaries: [], rejections: 0, replans: 0, mark: 0 },
-		};
-		if (!ask) return begin;
+			input: {
+				plan,
+				at: 0,
+				done: [],
+				rejections: 0,
+				replans: 0,
+				mark: 0,
+				commits: [],
+				...(committing ? { committing } : {}),
+			},
+		});
+		if (!ask) return begin(configured);
+		const stop = { label: stopLabel, description: 'End the task without changing anything' };
 		const question: UserQuestion = {
 			question: `Carry out this plan?\n\n${renderPlan(plan)}`,
-			options: [
-				{ label: approveLabel, description: 'Carry the plan out as it is' },
-				{ label: stopLabel, description: 'End the task without changing anything' },
-			],
+			options: choosing
+				? [
+						{ label: atEndLabel, description: 'Carry the plan out, then commit it all at once' },
+						{
+							label: eachPhaseLabel,
+							description: 'Carry the plan out, committing each phase once it is approved',
+						},
+						{
+							label: uncommittedLabel,
+							description: 'Carry the plan out, and leave the changes uncommitted',
+						},
+						stop,
+					]
+				: [{ label: approveLabel, description: 'Carry the plan out as it is' }, stop],
 			multiSelect: false,
 		};
 		signal.throwIfAborted();
@@ -492,14 +564,23 @@ export class PhasedOrchestrator implements Agent {
 				cause: 'It must answer the question with some text.',
 			});
 		}
-		if (answer === approveLabel) return begin;
 		if (answer === stopLabel) {
-			return { type: 'stop', result: { response: 'The user stopped the task before it began.' } };
+			return {
+				type: 'stop',
+				result: { response: 'The user stopped the task before it began.', phases: pending(plan) },
+			};
+		}
+		if (choosing) {
+			if (answer === atEndLabel) return begin({ each: false, asks: false });
+			if (answer === eachPhaseLabel) return begin({ each: true, asks: false });
+			if (answer === uncommittedLabel) return begin(undefined);
+		} else if (answer === approveLabel) {
+			return begin(configured);
 		}
 		if (corrections >= this.limits.corrections) {
 			const response = `The task ends with nothing changed: the plan was corrected ${String(corrections)} ${corrections === 1 ? 'time' : 'times'}, the most a run may take, and the last answer was not to approve it either:\n${answer}`;
 			this.warn(response);
-			return { type: 'stop', result: { response } };
+			return { type: 'stop', result: { response, phases: pending(plan) } };
 		}
 		return {
 			type: 'go',
@@ -510,22 +591,15 @@ export class PhasedOrchestrator implements Agent {
 
 	/**
 	 * The barrier before the review: the required checks, which the harness runs itself, must pass
-	 * for the files as they are, or the phase goes back to the executor with their results.
+	 * for the files as they are, or the phase goes back to the executor with their results. Then
+	 * what a commit after the review would hold is frozen, so it is what the reviewer read.
 	 */
-	private async verify(
-		executed: Executed,
-		ownRun: boolean,
-		options: RunOptions,
-	): Promise<Transition> {
-		let verification: Verification | undefined;
-		try {
-			verification = await this.verifier?.verify(options);
-		} catch (error) {
-			throw classifyLocalFailure(error, 'The required checks could not run');
-		}
+	private async verify(executed: Executed, options: RunOptions): Promise<Transition> {
+		const verification = await this.check(options);
+		const checked = verification ? { ...executed, verification } : executed;
 		if (verification && !verification.met) {
 			return this.rejected(
-				executed,
+				checked,
 				`The required checks do not pass for the files as they are:\n${describeChecks(verification)}`,
 			);
 		}
@@ -535,18 +609,11 @@ export class PhasedOrchestrator implements Agent {
 		} catch (error) {
 			throw classifyLocalFailure(error, 'The harness could not read what the phase changed');
 		}
-		// Before the last review, so what is committed is what the reviewer read.
-		const last = executed.at === executed.plan.phases.length - 1;
-		const frozen = last && ownRun ? await this.commits.freeze(options) : undefined;
+		const frozen = commitsAfter(executed) ? await this.commits.freeze(options) : undefined;
 		return {
 			type: 'go',
 			stage: 'review',
-			input: {
-				...executed,
-				diff,
-				...(verification ? { verification } : {}),
-				...(frozen ? { frozen } : {}),
-			},
+			input: { ...checked, diff, ...(frozen ? { frozen } : {}) },
 		};
 	}
 
@@ -554,25 +621,47 @@ export class PhasedOrchestrator implements Agent {
 		if (review.decision === 'rejected') return this.rejected(input, review.feedback);
 		if (review.decision === 'replan')
 			return this.toPlanner(input, `The reviewer: ${review.feedback}`);
-		const summaries = [...input.summaries, input.summary];
-		if (input.at < input.plan.phases.length - 1) {
-			return {
-				type: 'go',
-				stage: 'begin',
-				input: {
-					plan: input.plan,
-					at: input.at + 1,
-					summaries,
-					rejections: 0,
-					replans: 0,
-					mark: 0,
-				},
-			};
+		return input.frozen ? { type: 'go', stage: 'commit', input } : approved(input);
+	}
+
+	/**
+	 * The barrier before the commit, since a command the reviewer ran may have changed what the
+	 * checks saw: a check that no longer passes sends the phase back to the executor, as a
+	 * rejection. Then the commit, and the next phase or the end of the run.
+	 */
+	private async commit(
+		request: string,
+		input: Reviewing,
+		options: RunOptions,
+		spent: Totals,
+	): Promise<Transition> {
+		const verification = await this.check(options);
+		const checked = verification ? { ...input, verification } : input;
+		if (verification && !verification.met) {
+			return this.rejected(
+				checked,
+				`After the review, the required checks do not pass for the files as they are:\n${describeChecks(verification)}`,
+			);
 		}
-		const done = { ...input, summaries };
-		return input.frozen
-			? { type: 'go', stage: 'commit', input: done }
-			: { type: 'complete', result: { response: finished(done) } };
+		const { frozen, committing } = input;
+		if (!frozen || !committing) return approved(checked);
+		const phase = `phase ${String(input.at + 1)} of ${String(input.plan.phases.length)}, "${goalOf(input)}"`;
+		const commits = await this.commits.commit({
+			prompt: request,
+			plan: committing.each
+				? `${renderPlan(input.plan, input.at, input.done)}\n\nThis commit is for ${phase}, and any earlier phase left uncommitted.`
+				: renderPlan(input.plan),
+			frozen,
+			asks: committing.asks,
+			approved: committing.each ? phase : 'the change',
+			options,
+			committerOptions: roleOptions(options, 'committer'),
+			onResponse: response => {
+				if (!response.tokens) spent.unreported = true;
+				spent.tokens = addTokens(spent.tokens, response.tokens);
+			},
+		});
+		return approved(checked, commits);
 	}
 
 	/** Back to the executor with `feedback`, or, after too many rejections in a row, to the planner. */
@@ -598,14 +687,30 @@ export class PhasedOrchestrator implements Agent {
 	}
 
 	/**
-	 * The run ends without throwing: what the phases changed stays on disk, uncommitted, and the
-	 * response says what is unfinished and why.
+	 * The run ends without throwing: what the phases changed and nothing committed stays on disk,
+	 * and the response says what is unfinished, why, and which required checks do not pass.
 	 */
 	private unfinished(course: Course, reason: string): Transition {
 		const phase = course.plan.phases[course.at];
-		const response = `The task is unfinished: phase ${String(course.at + 1)} of ${String(course.plan.phases.length)}${phase ? `, "${phase.goal}",` : ''} could not be completed after ${String(course.replans)} ${course.replans === 1 ? 'replan' : 'replans'}. The last reason:\n${reason}\nWhat the phases changed stays on disk, uncommitted.`;
+		const { verification } = course;
+		const failing = verification?.checks.filter(({ status }) => status !== 'passed') ?? [];
+		const unmet =
+			failing.length === 0
+				? ''
+				: `\nThe required checks that do not pass: ${failing.map(({ command, status }) => `${command} (${status})`).join(', ')}.`;
+		const committed = course.commits.some(({ outcome }) => outcome === 'committed');
+		const response = `The task is unfinished: phase ${String(course.at + 1)} of ${String(course.plan.phases.length)}${phase ? `, "${phase.goal}",` : ''} could not be completed after ${String(course.replans)} ${course.replans === 1 ? 'replan' : 'replans'}. The last reason:\n${reason}${unmet}\n${committed ? 'What the phases committed stays committed; the rest stays on disk, uncommitted.' : 'What the phases changed stays on disk, uncommitted.'}`;
 		this.warn(response);
-		return { type: 'stop', result: { response } };
+		const commits = allCommits(course.commits);
+		return {
+			type: 'stop',
+			result: {
+				response,
+				phases: phasesOf(course),
+				...(commits ? { commits } : {}),
+				...(verification ? { verification } : {}),
+			},
+		};
 	}
 
 	private async mark(options: RunOptions): Promise<number> {
@@ -616,25 +721,13 @@ export class PhasedOrchestrator implements Agent {
 		}
 	}
 
-	private async commit(
-		request: string,
-		input: Reviewing,
-		options: RunOptions,
-		spent: Totals,
-	): Promise<{ commits?: CommitReport }> {
-		if (!input.frozen) return {};
-		const commits = await this.commits.commit({
-			prompt: request,
-			plan: renderPlan(input.plan),
-			frozen: input.frozen,
-			options,
-			committerOptions: roleOptions(options, 'committer'),
-			onResponse: response => {
-				if (!response.tokens) spent.unreported = true;
-				spent.tokens = addTokens(spent.tokens, response.tokens);
-			},
-		});
-		return commits ? { commits } : {};
+	/** Where the required checks stand now, run by the harness where they must be; none without a verifier. */
+	private async check(options: RunOptions): Promise<Verification | undefined> {
+		try {
+			return await this.verifier?.verify(options);
+		} catch (error) {
+			throw classifyLocalFailure(error, 'The required checks could not run');
+		}
 	}
 
 	private warn(message: string): void {
@@ -649,17 +742,140 @@ export class PhasedOrchestrator implements Agent {
 }
 
 /**
+ * The limits a run keeps, each given one a positive integer.
+ *
+ * @throws {InvalidAgentConfigError} for one that is not, or a name that is no limit.
+ */
+function phaseLimits(limits: Partial<PhaseLimits>): PhaseLimits {
+	const given: Partial<Record<keyof PhaseLimits, number>> = {};
+	for (const [name, value] of Object.entries(limits)) {
+		// Own entries only, as from a JSON file: an inherited name such as "constructor" is no limit.
+		if (!Object.hasOwn(defaultPhaseLimits, name)) {
+			throw new InvalidAgentConfigError(
+				`limits.${name} is not a limit; expected one of: ${Object.keys(defaultPhaseLimits).join(', ')}`,
+			);
+		}
+		if (!Number.isInteger(value) || value < 1) {
+			throw new InvalidAgentConfigError(`limits.${name} must be a positive integer`);
+		}
+		given[name as keyof PhaseLimits] = value;
+	}
+	return { ...defaultPhaseLimits, ...given };
+}
+
+/** Whether the phase's review is followed by a commit: every phase's, or the last one's. */
+function commitsAfter(course: Course): boolean {
+	return (
+		course.committing !== undefined &&
+		(course.committing.each || course.at === course.plan.phases.length - 1)
+	);
+}
+
+/** The phase approved, with its commit when it had one, and the next phase, or the end. */
+function approved(input: Executed, commits?: CommitReport): Transition {
+	const result: PhaseResult = {
+		goal: goalOf(input),
+		status: 'approved',
+		summary: input.summary,
+		...(input.verification ? { verification: input.verification } : {}),
+		...(commits && input.committing?.each ? { commits } : {}),
+	};
+	const done = [...input.done, result];
+	const made = commits ? [...input.commits, commits] : input.commits;
+	if (input.at < input.plan.phases.length - 1) {
+		return {
+			type: 'go',
+			stage: 'begin',
+			input: {
+				plan: input.plan,
+				at: input.at + 1,
+				done,
+				rejections: 0,
+				replans: 0,
+				mark: 0,
+				commits: made,
+				...(input.committing ? { committing: input.committing } : {}),
+			},
+		};
+	}
+	const all = allCommits(made);
+	return {
+		type: 'complete',
+		result: {
+			response: finished(input.plan, done),
+			phases: done,
+			...(all ? { commits: all } : {}),
+			...(input.verification ? { verification: input.verification } : {}),
+		},
+	};
+}
+
+/**
  * Only where the run stands, without what an attempt at the phase left, such as its diff or the
  * changes a commit would hold: the next attempt finds its own.
  */
-function courseOf({ plan, at, summaries, rejections, replans, mark }: Course): Course {
-	return { plan, at, summaries, rejections, replans, mark };
+function courseOf({
+	plan,
+	at,
+	done,
+	rejections,
+	replans,
+	mark,
+	committing,
+	commits,
+	verification,
+}: Course): Course {
+	return {
+		plan,
+		at,
+		done,
+		rejections,
+		replans,
+		mark,
+		commits,
+		...(committing ? { committing } : {}),
+		...(verification ? { verification } : {}),
+	};
+}
+
+function goalOf({ plan, at }: Course): string {
+	return plan.phases[at]?.goal ?? '';
+}
+
+/** Every phase of a plan the run ended before beginning. */
+function pending(plan: Plan): PhaseResult[] {
+	return plan.phases.map(({ goal }) => ({ goal, status: 'pending' }));
+}
+
+/** Each phase of a run that ended in the phase in progress. */
+function phasesOf(course: Course): PhaseResult[] {
+	const { plan, at, done, verification } = course;
+	return plan.phases.map(({ goal }, index): PhaseResult => {
+		const approvedOne = done[index];
+		if (index < at && approvedOne) return approvedOne;
+		if (index === at) {
+			return { goal, status: 'unfinished', ...(verification ? { verification } : {}) };
+		}
+		return { goal, status: 'pending' };
+	});
+}
+
+/**
+ * The run's commits as one report: committed when any commit was made, failed when none was and
+ * one failed, declined when the user declined, and every repository of each in order.
+ */
+function allCommits(reports: readonly CommitReport[]): CommitReport | undefined {
+	if (reports.length <= 1) return reports[0];
+	const outcomes = new Set(reports.map(({ outcome }) => outcome));
+	const outcome =
+		(['committed', 'failed', 'declined'] as const).find(each => outcomes.has(each)) ?? 'nothing';
+	return { outcome, repositories: reports.flatMap(({ repositories }) => repositories) };
 }
 
 /** The run's answer once every phase is approved: each phase and what its executor said of it. */
-function finished({ plan, summaries }: Course): string {
+function finished(plan: Plan, done: readonly PhaseResult[]): string {
 	const phases = plan.phases.map(
-		(phase, index) => `${String(index + 1)}. ${phase.goal}: ${summaries[index] ?? ''}`,
+		(phase, index) => `${String(index + 1)}. ${phase.goal}: ${done[index]?.summary ?? ''}`,
 	);
 	return `Carried out the plan in ${String(plan.phases.length)} ${plan.phases.length === 1 ? 'phase' : 'phases'}:\n${phases.join('\n')}`;
 }

@@ -26,6 +26,7 @@ import {
 	createHistory,
 	createLLMOrchestrator,
 	historyStart,
+	InvalidAgentConfigError,
 	type ProgressEvent,
 	type Transcript,
 	type WorkspaceOptions,
@@ -415,6 +416,63 @@ describe('the write tools, end to end through the public exports', () => {
 		const undone = await history.undo({ commits: 'revert' });
 		expect(undone.git?.[0]).toMatchObject({ action: 'revert', outcome: 'done' });
 		expect(read('src/math.ts')).toBe(broken);
+	});
+
+	it('runs a required check the executor did not, before the review, and reports it', async () => {
+		scriptOpenAI(
+			openAIResponse(text(planned('Make add add.'))),
+			openAIResponse(
+				call('e1', 'readFile', { path: 'src/math.ts', fromLine: null, lineCount: null }),
+			),
+			openAIResponse(
+				patch('e2', {
+					type: 'update_file',
+					path: 'src/math.ts',
+					diff: `@@\n-${broken.trimEnd()}\n+${fixed.trimEnd()}`,
+				}),
+			),
+			openAIResponse(text(reported('add adds now.'))),
+		);
+		const claude = scriptClaude(claudeResponse(say('{"decision":"approved"}')));
+		const { approve, requests } = approving();
+
+		const agent = await createLLMOrchestrator({
+			workspace,
+			commands,
+			requiredChecks: [{ command: 'test' }],
+			logger: { warn: vi.fn() },
+		});
+		const response = await agent.run('Fix add.', { signal, approve });
+
+		// The consumer declared the check, so the harness ran it asking nobody.
+		expect(requests).toEqual([]);
+		const passed = {
+			met: true,
+			checks: [
+				expect.objectContaining({ command: 'test', status: 'passed', how: 'exited with code 0' }),
+			],
+		};
+		expect(response.verification).toEqual(passed);
+		expect(response.phases).toEqual([
+			{ goal: 'Make add add.', status: 'approved', summary: 'add adds now.', verification: passed },
+		]);
+		expect(sent(claude, 0)).toContain('The harness ran the required checks itself');
+		expect(sent(claude, 0)).toContain('- test: passed, exited with code 0');
+	});
+
+	it('refuses required checks it could not run', async () => {
+		const logger = { warn: vi.fn() };
+
+		await expect(
+			createLLMOrchestrator({ workspace, requiredChecks: [{ command: 'test' }], logger }),
+		).rejects.toThrow(
+			new InvalidAgentConfigError('requiredChecks name commands, and no commands are configured'),
+		);
+		await expect(
+			createLLMOrchestrator({ workspace, commands, requiredChecks: [{ command: 'lint' }], logger }),
+		).rejects.toThrow(
+			new InvalidAgentConfigError('The required check "lint" is not a configured command'),
+		);
 	});
 
 	it('lets the planner send an explorer, which reads on a cheaper model and reports back', async () => {

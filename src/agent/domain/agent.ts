@@ -2,6 +2,7 @@ import type { Tokens } from '#src/shared/domain/tokens';
 import type { Approver } from './approval.ts';
 import type { CommitReport } from './commitReport.ts';
 import type { Inbox } from './inbox.ts';
+import type { PhaseResult, Verification } from './phaseResult.ts';
 import type { Asker } from './question.ts';
 import type { Session } from '#src/shared/domain/session';
 
@@ -36,9 +37,22 @@ export interface AgentResponse {
 	session?: Session;
 	/**
 	 * What the committer did, from `createLLMOrchestrator`, once the reviewer approved a run that
-	 * changed files and the user could be asked, or `autoCommit` is on. Absent otherwise.
+	 * changed files and the user could be asked, or `autoCommit` is on. When it committed after
+	 * each phase, every commit of the run, by repository. Absent otherwise.
 	 */
 	commits?: CommitReport;
+	/**
+	 * Each phase of the plan a run of `createLLMOrchestrator` carried out, in order, once the
+	 * planner made one: approved, unfinished or not begun, each with its checks and, when the run
+	 * commits after each phase, its commit. Absent from every other agent.
+	 */
+	phases?: PhaseResult[];
+	/**
+	 * The required checks of a run of `createLLMOrchestrator` at its last barrier, the one before
+	 * its commit when it made one. Unmet when the run ended with a check that did not pass, which
+	 * `response` says too. Absent with no `requiredChecks`, or before any phase reached a barrier.
+	 */
+	verification?: Verification;
 }
 
 export type Callback = (item: ProgressEvent) => void;

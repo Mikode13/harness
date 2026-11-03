@@ -8,14 +8,15 @@ import type { ChangeLog } from '../../src/orchestration/domain/model/changeLog.t
 import type { Committer, FrozenChanges } from '../../src/orchestration/domain/model/committer.ts';
 import { PhasedOrchestrator } from '../../src/orchestration/domain/model/phasedOrchestrator.ts';
 import type { PhaseLimits, Plan } from '../../src/orchestration/domain/model/phases.ts';
-import type { Verification, Verifier } from '../../src/orchestration/domain/model/verification.ts';
+import type { Verification } from '../../src/agent/domain/phaseResult.ts';
+import type { Verifier } from '../../src/orchestration/domain/model/verification.ts';
 import {
 	phaseReportValidator,
 	phaseReviewValidator,
 	planValidator,
 } from '../../src/orchestration/infrastructure/model/phaseValidators.ts';
 import { isAbortError } from '../../src/shared/domain/isAbortError.ts';
-import { UnrecoverableError } from '../../src/shared/domain/errors.ts';
+import { InvalidAgentConfigError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
 
 const signal = new AbortController().signal;
 const tokens = { inputTokens: 1, outputTokens: 1, readCacheTokens: 0, writtenCacheTokens: 0 };
@@ -163,6 +164,12 @@ describe('the phased orchestrator', () => {
 		expect(reviewer.prompts[0]).toContain('diff since 1');
 		expect(reviewer.prompts[1]).toContain('diff since 2');
 		expect(reviewer.prompts[1]).toContain('Add a markdown preview');
+		expect(result.phases).toEqual([
+			{ goal: 'parse', status: 'approved', summary: 'parsed' },
+			{ goal: 'render', status: 'approved', summary: 'rendered' },
+		]);
+		// No required checks, so no barrier to report.
+		expect(result).not.toHaveProperty('verification');
 	});
 
 	it('sends a rejection back to the executor with its feedback, and keeps the same executor', async () => {
@@ -217,6 +224,7 @@ describe('the phased orchestrator', () => {
 			'The task is unfinished: phase 1 of 1, "parse again", could not be completed after 1 replan. The last reason:\nRejected 2 times in a row; the last time:\nno 4\nWhat the phases changed stays on disk, uncommitted.',
 		);
 		expect(logger.warn).toHaveBeenCalledWith(result.response);
+		expect(result.phases).toEqual([{ goal: 'parse again', status: 'unfinished' }]);
 	});
 
 	it('goes to the planner when the executor or the reviewer says the plan is wrong', async () => {
@@ -350,6 +358,7 @@ describe('the phased orchestrator', () => {
 
 			expect(result.response).toBe('The user stopped the task before it began.');
 			expect(executor.run).not.toHaveBeenCalled();
+			expect(result.phases).toEqual([{ goal: 'all', status: 'pending' }]);
 		});
 
 		it('fails as a host failure when the asker answers wrongly', async () => {
@@ -401,7 +410,7 @@ describe('the phased orchestrator', () => {
 		it('counts failing checks as rejections, so a phase that never passes reaches the planner', async () => {
 			const planner = scripted(planOf('parse'), planOf('parse differently'));
 
-			await orchestrator({
+			const result = await orchestrator({
 				planner: planner.agent,
 				executor: scripted(done('a'), done('b'), done('c')).agent,
 				reviewer: scripted(approved).agent,
@@ -409,6 +418,38 @@ describe('the phased orchestrator', () => {
 			}).run('task', { signal });
 
 			expect(planner.prompts[1]).toContain('The required checks do not pass');
+			expect(result.verification).toEqual(passed);
+			expect(result.phases).toEqual([
+				{ goal: 'parse differently', status: 'approved', summary: 'c', verification: passed },
+			]);
+		});
+
+		it('ends unmet, without throwing, saying which checks do not pass, and commits nothing', async () => {
+			const logger = { warn: vi.fn() };
+			const { committer, commit } = fakeCommitter();
+
+			const result = await orchestrator({
+				planner: scripted(planOf('parse'), planOf('parse again')).agent,
+				executor: scripted(done('a'), done('b'), done('c'), done('d')).agent,
+				reviewer: scripted().agent,
+				verifier: verifierOf(failing, failing, failing, failing).verifier,
+				committer,
+				committerAgent: scripted().agent,
+				autoCommit: true,
+				limits: { replans: 1 },
+				logger,
+			}).run('task', { signal });
+
+			expect(result.response).toContain(
+				'\nThe required checks that do not pass: test (failed).\nWhat the phases changed stays on disk, uncommitted.',
+			);
+			expect(result.verification).toEqual(failing);
+			expect(result.phases).toEqual([
+				{ goal: 'parse again', status: 'unfinished', verification: failing },
+			]);
+			expect(result).not.toHaveProperty('commits');
+			expect(commit).not.toHaveBeenCalled();
+			expect(logger.warn).toHaveBeenCalledWith(result.response);
 		});
 
 		it('classifies a verifier that fails as a local failure', async () => {
@@ -551,14 +592,25 @@ describe('the phased orchestrator', () => {
 		).rejects.toSatisfy(isAbortError);
 	});
 
-	it('refuses a limit that is not a positive integer', () => {
-		expect(() =>
+	it('refuses a limit that is not a positive integer, or names no limit', () => {
+		const limited = (limits: Partial<PhaseLimits>) => () =>
 			orchestrator({
 				planner: scripted().agent,
 				executor: scripted().agent,
 				reviewer: scripted().agent,
-				limits: { rejections: 0 },
-			}),
-		).toThrow(new RangeError('limits.rejections must be a positive integer'));
+				limits,
+			});
+
+		expect(limited({ rejections: 0 })).toThrow(
+			new InvalidAgentConfigError('limits.rejections must be a positive integer'),
+		);
+		expect(limited({ corrections: 1.5 })).toThrow(
+			new InvalidAgentConfigError('limits.corrections must be a positive integer'),
+		);
+		expect(limited({ rounds: 3 } as Partial<PhaseLimits>)).toThrow(
+			new InvalidAgentConfigError(
+				'limits.rounds is not a limit; expected one of: rejections, replans, phases, corrections',
+			),
+		);
 	});
 });

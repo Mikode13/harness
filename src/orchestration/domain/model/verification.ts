@@ -1,5 +1,6 @@
 import type { RunOptions } from '#src/agent/domain/agent';
 import type { CommandLine } from '#src/agent/domain/approval';
+import type { CheckResult, Verification } from '#src/agent/domain/phaseResult';
 
 /**
  * A configured command whose passing a coding task requires, run with exactly these values for
@@ -11,37 +12,6 @@ export interface RequiredCheck {
 	readonly command: string;
 	/** By parameter name: a `paths` parameter takes a list, a `choice` or a `text` one value. */
 	readonly values?: Readonly<Record<string, string | readonly string[]>>;
-}
-
-/**
- * Where a required check stands, for the files as they are now:
- *
- * - `passed`: its last run exited with code 0, and no file the run changed is different since.
- * - `failed`: its last run did not pass, and no file the run changed is different since.
- * - `stale`: a file the run changed is different since its last run.
- * - `missing`: it never ran to an end in this run.
- * - `unknown`: what the files held when it ran, or since, is not known, because the history could
- *   not record all the run changed.
- */
-export type CheckStatus = 'passed' | 'failed' | 'stale' | 'missing' | 'unknown';
-
-/** A required check, and where it stands. */
-export interface CheckResult {
-	readonly command: string;
-	readonly status: CheckStatus;
-	/**
-	 * How its last run ended, such as "exited with code 1", or why the harness could not run it
-	 * now. Absent when it never ran and nothing stopped it.
-	 */
-	readonly how?: string;
-	/** What its last run printed, or the end of it. Absent when it never ran. */
-	readonly output?: string;
-}
-
-/** Whether every required check passed for the files as they are now, and where each stands. */
-export interface Verification {
-	readonly met: boolean;
-	readonly checks: readonly CheckResult[];
 }
 
 /** One run of a configured command, as the evidence of what the run checked. */
