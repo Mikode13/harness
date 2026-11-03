@@ -43,7 +43,10 @@ export interface PhaseResult {
 	readonly status: 'approved' | 'unfinished' | 'pending';
 	/** What the executor said it did, for an approved phase. */
 	readonly summary?: string;
-	/** Its required checks at its last barrier. Absent with none, or before any ran. */
+	/**
+	 * Its required checks at its last barrier, or as the run ended in it. Absent with none, or
+	 * before any ran.
+	 */
 	readonly verification?: Verification;
 	/** What its own commit did, when the run commits after each phase. */
 	readonly commits?: CommitReport;

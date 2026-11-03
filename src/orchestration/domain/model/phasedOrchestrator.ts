@@ -111,6 +111,12 @@ interface Reviewing extends Executed {
 	readonly frozen?: FrozenChanges;
 }
 
+/** A run that ends unfinished, and why. */
+interface Ending {
+	readonly course: Course;
+	readonly reason: string;
+}
+
 /** Why the planner plans: the request, the user's correction of a plan, or a phase it must rethink. */
 type Planning =
 	| { readonly kind: 'request' }
@@ -138,6 +144,7 @@ interface Stages {
 	verify: Executed;
 	review: Reviewing;
 	commit: Reviewing;
+	unfinished: Ending;
 }
 
 interface Outcome {
@@ -465,6 +472,10 @@ export class PhasedOrchestrator implements Agent {
 			stage.code('commit', {
 				run: (input, options) => this.commit(request, input, options, spent),
 			}),
+			stage.code('unfinished', {
+				run: async ({ course, reason }, options) =>
+					this.ended(course, reason, await this.check(options)),
+			}),
 		];
 		return new Map(stages.map(each => [each.name, each as RunnableStage]));
 	}
@@ -621,13 +632,18 @@ export class PhasedOrchestrator implements Agent {
 		if (review.decision === 'rejected') return this.rejected(input, review.feedback);
 		if (review.decision === 'replan')
 			return this.toPlanner(input, `The reviewer: ${review.feedback}`);
-		return input.frozen ? { type: 'go', stage: 'commit', input } : approved(input);
+		// The last phase checks again even with no commit, so the run ends on the files as they are.
+		const last = input.at === input.plan.phases.length - 1;
+		return input.frozen || (last && this.verifier)
+			? { type: 'go', stage: 'commit', input }
+			: approved(input);
 	}
 
 	/**
-	 * The barrier before the commit, since a command the reviewer ran may have changed what the
-	 * checks saw: a check that no longer passes sends the phase back to the executor, as a
-	 * rejection. Then the commit, and the next phase or the end of the run.
+	 * The barrier after the review, before a commit or the end of the run, since a command the
+	 * reviewer ran may have changed what the checks saw: a check that no longer passes sends the
+	 * phase back to the executor, as a rejection. Then the commit, when one follows, and the next
+	 * phase or the end of the run.
 	 */
 	private async commit(
 		request: string,
@@ -686,11 +702,18 @@ export class PhasedOrchestrator implements Agent {
 		};
 	}
 
+	/** The run ends unfinished, once its required checks say how the files stand. */
+	private unfinished(course: Course, reason: string): Transition {
+		return { type: 'go', stage: 'unfinished', input: { course: courseOf(course), reason } };
+	}
+
 	/**
 	 * The run ends without throwing: what the phases changed and nothing committed stays on disk,
-	 * and the response says what is unfinished, why, and which required checks do not pass.
+	 * and the response says what is unfinished, why, and which required checks do not pass for
+	 * the files as they are.
 	 */
-	private unfinished(course: Course, reason: string): Transition {
+	private ended(at: Course, reason: string, checked: Verification | undefined): Transition {
+		const course = checked ? { ...at, verification: checked } : at;
 		const phase = course.plan.phases[course.at];
 		const { verification } = course;
 		const failing = verification?.checks.filter(({ status }) => status !== 'passed') ?? [];
@@ -702,15 +725,13 @@ export class PhasedOrchestrator implements Agent {
 		const response = `The task is unfinished: phase ${String(course.at + 1)} of ${String(course.plan.phases.length)}${phase ? `, "${phase.goal}",` : ''} could not be completed after ${String(course.replans)} ${course.replans === 1 ? 'replan' : 'replans'}. The last reason:\n${reason}${unmet}\n${committed ? 'What the phases committed stays committed; the rest stays on disk, uncommitted.' : 'What the phases changed stays on disk, uncommitted.'}`;
 		this.warn(response);
 		const commits = allCommits(course.commits);
-		// The run's last barrier: an earlier phase's, when this one ended before reaching its own.
-		const last = verification ?? course.done.findLast(done => done.verification)?.verification;
 		return {
 			type: 'stop',
 			result: {
 				response,
 				phases: phasesOf(course),
 				...(commits ? { commits } : {}),
-				...(last ? { verification: last } : {}),
+				...(verification ? { verification } : {}),
 			},
 		};
 	}

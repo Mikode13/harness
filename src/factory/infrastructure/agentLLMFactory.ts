@@ -319,7 +319,8 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	/**
 	 * The configured commands each phase must pass, such as `[{ command: 'test' }]`, each with the
 	 * values of its parameters; a parameter left out is not given. Before each review, and again
-	 * before a commit, the harness itself runs, with no model, each one that never ran or ran on
+	 * after the review before a commit or the end of the run, and as an unfinished run ends, the
+	 * harness itself runs, with no model, each one that never ran or ran on
 	 * files that changed since, and a phase whose checks do not pass goes back to the executor
 	 * with their output, as a rejection. Each names one of `commands`, and they run in a `write`
 	 * root. See `AgentResponse.verification`.
@@ -820,8 +821,9 @@ const repositoryGuidance: Record<CommandRole, string> = {
  *   the planner, which replaces what is left of the plan, as it does when the executor or the
  *   reviewer says the plan is wrong. A phase that went to the planner twice ends the run
  *   unfinished: it returns and says why. The `limits` change these numbers.
- * - What the reviewer approved is committed at the end, or after each phase, once the checks
- *   pass again; see `autoCommit` and `commitQuestion`.
+ * - Once the reviewer approves the last phase, or one a commit follows, the checks run again,
+ *   and what the reviewer approved is committed at the end, or after each phase; see
+ *   `autoCommit` and `commitQuestion`.
  * - Every prompt says how to answer, in JSON, so a role's own `systemPrompts` need not.
  * - The `AgentResponse` reports each phase, the last checks and every commit, in `phases`,
  *   `verification` and `commits`.

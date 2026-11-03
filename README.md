@@ -662,8 +662,8 @@ whose required checks do not pass.
 
 `requiredChecks` names the configured commands every phase must pass, each with the values of
 its parameters. A parameter left out is not given, so a run of `test` on some files never counts
-for `{ command: 'test' }`. At each barrier, before each review and again before a commit, the
-harness runs with no model each check that never ran, or ran on files that changed since, and
+for `{ command: 'test' }`. At each barrier, before each review, and again after the review before a
+commit or the end of the run, the harness runs with no model each check that never ran, or ran on files that changed since, and
 does not run one that already failed for these files. A check that does not pass sends the
 phase back to the executor with its output. A check that names no command, or a value that does
 not fit it, is an `InvalidAgentConfigError` when the orchestrator is built.
@@ -681,7 +681,8 @@ any other limit, the run does not throw. Its `response` says what is unfinished 
 not pass, the logger is warned, and nothing more is committed; what the phases changed stays on
 disk. `AgentResponse.phases` lists each phase of the plan, `approved`, `unfinished` or
 `pending`, with what the executor said, its checks and, when the run commits each phase, its
-commit. `AgentResponse.verification` holds the checks at the last barrier, `met` or not.
+commit. `AgentResponse.verification` holds the checks for the files as the run left them, `met` or
+not: an unfinished run runs them once more as it ends.
 
 ```ts
 const orchestrator = await createLLMOrchestrator({

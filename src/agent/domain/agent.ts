@@ -48,9 +48,10 @@ export interface AgentResponse {
 	 */
 	phases?: PhaseResult[];
 	/**
-	 * The required checks of a run of `createLLMOrchestrator` at its last barrier, the one before
-	 * its commit when it made one. Unmet when the run ended with a check that did not pass, which
-	 * `response` says too. Absent with no `requiredChecks`, or before any phase reached a barrier.
+	 * The required checks of a run of `createLLMOrchestrator` for the files as the run left them:
+	 * a completed run checks them after its last review, and an unfinished one as it ends. Unmet
+	 * when a check did not pass, which `response` says too. Absent with no `requiredChecks`, or
+	 * when the run ended before any phase began.
 	 */
 	verification?: Verification;
 }

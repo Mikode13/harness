@@ -387,7 +387,7 @@ describe('the phased orchestrator', () => {
 
 	describe('with required checks', () => {
 		it('sends a phase whose checks fail back to the executor, with their output, before any review', async () => {
-			const { verifier, verify } = verifierOf(failing, passed);
+			const { verifier, verify } = verifierOf(failing, passed, passed);
 			const executor = scripted(done('first'), done('fixed'));
 			const reviewer = scripted(approved);
 
@@ -398,7 +398,7 @@ describe('the phased orchestrator', () => {
 				verifier,
 			}).run('task', { signal });
 
-			expect(verify).toHaveBeenCalledTimes(2);
+			expect(verify).toHaveBeenCalledTimes(3);
 			expect(executor.prompts[1]).toContain(
 				'The required checks do not pass for the files as they are:\n- test: failed, exited with code 1\n1 failed',
 			);
@@ -414,7 +414,7 @@ describe('the phased orchestrator', () => {
 				planner: planner.agent,
 				executor: scripted(done('a'), done('b'), done('c')).agent,
 				reviewer: scripted(approved).agent,
-				verifier: verifierOf(failing, failing, passed).verifier,
+				verifier: verifierOf(failing, failing, passed, passed).verifier,
 			}).run('task', { signal });
 
 			expect(planner.prompts[1]).toContain('The required checks do not pass');
@@ -432,7 +432,7 @@ describe('the phased orchestrator', () => {
 				planner: scripted(planOf('parse'), planOf('parse again')).agent,
 				executor: scripted(done('a'), done('b'), done('c'), done('d')).agent,
 				reviewer: scripted().agent,
-				verifier: verifierOf(failing, failing, failing, failing).verifier,
+				verifier: verifierOf(failing, failing, failing, failing, failing).verifier,
 				committer,
 				committerAgent: scripted().agent,
 				autoCommit: true,
@@ -452,7 +452,30 @@ describe('the phased orchestrator', () => {
 			expect(logger.warn).toHaveBeenCalledWith(result.response);
 		});
 
-		it("reports an earlier phase's checks when the run ends in a phase before its own", async () => {
+		it('sends the last phase back to the executor when its checks fail after the review, with no commit', async () => {
+			const { verifier, verify } = verifierOf(passed, failing, passed, passed);
+			const executor = scripted(done('a'), done('b'));
+			const reviewer = scripted(approved, approved);
+
+			const result = await orchestrator({
+				planner: scripted(planOf('parse')).agent,
+				executor: executor.agent,
+				reviewer: reviewer.agent,
+				verifier,
+			}).run('task', { signal });
+
+			expect(executor.prompts[1]).toContain(
+				'After the review, the required checks do not pass for the files as they are:\n- test: failed',
+			);
+			expect(verify).toHaveBeenCalledTimes(4);
+			expect(reviewer.run).toHaveBeenCalledTimes(2);
+			expect(result.verification).toEqual(passed);
+			expect(result.phases).toEqual([
+				{ goal: 'parse', status: 'approved', summary: 'b', verification: passed },
+			]);
+		});
+
+		it('checks the files again when the run ends unfinished, and reports how they stand', async () => {
 			const result = await orchestrator({
 				planner: scripted(planOf('parse', 'print'), planOf('print again')).agent,
 				executor: scripted(
@@ -461,14 +484,15 @@ describe('the phased orchestrator', () => {
 					{ status: 'replan', reason: 'still no printer' },
 				).agent,
 				reviewer: scripted(approved).agent,
-				verifier: verifierOf(passed).verifier,
+				verifier: verifierOf(passed, failing).verifier,
 				limits: { replans: 1 },
 			}).run('task', { signal });
 
-			expect(result.verification).toEqual(passed);
+			expect(result.response).toContain('The required checks that do not pass: test (failed).');
+			expect(result.verification).toEqual(failing);
 			expect(result.phases).toEqual([
 				{ goal: 'parse', status: 'approved', summary: 'a', verification: passed },
-				{ goal: 'print again', status: 'unfinished' },
+				{ goal: 'print again', status: 'unfinished', verification: failing },
 			]);
 		});
 

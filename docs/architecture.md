@@ -220,7 +220,8 @@ one from the run's command runs and what its changed files hold now. `CommandVer
 infrastructure, reads the runs the `WriteSession` recorded, from the model or the harness, and
 runs a missing, stale or unknown check itself through the same `runCommand` tool, so the harness's
 run is captured, recorded and attributed as the model's. `PhasedOrchestrator` takes one as its
-barrier before each review and before each commit; `createLLMOrchestrator` builds one when
+barrier before each review, after the review before a commit or the end of the run, and as an
+unfinished run ends; `createLLMOrchestrator` builds one when
 `requiredChecks` names any, over a `runCommand` of its own. The result types the barrier
 returns, `Verification` and `CheckResult`, live in `src/agent/domain/phaseResult.ts` with
 `PhaseResult`, since `AgentResponse` carries them. `PhasedOrchestrator` is the phased flow of `createLLMOrchestrator`, built as a
@@ -413,11 +414,12 @@ the model-backed agent's tools it also exports the `Tool`, `ToolSummarizer`,
 `Commands`, `CommandDefinition`, `CommandArgument`, `CommandParameter` and `CommandRole` types, and `Formatter` for the formatter their edits run. For the history of what those runs wrote it exports `createHistory`, the `History`, `HistoryRun`, `Move`, `BranchMove`, `MovedCommit`, `MoveOptions` and `RunStatus` types,
 `historyStart`, and the `WorkspaceBusyError`, `WorkspaceMovedError`, `NothingToMoveError`,
 `UnknownRunError` and `HistoryExpiredError` errors; `AgentResponse.runId` names the run a writing run recorded, and `AgentResponse.session` and `HistoryRun.session` the session it belongs to. For runs that write apart it exports `createWorktree`. For workflows it exports `createWorkflow`, `defineWorkflowStages`, the `Workflow`,
-`WorkflowStage`, `WorkflowStageDefinition`, `WorkflowStageName`, `WorkflowTransition`,
+`WorkflowStage`, `WorkflowStageDefinition`, `WorkflowCodeStage`, `WorkflowCodeStageDefinition`,
+`WorkflowStageBinder`, `WorkflowStageName`, `WorkflowTransition`,
 `WorkflowResult`, `WorkflowStageReport` and `CreateWorkflowOptions` types, and `Validator`. `defineTool` takes a Zod 4 schema, so Zod's major
 version is part of the contract, and `zod` is a peer dependency, so the consumer's schemas and
 the harness share one copy. `RetryingAgent`,
-`OrchestratorAgent`, `WorkflowRunner`, `LLMAgent` and both engines are internal — the factories apply retry and the role
+`OrchestratorAgent`, `PhasedOrchestrator`, `WorkflowRunner`, `LLMAgent` and both engines are internal — the factories apply retry and the role
 defaults so a consumer never composes them, and a class that is not exported can change shape
 without a major release.
 
@@ -522,8 +524,9 @@ that may write outside it. The planner and the reviewer have no `write` roots, s
 only read; each role gets the consumer's agents `agents` names for it beside its own tools. Explorers and such agents work in the background while the agent that sent them
 goes on, and the session makes every change and command of the run one at a time. The executor gets
 `fileToolsFor` its provider. Each role gets `runCommand` with the `commands` whose `roles` name
-it, the executor by default. `OrchestratorAgent` creates one `RunContext` for a whole run, so the
-executor's writes are one run of the history, and names it in its response. It sends each role only the round's data; an agent
+it, the executor by default. `PhasedOrchestrator` runs a whole run as one workflow, whose
+`RunContext` makes every phase's writes one run of the history, and names it in its response. It
+sends each role only the phase's data; an agent
 without a system prompt gets its instructions at the head of every prompt from `InstructedAgent`. The Agent SDK path stays the default: `createAgent`
 and `createOrchestrator` use the provider's own login, while the model API path needs
 `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` and bills per token. Both paths name a provider by its company, `'anthropic'` or `'openai'`, and
@@ -568,9 +571,10 @@ required check passed, or the phase goes back to the executor with the checks' r
 rejection; then the `ChangeLog` reads the phase's diff since the mark, and before a review a
 commit follows, `CommitFlow` freezes what that commit would hold. The reviewer gets the request,
 the plan, the phase, the executor's summary, the checks' results and the diff. Its approval
-goes to the `commit` code stage when a commit follows it: the barrier runs again, since a command
-of the reviewer's may have changed what the checks saw, and a check that no longer passes sends
-the phase back to the executor as a rejection; otherwise `CommitFlow` commits. Then the next
+goes to the `commit` code stage when a commit follows it, or when it is the last phase and the
+run has a `Verifier`: the barrier runs again, since a command of the reviewer's may have changed
+what the checks saw, and a check that no longer passes sends the phase back to the executor as a
+rejection; otherwise `CommitFlow` commits, when a commit follows. Then the next
 phase begins, or the run completes. Whether a commit follows is decided at `approve`, for a run
 of its own that may commit: after the last phase or after each, as `commitQuestion` says, asked
 before each commit unless `autoCommit` is set; with `plan`, the user's answer to the plan
@@ -580,10 +584,11 @@ planner's phases replace the plan from the phase in progress on, and the phase k
 A first plan past the limit is asked again, as any invalid answer is; a replan's answer is not
 held to it, and a plan it grows past the limit ends the run. A phase that has
 gone to the planner `limits.replans` times, or a replan that grows the plan past
-`limits.phases`, stops the run with a response that says what is unfinished and which required
-checks do not pass, logged as a warning: what the phases changed stays on disk, and nothing more
-is committed. Every result carries `phases`, each approved, unfinished or pending, and the last
-barrier's `verification`; the commits of a run that commits each phase report as one. Every
+`limits.phases`, goes to the `unfinished` code stage, which runs the barrier once more and stops
+the run with a response that says what is unfinished and which required checks do not pass for
+the files as they are, logged as a warning: what the phases changed stays on disk, and nothing more
+is committed. Every result carries `phases`, each approved, unfinished or pending, and the
+`verification` of the files as the run left them; the commits of a run that commits each phase report as one. Every
 prompt ends with the JSON its answer takes, so a role's own instructions need not describe it.
 
 **Committing an approved run.** `createLLMOrchestrator` gives its orchestrator a
@@ -792,10 +797,13 @@ at a time, and reads what the user sends meanwhile" in [`decisions.md`](decision
   it happened, without redoing another role's successful work. The cost is that a workflow has
   no single retry budget: each role carries its own.
 - **Each role's instructions are a default a caller can replace.** The harness's own live in
-  `src/orchestration/domain/model/orchestratorAgent.ts`, apart from the data each round sends.
-  Both orchestrator factories take `systemPrompts`, per role, and use a replacement word for
-  word; a role left out keeps the default. The reviewer's JSON decision is the one part the
-  workflow depends on, so a replaced reviewer prompt must still ask for it.
+  `src/orchestration/domain/model/orchestratorAgent.ts` for `createOrchestrator` and in
+  `phasedOrchestrator.ts` for `createLLMOrchestrator`, apart from the data each round or phase
+  sends. Both orchestrator factories take `systemPrompts`, per role, and use a replacement word
+  for word; a role left out keeps the default. On `createOrchestrator`, the reviewer's JSON
+  decision is the one part the workflow depends on, so a replaced reviewer prompt must still ask
+  for it; `createLLMOrchestrator` says how to answer in every prompt, so its replacements need
+  not.
 - **The mandatory test suite never contacts a provider.** Both engines and `LLMAgent` with
   both `LLMClient`s are exercised through offline fakes of their SDK surfaces. Provider-boundary correctness — authentication, request
   shape, model availability — is not covered by an automated suite and surfaces through real
