@@ -323,7 +323,8 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	 * harness itself runs, with no model, each one that never ran or ran on
 	 * files that changed since, and a phase whose checks do not pass goes back to the executor
 	 * with their output, as a rejection. Each names one of `commands`, and they run in a `write`
-	 * root. See `AgentResponse.verification`.
+	 * root. The harness's runs ask no approver, whatever `autoApprove` says: listing a command
+	 * here approves its runs. See `AgentResponse.verification`.
 	 */
 	requiredChecks?: RequiredCheck[];
 	/**

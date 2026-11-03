@@ -664,7 +664,8 @@ whose required checks do not pass.
 its parameters. A parameter left out is not given, so a run of `test` on some files never counts
 for `{ command: 'test' }`. At each barrier, before each review, and again after the review before a
 commit or the end of the run, the harness runs with no model each check that never ran, or ran on files that changed since, and
-does not run one that already failed for these files. A check that does not pass sends the
+does not run one that already failed for these files. It asks no approver, whatever
+`autoApprove` says: listing a command in `requiredChecks` approves its runs. A check that does not pass sends the
 phase back to the executor with its output. A check that names no command, or a value that does
 not fit it, is an `InvalidAgentConfigError` when the orchestrator is built.
 
@@ -834,8 +835,9 @@ const tools = await createFileTools('openai', workspace, {
 
 - **Parameters:** `paths` inside the roots that the agent may read; a `choice` among the
   values you list; or `text` that matches your pattern and never starts with `-`.
-- **Approval:** every call asks the approver, which sees the exact program, arguments and
-  folder in `request.command`. `autoApprove` skips it.
+- **Approval:** every call of an agent asks the approver, which sees the exact program,
+  arguments and folder in `request.command`. `autoApprove` skips it. The `requiredChecks` the
+  harness runs itself never ask: listing a command there approves it.
 - **Roles:** in `createLLMOrchestrator`, a command goes to the executor, or to the roles its
   `roles` lists, such as `['planner', 'executor']` for one that reads an issue. Whoever runs it,
   its files are captured around it. `createFileTools` offers every command.
