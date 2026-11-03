@@ -702,13 +702,15 @@ export class PhasedOrchestrator implements Agent {
 		const response = `The task is unfinished: phase ${String(course.at + 1)} of ${String(course.plan.phases.length)}${phase ? `, "${phase.goal}",` : ''} could not be completed after ${String(course.replans)} ${course.replans === 1 ? 'replan' : 'replans'}. The last reason:\n${reason}${unmet}\n${committed ? 'What the phases committed stays committed; the rest stays on disk, uncommitted.' : 'What the phases changed stays on disk, uncommitted.'}`;
 		this.warn(response);
 		const commits = allCommits(course.commits);
+		// The run's last barrier: an earlier phase's, when this one ended before reaching its own.
+		const last = verification ?? course.done.findLast(done => done.verification)?.verification;
 		return {
 			type: 'stop',
 			result: {
 				response,
 				phases: phasesOf(course),
 				...(commits ? { commits } : {}),
-				...(verification ? { verification } : {}),
+				...(last ? { verification: last } : {}),
 			},
 		};
 	}
@@ -746,7 +748,11 @@ export class PhasedOrchestrator implements Agent {
  *
  * @throws {InvalidAgentConfigError} for one that is not, or a name that is no limit.
  */
-function phaseLimits(limits: Partial<PhaseLimits>): PhaseLimits {
+function phaseLimits(limits: unknown): PhaseLimits {
+	// Typed, but it may come from a JSON file.
+	if (typeof limits !== 'object' || limits === null || Array.isArray(limits)) {
+		throw new InvalidAgentConfigError('limits must be an object');
+	}
 	const given: Partial<Record<keyof PhaseLimits, number>> = {};
 	for (const [name, value] of Object.entries(limits)) {
 		// Own entries only, as from a JSON file: an inherited name such as "constructor" is no limit.
@@ -755,7 +761,7 @@ function phaseLimits(limits: Partial<PhaseLimits>): PhaseLimits {
 				`limits.${name} is not a limit; expected one of: ${Object.keys(defaultPhaseLimits).join(', ')}`,
 			);
 		}
-		if (!Number.isInteger(value) || value < 1) {
+		if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
 			throw new InvalidAgentConfigError(`limits.${name} must be a positive integer`);
 		}
 		given[name as keyof PhaseLimits] = value;

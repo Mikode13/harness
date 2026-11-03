@@ -6,7 +6,11 @@ import { dirname, join, relative, sep } from 'node:path';
 import type { RunOptions } from '#src/agent/domain/agent';
 import type { RepositoryCommit } from '#src/agent/domain/commitReport';
 import { runContextOf } from '#src/agent/domain/runContext';
-import type { FileChange } from '#src/recovery/domain/fileChanges';
+import {
+	type FileChange,
+	fileChanges,
+	sameState as sameRecordedState,
+} from '#src/recovery/domain/fileChanges';
 import type {
 	Commit,
 	FileState,
@@ -159,9 +163,11 @@ export class GitCommitter implements Committer {
 		const states = new Map<string, FrozenState>();
 		for (const { tip, items } of groups.values()) {
 			const frozen = await this.freezeIn(tip, items, commits, runId, options.signal);
+			if (!frozen) continue;
 			repositories.push(frozen.repository);
 			if (frozen.state) states.set(tip.repository, frozen.state);
 		}
+		if (repositories.length === 0) return undefined;
 		const result: FrozenChanges = { repositories };
 		this.states.set(result, states);
 		return result;
@@ -173,7 +179,7 @@ export class GitCommitter implements Committer {
 		commits: readonly RecordedCommits[],
 		runId: string,
 		signal: AbortSignal,
-	): Promise<{ repository: FrozenRepository; state?: FrozenState }> {
+	): Promise<{ repository: FrozenRepository; state?: FrozenState } | undefined> {
 		const { repository, branch, head } = tip;
 		const refuse = (refused: string) => ({
 			repository: {
@@ -192,9 +198,25 @@ export class GitCommitter implements Committer {
 		const fileModes = await trustsFileModes(repository, signal);
 
 		const rel = (path: string) => relative(repository, path).split(sep).join('/');
+		const start = await startOf(repository, branch, head, commits, signal);
+		// A file the run put back as it found it is a change only where a commit of the run holds it
+		// otherwise; anywhere else it has nothing to commit, nor to report.
+		const putBack = items.flatMap(({ path, change }) =>
+			change && isPutBack(change) ? [rel(path)] : [],
+		);
+		const putBackAtHead = await treeOf(repository, head, putBack, signal);
+		const putBackAtStart = await treeOf(repository, start, putBack, signal);
+		const changed = items.filter(
+			({ path, change }) =>
+				!change ||
+				!isPutBack(change) ||
+				!sameEntry(putBackAtHead.get(rel(path)), putBackAtStart.get(rel(path))),
+		);
+		if (changed.length === 0) return undefined;
+
 		const leftOut: { path: string; reason: string }[] = [];
 		const candidates: { path: string; rel: string; change: FileChange }[] = [];
-		for (const { path, change } of items) {
+		for (const { path, change } of changed) {
 			const reason = change ? whyNotTheRuns(change) : 'the history could not copy it';
 			if (reason !== undefined || !change) {
 				leftOut.push({ path: rel(path), reason: reason ?? 'the history could not copy it' });
@@ -221,7 +243,7 @@ export class GitCommitter implements Committer {
 		);
 		const before = await treeOf(
 			repository,
-			await startOf(repository, branch, head, commits, signal),
+			start,
 			wanted.map(({ rel }) => rel),
 			signal,
 		);
@@ -452,15 +474,23 @@ export class GitCommitter implements Committer {
 		}, options.signal);
 	}
 
-	/** Each file the run's history recorded, changed or changed in a way it could not copy. */
+	/**
+	 * Each file the run's history recorded, changed or changed in a way it could not copy. Once the
+	 * run committed, a file it put back as it found it counts too, since a commit may hold it
+	 * otherwise.
+	 */
 	private async recordedIn(
 		runId: string,
 	): Promise<{ items: Item[]; commits: readonly RecordedCommits[] }> {
 		const { record, entries, unrecorded, commits } = await this.store.readRun(runId);
 		// One item a path: a change the history could not copy outweighs one it recorded there.
 		const uncopied = new Set(unrecorded.map(({ path }) => path));
+		const changes =
+			commits.length === 0
+				? changedFiles(record, entries)
+				: fileChanges(entries, record.status !== 'running');
 		const items: Item[] = [
-			...changedFiles(record, entries)
+			...changes
 				.filter(change => !uncopied.has(change.path))
 				.map(change => ({ path: change.path, change })),
 			...[...uncopied].map(path => ({ path })),
@@ -742,6 +772,11 @@ async function changedSince(
 }
 
 /** Why a change cannot be committed as the run's, or `undefined` when it can. */
+/** Whether the run left the file as it found it, with no change of it in progress or cut short. */
+function isPutBack(change: FileChange): boolean {
+	return !change.pending && !change.uncertain && sameRecordedState(change.before, change.after);
+}
+
 function whyNotTheRuns(change: FileChange): string | undefined {
 	if (change.pending) return 'the run is still changing it';
 	if (change.uncertain) return 'the run stopped while changing it';

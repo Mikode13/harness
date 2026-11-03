@@ -596,7 +596,9 @@ and its modes, which follow `core.fileMode`,
 against the parent of the run's first commit there, or `HEAD`. Every other path is left out
 with a reason; a repository without a branch, or where `notReady` finds an operation in
 progress or a sparse checkout, is refused whole. A file a commit of the run already holds, as
-`HEAD` does, is not frozen again, so a later phase's commit holds only what changed since. Once
+`HEAD` does, is not frozen again, so a later phase's commit holds only what changed since. A
+file the run put back as it found it is frozen only where a commit of the run holds it
+otherwise, so a phase that undoes what an earlier phase committed commits that too. Once
 the reviewer approves, the orchestrator asks through `ask`, unless the user or `autoCommit`
 already said yes, then runs the committer agent once per
 repository with the request, the plan, the bounded diff from `HEAD` of what it would commit,

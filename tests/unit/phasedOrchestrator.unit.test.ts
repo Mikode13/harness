@@ -133,7 +133,7 @@ function orchestrator({
 		...(committer ? { committer } : {}),
 		...(committerAgent ? { createCommitter: () => committerAgent } : {}),
 		...(autoCommit === undefined ? {} : { autoCommit }),
-		...(limits ? { limits } : {}),
+		...(limits === undefined ? {} : { limits }),
 		logger,
 	});
 }
@@ -452,6 +452,26 @@ describe('the phased orchestrator', () => {
 			expect(logger.warn).toHaveBeenCalledWith(result.response);
 		});
 
+		it("reports an earlier phase's checks when the run ends in a phase before its own", async () => {
+			const result = await orchestrator({
+				planner: scripted(planOf('parse', 'print'), planOf('print again')).agent,
+				executor: scripted(
+					done('a'),
+					{ status: 'replan', reason: 'no printer' },
+					{ status: 'replan', reason: 'still no printer' },
+				).agent,
+				reviewer: scripted(approved).agent,
+				verifier: verifierOf(passed).verifier,
+				limits: { replans: 1 },
+			}).run('task', { signal });
+
+			expect(result.verification).toEqual(passed);
+			expect(result.phases).toEqual([
+				{ goal: 'parse', status: 'approved', summary: 'a', verification: passed },
+				{ goal: 'print again', status: 'unfinished' },
+			]);
+		});
+
 		it('classifies a verifier that fails as a local failure', async () => {
 			const verify = vi.fn<Verifier['verify']>(() => Promise.reject(new Error('git broke')));
 
@@ -607,6 +627,14 @@ describe('the phased orchestrator', () => {
 		expect(limited({ corrections: 1.5 })).toThrow(
 			new InvalidAgentConfigError('limits.corrections must be a positive integer'),
 		);
+		expect(limited({ replans: '2' } as unknown as Partial<PhaseLimits>)).toThrow(
+			new InvalidAgentConfigError('limits.replans must be a positive integer'),
+		);
+		for (const limits of [null, [], true]) {
+			expect(limited(limits as unknown as Partial<PhaseLimits>)).toThrow(
+				new InvalidAgentConfigError('limits must be an object'),
+			);
+		}
 		expect(limited({ rounds: 3 } as Partial<PhaseLimits>)).toThrow(
 			new InvalidAgentConfigError(
 				'limits.rounds is not a limit; expected one of: rejections, replans, phases, corrections',
