@@ -771,12 +771,12 @@ async function changedSince(
 	return changed;
 }
 
-/** Why a change cannot be committed as the run's, or `undefined` when it can. */
 /** Whether the run left the file as it found it, with no change of it in progress or cut short. */
 function isPutBack(change: FileChange): boolean {
 	return !change.pending && !change.uncertain && sameRecordedState(change.before, change.after);
 }
 
+/** Why a change cannot be committed as the run's, or `undefined` when it can. */
 function whyNotTheRuns(change: FileChange): string | undefined {
 	if (change.pending) return 'the run is still changing it';
 	if (change.uncertain) return 'the run stopped while changing it';
