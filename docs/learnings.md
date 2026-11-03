@@ -674,19 +674,20 @@ taken as `gpt-5.6-sol`'s.
 
   Only sol found a code stage that still ran after its progress event cancelled the run. Sol's
   sixth round, after Opus's fifth, found nothing.
+
 - **Evidence:**
 
   | Reviewer | Rounds | Bugs per round | False positives | Cost per round | Time per round |
   | -------- | ------ | -------------- | --------------- | -------------- | -------------- |
   | Sol      | 3      | 1, 1, 0        | none            | $0.97–1.18     | 2–3 minutes    |
   | Opus     | 5      | 2, 2, 1, 1, 1  | none            | $1.81–2.98     | 6–12 minutes   |
-
   - In all, sol cost $3.23 and Opus $12.63.
   - In round 1, Opus made 31 model calls to sol's 13.
   - Opus's summaries also listed what it had checked and found correct; sol's said only that it
     found nothing.
   - One of Opus's findings was partly wrong: the replan's prompt already gave the phases left.
   - One of its findings was a bug the fix of an earlier round had introduced.
+
 - **What changed:** no harness decision changed. The rounds led to decisions in decisions.md
   under "The model-API orchestrator runs in phases, as a workflow with code stages". The
   comparison covers one pull request, so it is evidence for choosing a reviewer, not a rule.
