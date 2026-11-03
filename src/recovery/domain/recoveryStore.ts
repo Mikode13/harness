@@ -381,7 +381,8 @@ export interface RecoveryStore {
 	readRun(runId: string): Promise<{
 		record: RunRecord;
 		entries: JournalEntry[];
-		unrecorded: UnrecordedChange[];
+		/** Each numbered in the same sequence as `entries`, so `since` can tell when it happened. */
+		unrecorded: (UnrecordedChange & { sequence: number })[];
 		/** The commits its commands made, in the order they were recorded. */
 		commits: RecordedCommits[];
 	}>;

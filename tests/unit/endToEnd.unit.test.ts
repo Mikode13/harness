@@ -188,6 +188,13 @@ function scriptClaude(...responses: AnthropicMessage[]) {
 	return create;
 }
 
+/** The planner's answer: a plan of one phase, whose goal is `goal`. */
+const planned = (goal: string) =>
+	JSON.stringify({ summary: goal, phases: [{ goal, files: [], done: 'It works' }] });
+
+/** The executor's answer once its phase is done. */
+const reported = (summary: string) => JSON.stringify({ status: 'done', summary });
+
 // Only an explorer's instructions say so.
 const explorerMark = 'You find things in a repository';
 
@@ -262,7 +269,7 @@ describe('the write tools, end to end through the public exports', () => {
 			openAIResponse(
 				call('p1', 'readFile', { path: 'src/math.ts', fromLine: null, lineCount: null }),
 			),
-			openAIResponse(text('Make add add, then format and test.')),
+			openAIResponse(text(planned('Make add add, then format and test.'))),
 			// The executor sees the test fail, reads, patches sloppily, formats, and tests again.
 			openAIResponse(
 				call('e1', 'runCommand', { command: { name: 'test', files: ['src/math.ts'] } }),
@@ -279,7 +286,7 @@ describe('the write tools, end to end through the public exports', () => {
 			),
 			openAIResponse(call('e4', 'runCommand', { command: { name: 'format' } })),
 			openAIResponse(call('e5', 'runCommand', { command: { name: 'test', files: [] } })),
-			openAIResponse(text('add adds now, and the test passes.')),
+			openAIResponse(text(reported('add adds now, and the test passes.'))),
 		);
 		const claude = scriptClaude(
 			// The reviewer looks at what the task changed, then approves.
@@ -356,7 +363,7 @@ describe('the write tools, end to end through the public exports', () => {
 		execFileSync('git', ['add', '.'], { cwd: repo });
 		execFileSync('git', ['commit', '--quiet', '-m', 'feat: add add'], { cwd: repo });
 		const openAI = scriptOpenAI(
-			openAIResponse(text('Make add add.')),
+			openAIResponse(text(planned('Make add add.'))),
 			openAIResponse(
 				call('e1', 'readFile', { path: 'src/math.ts', fromLine: null, lineCount: null }),
 			),
@@ -367,15 +374,23 @@ describe('the write tools, end to end through the public exports', () => {
 					diff: `@@\n-${broken.trimEnd()}\n+${fixed.trimEnd()}`,
 				}),
 			),
-			openAIResponse(text('add adds now.')),
+			openAIResponse(text(reported('add adds now.'))),
 			// The committer writes the message.
 			openAIResponse(text('fix: make add add')),
 		);
 		scriptClaude(claudeResponse(say('{"decision":"approved"}')));
-		const ask = vi.fn(() => ['Commit']);
+		// The plan first, then the commit.
+		const ask = vi.fn((questions: { question: string }[]) =>
+			questions.map(({ question }) =>
+				question.startsWith('Carry out this plan?') ? 'Approve' : 'Commit',
+			),
+		);
 
 		const agent = await createLLMOrchestrator({ workspace, logger: { warn: vi.fn() } });
 		const response = await agent.run('Fix add.', { signal, ask });
+
+		expect(ask).toHaveBeenCalledTimes(2);
+		expect(ask.mock.calls[0]?.[0][0]?.question).toContain('1. Make add add.');
 
 		const log = (format: string) =>
 			execFileSync('git', ['log', '-1', `--format=${format}`], { cwd: repo, encoding: 'utf8' });
@@ -408,8 +423,8 @@ describe('the write tools, end to end through the public exports', () => {
 				// The planner explores, waits for the report, then plans from it.
 				openAIResponse(call('p1', 'explore', { questions: ['What does add in src/math.ts do?'] })),
 				openAIResponse(text('I wait for the explorer.')),
-				openAIResponse(text('Make add add.')),
-				openAIResponse(text('Nothing to change yet.')),
+				openAIResponse(text(planned('Make add add.'))),
+				openAIResponse(text(reported('Nothing to change yet.'))),
 			],
 			[
 				// The explorer reads, then reports.
@@ -477,8 +492,8 @@ describe('the write tools, end to end through the public exports', () => {
 			[
 				openAIResponse(call('p1', 'explore', { questions: ['Where is add?'] })),
 				openAIResponse(text('I wait for the explorer.')),
-				openAIResponse(text('Make add add.')),
-				openAIResponse(text('Nothing to change yet.')),
+				openAIResponse(text(planned('Make add add.'))),
+				openAIResponse(text(reported('Nothing to change yet.'))),
 			],
 			[openAIResponse(text('add is in src/math.ts.'))],
 			2,
@@ -512,8 +527,8 @@ describe('the write tools, end to end through the public exports', () => {
 			[
 				claudeResponse(use('p1', 'explore', { questions: ['Where is add?'] })),
 				claudeResponse(say('I wait for the explorer.')),
-				claudeResponse(say('Make add add.')),
-				claudeResponse(say('Nothing to change yet.')),
+				claudeResponse(say(planned('Make add add.'))),
+				claudeResponse(say(reported('Nothing to change yet.'))),
 				claudeResponse(say('{"decision":"approved"}')),
 			],
 			[claudeResponse(say('add is in src/math.ts.'))],
@@ -535,7 +550,7 @@ describe('the write tools, end to end through the public exports', () => {
 
 	it('does the same with every role on Claude, the executor with its text editor', async () => {
 		const claude = scriptClaude(
-			claudeResponse(say('Make add add, then test.')),
+			claudeResponse(say(planned('Make add add, then test.'))),
 			claudeResponse(
 				use('e1', 'str_replace_based_edit_tool', { command: 'view', path: 'src/math.ts' }),
 			),
@@ -550,7 +565,7 @@ describe('the write tools, end to end through the public exports', () => {
 			claudeResponse(
 				use('e3', 'runCommand', { command: { name: 'test', files: ['src/math.ts'] } }),
 			),
-			claudeResponse(say('add adds now.')),
+			claudeResponse(say(reported('add adds now.'))),
 			claudeResponse(say('{"decision":"approved"}')),
 		);
 		const { approve, requests } = approving();
@@ -575,9 +590,9 @@ describe('the write tools, end to end through the public exports', () => {
 
 	it('denies a command nobody approved, and the run carries on without it', async () => {
 		scriptOpenAI(
-			openAIResponse(text('Run the tests.')),
+			openAIResponse(text(planned('Run the tests.'))),
 			openAIResponse(call('e1', 'runCommand', { command: { name: 'test', files: [] } })),
-			openAIResponse(text('The tests were not allowed to run.')),
+			openAIResponse(text(reported('The tests were not allowed to run.'))),
 		);
 		scriptClaude(claudeResponse(say('{"decision":"approved"}')));
 

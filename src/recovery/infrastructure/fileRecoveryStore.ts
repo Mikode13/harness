@@ -444,7 +444,7 @@ export class FileRecoveryStore implements RecoveryStore {
 	async readRun(runId: string): Promise<{
 		record: RunRecord;
 		entries: JournalEntry[];
-		unrecorded: UnrecordedChange[];
+		unrecorded: (UnrecordedChange & { sequence: number })[];
 		commits: RecordedCommits[];
 	}> {
 		// An id from outside is checked before it names a folder.
@@ -464,7 +464,7 @@ export class FileRecoveryStore implements RecoveryStore {
 		return {
 			record: withLiveStatus(record, holder),
 			entries,
-			unrecorded: unrecorded.map(({ path, by }) => ({ path, by })),
+			unrecorded: unrecorded.map(({ path, by, sequence }) => ({ path, by, sequence })),
 			commits,
 		};
 	}
@@ -1230,7 +1230,6 @@ export class FileRecoveryStore implements RecoveryStore {
 	): Promise<{
 		entries: JournalEntry[];
 		observations: OpenObservation[];
-		/** With the sequence of its line, which `readRun` leaves out. */
 		unrecorded: (UnrecordedChange & { sequence: number })[];
 		commits: RecordedCommits[];
 		lastSequence: number;

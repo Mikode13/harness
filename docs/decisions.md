@@ -2987,3 +2987,41 @@ tags: #mikode-harness #orchestration #verification #api-design
 
 - The checks the harness runs take the time they take, with no tokens.
 - A change the run does not record, such as the user's own edit while the run works, does not make a check stale.
+
+---
+
+## The model-API orchestrator runs in phases, as a workflow with code stages
+
+tags: #mikode-harness #orchestration #workflow #api-design
+
+**Decision:**
+
+- **`createLLMOrchestrator` is a workflow of its own stages.** The planner's, the executor's and the reviewer's answers are JSON a validator checks, as any workflow stage's. What is not an agent runs as a code stage: asking the user to approve the plan, marking where a phase begins, the barrier of required checks with the phase's diff, and the commit.
+- **The workflow gains code stages,** public: `stage.code(name, { run })` receives the stage's input and the run's options, and chooses the transition itself. A separate `code` binder, rather than an overload of the stage binder, keeps a `transition` with no parameters typed as before.
+- **The planner runs again only when asked:** when the executor or the reviewer answers `replan`, saying the plan, not the work, is wrong, or after 2 rejections in a row of one phase. Its phases replace the plan from the phase in progress on. There is no planner pass between phases or at the end.
+- **The user approves the plan,** when the run has `ask`: `Approve` carries it out, `Stop` ends the run with nothing done, and any other answer is a correction the planner plans again with, and the user is asked again. A replan is not asked. A run with no `ask` begins at once.
+- **The executor gets the plan, never the request.** The planner is told to write each phase so it can be carried out from the plan alone.
+- **A phase's required checks that do not pass count as a rejection,** so a phase that never passes them reaches the planner, and then the end of the run, instead of looping.
+- **A replan that grows the plan past its phase limit ends the run unfinished,** never asked again, even when the planner's answer alone is past it. A first plan past the limit is an invalid answer, asked again like any other. The user chose this on 2026-11-03, after Opus found that a replan's answer past the limit was retried and could throw, while one that only grew the total ended the run. The alternatives were holding a replan to the phases left and asking again, which can still throw once the attempts run out, and both, which needs the workflow to tell a limit failure from other invalid answers.
+- **A phase keeps its mark across a replan.** What the failed attempts changed stays on disk, so the reviewer of the replacement sees it in the phase's diff.
+- **Every prompt says how to answer.** The JSON each role answers with is in the prompt of each round, not only in the role's instructions, so a consumer's own `systemPrompts` keep working.
+- **Each role keeps its agent across runs,** as `OrchestratorAgent` did, so the CLI's roles go on with their conversations; a workflow's own stages create theirs per run.
+- **A code stage's transition stands when the run is cancelled while it runs.** What it did, a commit above all, cannot be taken back, so a `complete` or `stop` keeps its result and the commit's report; a `go` meets the cancellation as the next stage begins. Opus found on 2026-11-03 that the runner's check after the stage threw away a commit already made, which `OrchestratorAgent` kept.
+- **The user's corrections of the plan are limited, to 3 by default.** Past them, an answer that neither approves nor stops ends the run with nothing done, and the logger is warned. Opus found on 2026-11-03 that nothing else bounded the plan → approve → plan cycle, so an asker that always gave the same answer, such as `Commit`, kept paying the planner without end. The user chose a limit of its own, `corrections`, over counting corrections as replans, which mixes the user's corrections with the planner's replans, over stopping on a repeated answer, which an asker that varies its answer escapes, and over leaving the loop to the consumer's asker.
+- **For now, the commit is asked once, at the end,** and the limits keep their defaults: 2 rejections, 2 replans, 50 phases and 3 corrections. Making both configurable, the barrier before the commit, and the result fields are the next change.
+
+**Context:** #167, the second of its three pull requests. On 2026-11-02 the user chose code stages over passing the run to every stage callback and over a class of its own, and running the planner only when asked over after every phase and over only on escalation.
+
+**Alternatives considered:**
+
+- **The run in every stage callback,** `prompt(input, run)` and `transition(output, input, run)`. A smaller change, but the approval and the barrier would hide inside transitions, never shown as stages in the run's reports and events.
+- **A class of its own,** as `OrchestratorAgent`. No change to the workflow, but it repeats the runner's JSON, retry and validation logic, and drops building on the workflow.
+- **The planner after every phase.** The plan adapts to what each phase found, but each phase pays a call of the most expensive role.
+- **The planner only on escalation.** The cheapest, but the plan never adapts to what a phase found.
+
+**Consequences:**
+
+- The executor answers JSON, so an executor that finishes in prose is asked again, as any stage is.
+- A model has to notice that the plan is wrong for the planner to run before 2 rejections.
+- `createOrchestrator`, on the Agent SDKs, still runs `OrchestratorAgent`'s rounds.
+- `WorkflowStageReport.output` is `undefined` for a code stage, and its `attempts` is 1.

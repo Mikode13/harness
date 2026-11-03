@@ -18,17 +18,22 @@ import {
 	openAIModels,
 	openAIReasoningEfforts,
 } from '#src/llm/infrastructure/openAILLMClient';
+import { committerInstructions } from '#src/orchestration/domain/model/commitFlow';
 import {
-	committerInstructions,
-	executorInstructions,
-	executorInstructionsWithoutCommands,
-	OrchestratorAgent,
-	plannerInstructions,
-	reviewerInstructions,
-	reviewerInstructionsWithoutCommands,
-} from '#src/orchestration/domain/model/orchestratorAgent';
+	PhasedOrchestrator,
+	phasedExecutorInstructions,
+	phasedExecutorInstructionsWithoutCommands,
+	phasedPlannerInstructions,
+	phasedReviewerInstructions,
+	phasedReviewerInstructionsWithoutCommands,
+} from '#src/orchestration/domain/model/phasedOrchestrator';
 import { GitCommitter } from '#src/orchestration/infrastructure/model/gitCommitter';
-import { ReviewerDecisionValidator } from '#src/orchestration/infrastructure/model/reviewerDecisionValidator';
+import {
+	phaseReportValidator,
+	phaseReviewValidator,
+	planValidator,
+} from '#src/orchestration/infrastructure/model/phaseValidators';
+import { RecordedChangeLog } from '#src/orchestration/infrastructure/model/recordedChangeLog';
 import type { RecoveryStore } from '#src/recovery/domain/recoveryStore';
 import { RetryingAgent } from '#src/retry/domain/model/retryingAgent';
 import { InvalidAgentConfigError } from '#src/shared/domain/errors';
@@ -295,7 +300,8 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	agents?: RoleAgents;
 	/**
 	 * Commits what an approved run changed without asking. Without it, once the reviewer approves
-	 * a run that changed files, the run asks the user through its `ask` whether to commit, and a
+	 * the last phase of a run that changed files, the run asks the user through its `ask` whether
+	 * to commit, once, everything together, and a
 	 * run with no `ask` commits nothing. The harness makes the commit with `git commit --only`,
 	 * so what else is staged stays staged and git's hooks run, and the committer, on the
 	 * executor's provider's cheaper model, writes its message. See `AgentResponse.commits`.
@@ -776,9 +782,20 @@ const repositoryGuidance: Record<CommandRole, string> = {
 };
 
 /**
- * Builds the planner → executor → reviewer workflow with every role on the model APIs, each
- * holding its role's instructions, or `systemPrompts`, as its system prompt, followed by the
- * workspace's roots.
+ * Builds the planner → executor → reviewer workflow in phases, with every role on the model
+ * APIs, each holding its role's instructions, or `systemPrompts`, as its system prompt, followed
+ * by the workspace's roots.
+ *
+ * - The planner plans the task in phases, at most 50, which the user approves through `ask`
+ *   when the run has one: `Approve` carries them out, `Stop` ends the run with nothing done, and
+ *   any other answer is a correction the planner plans again with, up to 3, after which such an
+ *   answer ends the run with nothing done.
+ * - Each phase goes to the executor, which gets the plan, never the request, then to the
+ *   reviewer, with the phase's own diff. A rejection goes back to the executor with its
+ *   feedback, and the second in a row to the planner, which replaces what is left of the plan,
+ *   as it does when the executor or the reviewer says the plan is wrong. A phase that went to
+ *   the planner twice ends the run unfinished: it returns, says why, and commits nothing.
+ * - Every prompt says how to answer, in JSON, so a role's own `systemPrompts` need not.
  *
  * - The planner and the reviewer read: `listFiles`, `searchText`, `readFile`, `readFiles`, `showChanges`,
  *   the current task's changes as far as each may read them, and `explore`, which sends up to 4
@@ -795,8 +812,9 @@ const repositoryGuidance: Record<CommandRole, string> = {
  *   one, both are told the tests were not run, and the reviewer judges from the code whether
  *   they would pass.
  *
- * One run of the orchestrator is one run of the workspace's history, every round and retry
- * included, and its `AgentResponse` names it. Every role follows what the user undoes.
+ * One run of the orchestrator is one run of the workspace's history, every phase and retry
+ * included, and its `AgentResponse` names it. Each role keeps its agent, and its conversation,
+ * across the orchestrator's runs. Every role follows what the user undoes.
  * Asynchronous because opening the workspace is.
  *
  * @throws {InvalidAgentConfigError} for an unknown provider, or a workspace with no root.
@@ -902,19 +920,19 @@ export async function createLLMOrchestrator({
 	// with a command can do.
 	const executorRuns = executorToolset.some(tool => tool.name === 'runCommand');
 
-	return new OrchestratorAgent({
-		plannerAgent: await reader(
+	return new PhasedOrchestrator({
+		planner: await reader(
 			roles.planner,
 			'planner',
-			prompt('planner', systemPrompts.planner, plannerInstructions),
+			prompt('planner', systemPrompts.planner, phasedPlannerInstructions),
 		),
-		executorAgent: buildLLMAgent(executor.provider, {
+		executor: buildLLMAgent(executor.provider, {
 			model: executor.model,
 			reasoningEffort: executor.reasoningEffort,
 			systemPrompt: prompt(
 				'executor',
 				systemPrompts.executor,
-				executorRuns ? executorInstructions : executorInstructionsWithoutCommands,
+				executorRuns ? phasedExecutorInstructions : phasedExecutorInstructionsWithoutCommands,
 			),
 			tools: [...executorToolset, ...agentsOf.executor],
 			maxSteps: steps.executor,
@@ -924,16 +942,21 @@ export async function createLLMOrchestrator({
 			writeRoots: writeRootsOf(workspace.roots),
 			...shared,
 		}),
-		reviewerAgent: await reader(
+		reviewer: await reader(
 			roles.reviewer,
 			'reviewer',
 			prompt(
 				'reviewer',
 				systemPrompts.reviewer,
-				executorRuns ? reviewerInstructions : reviewerInstructionsWithoutCommands,
+				executorRuns ? phasedReviewerInstructions : phasedReviewerInstructionsWithoutCommands,
 			),
 		),
-		reviewerDecisionValidator: new ReviewerDecisionValidator(),
+		validators: {
+			plan: planValidator,
+			report: phaseReportValidator,
+			review: phaseReviewValidator,
+		},
+		changes: new RecordedChangeLog({ store: opened.store, policy: opened.policy }),
 		logger,
 		// Only a workspace it may write can hold a run's changes to commit.
 		...(opened.writable && canCommit

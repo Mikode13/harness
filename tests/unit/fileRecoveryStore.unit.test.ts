@@ -611,8 +611,8 @@ describe('FileRecoveryStore', () => {
 			expect(entries).toEqual([]);
 			// One still too large is not covered at all: whether it changed is unknown.
 			expect(unrecorded).toEqual([
-				{ path: path('small.txt'), by: 'build' },
-				{ path: path('shrunk.bin'), by: 'build' },
+				{ path: path('small.txt'), by: 'build', sequence: 2 },
+				{ path: path('shrunk.bin'), by: 'build', sequence: 3 },
 			]);
 			await expect(store.goTo(historyStart)).resolves.toMatchObject({ complete: false });
 			expect(readFileSync(path('shrunk.bin'), 'utf8')).toBe('shrunk\n');

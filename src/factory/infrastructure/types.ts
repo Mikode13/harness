@@ -28,9 +28,10 @@ export interface CreateOrchestratorOptions {
 	/**
 	 * Replaces a role's instructions, word for word; a role left out keeps the harness's own. A
 	 * role on a model API receives them as its system prompt, and one on an Agent SDK, which
-	 * takes none, at the head of every prompt. The reviewer must still answer with the JSON
-	 * decision the workflow parses: `{"decision":"approved"}`, or
-	 * `{"decision":"rejected","feedback":"..."}`.
+	 * takes none, at the head of every prompt. On `createOrchestrator`, the reviewer must still
+	 * answer with the JSON decision the workflow parses: `{"decision":"approved"}`, or
+	 * `{"decision":"rejected","feedback":"..."}`. `createLLMOrchestrator` says how to answer in
+	 * every prompt, so its roles' instructions need not.
 	 */
 	systemPrompts?: { planner?: string; executor?: string; reviewer?: string };
 	/** Defaults to warnings on stderr. */
