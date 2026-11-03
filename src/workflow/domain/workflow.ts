@@ -60,7 +60,9 @@ export interface WorkflowCodeStageDefinition<
 > {
 	/**
 	 * A failure it throws ends the run as an agent's does: a cancellation, a `RecoverableError`
-	 * or an `UnrecoverableError` as it is, anything else as an `UnrecoverableError`.
+	 * or an `UnrecoverableError` as it is, anything else as an `UnrecoverableError`. The
+	 * transition it returns stands even when the run was cancelled meanwhile, as what it did
+	 * stays done; the next stage, if any, then does not begin.
 	 */
 	run(
 		input: Inputs[Name],

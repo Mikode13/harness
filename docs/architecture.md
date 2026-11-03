@@ -618,9 +618,12 @@ stops the work after it. An agent's classified failure propagates with the usage
 answer added; an unclassified one, a throwing agent factory, prompt, validator, transition,
 progress callback or logger, an invalid transition or an unknown stage is an `UnrecoverableError`.
 A code stage, bound with `stage.code`, has no agent: the runner checks the signal, emits its
-`workflowStage` event, and calls its `run` with the stage's input and the run's options, which
-carry the shared `RunContext`. Its transition is checked as an agent stage's, and it reports one
-attempt, an `undefined` output and no usage. A cancellation, a `RecoverableError` or an
+`workflowStage` event, checks the signal again, and calls its `run` with the stage's input and
+the run's options, which carry the shared `RunContext`. Its transition is checked as an agent
+stage's, and it reports one attempt, an `undefined` output and no usage. A cancellation while
+it runs does not discard its transition, since what it did, such as a commit, stays done: a
+`complete` or `stop` ends the run with its result, and a `go` meets the cancellation as the
+next stage begins. A cancellation, a `RecoverableError` or an
 `UnrecoverableError` it throws propagates as it is; anything else becomes an `UnrecoverableError`.
 
 **A model-backed turn.** `LLMAgent.run` sends the stored context, the new prompt and the

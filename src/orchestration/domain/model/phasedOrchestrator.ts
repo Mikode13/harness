@@ -420,8 +420,8 @@ export class PhasedOrchestrator implements Agent {
 		const phases = [...course.plan.phases.slice(0, course.at), ...plan.phases];
 		if (phases.length > this.limits.phases) {
 			return this.unfinished(
-				course,
-				`the plan grew past ${String(this.limits.phases)} phases, the most a run may hold`,
+				{ ...course, replans: course.replans + 1 },
+				`${planning.reason}\nThe new plan grew past ${String(this.limits.phases)} phases, the most a run may hold.`,
 			);
 		}
 		// With no feedback: the executor gets the plan the reason changed.

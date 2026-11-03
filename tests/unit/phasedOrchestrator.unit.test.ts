@@ -265,7 +265,9 @@ describe('the phased orchestrator', () => {
 			limits: { phases: 2 },
 		}).run('task', { signal });
 
-		expect(result.response).toContain('the plan grew past 2 phases, the most a run may hold');
+		expect(result.response).toContain(
+			'phase 2 of 2, "b", could not be completed after 1 replan. The last reason:\nThe reviewer: split it\nThe new plan grew past 2 phases, the most a run may hold.',
+		);
 	});
 
 	it('ends a replan past the phase limit on its own, without asking the planner again', async () => {
@@ -279,7 +281,7 @@ describe('the phased orchestrator', () => {
 		}).run('task', { signal });
 
 		expect(planner.run).toHaveBeenCalledTimes(2);
-		expect(result.response).toContain('the plan grew past 1 phases, the most a run may hold');
+		expect(result.response).toContain('The new plan grew past 1 phases, the most a run may hold.');
 	});
 
 	describe('with the user to approve the plan', () => {

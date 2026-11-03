@@ -795,4 +795,57 @@ describe('a code stage', () => {
 		).rejects.toSatisfy(isAbortError);
 		expect(run).not.toHaveBeenCalled();
 	});
+
+	it('does not run when its own stage event cancels the run', async () => {
+		const run = vi.fn(() => ({ type: 'complete' as const, result: 'done' }));
+		const controller = new AbortController();
+
+		await expect(
+			createWorkflow({
+				initialStage: 'check',
+				stages: { check: stage.code('check', { run }) },
+			}).run(null, {
+				signal: controller.signal,
+				onProgress: () => {
+					controller.abort();
+				},
+			}),
+		).rejects.toSatisfy(isAbortError);
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it('keeps what it chose when the run is cancelled while it runs, and the next stage does not begin', async () => {
+		const controller = new AbortController();
+		const finish = fakeAgent(answer({ value: 'done' }, 3));
+		const cancelling = (transition: WorkflowTransition<Loose, string>) =>
+			stage.code('check', {
+				run: () => {
+					controller.abort();
+					return transition;
+				},
+			});
+
+		const completed = await createWorkflow({
+			initialStage: 'check',
+			stages: { check: cancelling({ type: 'complete', result: 'committed' }) },
+		}).run(null, { signal: controller.signal });
+		expect(completed).toMatchObject({ status: 'completed', result: 'committed' });
+
+		const again = new AbortController();
+		await expect(
+			createWorkflow({
+				initialStage: 'check',
+				stages: {
+					check: stage.code('check', {
+						run: () => {
+							again.abort();
+							return { type: 'go', stage: 'finish', input: 'x' };
+						},
+					}),
+					finish: finalStage('finish', finish.agent),
+				},
+			}).run(null, { signal: again.signal }),
+		).rejects.toSatisfy(isAbortError);
+		expect(finish.run).not.toHaveBeenCalled();
+	});
 });

@@ -278,7 +278,8 @@ console.log(result.status, result.result, result.stages, result.tokens);
   returns the transition itself, checked as an agent stage's is. It runs once: there is no
   answer to validate. A failure ends the run as an agent's does: a cancellation or a
   `RecoverableError` or `UnrecoverableError` as it is, anything else as an
-  `UnrecoverableError`.
+  `UnrecoverableError`. What it returns stands even if the run was cancelled while it ran,
+  since what it did stays done; the next stage then does not begin.
 - **What the run knows:** `result.stages` records, for each stage run in order, its input,
   its validated output, its attempts, usage and duration, and the transition it chose; a code
   stage's output is `undefined`, after one attempt.

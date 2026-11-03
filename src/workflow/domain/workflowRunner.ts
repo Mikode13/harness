@@ -183,7 +183,9 @@ export class WorkflowRunner<Input, Result> implements Workflow<Input, Result> {
 						transition: await this.runCode(stage, stageInput, options),
 					}
 				: await this.runAgentStage(stage, stageInput, options, totals, stageTotals, agents);
-			options.signal.throwIfAborted();
+			// A code stage's transition stands, since what it did cannot be taken back, such as a
+			// commit; the next stage meets the cancellation as it begins.
+			if (!isCodeStage(stage)) options.signal.throwIfAborted();
 
 			const tokens = knownTokens(stageTotals);
 			const nextStage = transition.type === 'go' ? transition.stage : undefined;
@@ -247,6 +249,8 @@ export class WorkflowRunner<Input, Result> implements Workflow<Input, Result> {
 	): Promise<Transition<Result>> {
 		options.signal.throwIfAborted();
 		this.emit(options, { type: 'workflowStage', stage: stage.name, attempt: 1 });
+		// The progress callback may have cancelled the run, and the code must not begin then.
+		options.signal.throwIfAborted();
 		let transition: unknown;
 		try {
 			transition = await stage.run(input, options);

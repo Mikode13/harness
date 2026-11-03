@@ -3006,6 +3006,7 @@ tags: #mikode-harness #orchestration #workflow #api-design
 - **A phase keeps its mark across a replan.** What the failed attempts changed stays on disk, so the reviewer of the replacement sees it in the phase's diff.
 - **Every prompt says how to answer.** The JSON each role answers with is in the prompt of each round, not only in the role's instructions, so a consumer's own `systemPrompts` keep working.
 - **Each role keeps its agent across runs,** as `OrchestratorAgent` did, so the CLI's roles go on with their conversations; a workflow's own stages create theirs per run.
+- **A code stage's transition stands when the run is cancelled while it runs.** What it did, a commit above all, cannot be taken back, so a `complete` or `stop` keeps its result and the commit's report; a `go` meets the cancellation as the next stage begins. Opus found on 2026-11-03 that the runner's check after the stage threw away a commit already made, which `OrchestratorAgent` kept.
 - **For now, the commit is asked once, at the end,** and the limits keep their defaults: 2 rejections, 2 replans and 50 phases. Making both configurable, the barrier before the commit, and the result fields are the next change.
 
 **Context:** #167, the second of its three pull requests. On 2026-11-02 the user chose code stages over passing the run to every stage callback and over a class of its own, and running the planner only when asked over after every phase and over only on escalation.
