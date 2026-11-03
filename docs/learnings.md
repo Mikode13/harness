@@ -681,6 +681,9 @@ taken as `gpt-5.6-sol`'s.
   | -------- | ------ | -------------- | --------------- | -------------- | -------------- |
   | Sol      | 3      | 1, 1, 0        | none            | $0.97–1.18     | 2–3 minutes    |
   | Opus     | 5      | 2, 2, 1, 1, 1  | none            | $1.81–2.98     | 6–12 minutes   |
+
+  Beyond the table:
+
   - In all, sol cost $3.23 and Opus $12.63.
   - In round 1, Opus made 31 model calls to sol's 13.
   - Opus's summaries also listed what it had checked and found correct; sol's said only that it
