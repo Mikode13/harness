@@ -636,6 +636,20 @@ describe('the phased orchestrator', () => {
 		).rejects.toSatisfy(isAbortError);
 	});
 
+	it('keeps the default of a limit given as undefined', async () => {
+		const executor = scripted(done('a'), done('b'));
+
+		const result = await orchestrator({
+			planner: scripted(planOf('parse')).agent,
+			executor: executor.agent,
+			reviewer: scripted(rejected('no'), approved).agent,
+			limits: { rejections: undefined },
+		}).run('task', { signal });
+
+		expect(executor.run).toHaveBeenCalledTimes(2);
+		expect(result.phases).toEqual([{ goal: 'parse', status: 'approved', summary: 'b' }]);
+	});
+
 	it('refuses a limit that is not a positive integer, or names no limit', () => {
 		const limited = (limits: Partial<PhaseLimits>) => () =>
 			orchestrator({

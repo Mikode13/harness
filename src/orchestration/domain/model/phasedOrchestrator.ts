@@ -767,6 +767,8 @@ export class PhasedOrchestrator implements Agent {
 /**
  * The limits a run keeps, each given one a positive integer.
  *
+ * A limit given as `undefined` keeps its default.
+ *
  * @throws {InvalidAgentConfigError} for one that is not, or a name that is no limit.
  */
 function phaseLimits(limits: unknown): PhaseLimits {
@@ -782,6 +784,8 @@ function phaseLimits(limits: unknown): PhaseLimits {
 				`limits.${name} is not a limit; expected one of: ${Object.keys(defaultPhaseLimits).join(', ')}`,
 			);
 		}
+		// Given as `undefined`, as from optional settings, it keeps its default.
+		if (value === undefined) continue;
 		if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
 			throw new InvalidAgentConfigError(`limits.${name} must be a positive integer`);
 		}
