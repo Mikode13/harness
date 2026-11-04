@@ -738,7 +738,10 @@ refused every commit, as a hook that rejects it does. The run succeeds either wa
 files changed. Each repository says its `outcome`, the commits made, the paths they hold and
 those left out, a hook's included, and `unreviewed`, the paths a hook, a filter or an edit made while git committed changed beyond
 what was reviewed. When git cannot be read, the run fails with `UnrecoverableError`, and so it does when
-the committer fails, as any role's failure ends the run. An orchestrator that runs inside another agent's run, as an agent of `agentAsTool`, never
+the committer fails, as any role's failure ends the run. A run that fails once an earlier
+phase is committed rejects with `RecoverableCommittedRunError` or
+`UnrecoverableCommittedRunError`, of the failure's own kind, which carry the run's `commits`,
+`phases` and `runId`, since those commits stay in git; a cancellation is let through as it is. An orchestrator that runs inside another agent's run, as an agent of `agentAsTool`, never
 commits: that run holds the other agent's changes too. It does not commit
 on Windows, where `autoCommit` is an `InvalidAgentConfigError`.
 

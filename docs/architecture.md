@@ -50,7 +50,9 @@ provider: it drives whatever `LLMClient` it is given.
 
 `Agent`, `RunOptions`, `AgentResponse`, `ProgressEvent`, `Inbox`, the messages a consumer
 sends to a run while it works, read internally through `readerOf`, `OneRunAtATime` and its
-`RunInProgressError`, which let an agent instance take one run at a time, `newSession` and
+`RunInProgressError`, which let an agent instance take one run at a time,
+`RecoverableCommittedRunError` and `UnrecoverableCommittedRunError`, a failure of the kind it
+had, with what a run that committed after each phase had committed, `newSession` and
 `sessionOf`, which give each agent a `Session` of its own, with an id such as
 `smart-hawk-4821`, and read the one a run belongs to (the outer run's, then
 `RunOptions.session`), the approval contract (`ToolRisk`, `Approver`, and
@@ -400,7 +402,9 @@ why it is the only place that knows every provider.
 `ProgressAgent`, `StepContext`, `Session` and `Tokens` types, the `CommitReport`, `RepositoryCommit` and `MadeCommit` types of `AgentResponse.commits`, the `PhaseResult`, `Verification`, `CheckResult` and `CheckStatus` types of `AgentResponse.phases` and `verification`, the `CommitQuestion`, `RequiredCheck` and `PhaseLimits` types of `createLLMOrchestrator`'s options, the `Transcript` and `TranscriptCallback` types
 of `onTranscript`, the `Asker`, `UserQuestion` and `QuestionOption` types of `RunOptions.ask`, `Inbox`, what
 `RunOptions.inbox` takes, `RunInProgressError`, the `UnrecoverableError` a run rejects with while another
-works on the same agent, the approval contract (`rememberApprovals` and the `Approver`,
+works on the same agent, `RecoverableCommittedRunError`, `UnrecoverableCommittedRunError` and the
+`CommittedRun` type they carry, what a run of `createLLMOrchestrator` that fails after a commit
+had committed, the approval contract (`rememberApprovals` and the `Approver`,
 `ApprovalRequest`, `ApprovalDecision`, `RememberableDecision`, `ToolRisk`, `CommandLine` and `WorktreeRemoval` types), the three
 failure types an agent rejects with, `isAbortError`, `isAgentProvider`, `agentProviders`, the
 provider-indexed `agentModels` and `agentReasoningEfforts` catalogs with their `isModelOf` and
@@ -591,7 +595,11 @@ gone to the planner `limits.replans` times, or a replan that grows the plan past
 the run with a response that says what is unfinished and which required checks do not pass for
 the files as they are, logged as a warning: what the phases changed stays on disk, and nothing more
 is committed. Every result carries `phases`, each approved, unfinished or pending, and the
-`verification` of the files as the run left them; the commits of a run that commits each phase report as one. Every
+`verification` of the files as the run left them; the commits of a run that commits each phase report as one. A
+failure that ends a run after a commit, which the workflow throws, is rethrown as
+`RecoverableCommittedRunError` or `UnrecoverableCommittedRunError`, of its own kind, with the
+commits, the phases of the plan as the run last held it and its `runId`, which the orchestrator
+keeps as each phase begins, the planner replans and a commit is made. Every
 prompt ends with the JSON its answer takes, so a role's own instructions need not describe it.
 
 **Committing an approved run.** `createLLMOrchestrator` gives its orchestrator a

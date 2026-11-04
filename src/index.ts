@@ -57,6 +57,11 @@ export {
 	type RunOptions,
 } from './agent/domain/agent.ts';
 export type { CommitReport, MadeCommit, RepositoryCommit } from './agent/domain/commitReport.ts';
+export {
+	type CommittedRun,
+	RecoverableCommittedRunError,
+	UnrecoverableCommittedRunError,
+} from './agent/domain/committedRunError.ts';
 export type {
 	CheckResult,
 	CheckStatus,

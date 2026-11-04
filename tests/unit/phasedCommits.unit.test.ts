@@ -4,7 +4,11 @@ import type { RepositoryCommit } from '../../src/agent/domain/commitReport.ts';
 import { Inbox } from '../../src/agent/domain/inbox.ts';
 import type { Verification } from '../../src/agent/domain/phaseResult.ts';
 import type { Asker, UserQuestion } from '../../src/agent/domain/question.ts';
-import { RunContext, withRunContext } from '../../src/agent/domain/runContext.ts';
+import {
+	RecoverableCommittedRunError,
+	UnrecoverableCommittedRunError,
+} from '../../src/agent/domain/committedRunError.ts';
+import { RunContext, runContextOf, withRunContext } from '../../src/agent/domain/runContext.ts';
 import type { ChangeLog } from '../../src/orchestration/domain/model/changeLog.ts';
 import type {
 	Committer,
@@ -19,7 +23,12 @@ import {
 	phaseReviewValidator,
 	planValidator,
 } from '../../src/orchestration/infrastructure/model/phaseValidators.ts';
-import { InvalidAgentConfigError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
+import {
+	InvalidAgentConfigError,
+	RecoverableError,
+	UnrecoverableError,
+} from '../../src/shared/domain/errors.ts';
+import { isAbortError } from '../../src/shared/domain/isAbortError.ts';
 
 const tokens = { inputTokens: 1, outputTokens: 1, readCacheTokens: 0, writtenCacheTokens: 0 };
 
@@ -84,7 +93,11 @@ function orchestrator({
 	commitQuestion,
 	verifier,
 	reviews = [approved],
+	executor = scripted(...reviews.map((_, index) => done(String(index)))).agent,
+	planner = scripted(planOf(...goals)).agent,
 }: {
+	executor?: Agent;
+	planner?: Agent;
 	goals?: string[];
 	committer?: Committer;
 	committerAgent?: Agent;
@@ -94,8 +107,8 @@ function orchestrator({
 	reviews?: unknown[];
 } = {}) {
 	return new PhasedOrchestrator({
-		planner: scripted(planOf(...goals)).agent,
-		executor: scripted(...reviews.map((_, index) => done(String(index)))).agent,
+		planner,
+		executor,
 		reviewer: scripted(...reviews).agent,
 		validators: { plan: planValidator, report: phaseReportValidator, review: phaseReviewValidator },
 		changes,
@@ -472,6 +485,134 @@ describe("the phased orchestrator's committer", () => {
 				'committed',
 			]);
 			expect(response.commits?.outcome).toBe('committed');
+		});
+
+		/** An executor that carries out the first phase, writing as run `run-1`, and then fails with `failure`. */
+		function failingAfterOne(failure: unknown): Agent {
+			const run = vi
+				.fn<Agent['run']>()
+				.mockImplementationOnce((_prompt, options) => {
+					const context = runContextOf(options);
+					if (context) context.historyRunOf('workspace').runId = 'run-1';
+					return Promise.resolve(respond(JSON.stringify(done('0'))));
+				})
+				.mockRejectedValueOnce(failure);
+			return { run };
+		}
+
+		it.each([
+			[
+				'recoverable',
+				new RecoverableError('Overloaded', { cause: 'busy', tokens }),
+				RecoverableCommittedRunError,
+			],
+			[
+				'unrecoverable',
+				new UnrecoverableError('Out of steps', { cause: 'the limit', tokens }),
+				UnrecoverableCommittedRunError,
+			],
+		])(
+			'fails a run with what it committed when a %s failure ends it after a commit',
+			async (_, failure, kind) => {
+				const promise = orchestrator({
+					goals: ['a', 'b'],
+					commitQuestion: 'phase',
+					autoCommit: true,
+					reviews: [approved, approved],
+					executor: failingAfterOne(failure),
+				}).run('task', { signal });
+
+				await expect(promise).rejects.toBeInstanceOf(kind);
+				const error = await promise.catch((caught: unknown) => caught);
+				// The same failure, and the same kind of it, with what stays in git.
+				expect(error).toBeInstanceOf(failure.constructor);
+				expect(error).toMatchObject({
+					message: failure.message,
+					cause: failure.cause,
+					stack: failure.stack,
+					runId: 'run-1',
+					commits: { outcome: 'committed', repositories: [committed] },
+					phases: [
+						{
+							goal: 'a',
+							status: 'approved',
+							summary: '0',
+							commits: { outcome: 'committed', repositories: [committed] },
+						},
+						{ goal: 'b', status: 'unfinished' },
+					],
+				});
+				// The executor's, the reviewer's and the committer's answers, and the failure's own.
+				expect((error as RecoverableError).tokens).toEqual({
+					...tokens,
+					inputTokens: 5,
+					outputTokens: 5,
+				});
+			},
+		);
+
+		it('reports the phases of the plan as the planner last changed it', async () => {
+			const failure = new UnrecoverableError('Out of steps', { cause: 'the limit' });
+			const run = vi
+				.fn<Agent['run']>()
+				.mockResolvedValueOnce(respond(JSON.stringify(done('0'))))
+				.mockResolvedValueOnce(respond(JSON.stringify({ status: 'replan', reason: 'no b' })))
+				.mockRejectedValueOnce(failure);
+
+			const error = await orchestrator({
+				goals: ['a', 'b'],
+				planner: scripted(planOf('a', 'b'), planOf('c', 'd')).agent,
+				commitQuestion: 'phase',
+				autoCommit: true,
+				reviews: [approved],
+				executor: { run },
+			})
+				.run('task', { signal })
+				.catch((caught: unknown) => caught);
+
+			expect((error as UnrecoverableCommittedRunError).phases).toEqual([
+				expect.objectContaining({ goal: 'a', status: 'approved' }),
+				{ goal: 'c', status: 'unfinished' },
+				{ goal: 'd', status: 'pending' },
+			]);
+		});
+
+		it('fails as it would with nothing committed, the first phase declined', async () => {
+			const failure = new UnrecoverableError('Out of steps', { cause: 'the limit' });
+			const ask = vi.fn<Asker>().mockReturnValueOnce(['Approve']).mockReturnValueOnce(['Not yet']);
+
+			const error = await orchestrator({
+				goals: ['a', 'b'],
+				commitQuestion: 'phase',
+				reviews: [approved, approved],
+				executor: failingAfterOne(failure),
+			})
+				.run('task', { signal, ask })
+				.catch((caught: unknown) => caught);
+
+			expect(error).toBeInstanceOf(UnrecoverableError);
+			expect(error).not.toBeInstanceOf(UnrecoverableCommittedRunError);
+		});
+
+		it('lets a cancellation after a commit through as it is', async () => {
+			const controller = new AbortController();
+			const run = vi
+				.fn<Agent['run']>()
+				.mockResolvedValueOnce(respond(JSON.stringify(done('0'))))
+				.mockImplementationOnce(() => {
+					controller.abort();
+					return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'));
+				});
+
+			await expect(
+				orchestrator({
+					goals: ['a', 'b'],
+					commitQuestion: 'phase',
+					autoCommit: true,
+					reviews: [approved, approved],
+					executor: { run },
+				}).run('task', { signal: controller.signal }),
+			).rejects.toSatisfy(isAbortError);
 		});
 
 		it('commits each phase without asking with autoCommit', async () => {

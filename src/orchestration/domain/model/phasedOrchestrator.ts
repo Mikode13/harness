@@ -6,6 +6,7 @@ import type {
 	RunOptions,
 } from '#src/agent/domain/agent';
 import type { CommitReport } from '#src/agent/domain/commitReport';
+import { type CommittedRun, withCommittedRun } from '#src/agent/domain/committedRunError';
 import type { PhaseResult, Verification } from '#src/agent/domain/phaseResult';
 import { OneRunAtATime } from '#src/agent/domain/oneRunAtATime';
 import { readAnswers, type UserQuestion } from '#src/agent/domain/question';
@@ -159,6 +160,14 @@ type Transition = WorkflowTransition<Stages, Outcome>;
 interface Totals {
 	tokens: Tokens | undefined;
 	unreported: boolean;
+}
+
+/** How far a run got, for a failure to say what it had committed. */
+interface Reached {
+	/** Where the run stood when its phase in progress began, or was replanned. */
+	course?: Course;
+	/** The run the workspace's history recorded, once the run committed. */
+	runId?: string;
 }
 
 function renderPlan(plan: Plan, at?: number, done: readonly PhaseResult[] = []): string {
@@ -382,6 +391,9 @@ export class PhasedOrchestrator implements Agent {
 	 *
 	 * @throws {RunInProgressError} when another run on it is still working, before any role
 	 * starts.
+	 * @throws {RecoverableCommittedRunError | UnrecoverableCommittedRunError} for a failure that
+	 * ends a run after one of its phases was committed, of the failure's own kind, with what the
+	 * run committed.
 	 */
 	run(prompt: string, options: RunOptions): Promise<AgentResponse> {
 		return this.runs.run(() => this.runAlone(prompt, options));
@@ -390,11 +402,12 @@ export class PhasedOrchestrator implements Agent {
 	private async runAlone(request: string, options: RunOptions): Promise<AgentResponse> {
 		// Per invocation, not per instance: the CLI keeps one orchestrator for a whole session.
 		const spent: Totals = { tokens: undefined, unreported: false };
+		const reached: Reached = {};
 		// Only a run of its own: inside another agent's, the run holds that agent's changes too.
 		const ownRun = runContextOf(options) === undefined;
 		const workflow = new WorkflowRunner<Planning, Outcome>({
 			initialStage: 'plan',
-			stages: this.stagesFor(request, ownRun, spent),
+			stages: this.stagesFor(request, ownRun, spent, reached),
 			maxAttempts: 3,
 			// The corrections' and the phases' own limits end the run; this only keeps the runner
 			// from ending it first.
@@ -408,8 +421,12 @@ export class PhasedOrchestrator implements Agent {
 				{ ...options, session: sessionOf(options) ?? this.session },
 			);
 		} catch (error) {
-			// The committer's answers, which no stage of the workflow counts.
-			throw withSpentTokens(error, spent.tokens, spent.unreported);
+			// The committer's answers, which no stage of the workflow counts, and what the phases
+			// committed, which stays in git.
+			throw withCommittedRun(
+				withSpentTokens(error, spent.tokens, spent.unreported),
+				committedRun(reached),
+			);
 		}
 		const { commits, phases, verification } = result.result;
 		return {
@@ -427,18 +444,23 @@ export class PhasedOrchestrator implements Agent {
 		};
 	}
 
-	/** One run's stages: they close over its request and what its committer spends. */
+	/** One run's stages: they close over its request, what its committer spends and how far it got. */
 	private stagesFor(
 		request: string,
 		ownRun: boolean,
 		spent: Totals,
+		reached: Reached,
 	): ReadonlyMap<string, RunnableStage> {
 		const stage = defineWorkflowStages<Stages, Outcome>();
 		const plan = (validator: Validator<Plan>) => ({
 			agent: () => this.planner,
 			prompt: (planning: Planning) => plannerPrompt(request, planning, this.limits.phases),
 			validator,
-			transition: (answer: Plan, planning: Planning) => this.planned(answer, planning),
+			transition: (answer: Plan, planning: Planning): Transition => {
+				const next = this.planned(answer, planning);
+				if (next.type === 'go' && next.stage === 'execute') reached.course = next.input;
+				return next;
+			},
 		});
 		const stages = [
 			stage('plan', plan(this.planValidator)),
@@ -447,11 +469,14 @@ export class PhasedOrchestrator implements Agent {
 				run: (proposed, options) => this.approve(proposed, ownRun, options),
 			}),
 			stage.code('begin', {
-				run: async (course, options): Promise<Transition> => ({
-					type: 'go',
-					stage: 'execute',
-					input: { ...course, mark: await this.mark(options) },
-				}),
+				run: async (course, options): Promise<Transition> => {
+					reached.course = course;
+					return {
+						type: 'go',
+						stage: 'execute',
+						input: { ...course, mark: await this.mark(options) },
+					};
+				},
 			}),
 			stage('execute', {
 				agent: () => this.executor,
@@ -470,7 +495,7 @@ export class PhasedOrchestrator implements Agent {
 				transition: (review, input) => this.reviewed(review, input),
 			}),
 			stage.code('commit', {
-				run: (input, options) => this.commit(request, input, options, spent),
+				run: (input, options) => this.commit(request, input, options, spent, reached),
 			}),
 			stage.code('unfinished', {
 				run: async ({ course, reason }, options) =>
@@ -650,6 +675,7 @@ export class PhasedOrchestrator implements Agent {
 		input: Reviewing,
 		options: RunOptions,
 		spent: Totals,
+		reached: Reached,
 	): Promise<Transition> {
 		const verification = await this.check(options);
 		const checked = verification ? { ...input, verification } : input;
@@ -677,6 +703,7 @@ export class PhasedOrchestrator implements Agent {
 				spent.tokens = addTokens(spent.tokens, response.tokens);
 			},
 		});
+		reached.runId = runContextOf(options)?.firstRunId;
 		return approved(checked, commits);
 	}
 
@@ -889,6 +916,13 @@ function phasesOf(course: Course): PhaseResult[] {
 		}
 		return { goal, status: 'pending' };
 	});
+}
+
+/** What a run that failed had committed, when it committed anything. */
+function committedRun({ course, runId }: Reached): CommittedRun | undefined {
+	const commits = course && allCommits(course.commits);
+	if (!course || !commits) return undefined;
+	return { commits, phases: phasesOf(course), ...(runId === undefined ? {} : { runId }) };
 }
 
 /**
