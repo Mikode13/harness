@@ -329,9 +329,15 @@ describe('the git committer', { timeout: 20_000 }, () => {
 	it("commits a later repository holding a file the run created and deleted, after an earlier repository's commit", async () => {
 		const nested = join(root, 'nested');
 		execFileSync('git', ['init', '--quiet', '--initial-branch=main', nested]);
-		execFileSync('git', [...identity, 'commit', '--quiet', '--allow-empty', '-m', 'start'], {
-			cwd: nested,
-		});
+		// git commits there too, and a runner cannot always guess an identity.
+		for (const [key, value] of [
+			['user.name', 'Test'],
+			['user.email', 'test@example.com'],
+			['commit.gpgsign', 'false'],
+		] as const) {
+			execFileSync('git', ['config', key, value], { cwd: nested });
+		}
+		execFileSync('git', ['commit', '--quiet', '--allow-empty', '-m', 'start'], { cwd: nested });
 		const { run, committer, options } = await workingRun({
 			edit: 'echo two > a.txt && echo two > nested/n.txt && echo tmp > nested/tmp.txt',
 			clean: 'rm nested/tmp.txt',
@@ -349,7 +355,9 @@ describe('the git committer', { timeout: 20_000 }, () => {
 			options,
 		);
 
-		expect(reports.map(({ repository, outcome }) => ({ repository, outcome }))).toEqual([
+		expect(
+			reports.map(({ repository, outcome, reason }) => ({ repository, outcome, reason })),
+		).toEqual([
 			{ repository: root, outcome: 'done' },
 			{ repository: nested, outcome: 'done' },
 		]);
