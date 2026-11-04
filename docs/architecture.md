@@ -332,8 +332,8 @@ provider adapters and preserve their literal tuples.
 
 Two boundaries carry most of the design:
 
-**Everything is an `Agent`.** `ClaudeAgent`, `CodexAgent`, `LLMAgent`, `RetryingAgent` and
-`OrchestratorAgent` all implement `run(prompt, options)`, where `options` holds the run's
+**Everything is an `Agent`.** `ClaudeAgent`, `CodexAgent`, `LLMAgent`, `RetryingAgent`,
+`OrchestratorAgent` and `PhasedOrchestrator` all implement `run(prompt, options)`, where `options` holds the run's
 `signal`, its optional `onProgress`, its optional `approve`, asked before a model-backed
 agent runs a `destructive` tool call, and its optional `ask`, which answers what a model-backed
 agent asks its user. A decorator and a whole multi-agent workflow are
@@ -342,8 +342,8 @@ is driving. A decorator such as `InstructedAgent` passes `options` on whole, nev
 a field added to it reaches every agent without each decorator learning about it. Two copy it
 instead, both with object spread, so a field must be an own enumerable one to survive them:
 `RetryingAgent`, for a run with `ask`, replaces only `ask` with one that remembers the answers
-across attempts, and `OrchestratorAgent` makes one shallow copy per role with object
-spread, carrying the own enumerable string- and symbol-keyed fields, including the internal
+across attempts, and each orchestrator, `OrchestratorAgent` and `PhasedOrchestrator`, makes one
+shallow copy per role with object spread, carrying the own enumerable string- and symbol-keyed fields, including the internal
 `RunContext`, and replaces only `onProgress` with a wrapper that makes the role attribution
 authoritative. The same context therefore reaches every agent the run reaches, and no consumer can
 see or set it.
@@ -435,7 +435,8 @@ Four contracts have rules of their own:
   `AgentResponse`, whose `response` is empty when the run produced no text, or rejects with a
   `RecoverableError` or `UnrecoverableError` whose `tokens` hold what the run spent before
   failing. `RetryingAgent` adds failed attempts to whichever ends the run, and
-  `OrchestratorAgent` adds every earlier role. `tokens` is missing, not zero, when any response
+  `OrchestratorAgent`, and the workflow under `PhasedOrchestrator`, add every earlier role, and
+  `PhasedOrchestrator` adds its committer's. `tokens` is missing, not zero, when any response
   in the run came without usage: its call was billed, so a partial sum would look complete.
   A failure tells the two cases apart. The engine sets `usageUnreported` when the provider
   answered without usage before the run failed, which makes every total that includes it
@@ -451,8 +452,9 @@ Four contracts have rules of their own:
   know and ignore the rest, so a new type must never carry information a consumer needs to be
   correct. The result of a run travels in `AgentResponse`; progress is narration. Existing event
   shapes remain valid because `agent` is optional on every event and `summary`, `exitCode` and
-  `error` are optional on `tool` events. `OrchestratorAgent` supplies
-  `agent: 'planner' | 'executor' | 'reviewer' | 'committer'` for every event received from a role, including
+  `error` are optional on `tool` events. Each orchestrator supplies
+  `agent: 'planner' | 'executor' | 'reviewer' | 'committer'` for every event received from a role,
+  `'committer'` only from `PhasedOrchestrator`, including
   retries and later rounds, and overwrites an inner value rather than trusting it. A
   `tool.summary` is owned by the tool and is only a short description of the model-supplied call;
   `tool.exitCode` narrates the exit code of a configured command that failed, and `tool.error`
@@ -470,7 +472,7 @@ Four contracts have rules of their own:
   events keep arriving after it, and a `subagentEnded` event, with the same call id, number and
   `name`, says when each ended and whether it `answered`, `failed` or was `stopped` when the run
   ended. It is narration: the answer reaches only the model that sent the agent.
-  `OrchestratorAgent` stamps the outer wrapper with the role that made the call. An agent on
+  Each orchestrator stamps the outer wrapper with the role that made the call. An agent on
   the model APIs emits `compaction` when its context was compacted, with who compacted it, why,
   and, when known, how many tokens of context it compacted. The provider's follows the `step`
   of the call that compacted, whose tokens it includes; the harness's comes once its summary is
@@ -544,8 +546,8 @@ previous failure appended to the original prompt — an attempt that failed befo
 registered the turn left no session that remembers it. On exhaustion it throws
 `UnrecoverableError`.
 
-**A workflow turn.** `OrchestratorAgent.run` loops up to `maxAttempts` rounds of planner →
-executor → reviewer. The reviewer is asked for JSON and its answer goes through
+**A workflow turn.** On `createOrchestrator`, `OrchestratorAgent.run` loops up to `maxAttempts`
+rounds of planner → executor → reviewer; `createLLMOrchestrator`'s phased turn follows. The reviewer is asked for JSON and its answer goes through
 `ReviewerDecisionValidator`, so a decision is `{ decision: 'approved' }` or
 `{ decision: 'rejected', feedback }` and never free text. An unusable reviewer answer retries
 only the reviewer call, with the parse failure fed back — a malformed decision is not evidence
@@ -742,7 +744,8 @@ summed over every call of the run: one call without usage leaves the total unkno
 failure carries what the earlier calls spent. The agent emits no `turnStarted` or
 `turnEnded`: like the other engines, it leaves turn boundaries to the consumer. The tool-to-consumer
 narration path is `Tool.summarize` → `LLMAgent`'s optional `tool.summary` events →
-`OrchestratorAgent`'s authoritative role label → the consumer's progress callback. No stage makes
+the orchestrator's authoritative role label, from `OrchestratorAgent` or `PhasedOrchestrator` →
+the consumer's progress callback. No stage makes
 the summary part of the model context or the run result. After each call to the model, once its
 tokens are counted, `LLMAgent` emits a `step` event: the call's tokens and a `StepContext`, the
 characters it sent by origin (system prompt, tool definitions, text, reasoning, tool calls, each
@@ -785,7 +788,8 @@ and "An edit shows the lines the formatter rewrote, and has the file read again"
 otherwise see every previous run's tokens reported again.
 
 **An agent instance takes one run at a time.** It continues one conversation, or one provider
-session or thread, so `LLMAgent`, both Agent SDK engines and `OrchestratorAgent` reject a run
+session or thread, so `LLMAgent`, both Agent SDK engines, `OrchestratorAgent` and
+`PhasedOrchestrator` reject a run
 that starts while another works on them with `RunInProgressError` (`OneRunAtATime`), before it
 sends anything. The orchestrator checks before any role starts. A consumer queues what arrives
 meanwhile, or sends it to the run in progress through its `Inbox`. See "An agent takes one run
