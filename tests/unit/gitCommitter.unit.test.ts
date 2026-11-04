@@ -326,6 +326,35 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		});
 	});
 
+	it("commits a later repository holding a file the run created and deleted, after an earlier repository's commit", async () => {
+		const nested = join(root, 'nested');
+		execFileSync('git', ['init', '--quiet', '--initial-branch=main', nested]);
+		execFileSync('git', [...identity, 'commit', '--quiet', '--allow-empty', '-m', 'start'], {
+			cwd: nested,
+		});
+		const { run, committer, options } = await workingRun({
+			edit: 'echo two > a.txt && echo two > nested/n.txt && echo tmp > nested/tmp.txt',
+			clean: 'rm nested/tmp.txt',
+		});
+		await run('edit');
+		await run('clean');
+		const frozen = await committer.freeze(options);
+
+		const reports = await committer.commit(
+			frozen ?? { repositories: [] },
+			new Map([
+				[root, 'Change a'],
+				[nested, 'Add n'],
+			]),
+			options,
+		);
+
+		expect(reports.map(({ repository, outcome }) => ({ repository, outcome }))).toEqual([
+			{ repository: root, outcome: 'done' },
+			{ repository: nested, outcome: 'done' },
+		]);
+	});
+
 	it('leaves the repository when the run changes another file after the review, as a command of the reviewer can', async () => {
 		const { run, committer, options } = await workingRun({
 			edit: 'echo two > a.txt',
