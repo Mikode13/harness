@@ -262,7 +262,7 @@ describe('the command verifier', { timeout: 20_000 }, () => {
 		expect(runs('test')).toBe(3);
 	});
 
-	it('reports a check stale when a later check changed the files it saw', async () => {
+	it('runs a check again when a later check changed the files it saw', async () => {
 		const { options, verifier } = await verifiedRun(
 			{ lint: counted('lint', 'exit 0'), snapshot: counted('snapshot', 'echo new > a.txt') },
 			[{ command: 'lint' }, { command: 'snapshot' }],
@@ -270,11 +270,34 @@ describe('the command verifier', { timeout: 20_000 }, () => {
 
 		const result = await verifier.verify(options);
 
-		expect(result.met).toBe(false);
+		expect(result.met).toBe(true);
 		expect(result.checks.map(({ command, status }) => `${command} ${status}`)).toEqual([
-			'lint stale',
+			'lint passed',
 			'snapshot passed',
 		]);
+		expect(runs('lint')).toBe(2);
+		expect(runs('snapshot')).toBe(1);
+	});
+
+	it('reports a check stale after a few passes when the checks keep changing the files', async () => {
+		const counter = (name: string) => `wc -l < "${join(parent, `${name}.count`)}"`;
+		const { options, verifier } = await verifiedRun(
+			{
+				first: counted('first', `${counter('first')} > a.txt`),
+				second: counted('second', `${counter('second')} > b.txt`),
+			},
+			[{ command: 'first' }, { command: 'second' }],
+		);
+
+		const result = await verifier.verify(options);
+
+		expect(result.met).toBe(false);
+		expect(result.checks.map(({ command, status }) => `${command} ${status}`)).toEqual([
+			'first stale',
+			'second passed',
+		]);
+		expect(runs('first')).toBe(3);
+		expect(runs('second')).toBe(3);
 	});
 
 	it('reports a check missing, with why, when the run may write no more', async () => {

@@ -101,6 +101,13 @@ export function validateRequiredChecks(checks: readonly RequiredCheck[], command
 }
 
 /**
+ * How many times the harness goes through the checks in one verification: the first runs what
+ * is missing, stale or unknown, and each later one what the harness's own runs made stale, so
+ * checks that change files settle.
+ */
+const checkPasses = 3;
+
+/**
  * Verifies a run's required checks with the runs of its configured commands, through the
  * `runCommand` tool, so a check the harness runs is captured, recorded and attributed as one the
  * model runs. The consumer declared each check, so running it asks nobody.
@@ -141,16 +148,19 @@ export class CommandVerifier implements Verifier {
 		// point that notices a cancellation.
 		signal.throwIfAborted();
 
-		const prepared: { check: RequiredCheck; call: PreparedCall; line: CommandLine }[] = [];
-		for (const check of this.checks) {
+		const prepare = async (check: RequiredCheck): Promise<PreparedCall> => {
 			const definition = this.commands[check.command];
 			// The constructor validated every check against the commands.
 			if (!definition) throw new Error(`"${check.command}" is not a configured command`);
-			const call = await this.tool.prepare(
+			return this.tool.prepare(
 				{ command: { name: check.command, ...valuesFor(definition, check.values ?? {}) } },
 				signal,
 				callContext(context, check.command, delegation?.depth ?? 0),
 			);
+		};
+		const prepared: { check: RequiredCheck; call?: PreparedCall; line: CommandLine }[] = [];
+		for (const check of this.checks) {
+			const call = await prepare(check);
 			// The tool always says what it runs; a tool that does not is not `runCommand`.
 			if (!call.command) throw new Error(`"${check.command}" did not prepare a command`);
 			prepared.push({ check, call, line: call.command });
@@ -165,33 +175,45 @@ export class CommandVerifier implements Verifier {
 			);
 
 		const why = new Map<RequiredCheck, string>();
-		for (const { check, call, line } of prepared) {
-			const { runs, current } = await evidence();
-			const { status } = assessCheck(check.command, line, runs, current);
-			if (status === 'passed' || status === 'failed') continue;
-			try {
-				// Here, not in `prepare`, which only says what the check runs: a run another agent
-				// delegated to never writes beyond its caller's limit, a check included.
-				await this.writes.checkCeiling(
-					delegation?.writeCeiling ? { writeCeiling: delegation.writeCeiling } : {},
-				);
-				await call.run(signal);
-			} catch (error) {
-				// A check that ran and did not pass is evidence, recorded with how it ended.
-				if (error instanceof ToolExecutionError) continue;
-				// One the harness may not run, such as when the run may write no more, keeps its status.
-				if (error instanceof EditRefusedError) {
-					why.set(check, `could not run: ${error.message}`);
-					continue;
+		for (let pass = 0; pass < checkPasses; pass++) {
+			let ran = false;
+			for (const each of prepared) {
+				const { check, line } = each;
+				if (why.has(check)) continue;
+				const { runs, current } = await evidence();
+				const { status } = assessCheck(check.command, line, runs, current);
+				if (status === 'passed' || status === 'failed') continue;
+				// After the first pass, only a check a later check of the harness's made stale.
+				if (pass > 0 && status !== 'stale') continue;
+				ran = true;
+				// A prepared call runs once: a check run again is prepared again.
+				const call = each.call ?? (await prepare(check));
+				each.call = undefined;
+				try {
+					// Here, not in `prepare`, which only says what the check runs: a run another agent
+					// delegated to never writes beyond its caller's limit, a check included.
+					await this.writes.checkCeiling(
+						delegation?.writeCeiling ? { writeCeiling: delegation.writeCeiling } : {},
+					);
+					await call.run(signal);
+				} catch (error) {
+					// A check that ran and did not pass is evidence, recorded with how it ended.
+					if (error instanceof ToolExecutionError) continue;
+					// One the harness may not run, such as when the run may write no more, keeps its status.
+					if (error instanceof EditRefusedError) {
+						why.set(check, `could not run: ${error.message}`);
+						continue;
+					}
+					// One that ran but whose changes the harness could not all record stopped writing; it
+					// is recorded, if it ended, with no state, and the others are refused from here.
+					if (error instanceof EditUnconfirmedError) {
+						why.set(check, error.message);
+						continue;
+					}
+					throw error;
 				}
-				// One that ran but whose changes the harness could not all record stopped writing; it
-				// is recorded, if it ended, with no state, and the others are refused from here.
-				if (error instanceof EditUnconfirmedError) {
-					why.set(check, error.message);
-					continue;
-				}
-				throw error;
 			}
+			if (!ran) break;
 		}
 
 		// Again for every check: running one may have changed what another checked.

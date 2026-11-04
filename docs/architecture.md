@@ -218,7 +218,8 @@ The `Verifier` port tells where each of a run's required checks stands, `passed`
 `stale`, `missing` or `unknown`, from real command results, with the pure `assessCheck` deciding
 one from the run's command runs and what its changed files hold now. `CommandVerifier`, its
 infrastructure, reads the runs the `WriteSession` recorded, from the model or the harness, and
-runs a missing, stale or unknown check itself through the same `runCommand` tool, so the harness's
+runs a missing, stale or unknown check itself through the same `runCommand` tool, and again, in
+up to 3 passes, one its own later check made stale, so the harness's
 run is captured, recorded and attributed as the model's. `PhasedOrchestrator` takes one as its
 barrier before each review, after the review before a commit or the end of the run, and as an
 unfinished run ends; `createLLMOrchestrator` builds one when

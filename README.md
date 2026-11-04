@@ -664,7 +664,9 @@ whose required checks do not pass.
 its parameters. A parameter left out is not given, so a run of `test` on some files never counts
 for `{ command: 'test' }`. At each barrier, before each review, and again after the review before a
 commit or the end of the run, the harness runs with no model each check that never ran, or ran on files that changed since, and
-does not run one that already failed for these files. It asks no approver, whatever
+does not run one that already failed for these files. A check that another check's run changed
+the files under runs again, up to 3 passes in all, so a check that writes, such as a snapshot,
+settles. It asks no approver, whatever
 `autoApprove` says: listing a command in `requiredChecks` approves its runs. A check that does not pass sends the
 phase back to the executor with its output. A check that names no command, or a value that does
 not fit it, is an `InvalidAgentConfigError` when the orchestrator is built.
