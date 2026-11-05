@@ -1516,7 +1516,10 @@ class FileRunJournal implements RunJournal {
 	private readonly firstStates = new Map<string, FileState>();
 	private readonly currentStates = new Map<string, FileState>();
 	private readonly appliedInOrder: string[] = [];
-	private state: { applied: number; hash: string } | undefined;
+	// How many changes it could not copy: each leaves a file in a state the content state cannot
+	// know, so it counts as a change of its own.
+	private uncopied = 0;
+	private state: { applied: number; uncopied: number; hash: string } | undefined;
 	// The changes recorded as prepared and not abandoned: those that may have reached a file. One
 	// whose `prepared` line failed is not here, since nothing writes a file before that line.
 	private readonly effects = new Set<number>();
@@ -1629,6 +1632,7 @@ class FileRunJournal implements RunJournal {
 		this.assertOpen();
 		await this.append({ type: 'unrecorded', sequence: ++this.sequence, path, by });
 		this.lost = true;
+		this.uncopied++;
 	}
 
 	async committed(commits: RecordedCommits): Promise<void> {
@@ -1645,18 +1649,21 @@ class FileRunJournal implements RunJournal {
 		return this.appliedInOrder;
 	}
 
-	// Computed again only after a change was applied.
+	// Computed again only after a change was applied or could not be copied.
 	contentState(): string {
-		if (this.state?.applied !== this.appliedInOrder.length) {
+		const applied = this.appliedInOrder.length;
+		if (this.state?.applied !== applied || this.state.uncopied !== this.uncopied) {
 			const changed = [...this.currentStates]
 				.filter(([path, current]) => {
 					const first = this.firstStates.get(path);
 					return !first || !sameState(first, current);
 				})
 				.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+			const known = this.uncopied === 0 ? changed : [changed, this.uncopied];
 			this.state = {
-				applied: this.appliedInOrder.length,
-				hash: hashOf(Buffer.from(JSON.stringify(changed))),
+				applied,
+				uncopied: this.uncopied,
+				hash: hashOf(Buffer.from(JSON.stringify(known))),
 			};
 		}
 		return this.state.hash;

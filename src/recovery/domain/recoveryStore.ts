@@ -183,7 +183,8 @@ export interface RunJournal {
 	/**
 	 * What the files this run changed hold now, as one hash of their paths and states. A file back
 	 * to what it held before the run's first change to it counts as unchanged, so a change undone
-	 * gives the state from before it.
+	 * gives the state from before it. A change it could not copy leaves a state no other gives,
+	 * since what the file holds is not known.
 	 */
 	contentState(): string;
 	/**

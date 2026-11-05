@@ -423,6 +423,22 @@ describe('FileRecoveryStore', () => {
 			await run.finish('completed');
 		});
 
+		it('gives a new state for each change it could not copy, whose content it does not know', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const run = await store.startRun();
+			const initial = run.contentState();
+
+			// Such as a command that leaves a symbolic link where a file was, twice.
+			await run.unrecorded('b.txt', 'runCommand');
+			const once = run.contentState();
+			await run.unrecorded('b.txt', 'runCommand');
+
+			expect(once).not.toBe(initial);
+			expect(run.contentState()).not.toBe(once);
+			expect(run.contentState()).not.toBe(initial);
+			await run.finish('completed');
+		});
+
 		it('takes a run that changed nothing out of the history, back to the run before it', async () => {
 			const store = await FileRecoveryStore.open({ root, directory });
 			const kept = await store.startRun();
