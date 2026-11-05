@@ -380,6 +380,22 @@ describe('the history commands', () => {
 			);
 		});
 
+		it('says git shows the files against kept commits only for the runs a move undoes', async () => {
+			const first = await committingRun('a.txt', 'one\n', 'Add a');
+			const madeA = sha();
+			await commands('y', '', '').run('/undo');
+			await committingRun('b.txt', 'two\n', 'Add b');
+			const madeB = sha();
+			const cli = commands('y', '', '');
+
+			await cli.run(`/goto ${short(first)}`);
+
+			expect(cli.printed.slice(-2)).toEqual([
+				`git: ${root} (${branch}): kept on the branch, so git shows what was undone as changes against them: ${madeB} Add b`,
+				`git: ${root} (${branch}): kept on the branch: ${madeA} Add a`,
+			]);
+		});
+
 		it('does not ask about commits for a run that made none', async () => {
 			await committingRun('a.txt', 'one\n', 'Add a');
 			await recordRun(store, root, [['c.txt', 'three']]);
