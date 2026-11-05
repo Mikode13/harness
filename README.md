@@ -685,7 +685,9 @@ not pass, the logger is warned, and nothing more is committed; what the phases c
 disk. `AgentResponse.phases` lists each phase of the plan, `approved`, `unfinished` or
 `pending`, with what the executor said, its checks and, when the run commits each phase, its
 commit. `AgentResponse.verification` holds the checks for the files as the run left them, `met` or
-not: an unfinished run runs them once more as it ends.
+not: an unfinished run runs them once more as it ends. The last commit's hooks run after that
+check, so what a hook changed, such as a formatter's rewrite, is not checked; the commit's
+report names it in `unreviewed`.
 
 ```ts
 const orchestrator = await createLLMOrchestrator({

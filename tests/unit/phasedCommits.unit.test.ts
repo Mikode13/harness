@@ -594,6 +594,25 @@ describe("the phased orchestrator's committer", () => {
 			expect(error).not.toBeInstanceOf(UnrecoverableCommittedRunError);
 		});
 
+		it('fails with the commit when the progress callback fails once it is made', async () => {
+			const error = await orchestrator({ autoCommit: true })
+				.run('task', {
+					signal,
+					onProgress: event => {
+						if (event.type === 'workflowTransition' && event.stage === 'commit') {
+							throw new Error('the host broke');
+						}
+					},
+				})
+				.catch((caught: unknown) => caught);
+
+			expect(error).toBeInstanceOf(UnrecoverableCommittedRunError);
+			expect(error).toMatchObject({
+				commits: { outcome: 'committed', repositories: [committed] },
+				phases: [{ goal: 'a', status: 'approved' }],
+			});
+		});
+
 		it('lets a cancellation after a commit through as it is', async () => {
 			const controller = new AbortController();
 			const run = vi

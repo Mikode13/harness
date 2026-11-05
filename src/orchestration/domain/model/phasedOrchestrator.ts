@@ -171,7 +171,7 @@ interface Totals {
 
 /** How far a run got, for a failure to say what it had committed. */
 interface Reached {
-	/** Where the run stood when its phase in progress began, or was replanned. */
+	/** Where the run stood when its phase in progress began or was replanned, or a commit was made. */
 	course?: Course;
 	/** The run the workspace's history recorded, once the run committed. */
 	runId?: string;
@@ -714,6 +714,8 @@ export class PhasedOrchestrator implements Agent {
 				spent.tokens = addTokens(spent.tokens, response.tokens);
 			},
 		});
+		// Now, before anything else can fail: the commit is made, whatever happens next.
+		reached.course = afterApproval(checked, commits);
 		reached.runId = runContextOf(options)?.firstRunId;
 		return approved(checked, commits);
 	}
@@ -842,6 +844,25 @@ function commitsAfter(course: Course): boolean {
 
 /** The phase approved, with its commit when it had one, and the next phase, or the end. */
 function approved(input: Reviewing, commits?: CommitReport): Transition {
+	const next = afterApproval(input, commits);
+	if (next.at < input.plan.phases.length) return { type: 'go', stage: 'begin', input: next };
+	const all = allCommits(next.commits);
+	return {
+		type: 'complete',
+		result: {
+			response: finished(input.plan, next.done),
+			phases: [...next.done],
+			...(all ? { commits: all } : {}),
+			...(input.verification ? { verification: input.verification } : {}),
+		},
+	};
+}
+
+/**
+ * Where the run stands once the phase is approved, with its commit when it had one: at the next
+ * phase, or past the last.
+ */
+function afterApproval(input: Reviewing, commits?: CommitReport): Course {
 	const result: PhaseResult = {
 		goal: goalOf(input),
 		status: 'approved',
@@ -849,33 +870,15 @@ function approved(input: Reviewing, commits?: CommitReport): Transition {
 		...(input.verification ? { verification: input.verification } : {}),
 		...(commits && input.committing?.each ? { commits } : {}),
 	};
-	const done = [...input.done, result];
-	const made = commits ? [...input.commits, commits] : input.commits;
-	if (input.at < input.plan.phases.length - 1) {
-		return {
-			type: 'go',
-			stage: 'begin',
-			input: {
-				plan: input.plan,
-				at: input.at + 1,
-				done,
-				rejections: 0,
-				replans: 0,
-				mark: input.reviewed,
-				commits: made,
-				...(input.committing ? { committing: input.committing } : {}),
-			},
-		};
-	}
-	const all = allCommits(made);
 	return {
-		type: 'complete',
-		result: {
-			response: finished(input.plan, done),
-			phases: done,
-			...(all ? { commits: all } : {}),
-			...(input.verification ? { verification: input.verification } : {}),
-		},
+		plan: input.plan,
+		at: input.at + 1,
+		done: [...input.done, result],
+		rejections: 0,
+		replans: 0,
+		mark: input.reviewed,
+		commits: commits ? [...input.commits, commits] : input.commits,
+		...(input.committing ? { committing: input.committing } : {}),
 	};
 }
 
