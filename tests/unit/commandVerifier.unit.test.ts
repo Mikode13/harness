@@ -77,7 +77,7 @@ async function verifiedRun(commands: Commands, checks: RequiredCheck[]) {
 		await call.run(signal).catch(() => undefined);
 	};
 	const verifier = new CommandVerifier({ checks, commands, tool, writes: opened.writes });
-	return { context, options, run, verifier, writes: opened.writes };
+	return { context, options, run, verifier, writes: opened.writes, store: opened.store };
 }
 
 describe('a required check, against the runs of a task', () => {
@@ -277,6 +277,18 @@ describe('the command verifier', { timeout: 20_000 }, () => {
 		]);
 		expect(runs('lint')).toBe(2);
 		expect(runs('snapshot')).toBe(1);
+	});
+
+	it("records what a check it ran changed as the harness's", async () => {
+		const { context, options, verifier, store } = await verifiedRun(
+			{ snapshot: counted('snapshot', 'echo new > a.txt') },
+			[{ command: 'snapshot' }],
+		);
+
+		await verifier.verify(options);
+
+		const { entries } = await store.readRun(context.firstRunId ?? '');
+		expect(entries).toMatchObject([{ observedBy: 'snapshot', author: 'harness' }]);
 	});
 
 	it('reports a check stale after a few passes when the checks keep changing the files', async () => {

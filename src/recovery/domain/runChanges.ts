@@ -112,6 +112,9 @@ async function renderFile(
 	if (change.uncertain) {
 		lines.push(`# ${name}: the run stopped while changing this file; it may not hold this change`);
 	}
+	if (change.authors.length > 0) {
+		lines.push(`# ${name}: changed by ${change.authors.join(', ')}`);
+	}
 	if (change.observedBy.length > 0) {
 		const commands = change.observedBy.map(command => `"${command}"`).join(', ');
 		lines.push(

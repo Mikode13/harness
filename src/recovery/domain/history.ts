@@ -28,6 +28,13 @@ export interface HistoryRun {
 	 */
 	files: string[];
 	/**
+	 * Who changed each file of `files` that names one, by the same path: the role of the
+	 * orchestrator whose tool changed it, such as `executor`, an agent that role handed work to,
+	 * as `executor › commit`, or `harness` for a required check the harness ran. Absent when no
+	 * change of the run names one, as for an agent outside an orchestrator.
+	 */
+	authors?: Record<string, string[]>;
+	/**
 	 * The session it came from, so a host can warn before undoing another session's run. Absent
 	 * for a run recorded before runs recorded one. A run retention chained into this one keeps
 	 * no session of its own.
@@ -132,10 +139,16 @@ export class StoreHistory implements History {
 			});
 			if (!read) continue;
 			const { record, entries, unrecorded } = read;
+			const changes = changedFiles(record, entries);
 			const files = [
-				...changedFiles(record, entries).map(change => change.path),
+				...changes.map(change => change.path),
 				...unrecorded.map(change => change.path),
 			];
+			const authors = Object.fromEntries(
+				changes
+					.filter(change => change.authors.length > 0)
+					.map(change => [displayPath(record.root, change.path), [...change.authors]]),
+			);
 			listed.push({
 				runId: record.runId,
 				...(record.parentRunId ? { parentRunId: record.parentRunId } : {}),
@@ -144,6 +157,7 @@ export class StoreHistory implements History {
 				startedAt: record.startedAt,
 				...(record.finishedAt ? { finishedAt: record.finishedAt } : {}),
 				files: [...new Set(files)].map(path => displayPath(record.root, path)),
+				...(Object.keys(authors).length > 0 ? { authors } : {}),
 				...(record.session ? { session: { ...record.session } } : {}),
 			});
 		}

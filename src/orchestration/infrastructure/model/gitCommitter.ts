@@ -5,7 +5,7 @@ import { devNull, tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import type { RunOptions } from '#src/agent/domain/agent';
 import type { RepositoryCommit } from '#src/agent/domain/commitReport';
-import { runContextOf } from '#src/agent/domain/runContext';
+import { harnessAuthor, runContextOf } from '#src/agent/domain/runContext';
 import {
 	type FileChange,
 	fileChanges,
@@ -545,6 +545,7 @@ export class GitCommitter implements Committer {
 			journal,
 			covered: this.covered,
 			by: committerName,
+			author: harnessAuthor,
 			signal,
 		});
 		// Checked once the checkpoint holds the files, so nothing changed while it captured them

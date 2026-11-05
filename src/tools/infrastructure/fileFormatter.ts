@@ -76,15 +76,17 @@ export class FileFormatter {
 		absolute: string,
 		session: WriteSession,
 		signal: AbortSignal,
+		author?: string,
 	): Promise<string | undefined> {
 		// Alone, as a command runs, so no other write of the run comes between its captures.
-		return session.exclusive(() => this.formatAlone(absolute, session, signal), signal);
+		return session.exclusive(() => this.formatAlone(absolute, session, signal, author), signal);
 	}
 
 	private async formatAlone(
 		absolute: string,
 		session: WriteSession,
 		signal: AbortSignal,
+		author: string | undefined,
 	): Promise<string | undefined> {
 		signal.throwIfAborted();
 		let checkpoint: CommandCheckpoint;
@@ -94,6 +96,7 @@ export class FileFormatter {
 				journal,
 				covered: () => Promise.resolve([absolute]),
 				by: observer,
+				author,
 				signal,
 			});
 		} catch (error) {

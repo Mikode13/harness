@@ -229,7 +229,7 @@ interface Head {
 type JournalLine =
 	| ({ type: 'prepared'; sequence: number } & Omit<JournalEntry, 'sequence' | 'status'>)
 	| { type: 'applied' | 'abandoned'; sequence: number }
-	| { type: 'observing'; sequence: number; manifest: string; by: string }
+	| { type: 'observing'; sequence: number; manifest: string; by: string; author?: string }
 	| { type: 'observed'; sequence: number; measure?: ObservationMeasure }
 	| ({ type: 'unrecorded'; sequence: number } & UnrecordedChange)
 	| ({ type: 'committed'; sequence: number } & RecordedCommits);
@@ -239,6 +239,7 @@ interface OpenObservation {
 	sequence: number;
 	manifest: string;
 	by: string;
+	author?: string;
 }
 
 /**
@@ -1161,7 +1162,15 @@ export class FileRecoveryStore implements RecoveryStore {
 			if (sameState(after, before)) continue;
 			sequence++;
 			lines.push(
-				{ type: 'prepared', sequence, path, before, after, observedBy: observation.by },
+				{
+					type: 'prepared',
+					sequence,
+					path,
+					before,
+					after,
+					observedBy: observation.by,
+					...(observation.author === undefined ? {} : { author: observation.author }),
+				},
 				{ type: 'applied', sequence },
 			);
 		}
@@ -1266,7 +1275,7 @@ export class FileRecoveryStore implements RecoveryStore {
 			}
 			lastSequence = Math.max(lastSequence, line.sequence);
 			if (line.type === 'prepared') {
-				const { sequence, path, before, after, createdFolders, observedBy } = line;
+				const { sequence, path, before, after, createdFolders, observedBy, author } = line;
 				entries.set(sequence, {
 					sequence,
 					path,
@@ -1274,13 +1283,19 @@ export class FileRecoveryStore implements RecoveryStore {
 					after,
 					...(createdFolders ? { createdFolders } : {}),
 					...(observedBy === undefined ? {} : { observedBy }),
+					...(author === undefined ? {} : { author }),
 					status: 'prepared',
 				});
 				return;
 			}
 			if (line.type === 'observing') {
-				const { sequence, manifest, by } = line;
-				observations.set(sequence, { sequence, manifest, by });
+				const { sequence, manifest, by, author } = line;
+				observations.set(sequence, {
+					sequence,
+					manifest,
+					by,
+					...(author === undefined ? {} : { author }),
+				});
 				return;
 			}
 			if (line.type === 'observed') {
@@ -1586,10 +1601,16 @@ class FileRunJournal implements RunJournal {
 		this.pendingStates.delete(sequence);
 	}
 
-	async observe(manifest: string, by: string): Promise<number> {
+	async observe(manifest: string, by: string, author?: string): Promise<number> {
 		this.assertOpen();
 		const sequence = ++this.sequence;
-		await this.append({ type: 'observing', sequence, manifest, by });
+		await this.append({
+			type: 'observing',
+			sequence,
+			manifest,
+			by,
+			...(author === undefined ? {} : { author }),
+		});
 		// Until it is observed, whatever ran may have changed a file.
 		this.effects.add(sequence);
 		this.observing.add(sequence);

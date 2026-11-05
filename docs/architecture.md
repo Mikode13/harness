@@ -111,7 +111,11 @@ Tools and their lifecycle:
   run's `approve` and `ask`, how many delegations deep the calling agent runs, the folders
   it may write in when an agent that delegated to it set a limit (`writeCeiling`), and the
   calling agent's own `write` roots (`agentWriteRoots`), which `writeCeiling.ts` narrows
-  into the limit of an agent the call starts.
+  into the limit of an agent the call starts, and who its changes are recorded as made by
+  (`author`). `PhasedOrchestrator` sets each role's in its run options under a private
+  symbol, `withAuthor` in `runContext.ts`, `LLMAgent` hands it to each call, an agent a call
+  starts writes as `role › name`, and the harness's own required checks and commit capture
+  write as `harness`.
 
 Reading:
 
@@ -230,10 +234,13 @@ returns, `Verification` and `CheckResult`, live in `src/agent/domain/phaseResult
 `PhaseResult`, since `AgentResponse` carries them. `PhasedOrchestrator` is the phased flow of `createLLMOrchestrator`, built as a
 workflow of its own stages: the planner's, the executor's and the reviewer's, each answering
 JSON its `Validator` checks (`planValidator`, `phaseReportValidator`, `phaseReviewValidator`,
-in infrastructure), and code stages that ask the user to approve the plan, mark where a phase
-begins, run the barrier and read the phase's diff, and commit. The `ChangeLog` port gives that
-diff; `RecordedChangeLog`, its infrastructure, reads it from the run's record in the recovery
-store, from the mark on. `CommitFlow` freezes, asks unless told not to, has the committer write
+in infrastructure), and code stages that ask the user to approve the plan, begin a phase, run
+the barrier and read the phase's diff, and commit. The `ChangeLog` port gives that diff;
+`RecordedChangeLog`, its infrastructure, reads it from the run's record in the recovery store,
+from a mark on: where the record stood when the plan was approved, for the first phase, and,
+for a later one, when the previous phase's diff was read, so what a command of the reviewer's
+or the barrier after the review changed is in the next phase's diff, under the note of who
+changed it. `CommitFlow` freezes, asks unless told not to, has the committer write
 each message and commits. `OrchestratorAgent`, the round-based flow, remains for
 `createOrchestrator` on the Agent SDKs, whose changes the history does not record, so it
 neither commits nor verifies.
@@ -260,7 +267,9 @@ is listed as `interrupted`, and the next run settles the changes it left prepare
 
 The journal also records an observation around something that changes files outside it, such
 as a command: it names a stored manifest of the files before, and the changes found after
-are recorded as its own entries, each `observedBy` it; an observation a dead run left open
+are recorded as its own entries, each `observedBy` it; each entry also names its `author`,
+when the tool call that made it had one, and the observation keeps it for the entries it
+settles later; an observation a dead run left open
 is settled from its manifest. A run that finishes with an observation open, such as a
 command whose files could not be compared after it ran, keeps its status, is marked
 `unsettled` and is settled from the manifest at once, or by the next run or move if that
@@ -307,7 +316,8 @@ refers to are freed.
 
 `showChanges` renders a run's recorded effects as a git-style diff per file. `History` is
 the public view of all this, built by `createHistory` over its own `FileRecoveryStore` and
-implemented by `StoreHistory`: it lists the runs with the files each changed, shows a run's
+implemented by `StoreHistory`: it lists the runs with the files each changed and who changed
+each, as far as the entries name it, shows a run's
 diff, and moves the workspace, with paths relative to the root; the store, the journal and
 `Revision` stay internal. It depends on Node, on git through `runProcess` in `src/shared/`,
 and on `src/diff/`.

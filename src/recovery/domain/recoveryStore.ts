@@ -24,6 +24,12 @@ export interface JournalEntry {
 	 * itself. It was found by comparing the file before and after, not journaled before it was made.
 	 */
 	observedBy?: string;
+	/**
+	 * Who made it: the role of the orchestrator whose tool made it, such as `executor`, an agent
+	 * that role handed work to, as `executor › commit`, or `harness` for what the harness ran
+	 * itself. Absent outside an orchestrator, and for a change recorded before changes named one.
+	 */
+	author?: string;
 	status: 'prepared' | 'applied' | 'abandoned';
 }
 
@@ -151,8 +157,9 @@ export interface RunJournal {
 	 * then recorded as its own entry, prepared and applied at once, before `observed`. If the run
 	 * stops first, the next run settles it: every file of the manifest that changed since is
 	 * recorded as changed by `by`. A file it created is not in the manifest, and is then missed.
+	 * `author` is who ran it, as `JournalEntry.author`.
 	 */
-	observe(manifest: string, by: string): Promise<number>;
+	observe(manifest: string, by: string, author?: string): Promise<number>;
 	/**
 	 * Every change the observation found is recorded. `measure`, what capturing and comparing the
 	 * files cost, is kept with it.

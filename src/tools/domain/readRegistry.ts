@@ -108,4 +108,6 @@ export interface ToolCallContext {
 	 * has no workspace.
 	 */
 	readonly agentWriteRoots?: readonly string[];
+	/** Who the changes the call makes are recorded as made by, as `JournalEntry.author`. */
+	readonly author?: string;
 }

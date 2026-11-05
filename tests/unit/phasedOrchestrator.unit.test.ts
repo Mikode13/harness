@@ -3,7 +3,7 @@ import type { Agent, AgentResponse, ProgressEvent } from '../../src/agent/domain
 import type { RepositoryCommit } from '../../src/agent/domain/commitReport.ts';
 import { Inbox } from '../../src/agent/domain/inbox.ts';
 import type { Asker } from '../../src/agent/domain/question.ts';
-import { RunContext, withRunContext } from '../../src/agent/domain/runContext.ts';
+import { authorOf, RunContext, withRunContext } from '../../src/agent/domain/runContext.ts';
 import type { ChangeLog } from '../../src/orchestration/domain/model/changeLog.ts';
 import type { Committer, FrozenChanges } from '../../src/orchestration/domain/model/committer.ts';
 import { PhasedOrchestrator } from '../../src/orchestration/domain/model/phasedOrchestrator.ts';
@@ -170,6 +170,34 @@ describe('the phased orchestrator', () => {
 		]);
 		// No required checks, so no barrier to report.
 		expect(result).not.toHaveProperty('verification');
+	});
+
+	it("shows the next phase's reviewer what changed during the previous review", async () => {
+		// The record's position grows with each change; a role's run makes one.
+		let position = 0;
+		const writing = (agent: Agent): Agent => ({
+			run: (prompt, options) => {
+				position++;
+				return agent.run(prompt, options);
+			},
+		});
+		const changes: ChangeLog = {
+			mark: () => Promise.resolve(position),
+			since: mark => Promise.resolve(`changes after ${String(mark)} of ${String(position)}`),
+		};
+		const reviewer = scripted(approved, approved);
+
+		await orchestrator({
+			planner: scripted(planOf('parse', 'render')).agent,
+			executor: writing(scripted(done('parsed'), done('rendered')).agent),
+			// Such as a command of the reviewer's that updates a snapshot.
+			reviewer: writing(reviewer.agent),
+			changes,
+		}).run('task', { signal });
+
+		expect(reviewer.prompts[0]).toContain('changes after 0 of 1');
+		// The first reviewer's change, 2, and the second executor's, 3.
+		expect(reviewer.prompts[1]).toContain('changes after 1 of 3');
 	});
 
 	it('sends a rejection back to the executor with its feedback, and keeps the same executor', async () => {
@@ -602,6 +630,24 @@ describe('the phased orchestrator', () => {
 			{ type: 'agentMessage', message: 'executor', agent: 'executor' },
 			{ type: 'agentMessage', message: 'reviewer', agent: 'reviewer' },
 		]);
+	});
+
+	it("records each role's changes as made by it", async () => {
+		const authors: (string | undefined)[] = [];
+		const noting = (answer: unknown): Agent => ({
+			run: (_prompt, options) => {
+				authors.push(authorOf(options));
+				return Promise.resolve({ response: JSON.stringify(answer), duration: 1 });
+			},
+		});
+
+		await orchestrator({
+			planner: noting(planOf('parse')),
+			executor: noting(done('a')),
+			reviewer: noting(approved),
+		}).run('task', { signal });
+
+		expect(authors).toEqual(['planner', 'executor', 'reviewer']);
 	});
 
 	it('keeps each role agent across runs, so the CLI goes on with its conversations', async () => {

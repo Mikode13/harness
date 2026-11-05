@@ -150,6 +150,7 @@ export async function createCommandTool({
 						line,
 						definition: command.definition,
 						context: run,
+						author: call.author,
 						signal: runSignal,
 						ended: end => {
 							ending = end;
@@ -164,6 +165,8 @@ export async function createCommandTool({
 		line: CommandLine;
 		definition: CommandDefinition;
 		context: RunContext;
+		/** Who runs it, as `JournalEntry.author`. */
+		author: string | undefined;
 		signal: AbortSignal;
 		/** Told how the command ended, once it ran to an end and everything it changed is recorded. */
 		ended: (ending: CommandEnding) => void;
@@ -176,14 +179,14 @@ export async function createCommandTool({
 	}
 
 	async function runCommandAlone(
-		{ name, line, definition, signal, ended: onEnded }: CommandRun,
+		{ name, line, definition, author, signal, ended: onEnded }: CommandRun,
 		session: WriteSession,
 	): Promise<string> {
 		signal.throwIfAborted();
 		const journal = await session.journalForChange();
 		let checkpoint: CommandCheckpoint;
 		try {
-			checkpoint = await CommandCheckpoint.begin({ journal, covered, by: name, signal });
+			checkpoint = await CommandCheckpoint.begin({ journal, covered, by: name, author, signal });
 		} catch (error) {
 			signal.throwIfAborted();
 			throw new EditRefusedError(

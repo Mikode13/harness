@@ -905,7 +905,10 @@ await history.goTo(historyStart); // as it was before the agent's first run
 
 `list()` gives every run kept, oldest first, with its parent, status, the files it changed
 and the session it came from, and the run the workspace is at (`head`), absent at the
-start. Runs form a tree: going back and writing again starts a new branch, and `goTo`
+start. A run of `createLLMOrchestrator` also says who changed each file, in `authors`: the
+role, such as `executor`, an agent it handed work to, as `executor › commit`, or `harness`
+for a required check the harness ran or what a hook changed while it committed; the diff
+`changes` gives says it too, as `# a.ts: changed by executor`. Runs form a tree: going back and writing again starts a new branch, and `goTo`
 reaches the old one. `redo` returns towards where the workspace was most recently. A
 run's `runId` is in its `AgentResponse` when it changed a file, and a run that failed or
 was cancelled after writing is still listed, with that status. A run that changed nothing

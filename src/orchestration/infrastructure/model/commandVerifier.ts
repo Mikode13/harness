@@ -1,6 +1,11 @@
 import type { RunOptions } from '#src/agent/domain/agent';
 import type { CommandLine } from '#src/agent/domain/approval';
-import { delegationOf, runContextOf, type RunContext } from '#src/agent/domain/runContext';
+import {
+	delegationOf,
+	harnessAuthor,
+	runContextOf,
+	type RunContext,
+} from '#src/agent/domain/runContext';
 import { InvalidAgentConfigError } from '#src/shared/domain/errors';
 import {
 	buildArguments,
@@ -269,5 +274,6 @@ function callContext(run: RunContext, command: string, depth: number) {
 		onProgress: () => undefined,
 		spend: () => undefined,
 		depth,
+		author: harnessAuthor,
 	};
 }

@@ -301,7 +301,7 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		execFileSync('git', [...identity, 'commit', '--quiet', '--allow-empty', '-m', 'start'], {
 			cwd: nested,
 		});
-		const { run, committer, options } = await workingRun({
+		const { run, committer, options, opened, context } = await workingRun({
 			edit: 'echo two > a.txt && echo two > nested/n.txt',
 		});
 		await run('edit');
@@ -324,6 +324,9 @@ describe('the git committer', { timeout: 20_000 }, () => {
 			outcome: 'left',
 			reason: 'the task changed files after the review: generated.txt',
 		});
+		// The hook ran within the harness's commit.
+		const { entries } = await opened.store.readRun(context.firstRunId ?? '');
+		expect(entries.find(({ path }) => path.endsWith('generated.txt'))?.author).toBe('harness');
 	});
 
 	it("commits a later repository holding a file the run created and deleted, after an earlier repository's commit", async () => {

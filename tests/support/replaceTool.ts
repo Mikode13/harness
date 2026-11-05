@@ -18,7 +18,7 @@ export function replaceTool(
 		prepare: async (input, prepareSignal, call) => {
 			const { path, content } = input as { path: string; content: string };
 			await writes.checkCeiling(call);
-			const editor = writes.editorFor(call.run);
+			const editor = writes.editorFor(call.run, call.author);
 			const edit = await editor.prepare(
 				{ kind: 'replace', path, content: Buffer.from(content) },
 				prepareSignal,

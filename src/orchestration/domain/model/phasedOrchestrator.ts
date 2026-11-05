@@ -10,7 +10,7 @@ import { type CommittedRun, withCommittedRun } from '#src/agent/domain/committed
 import type { PhaseResult, Verification } from '#src/agent/domain/phaseResult';
 import { OneRunAtATime } from '#src/agent/domain/oneRunAtATime';
 import { readAnswers, type UserQuestion } from '#src/agent/domain/question';
-import { runContextOf } from '#src/agent/domain/runContext';
+import { runContextOf, withAuthor } from '#src/agent/domain/runContext';
 import { newSession, sessionOf } from '#src/agent/domain/session';
 import {
 	InvalidAgentConfigError,
@@ -88,7 +88,11 @@ interface Course {
 	readonly rejections: number;
 	/** Times the phase in progress went back to the planner. */
 	readonly replans: number;
-	/** Where the run's record stood when the phase began, for its diff. */
+	/**
+	 * Where the phase's diff starts in the run's record: where it stood when the first phase began,
+	 * or, for a later one, when the previous phase's diff was read, so what changed during its
+	 * review and the barrier after it is reviewed too.
+	 */
 	readonly mark: number;
 	/** How the run commits; absent when it commits nothing. */
 	readonly committing?: Committing;
@@ -108,6 +112,8 @@ interface Executed extends Course {
 /** A phase ready for its review: what it changed, and the evidence of its checks. */
 interface Reviewing extends Executed {
 	readonly diff: string;
+	/** Where the run's record stood when `diff` was read: the next phase's diff starts there. */
+	readonly reviewed: number;
 	/** What a commit after its review would hold, frozen before it. */
 	readonly frozen?: FrozenChanges;
 }
@@ -245,7 +251,7 @@ const reviewerPrompt = (request: string, input: Reviewing): string =>
 		reviewFormat,
 	].join('\n\n');
 
-/** Each role's events name it, over anything a nested agent supplied. */
+/** Each role's events name it, over anything a nested agent supplied, and so do its changes. */
 function asRole(agent: Agent, role: ProgressAgent): Agent {
 	return { run: (prompt, options) => agent.run(prompt, roleOptions(options, role)) };
 }
@@ -258,21 +264,24 @@ function asRole(agent: Agent, role: ProgressAgent): Agent {
  */
 function roleOptions(options: RunOptions, agent: ProgressAgent): RunOptions {
 	const { onProgress } = options;
-	return {
-		...options,
-		inbox: undefined,
-		onProgress: onProgress
-			? (event: ProgressEvent) => {
-					treatErrors(
-						() => {
-							onProgress({ ...event, agent });
-						},
-						classifyHostFailure,
-						'Orchestrator progress callback failed',
-					);
-				}
-			: undefined,
-	};
+	return withAuthor(
+		{
+			...options,
+			inbox: undefined,
+			onProgress: onProgress
+				? (event: ProgressEvent) => {
+						treatErrors(
+							() => {
+								onProgress({ ...event, agent });
+							},
+							classifyHostFailure,
+							'Orchestrator progress callback failed',
+						);
+					}
+				: undefined,
+		},
+		agent,
+	);
 }
 
 /**
@@ -469,13 +478,9 @@ export class PhasedOrchestrator implements Agent {
 				run: (proposed, options) => this.approve(proposed, ownRun, options),
 			}),
 			stage.code('begin', {
-				run: async (course, options): Promise<Transition> => {
+				run: (course): Promise<Transition> => {
 					reached.course = course;
-					return {
-						type: 'go',
-						stage: 'execute',
-						input: { ...course, mark: await this.mark(options) },
-					};
+					return Promise.resolve({ type: 'go', stage: 'execute', input: course });
 				},
 			}),
 			stage('execute', {
@@ -551,7 +556,7 @@ export class PhasedOrchestrator implements Agent {
 			commits && !choosing
 				? { each: this.commitQuestion === 'phase', asks: !this.autoCommit }
 				: undefined;
-		const begin = (committing: Committing | undefined): Transition => ({
+		const begin = async (committing: Committing | undefined): Promise<Transition> => ({
 			type: 'go',
 			stage: 'begin',
 			input: {
@@ -560,7 +565,9 @@ export class PhasedOrchestrator implements Agent {
 				done: [],
 				rejections: 0,
 				replans: 0,
-				mark: 0,
+				// Not the run's start: inside another agent's run, its record holds that agent's
+				// changes too.
+				mark: await this.mark(options),
 				commits: [],
 				...(committing ? { committing } : {}),
 			},
@@ -640,6 +647,8 @@ export class PhasedOrchestrator implements Agent {
 			);
 		}
 		let diff: string;
+		// Nothing writes between the two: the executor is done, and the checks have run.
+		const reviewed = await this.mark(options);
 		try {
 			diff = await this.changes.since(executed.mark, options);
 		} catch (error) {
@@ -649,7 +658,7 @@ export class PhasedOrchestrator implements Agent {
 		return {
 			type: 'go',
 			stage: 'review',
-			input: { ...checked, diff, ...(frozen ? { frozen } : {}) },
+			input: { ...checked, diff, reviewed, ...(frozen ? { frozen } : {}) },
 		};
 	}
 
@@ -830,7 +839,7 @@ function commitsAfter(course: Course): boolean {
 }
 
 /** The phase approved, with its commit when it had one, and the next phase, or the end. */
-function approved(input: Executed, commits?: CommitReport): Transition {
+function approved(input: Reviewing, commits?: CommitReport): Transition {
 	const result: PhaseResult = {
 		goal: goalOf(input),
 		status: 'approved',
@@ -850,7 +859,7 @@ function approved(input: Executed, commits?: CommitReport): Transition {
 				done,
 				rejections: 0,
 				replans: 0,
-				mark: 0,
+				mark: input.reviewed,
 				commits: made,
 				...(input.committing ? { committing: input.committing } : {}),
 			},

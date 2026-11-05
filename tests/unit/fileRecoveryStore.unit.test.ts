@@ -556,7 +556,11 @@ describe('FileRecoveryStore', () => {
 					[formatted, deleted, untouched].map(({ path, state }) => [path, state]),
 				),
 			};
-			await dead.observe(await dead.saveContent(Buffer.from(JSON.stringify(manifest))), 'format');
+			await dead.observe(
+				await dead.saveContent(Buffer.from(JSON.stringify(manifest))),
+				'format',
+				'executor',
+			);
 			// The command ran, and the process died before comparing the files.
 			writeFileSync(formatted.path, 'a;\n');
 			rmSync(deleted.path);
@@ -568,8 +572,20 @@ describe('FileRecoveryStore', () => {
 
 			const { entries } = await store.readRun(dead.runId);
 			expect(entries).toMatchObject([
-				{ path: formatted.path, before: formatted.state, status: 'applied', observedBy: 'format' },
-				{ path: deleted.path, after: absent, status: 'applied', observedBy: 'format' },
+				{
+					path: formatted.path,
+					before: formatted.state,
+					status: 'applied',
+					observedBy: 'format',
+					author: 'executor',
+				},
+				{
+					path: deleted.path,
+					after: absent,
+					status: 'applied',
+					observedBy: 'format',
+					author: 'executor',
+				},
 			]);
 			// A file it created was never captured, so the settled run cannot know of it.
 			expect(entries).toHaveLength(2);
