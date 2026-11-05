@@ -18,6 +18,8 @@ export interface RequiredCheck {
 export interface CheckRun {
 	readonly name: string;
 	readonly line: CommandLine;
+	/** The variables its definition set, which the line does not show. */
+	readonly env?: Readonly<Record<string, string>>;
 	readonly passed: boolean;
 	readonly how: string;
 	readonly output: string;
@@ -48,7 +50,8 @@ export interface Verifier {
 /**
  * Where the check that runs as `expected` stands, from `runs`, every command the run ran in order,
  * and `current`, what the files the run changed hold now. Only a run with the same program,
- * arguments and folder counts. A later run of any command that changed something the history could
+ * arguments, folder and variables, `env`, counts: a command of the same name an agent the run
+ * delegated to was given otherwise, such as with a variable that skips the tests, does not. A later run of any command that changed something the history could
  * not record makes it `unknown`, since the files may differ in a way no hash shows.
  */
 export function assessCheck(
@@ -56,8 +59,11 @@ export function assessCheck(
 	expected: CommandLine,
 	runs: readonly CheckRun[],
 	current: string | undefined,
+	env?: Readonly<Record<string, string>>,
 ): CheckResult {
-	const last = runs.findLastIndex(run => run.name === command && sameLine(run.line, expected));
+	const last = runs.findLastIndex(
+		run => run.name === command && sameLine(run.line, expected) && sameEnv(run.env, env),
+	);
 	const run = runs[last];
 	if (!run) return { command, status: 'missing' };
 	const ran = { command, how: run.how, output: run.output };
@@ -72,6 +78,18 @@ export function assessCheck(
 /** Whether `checks` meet the requirement: every one passed. */
 export function verification(checks: readonly CheckResult[]): Verification {
 	return { met: checks.every(({ status }) => status === 'passed'), checks };
+}
+
+function sameEnv(
+	a: Readonly<Record<string, string>> | undefined,
+	b: Readonly<Record<string, string>> | undefined,
+): boolean {
+	const left = Object.entries(a ?? {});
+	const right = b ?? {};
+	return (
+		left.length === Object.keys(right).length &&
+		left.every(([name, value]) => Object.hasOwn(right, name) && right[name] === value)
+	);
 }
 
 function sameLine(a: CommandLine, b: CommandLine): boolean {

@@ -127,6 +127,17 @@ describe('a required check, against the runs of a task', () => {
 		});
 	});
 
+	it('counts only a run whose command set the same variables', () => {
+		const skipping = ran({ env: { SKIP_TESTS: '1' } });
+		expect(assessCheck('test', line, [skipping], 'one')).toMatchObject({ status: 'missing' });
+		expect(assessCheck('test', line, [ran()], 'one', { CI: '1' })).toMatchObject({
+			status: 'missing',
+		});
+		expect(
+			assessCheck('test', line, [ran({ env: { CI: '1' } })], 'one', { CI: '1' }),
+		).toMatchObject({ status: 'passed' });
+	});
+
 	it('is unknown when the history could not record what it, or a later command, changed', () => {
 		expect(assessCheck('test', line, [ran({ state: undefined })], 'one')).toMatchObject({
 			status: 'unknown',
@@ -140,6 +151,18 @@ describe('a required check, against the runs of a task', () => {
 });
 
 describe('the command verifier', { timeout: 20_000 }, () => {
+	it('takes its own run of a command that sets variables as the check, and does not run it again', async () => {
+		const { options, verifier } = await verifiedRun(
+			{ test: { ...counted('test', '[ "$CI" = 1 ]'), env: { CI: '1' } } },
+			[{ command: 'test' }],
+		);
+
+		await expect(verifier.verify(options)).resolves.toMatchObject({ met: true });
+		await expect(verifier.verify(options)).resolves.toMatchObject({ met: true });
+
+		expect(runs('test')).toBe(1);
+	});
+
 	it('runs a check that never ran, itself, and finds it passed', async () => {
 		const { options, verifier } = await verifiedRun({ test: counted('test', 'exit 0') }, [
 			{ command: 'test' },

@@ -45,7 +45,9 @@ export class UnrecoverableError extends Error {
  * The same failure, also carrying what an outer layer spent before the failure reached it,
  * such as earlier attempts or earlier roles, or the call the failure came from. `unreported`
  * says that some of it was answered without usage. It is a new instance of the same class, so
- * a subclass such as `MaxContextError` keeps its meaning. A cancellation or an unclassified
+ * a subclass such as `MaxContextError` keeps its meaning, built with the failure's own fields
+ * too, so one that carries more, such as the commits of `UnrecoverableCommittedRunError`, keeps
+ * them. A cancellation or an unclassified
  * failure is returned unchanged: neither can carry tokens.
  */
 export function withSpentTokens(
@@ -61,6 +63,7 @@ export function withSpentTokens(
 		options: ClassifiedErrorOptions,
 	) => RecoverableError | UnrecoverableError;
 	const copy = new ErrorClass(error.message, {
+		...(Object.fromEntries(Object.entries(error)) as Record<string, unknown>),
 		cause: error.cause,
 		tokens: addTokens(error.tokens, spent),
 		usageUnreported: error.usageUnreported || unreported,

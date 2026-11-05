@@ -713,10 +713,12 @@ export class PhasedOrchestrator implements Agent {
 				if (!response.tokens) spent.unreported = true;
 				spent.tokens = addTokens(spent.tokens, response.tokens);
 			},
+			// At once, before anything else can fail: the commit is made, whatever happens next.
+			onCommitted: report => {
+				reached.course = afterApproval(checked, report);
+				reached.runId = runContextOf(options)?.firstRunId;
+			},
 		});
-		// Now, before anything else can fail: the commit is made, whatever happens next.
-		reached.course = afterApproval(checked, commits);
-		reached.runId = runContextOf(options)?.firstRunId;
 		return approved(checked, commits);
 	}
 

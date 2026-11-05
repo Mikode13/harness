@@ -662,7 +662,8 @@ whose required checks do not pass.
 
 `requiredChecks` names the configured commands every phase must pass, each with the values of
 its parameters. A parameter left out is not given, so a run of `test` on some files never counts
-for `{ command: 'test' }`. At each barrier, before each review, and again after the review before a
+for `{ command: 'test' }`, and neither does a run of a command of that name whose `env` differs,
+such as one an agent of `agentAsTool` was given with a variable that skips the tests. At each barrier, before each review, and again after the review before a
 commit or the end of the run, the harness runs with no model each check that never ran, or ran on files that changed since, and
 does not run one that already failed for these files. A check that another check's run changed
 the files under runs again, up to 3 passes in all, so a check that writes, such as a snapshot,

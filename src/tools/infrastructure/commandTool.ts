@@ -261,7 +261,8 @@ export async function createCommandTool({
 			observed = await checkpoint.end({ complete });
 		} catch (error) {
 			session.stop('Writing stopped: the harness could not record what a command changed');
-			if (ended) session.recordCommand({ name, line, ending: endingOf(ended) });
+			if (ended)
+				session.recordCommand({ name, line, ...envOf(definition), ending: endingOf(ended) });
 			logAbsorbed(absorbed);
 			throw new EditUnconfirmedError(
 				`"${name}" ran, but the harness could not record what it changed; writing has stopped for this run`,
@@ -277,7 +278,7 @@ export async function createCommandTool({
 					? journal.contentState()
 					: undefined,
 			);
-		if (ending) session.recordCommand({ name, line, ending });
+		if (ending) session.recordCommand({ name, line, ...envOf(definition), ending });
 		logAbsorbed(absorbed);
 
 		if (unrecordedCommits !== undefined) throw unrecordedCommits;
@@ -574,4 +575,9 @@ function parameterSchema(parameter: CommandParameter): z.ZodType {
 				: text.nullable().describe(`${description} null to leave it out.`);
 		}
 	}
+}
+
+/** The variables a command's definition sets, as a recorded run keeps them. */
+function envOf({ env }: CommandDefinition): { env?: Readonly<Record<string, string>> } {
+	return env === undefined ? {} : { env: { ...env } };
 }

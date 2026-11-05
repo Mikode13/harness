@@ -95,7 +95,9 @@ function orchestrator({
 	reviews = [approved],
 	executor = scripted(...reviews.map((_, index) => done(String(index)))).agent,
 	planner = scripted(planOf(...goals)).agent,
+	warn = logger.warn,
 }: {
+	warn?: (...args: unknown[]) => void;
 	executor?: Agent;
 	planner?: Agent;
 	goals?: string[];
@@ -117,7 +119,7 @@ function orchestrator({
 		createCommitter: () => committerAgent,
 		autoCommit,
 		...(commitQuestion ? { commitQuestion } : {}),
-		logger,
+		logger: { warn },
 	});
 }
 
@@ -611,6 +613,25 @@ describe("the phased orchestrator's committer", () => {
 				commits: { outcome: 'committed', repositories: [committed] },
 				phases: [{ goal: 'a', status: 'approved' }],
 			});
+		});
+
+		it('fails with the commit when the logger fails on what git did', async () => {
+			const { committer, commit } = fakeCommitter();
+			// A hook changed a file while git committed it, which the logger hears of.
+			commit.mockResolvedValue([{ ...committed, unreviewed: ['a.txt'] }]);
+
+			const error = await orchestrator({
+				committer,
+				autoCommit: true,
+				warn: () => {
+					throw new Error('the logger broke');
+				},
+			})
+				.run('task', { signal })
+				.catch((caught: unknown) => caught);
+
+			expect(error).toBeInstanceOf(UnrecoverableCommittedRunError);
+			expect(error).toMatchObject({ commits: { outcome: 'committed' } });
 		});
 
 		it('lets a cancellation after a commit through as it is', async () => {

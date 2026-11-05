@@ -16,6 +16,8 @@ const defaultMaxChanges = 500;
 export interface RecordedCommand {
 	readonly name: string;
 	readonly line: CommandLine;
+	/** The variables its definition set, which the line does not show. */
+	readonly env?: Readonly<Record<string, string>>;
 	readonly ending: CommandEnding;
 }
 

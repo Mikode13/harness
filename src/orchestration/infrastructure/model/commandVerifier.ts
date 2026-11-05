@@ -186,7 +186,7 @@ export class CommandVerifier implements Verifier {
 				const { check, line } = each;
 				if (why.has(check)) continue;
 				const { runs, current } = await evidence();
-				const { status } = assessCheck(check.command, line, runs, current);
+				const { status } = assessCheck(check.command, line, runs, current, this.envOf(check));
 				if (status === 'passed' || status === 'failed') continue;
 				// After the first pass, only a check a later check of the harness's made stale.
 				if (pass > 0 && status !== 'stale') continue;
@@ -225,12 +225,17 @@ export class CommandVerifier implements Verifier {
 		const { runs, current } = await evidence();
 		signal.throwIfAborted();
 		const results: CheckResult[] = prepared.map(({ check, line }) => {
-			const result = assessCheck(check.command, line, runs, current);
+			const result = assessCheck(check.command, line, runs, current, this.envOf(check));
 			// Why it could not run now says more than how its last run ended; what that printed stays.
 			const reason = why.get(check);
 			return reason === undefined ? result : { ...result, how: reason };
 		});
 		return verification(results);
+	}
+
+	/** The variables the configured command of `check` sets, which a run must have had too. */
+	private envOf(check: RequiredCheck): Readonly<Record<string, string>> | undefined {
+		return this.commands[check.command]?.env;
 	}
 }
 
@@ -256,9 +261,10 @@ function valuesFor(
 }
 
 function checkRuns(session: WriteSession): CheckRun[] {
-	return session.commandsRun.map(({ name, line, ending }: RecordedCommand) => ({
+	return session.commandsRun.map(({ name, line, env, ending }: RecordedCommand) => ({
 		name,
 		line,
+		...(env === undefined ? {} : { env }),
 		passed: ending.passed,
 		how: ending.how,
 		output: ending.output,

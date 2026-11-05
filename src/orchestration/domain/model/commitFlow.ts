@@ -96,6 +96,11 @@ export interface CommitRequest {
 	committerOptions: RunOptions;
 	/** Told of every answer the committer gave, which the run paid for. */
 	onResponse: (response: AgentResponse) => void;
+	/**
+	 * Told what git did once it committed, before the logger hears of it: a logger that fails ends
+	 * the run, and the commits stay made.
+	 */
+	onCommitted: (report: CommitReport) => void;
 }
 
 /**
@@ -163,6 +168,7 @@ export class CommitFlow {
 		options,
 		committerOptions,
 		onResponse,
+		onCommitted,
 	}: CommitRequest): Promise<CommitReport | undefined> {
 		const { committer } = this;
 		if (!committer) return undefined;
@@ -191,11 +197,13 @@ export class CommitFlow {
 			throw classifyLocalFailure(error, 'The committer could not commit the change');
 		}
 		const repositories = [...committed, ...unready];
-		this.warnLeft(repositories);
-		return {
+		const report: CommitReport = {
 			outcome: committed.some(({ outcome }) => outcome === 'done') ? 'committed' : 'failed',
 			repositories,
 		};
+		onCommitted(report);
+		this.warnLeft(repositories);
+		return report;
 	}
 
 	/**
