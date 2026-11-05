@@ -284,7 +284,8 @@ reason the host gave, and a move the process did not finish is finished by the n
 run.
 
 The journal also records the commits a command made (`RecordedCommits`): a run that made one
-stays in the history even if it changed no file. A move takes care of those commits before
+stays in the history even if it changed no file, and `History.list` gives them in its
+`HistoryRun.commits`, per branch of each repository, so a host can show them before a move. A move takes care of those commits before
 it moves the files, per branch, in `gitCommits.ts`, on the branch and the index only, never
 the files: undoing keeps them, reverts them or resets the branch to before them, as
 `MoveOptions.commits` says, and redoing puts back what an earlier move took back, forward to

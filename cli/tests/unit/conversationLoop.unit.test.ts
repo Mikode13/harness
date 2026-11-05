@@ -6,6 +6,10 @@ import type {
 	ProgressEvent,
 	RunOptions,
 } from '../../../src/agent/domain/agent.ts';
+import {
+	RecoverableCommittedRunError,
+	UnrecoverableCommittedRunError,
+} from '../../../src/agent/domain/committedRunError.ts';
 import { UnrecoverableError } from '../../../src/shared/domain/errors.ts';
 
 type EmitResult = string | { error: unknown };
@@ -148,6 +152,44 @@ describe('ConversationLoop', () => {
 		expect(output.print).toHaveBeenCalledWith('outputTokens: 4');
 		expect(output.printError).toHaveBeenCalledWith(failure);
 	});
+
+	it.each([RecoverableCommittedRunError, UnrecoverableCommittedRunError])(
+		'prints what a run committed before it failed: %o',
+		async ErrorClass => {
+			const promptEmitter = createPromptEmitter('hello', { error: abortError() });
+			const output = createOutput();
+			const failure = new ErrorClass('Out of steps', {
+				cause: 'the limit',
+				commits: {
+					outcome: 'committed',
+					repositories: [
+						{
+							repository: '/repo',
+							branch: 'main',
+							outcome: 'done',
+							commits: [{ sha: 'a'.repeat(40), subject: 'Add parser' }],
+							paths: ['a.ts'],
+							leftOut: [],
+							unreviewed: [],
+						},
+					],
+				},
+				phases: [{ goal: 'parse', status: 'approved', summary: 'done' }],
+				runId: 'run-1',
+			});
+			const loop = new ConversationLoop(
+				{ run: vi.fn().mockRejectedValue(failure) },
+				vi.fn(),
+				promptEmitter,
+				output,
+			);
+
+			await loop.start();
+
+			expect(output.print).toHaveBeenCalledWith('commit: /repo (main): aaaaaaa Add parser');
+			expect(output.printError).toHaveBeenCalledWith(failure);
+		},
+	);
 
 	it('exits immediately on an interrupt while idle at the prompt', async () => {
 		const promptEmitter = createPromptEmitter({ error: abortError() });

@@ -925,8 +925,9 @@ reason is kept with the move.
 
 When a configured command commits, the run records the commits it made: those new on the
 branch it ran on, as long as that branch stayed checked out and only moved forward, so
-commits a `git pull` brings in count too. What undoing does with them is `commits` in the
-move's options:
+commits a `git pull` brings in count too. `list()` gives them in each run's `commits`, per
+branch of each repository, so a host can show them before a move that undoes the run. What
+undoing does with them is `commits` in the move's options:
 
 - `keep`, the default, leaves them on their branch. Git then shows the restored files as
   changes against a commit that still holds the run's.
@@ -1091,9 +1092,12 @@ without the model:
 - `/goto <run | start>` goes to a run, named by its id or its last six characters, or
   to `start`, before any run.
 
-Each move says what it will do and changes nothing until you answer `y`. It then
-asks why, and records the reason, if you give one, with the move. A move that left
-files as they were, because they changed since, names them. With `--llm` the executor
+Each move says what it will do and changes nothing until you answer `y`. When the runs it
+undoes made commits, it lists them first and, once you agree, asks whether to keep, revert or
+reset them; keep is the default. It then asks why, and records the reason, if you give one,
+with the move. After the move it prints what git did with each branch's commits, or why it
+could not, and names the files it left as they were because they changed since. A run that
+fails after committing prints those commits too, as a run that ends does. With `--llm` the executor
 writes to the current directory through the harness's tools, so its runs are in that
 history. The Agent SDK path changes files through its own tools, which the history does not
 record.

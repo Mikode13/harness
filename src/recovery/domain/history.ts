@@ -3,6 +3,7 @@ import { changedFiles, displayPath, showChanges } from './runChanges.ts';
 import type {
 	BranchMove,
 	MoveOptions,
+	RecordedCommits,
 	RecoveryStore,
 	Revision,
 	RunStatus,
@@ -34,6 +35,12 @@ export interface HistoryRun {
 	 * change of the run names one, as for an agent outside an orchestrator.
 	 */
 	authors?: Record<string, string[]>;
+	/**
+	 * The commits its commands made, per branch of each repository, oldest first, a run retention
+	 * chained into it included: what undoing it may keep, revert or reset (`MoveOptions.commits`).
+	 * As the run recorded them, so a move since may have taken them back. Absent when it made none.
+	 */
+	commits?: { repository: string; branch: string; commits: { sha: string; subject: string }[] }[];
 	/**
 	 * The session it came from, so a host can warn before undoing another session's run. Absent
 	 * for a run recorded before runs recorded one. A run retention chained into this one keeps
@@ -138,7 +145,7 @@ export class StoreHistory implements History {
 				throw error;
 			});
 			if (!read) continue;
-			const { record, entries, unrecorded } = read;
+			const { record, entries, unrecorded, commits } = read;
 			const changes = changedFiles(record, entries);
 			const files = [
 				...changes.map(change => change.path),
@@ -158,6 +165,7 @@ export class StoreHistory implements History {
 				...(record.finishedAt ? { finishedAt: record.finishedAt } : {}),
 				files: [...new Set(files)].map(path => displayPath(record.root, path)),
 				...(Object.keys(authors).length > 0 ? { authors } : {}),
+				...(commits.length > 0 ? { commits: byBranch(commits) } : {}),
 				...(record.session ? { session: { ...record.session } } : {}),
 			});
 		}
@@ -201,4 +209,16 @@ export class StoreHistory implements History {
 				: {}),
 		};
 	}
+}
+
+/** The commits a run recorded, one entry per branch of each repository, in the order made. */
+function byBranch(recorded: readonly RecordedCommits[]): NonNullable<HistoryRun['commits']> {
+	const branches = new Map<string, NonNullable<HistoryRun['commits']>[number]>();
+	for (const { repository, branch, commits } of recorded) {
+		const key = JSON.stringify([repository, branch]);
+		const listed = branches.get(key) ?? { repository, branch, commits: [] };
+		listed.commits.push(...commits.map(({ sha, subject }) => ({ sha, subject })));
+		branches.set(key, listed);
+	}
+	return [...branches.values()];
 }

@@ -247,6 +247,43 @@ describe('the run an agent recorded', () => {
 		expect(runs[0]).not.toHaveProperty('authors');
 	});
 
+	it('lists the commits a run made, per branch of each repository, oldest first', async () => {
+		const journal = await store.startRun();
+		const commit = (sha: string, subject: string) => ({ sha: sha.repeat(40), subject });
+		await journal.committed({
+			repository: root,
+			branch: 'main',
+			commits: [commit('a', 'Add parser')],
+			by: 'runCommand',
+		});
+		await journal.committed({
+			repository: '/other',
+			branch: 'dev',
+			commits: [commit('b', 'Elsewhere')],
+			by: 'runCommand',
+		});
+		await journal.committed({
+			repository: root,
+			branch: 'main',
+			commits: [commit('c', 'Fix null case')],
+			by: 'committer',
+		});
+		await journal.finish('completed');
+		const plain = await recordRun(store, root, [['a.txt', 'one']]);
+
+		const { runs } = await history.list();
+
+		expect(runs[0]?.commits).toEqual([
+			{
+				repository: root,
+				branch: 'main',
+				commits: [commit('a', 'Add parser'), commit('c', 'Fix null case')],
+			},
+			{ repository: '/other', branch: 'dev', commits: [commit('b', 'Elsewhere')] },
+		]);
+		expect(runs.find(run => run.runId === plain)).not.toHaveProperty('commits');
+	});
+
 	it('is absent from the response of a run that wrote nothing', async () => {
 		const agent = await agentWriting(textResponse('nothing to do'));
 

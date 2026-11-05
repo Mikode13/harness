@@ -59,6 +59,38 @@ function commands(...replies: (string | (() => Promise<string>))[]) {
 
 const short = (runId: string) => runId.slice(-6);
 
+function git(...args: string[]): string {
+	return execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+}
+
+/** A known identity, no signing and no hooks, whatever the machine's own configuration says. */
+function configureGit(): void {
+	git('config', 'user.name', 'Test');
+	git('config', 'user.email', 'test@example.com');
+	git('config', 'commit.gpgsign', 'false');
+	git('config', 'core.hooksPath', '/dev/null');
+}
+
+/** A run whose command committed `name` with `content`, recorded as the command tool records it. */
+async function committingRun(name: string, content: string, subject: string): Promise<string> {
+	const journal = await store.startRun();
+	writeFileSync(join(root, name), content);
+	git('add', name);
+	git('commit', '--quiet', '-m', subject);
+	await journal.committed({
+		repository: root,
+		branch: git('branch', '--show-current'),
+		commits: [{ sha: git('rev-parse', 'HEAD'), subject }],
+		by: 'runCommand',
+	});
+	await journal.finish('completed');
+	return journal.runId;
+}
+
+function subjects(): string[] {
+	return git('log', '--format=%s').split('\n');
+}
+
 describe('the history commands', () => {
 	it('says when no run has written yet', async () => {
 		const cli = commands();
@@ -239,6 +271,125 @@ describe('the history commands', () => {
 		}
 
 		expect(cli.printed.at(-1)).toMatch(/^The workspace is busy: .* Nothing was changed\.$/);
+	});
+
+	describe('over runs that committed', () => {
+		let branch: string;
+		const sha = () => git('rev-parse', '--short=7', 'HEAD');
+
+		beforeEach(() => {
+			configureGit();
+			git('commit', '--quiet', '--allow-empty', '-m', 'start');
+			branch = git('branch', '--show-current');
+		});
+
+		it('lists the commits of the run it undoes, and reverts them when asked', async () => {
+			const runId = await committingRun('a.txt', 'one\n', 'Add a');
+			const made = sha();
+			const cli = commands('y', 'r', 'wrong file');
+
+			await cli.run('/undo');
+
+			expect(cli.printed.slice(1, 3)).toEqual([
+				'It made these commits:',
+				`  ${root} (${branch}): ${made} Add a`,
+			]);
+			expect(cli.questions).toEqual([
+				'Go ahead? [y/N]: ',
+				'Those commits: [k]eep, [r]evert or re[s]et? (keep): ',
+				'Why are you going back? (optional): ',
+			]);
+			expect(cli.printed.slice(-2)).toEqual([
+				'The workspace is now at how it was before any run.',
+				`git: ${root} (${branch}): reverted: ${made} Add a`,
+			]);
+			expect(subjects()).toEqual(['Revert "Add a"', 'Add a', 'start']);
+			await expect(store.listRevisions()).resolves.toMatchObject([
+				{ from: runId, reason: 'wrong file' },
+			]);
+		});
+
+		it('keeps them when nothing is answered, and says git shows the files against them until redone', async () => {
+			await committingRun('a.txt', 'one\n', 'Add a');
+			const made = sha();
+			const cli = commands('y', '', '');
+
+			await cli.run('/undo');
+
+			expect(cli.printed.at(-1)).toBe(
+				`git: ${root} (${branch}): kept on the branch, so git shows what was undone as changes against them: ${made} Add a`,
+			);
+			expect(subjects()).toEqual(['Add a', 'start']);
+
+			// Redone, the files match them again.
+			const redo = commands('y', '');
+			await redo.run('/redo');
+			expect(redo.printed.at(-1)).toBe(
+				`git: ${root} (${branch}): kept on the branch: ${made} Add a`,
+			);
+		});
+
+		it('says what git could not do, and why', async () => {
+			await committingRun('a.txt', 'one\n', 'Add a');
+			const made = sha();
+			// The branch is no longer checked out, so git cannot move it.
+			git('switch', '--quiet', '-c', 'elsewhere');
+			const cli = commands('y', 's', '');
+
+			await cli.run('/undo');
+
+			expect(cli.printed.at(-1)).toMatch(
+				new RegExp(
+					`^git: ${root} \\(${branch}\\): could not reset ${made} Add a, which stay as they were: .+$`,
+				),
+			);
+			expect(git('log', '--format=%s', branch).split('\n')).toEqual(['Add a', 'start']);
+		});
+
+		it('changes nothing for an answer that is not a choice', async () => {
+			await committingRun('a.txt', 'one\n', 'Add a');
+			const cli = commands('y', 'squash');
+
+			await cli.run('/undo');
+
+			expect(cli.printed.at(-1)).toBe('That is not keep, revert or reset. Nothing was changed.');
+			await expect(store.listRevisions()).resolves.toEqual([]);
+			expect(subjects()).toEqual(['Add a', 'start']);
+		});
+
+		it('lists the commits of every run a move to an earlier one undoes, and redoes them', async () => {
+			const first = await committingRun('a.txt', 'one\n', 'Add a');
+			const second = await committingRun('b.txt', 'two\n', 'Add b');
+			const cli = commands('y', 'revert', '');
+
+			await cli.run('/goto start');
+
+			expect(cli.printed.slice(1, 4)).toEqual([
+				'They made these commits:',
+				expect.stringMatching(new RegExp(` Add b \\(run ${short(second)}\\)$`)),
+				expect.stringMatching(new RegExp(` Add a \\(run ${short(first)}\\)$`)),
+			]);
+			expect(subjects().slice(0, 2)).toEqual(['Revert "Add a"', 'Revert "Add b"']);
+
+			const redo = commands('y', '');
+			await redo.run('/redo');
+
+			expect(redo.questions).toEqual(['Go ahead? [y/N]: ', 'Why? (optional): ']);
+			expect(redo.printed.at(-1)).toMatch(
+				new RegExp(`^git: ${root} \\(${branch}\\): put back: [0-9a-f]{7} .*Add a$`),
+			);
+		});
+
+		it('does not ask about commits for a run that made none', async () => {
+			await committingRun('a.txt', 'one\n', 'Add a');
+			await recordRun(store, root, [['c.txt', 'three']]);
+			const cli = commands('y', '');
+
+			await cli.run('/undo');
+
+			expect(cli.questions).toEqual(['Go ahead? [y/N]: ', 'Why are you going back? (optional): ']);
+			expect(cli.printed).not.toContain('It made these commits:');
+		});
 	});
 
 	it('lists the commands for one it does not know', async () => {

@@ -1,5 +1,11 @@
 import type { Agent, Approver, Asker, Callback, CommitReport, Tokens } from '../src/index.ts';
-import { RecoverableError, UnrecoverableError, isAbortError } from '../src/index.ts';
+import {
+	RecoverableCommittedRunError,
+	RecoverableError,
+	UnrecoverableCommittedRunError,
+	UnrecoverableError,
+	isAbortError,
+} from '../src/index.ts';
 import type { IOutput } from './output.ts';
 import type { IPromptEmitter } from './promptEmitter.ts';
 
@@ -86,6 +92,13 @@ export class ConversationLoop {
 				) {
 					this.output.print('usage before the failure:');
 					this.printTokens(e.tokens);
+				}
+				// What the run committed before it failed stays in git.
+				if (
+					e instanceof RecoverableCommittedRunError ||
+					e instanceof UnrecoverableCommittedRunError
+				) {
+					for (const line of commitLines(e.commits)) this.output.print(line);
 				}
 
 				if (e instanceof UnrecoverableError) {
