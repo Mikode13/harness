@@ -577,14 +577,14 @@ describe('FileRecoveryStore', () => {
 					before: formatted.state,
 					status: 'applied',
 					observedBy: 'format',
-					author: 'executor',
+					authors: ['executor'],
 				},
 				{
 					path: deleted.path,
 					after: absent,
 					status: 'applied',
 					observedBy: 'format',
-					author: 'executor',
+					authors: ['executor'],
 				},
 			]);
 			// A file it created was never captured, so the settled run cannot know of it.

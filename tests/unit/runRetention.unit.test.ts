@@ -267,14 +267,14 @@ describe('chainEntries', () => {
 	it('keeps who made each part of a change, once each', () => {
 		const by = (sequence: number, before: string, after: string, author?: string) => ({
 			...entry(sequence, before, after),
-			...(author === undefined ? {} : { author }),
+			...(author === undefined ? {} : { authors: [author] }),
 		});
 		expect(
 			chainEntries(
 				[by(1, 'a', 'b', 'executor'), by(2, 'b', 'c', 'reviewer')],
 				[by(1, 'c', 'd', 'executor')],
 			),
-		).toMatchObject([{ before: state('a'), after: state('d'), author: 'executor, reviewer' }]);
-		expect(chainEntries([by(1, 'a', 'b')], [by(1, 'b', 'c')])[0]).not.toHaveProperty('author');
+		).toMatchObject([{ before: state('a'), after: state('d'), authors: ['executor', 'reviewer'] }]);
+		expect(chainEntries([by(1, 'a', 'b')], [by(1, 'b', 'c')])[0]).not.toHaveProperty('authors');
 	});
 });

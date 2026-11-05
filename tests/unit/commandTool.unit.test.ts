@@ -171,7 +171,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 
 		const runId = context.firstRunId ?? '';
 		const { entries } = await opened.store.readRun(runId);
-		expect(entries).toMatchObject([{ observedBy: 'format', author: 'reviewer' }]);
+		expect(entries).toMatchObject([{ observedBy: 'format', authors: ['reviewer'] }]);
 		await expect(showChanges(opened.store, runId)).resolves.toContain(
 			'# src/a.ts: changed by reviewer',
 		);

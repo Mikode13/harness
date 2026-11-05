@@ -237,8 +237,8 @@ JSON its `Validator` checks (`planValidator`, `phaseReportValidator`, `phaseRevi
 in infrastructure), and code stages that ask the user to approve the plan, begin a phase, run
 the barrier and read the phase's diff, and commit. The `ChangeLog` port gives that diff;
 `RecordedChangeLog`, its infrastructure, reads it from the run's record in the recovery store,
-from a mark on: where the record stood when the plan was approved, for the first phase, and,
-for a later one, when the previous phase's diff was read, so what a command of the reviewer's
+from a mark on: the run's start for the first phase, or, inside another agent's run, where
+the record stood when the plan was approved, and, for a later one, when the previous phase's diff was read, so what a command of the reviewer's
 or the barrier after the review changed is in the next phase's diff, under the note of who
 changed it. `CommitFlow` freezes, asks unless told not to, has the committer write
 each message and commits. `OrchestratorAgent`, the round-based flow, remains for
@@ -267,9 +267,9 @@ is listed as `interrupted`, and the next run settles the changes it left prepare
 
 The journal also records an observation around something that changes files outside it, such
 as a command: it names a stored manifest of the files before, and the changes found after
-are recorded as its own entries, each `observedBy` it; each entry also names its `author`,
-when the tool call that made it had one, and the observation keeps it for the entries it
-settles later; an observation a dead run left open
+are recorded as its own entries, each `observedBy` it; each entry also names its `authors`,
+the tool call's author when it had one, and the observation keeps it for the entries it
+settles later, and retention keeps every author of the changes it chains; an observation a dead run left open
 is settled from its manifest. A run that finishes with an observation open, such as a
 command whose files could not be compared after it ran, keeps its status, is marked
 `unsettled` and is settled from the manifest at once, or by the next run or move if that

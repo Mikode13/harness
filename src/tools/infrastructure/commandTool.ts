@@ -165,7 +165,7 @@ export async function createCommandTool({
 		line: CommandLine;
 		definition: CommandDefinition;
 		context: RunContext;
-		/** Who runs it, as `JournalEntry.author`. */
+		/** Who runs it, as one of `JournalEntry.authors`. */
 		author: string | undefined;
 		signal: AbortSignal;
 		/** Told how the command ended, once it ran to an end and everything it changed is recorded. */

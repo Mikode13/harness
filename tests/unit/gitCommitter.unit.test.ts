@@ -326,7 +326,9 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		});
 		// The hook ran within the harness's commit.
 		const { entries } = await opened.store.readRun(context.firstRunId ?? '');
-		expect(entries.find(({ path }) => path.endsWith('generated.txt'))?.author).toBe('harness');
+		expect(entries.find(({ path }) => path.endsWith('generated.txt'))?.authors).toEqual([
+			'harness',
+		]);
 	});
 
 	it("commits a later repository holding a file the run created and deleted, after an earlier repository's commit", async () => {

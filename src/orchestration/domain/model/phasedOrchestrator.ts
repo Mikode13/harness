@@ -89,8 +89,9 @@ interface Course {
 	/** Times the phase in progress went back to the planner. */
 	readonly replans: number;
 	/**
-	 * Where the phase's diff starts in the run's record: where it stood when the first phase began,
-	 * or, for a later one, when the previous phase's diff was read, so what changed during its
+	 * Where the phase's diff starts in the run's record: for the first phase, the run's start, or,
+	 * inside another agent's run, where the record stood when the plan was approved; for a later
+	 * one, where it stood when the previous phase's diff was read, so what changed during its
 	 * review and the barrier after it is reviewed too.
 	 */
 	readonly mark: number;
@@ -565,9 +566,10 @@ export class PhasedOrchestrator implements Agent {
 				done: [],
 				rejections: 0,
 				replans: 0,
-				// Not the run's start: inside another agent's run, its record holds that agent's
-				// changes too.
-				mark: await this.mark(options),
+				// A run of its own from its start, so what a command of the planner's wrote is reviewed
+				// too; inside another agent's run, which never commits, from now, since its record
+				// holds that agent's changes too.
+				mark: ownRun ? 0 : await this.mark(options),
 				commits: [],
 				...(committing ? { committing } : {}),
 			},

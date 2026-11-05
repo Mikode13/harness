@@ -126,7 +126,7 @@ export class FileEditor {
 	}: {
 		policy: AccessPolicy;
 		session: WriteSession;
-		/** Who its changes are recorded as made by, as `JournalEntry.author`. */
+		/** Who its changes are recorded as made by, as one of `JournalEntry.authors`. */
 		author?: string | undefined;
 		maxFileBytes?: number;
 	}) {
@@ -223,7 +223,7 @@ export class FileEditor {
 				before: current.state,
 				after,
 				...(createdFolders.length > 0 ? { createdFolders } : {}),
-				...(this.author === undefined ? {} : { author: this.author }),
+				...(this.author === undefined ? {} : { authors: [this.author] }),
 			}),
 		);
 

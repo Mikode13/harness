@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Agent, AgentResponse, ProgressEvent } from '../../src/agent/domain/agent.ts';
+import type {
+	Agent,
+	AgentResponse,
+	ProgressEvent,
+	RunOptions,
+} from '../../src/agent/domain/agent.ts';
 import type { RepositoryCommit } from '../../src/agent/domain/commitReport.ts';
 import { Inbox } from '../../src/agent/domain/inbox.ts';
 import type { Asker } from '../../src/agent/domain/question.ts';
@@ -161,8 +166,9 @@ describe('the phased orchestrator', () => {
 		expect(executor.prompts[1]).toContain('Phase 2 of 2: render');
 		expect(executor.prompts[1]).toContain('The executor said: parsed');
 		expect(reviewer.prompts[0]).toContain('Phase 1 of 2: parse');
-		expect(reviewer.prompts[0]).toContain('diff since 1');
-		expect(reviewer.prompts[1]).toContain('diff since 2');
+		// From the run's start, then from where the first diff was read.
+		expect(reviewer.prompts[0]).toContain('diff since 0');
+		expect(reviewer.prompts[1]).toContain('diff since 1');
 		expect(reviewer.prompts[1]).toContain('Add a markdown preview');
 		expect(result.phases).toEqual([
 			{ goal: 'parse', status: 'approved', summary: 'parsed' },
@@ -198,6 +204,36 @@ describe('the phased orchestrator', () => {
 		expect(reviewer.prompts[0]).toContain('changes after 0 of 1');
 		// The first reviewer's change, 2, and the second executor's, 3.
 		expect(reviewer.prompts[1]).toContain('changes after 1 of 3');
+	});
+
+	it("shows the first reviewer what the planner's commands wrote, in a run of its own only", async () => {
+		const reviewed = async (options: RunOptions) => {
+			// The planner's command wrote once before the plan was approved.
+			let position = 0;
+			const changes: ChangeLog = {
+				mark: () => Promise.resolve(position),
+				since: mark => Promise.resolve(`changes after ${String(mark)}`),
+			};
+			const planner = scripted(planOf('parse'));
+			const reviewer = scripted(approved);
+			await orchestrator({
+				planner: {
+					run: (prompt, runOptions) => {
+						position++;
+						return planner.agent.run(prompt, runOptions);
+					},
+				},
+				executor: scripted(done('parsed')).agent,
+				reviewer: reviewer.agent,
+				changes,
+			}).run('task', options);
+			return reviewer.prompts[0];
+		};
+
+		await expect(reviewed({ signal })).resolves.toContain('changes after 0');
+		await expect(
+			reviewed(withRunContext({ signal }, new RunContext({ id: 'outer' }))),
+		).resolves.toContain('changes after 1');
 	});
 
 	it('sends a rejection back to the executor with its feedback, and keeps the same executor', async () => {

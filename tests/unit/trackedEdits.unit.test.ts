@@ -511,7 +511,7 @@ describe('formatting what an edit wrote', () => {
 		).run('change it', withAuthor({ signal }, 'executor'));
 
 		const { entries } = await store.readRun(runId ?? '');
-		expect(entries.map(({ author }) => author)).toEqual(['executor', 'executor']);
+		expect(entries.map(({ authors }) => authors)).toEqual([['executor'], ['executor']]);
 	});
 
 	it('keeps the file as written, and says why, when the formatter fails', async () => {

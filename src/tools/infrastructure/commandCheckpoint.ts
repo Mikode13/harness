@@ -77,7 +77,7 @@ export class CommandCheckpoint {
 		covered: CoveredFiles;
 		/** The command, as the history will name it. */
 		by: string;
-		/** Who ran it, as `JournalEntry.author`. */
+		/** Who ran it, as one of `JournalEntry.authors`. */
 		author?: string | undefined;
 		signal: AbortSignal;
 	}): Promise<CommandCheckpoint> {
@@ -178,7 +178,7 @@ export class CommandCheckpoint {
 				before,
 				after,
 				observedBy: this.by,
-				...(this.author === undefined ? {} : { author: this.author }),
+				...(this.author === undefined ? {} : { authors: [this.author] }),
 			});
 			await this.journal.applied(sequence);
 			changes.push({ path, before, after });

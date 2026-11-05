@@ -1169,7 +1169,7 @@ export class FileRecoveryStore implements RecoveryStore {
 					before,
 					after,
 					observedBy: observation.by,
-					...(observation.author === undefined ? {} : { author: observation.author }),
+					...(observation.author === undefined ? {} : { authors: [observation.author] }),
 				},
 				{ type: 'applied', sequence },
 			);
@@ -1275,7 +1275,7 @@ export class FileRecoveryStore implements RecoveryStore {
 			}
 			lastSequence = Math.max(lastSequence, line.sequence);
 			if (line.type === 'prepared') {
-				const { sequence, path, before, after, createdFolders, observedBy, author } = line;
+				const { sequence, path, before, after, createdFolders, observedBy, authors } = line;
 				entries.set(sequence, {
 					sequence,
 					path,
@@ -1283,7 +1283,7 @@ export class FileRecoveryStore implements RecoveryStore {
 					after,
 					...(createdFolders ? { createdFolders } : {}),
 					...(observedBy === undefined ? {} : { observedBy }),
-					...(author === undefined ? {} : { author }),
+					...(authors === undefined ? {} : { authors }),
 					status: 'prepared',
 				});
 				return;

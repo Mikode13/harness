@@ -22,7 +22,7 @@ export interface FileChange {
 	createdFolders: string[];
 	/** The commands seen changing it, for changes no tool of the harness made itself. */
 	observedBy: string[];
-	/** Who changed it, in the order each first did, as `JournalEntry.author`; empty when none was named. */
+	/** Who changed it, in the order each first did, as `JournalEntry.authors`; empty when none was named. */
 	authors: string[];
 }
 
@@ -58,9 +58,9 @@ export function fileChanges(entries: JournalEntry[], stopped: boolean): FileChan
 			if (entry.observedBy !== undefined && !known.observedBy.includes(entry.observedBy)) {
 				known.observedBy.push(entry.observedBy);
 			}
-			if (entry.author !== undefined && !known.authors.includes(entry.author)) {
-				known.authors.push(entry.author);
-			}
+			known.authors.push(
+				...(entry.authors ?? []).filter(author => !known.authors.includes(author)),
+			);
 		} else {
 			byPath.set(entry.path, {
 				path: entry.path,
@@ -71,7 +71,7 @@ export function fileChanges(entries: JournalEntry[], stopped: boolean): FileChan
 				pending,
 				createdFolders: [...folders],
 				observedBy: entry.observedBy === undefined ? [] : [entry.observedBy],
-				authors: entry.author === undefined ? [] : [entry.author],
+				authors: [...new Set(entry.authors ?? [])],
 			});
 		}
 	}

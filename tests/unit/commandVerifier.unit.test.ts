@@ -288,7 +288,7 @@ describe('the command verifier', { timeout: 20_000 }, () => {
 		await verifier.verify(options);
 
 		const { entries } = await store.readRun(context.firstRunId ?? '');
-		expect(entries).toMatchObject([{ observedBy: 'snapshot', author: 'harness' }]);
+		expect(entries).toMatchObject([{ observedBy: 'snapshot', authors: ['harness'] }]);
 	});
 
 	it('reports a check stale after a few passes when the checks keep changing the files', async () => {
