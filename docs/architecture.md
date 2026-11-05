@@ -580,12 +580,13 @@ conversation across phases and across the orchestrator's runs, and every role's 
 its name. The planner's plan, at most `limits.phases` phases, goes to the `approve` code stage:
 with no `ask` it begins at once; with one, `Approve` begins, `Stop` ends the run stopped, and
 any other answer goes back to the planner as a correction; past `limits.corrections`
-corrections, such an answer ends the run stopped with nothing done, logged as a warning, so an
-asker that never approves cannot keep the planner planning. `begin` marks where the run's record
-stands, and the executor gets the plan with the phase in progress and any feedback, never the
+corrections, such an answer ends the run stopped before any phase, logged as a warning, so an
+asker that never approves cannot keep the planner planning; either stop says when, in a run of
+its own, a command of the planner's changed files, which stay. `begin` records how far the run
+got, and the executor gets the plan with the phase in progress and any feedback, never the
 request. Its `done` goes to `verify`: the `Verifier`, when there is one, must find every
 required check passed, or the phase goes back to the executor with the checks' results, as a
-rejection; then the `ChangeLog` reads the phase's diff since the mark, and before a review a
+rejection; then the `ChangeLog` reads the phase's diff since its mark: where the run began for the first phase of a run of its own, where the plan was approved inside another agent's, and where the previous diff was read for a later one, and before a review a
 commit follows, `CommitFlow` freezes what that commit would hold. The reviewer gets the request,
 the plan, the phase, the executor's summary, the checks' results and the diff. Its approval
 goes to the `commit` code stage when a commit follows it, or when it is the last phase and the

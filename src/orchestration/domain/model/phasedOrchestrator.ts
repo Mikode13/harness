@@ -540,7 +540,7 @@ export class PhasedOrchestrator implements Agent {
 
 	/**
 	 * Asks the user to approve the plan when the run can ask: `Approve` carries it out, `Stop`
-	 * ends the run with nothing done, and anything else is a correction the planner plans with.
+	 * ends the run before any phase, and anything else is a correction the planner plans with.
 	 * When the commit is asked about with the plan, approving also says how to commit.
 	 */
 	private async approve(
@@ -575,7 +575,7 @@ export class PhasedOrchestrator implements Agent {
 			},
 		});
 		if (!ask) return begin(configured);
-		const stop = { label: stopLabel, description: 'End the task without changing anything' };
+		const stop = { label: stopLabel, description: 'End the task before any phase begins' };
 		const question: UserQuestion = {
 			question: `Carry out this plan?\n\n${renderPlan(plan)}`,
 			options: choosing
@@ -610,9 +610,13 @@ export class PhasedOrchestrator implements Agent {
 			});
 		}
 		if (answer === stopLabel) {
+			const left = await this.leftByPlanner(ownRun, options);
 			return {
 				type: 'stop',
-				result: { response: 'The user stopped the task before it began.', phases: pending(plan) },
+				result: {
+					response: `The user stopped the task before it began.${left === '' ? '' : ` ${left}`}`,
+					phases: pending(plan),
+				},
 			};
 		}
 		if (choosing) {
@@ -623,7 +627,8 @@ export class PhasedOrchestrator implements Agent {
 			return begin(configured);
 		}
 		if (corrections >= this.limits.corrections) {
-			const response = `The task ends with nothing changed: the plan was corrected ${String(corrections)} ${corrections === 1 ? 'time' : 'times'}, the most a run may take, and the last answer was not to approve it either:\n${answer}`;
+			const left = await this.leftByPlanner(ownRun, options);
+			const response = `The task ends before any phase began: the plan was corrected ${String(corrections)} ${corrections === 1 ? 'time' : 'times'}, the most a run may take, and the last answer was not to approve it either:\n${answer}${left === '' ? '' : `\n\n${left}`}`;
 			this.warn(response);
 			return { type: 'stop', result: { response, phases: pending(plan) } };
 		}
@@ -776,6 +781,15 @@ export class PhasedOrchestrator implements Agent {
 				...(verification ? { verification } : {}),
 			},
 		};
+	}
+
+	/**
+	 * What a run that ends before its first phase says of what it changed: a command of the
+	 * planner's may have written. Only of a run of its own, whose record holds nothing else.
+	 */
+	private async leftByPlanner(ownRun: boolean, options: RunOptions): Promise<string> {
+		if (!ownRun || (await this.mark(options)) === 0) return '';
+		return "What the planner's commands changed stays as it is.";
 	}
 
 	private async mark(options: RunOptions): Promise<number> {

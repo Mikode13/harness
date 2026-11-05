@@ -655,7 +655,7 @@ orchestrator is one run of the history, every phase included.
 #### Phases, checks and limits
 
 The planner answers with a plan in phases. With `ask`, the user approves it first: **Approve**
-carries it out, **Stop** ends the run with nothing done, and any other answer is a correction
+carries it out, **Stop** ends the run before any phase, and any other answer is a correction
 the planner plans again with. Each phase goes to the executor, then to its barrier, then to the
 reviewer with the phase's diff. A rejection goes back to the executor, and so does a phase
 whose required checks do not pass.

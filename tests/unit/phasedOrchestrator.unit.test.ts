@@ -62,6 +62,9 @@ function fakeChanges() {
 	return { changes: { mark, since } satisfies ChangeLog, mark, since };
 }
 
+/** A change log whose record holds nothing yet. */
+const unchanged: ChangeLog = { mark: () => Promise.resolve(0), since: () => Promise.resolve('') };
+
 function verifierOf(...results: Verification[]) {
 	const verify = vi.fn<Verifier['verify']>(() => {
 		const next = results.shift();
@@ -390,7 +393,7 @@ describe('the phased orchestrator', () => {
 			expect(result.response).toContain('2 phases');
 		});
 
-		it('ends with nothing done once the corrections run out, so an asker that never approves cannot loop', async () => {
+		it('ends before any phase once the corrections run out, so an asker that never approves cannot loop', async () => {
 			const planner = scripted(planOf('a'), planOf('b'), planOf('c'));
 			const executor = scripted();
 			const logger = { warn: vi.fn() };
@@ -401,28 +404,58 @@ describe('the phased orchestrator', () => {
 				reviewer: scripted().agent,
 				limits: { corrections: 2 },
 				logger,
+				changes: unchanged,
 			}).run('task', { signal, ask: () => ['Commit'] });
 
 			expect(planner.run).toHaveBeenCalledTimes(3);
 			expect(executor.run).not.toHaveBeenCalled();
 			expect(result.response).toBe(
-				'The task ends with nothing changed: the plan was corrected 2 times, the most a run may take, and the last answer was not to approve it either:\nCommit',
+				'The task ends before any phase began: the plan was corrected 2 times, the most a run may take, and the last answer was not to approve it either:\nCommit',
 			);
 			expect(logger.warn).toHaveBeenCalledWith(result.response);
 		});
 
-		it('ends with nothing done when the user stops it', async () => {
+		it('ends before any phase when the user stops it', async () => {
 			const executor = scripted();
 
 			const result = await orchestrator({
 				planner: scripted(planOf('all')).agent,
 				executor: executor.agent,
 				reviewer: scripted().agent,
+				changes: unchanged,
 			}).run('task', { signal, ask: () => ['Stop'] });
 
 			expect(result.response).toBe('The user stopped the task before it began.');
 			expect(executor.run).not.toHaveBeenCalled();
 			expect(result.phases).toEqual([{ goal: 'all', status: 'pending' }]);
+		});
+
+		it("says when a command of the planner's changed files, which a stop before the first phase leaves", async () => {
+			// The record holds one change, the planner's: of the run's own, or of another agent's run.
+			const changes: ChangeLog = {
+				mark: () => Promise.resolve(1),
+				since: () => Promise.resolve(''),
+			};
+			const stopped = (answer: string, options: RunOptions) =>
+				orchestrator({
+					planner: scripted(planOf('a'), planOf('b')).agent,
+					executor: scripted().agent,
+					reviewer: scripted().agent,
+					limits: { corrections: 1 },
+					changes,
+				}).run('task', { ...options, ask: () => [answer] });
+			const left = "What the planner's commands changed stays as it is.";
+
+			await expect(stopped('Stop', { signal })).resolves.toMatchObject({
+				response: `The user stopped the task before it began. ${left}`,
+			});
+			await expect(stopped('Split it', { signal })).resolves.toMatchObject({
+				response: expect.stringMatching(new RegExp(`:\\nSplit it\\n\\n${left}$`)) as unknown,
+			});
+			// Inside another agent's run, the record holds that agent's changes too.
+			await expect(
+				stopped('Stop', withRunContext({ signal }, new RunContext({ id: 'outer' }))),
+			).resolves.toMatchObject({ response: 'The user stopped the task before it began.' });
 		});
 
 		it('fails as a host failure when the asker answers wrongly', async () => {
