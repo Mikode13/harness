@@ -373,8 +373,8 @@ The two paths authenticate differently:
 
 The Claude Agent SDK
 [authenticates with `ANTHROPIC_API_KEY`](https://code.claude.com/docs/en/agent-sdk) whenever
-it is set, so with that key in the environment a Claude agent from `createAgent` or `createOrchestrator`
-bills the key instead of the subscription.
+it is set, so with that key in the environment a Claude agent from `createAgent` or
+`createOrchestrator` bills the key instead of the subscription.
 
 ### Agents that own their conversation
 
@@ -453,10 +453,11 @@ await agent.run('Add a cache to the client.', {
 });
 ```
 
-Without `ask` the agent has no such tool, and neither does an agent given a tool of its own named `askUser`, which keeps it. Questions the model wrote wrong go back to
-it to correct. An asker that throws, or does not answer each question with some text,
-ends the run with an `UnrecoverableError`. The Agent SDK engines ignore `ask`, and
-`createLLMOrchestrator` passes it to every role.
+Without `ask` the agent has no such tool, and neither does an agent given a tool of its own
+named `askUser`, which keeps it. Questions the model wrote wrong go back to it to correct. An
+asker that throws, or does not answer each question with some text, ends the run with an
+`UnrecoverableError`. The Agent SDK engines ignore `ask`, and `createLLMOrchestrator` passes it
+to every role.
 
 ### One run at a time, and what the user sends meanwhile
 
@@ -481,8 +482,8 @@ const unread = inbox.close();
 
 `createLLMAgent` reads what was sent once the step in progress ends, without cutting a model
 call or a tool, as a message from the user. It also reads it while it waits for agents working
-in the background, so the model can reconsider at once. The Agent SDK engines, the
-orchestrators and the workflows never read it, so `close()` returns everything sent to them. Neither does a
+in the background, so the model can reconsider at once. The Agent SDK engines, the orchestrators
+and the workflows never read it, so `close()` returns everything sent to them. Neither does a
 run's last step, which has no step left to answer it. A run that fails before it is kept gives
 back what it read: a retried attempt reads it again, or `close()` returns it.
 
@@ -500,11 +501,11 @@ const first = await agent.run('Add the export button', { signal });
 await other.run('Make it a dropdown too', { signal, session: first.session });
 ```
 
-An agent another agent started belongs to the outer run's session, and a workflow makes a
-new one for each run that names none. A session without a `name`, or with a blank one, is shown by its `id`. Each
-run that writes records its session in the workspace's history, as `HistoryRun.session`, so
-a host can say whose change an undo takes back. It is the harness's session, not a
-provider's, which stays inside its engine.
+An agent another agent started belongs to the outer run's session, and a workflow makes a new
+one for each run that names none. A session without a `name`, or with a blank one, is shown by
+its `id`. Each run that writes records its session in the workspace's history, as
+`HistoryRun.session`, so a host can say whose change an undo takes back. It is the harness's
+session, not a provider's, which stays inside its engine.
 
 ### Agents that change files
 
@@ -663,14 +664,15 @@ whose required checks do not pass.
 `requiredChecks` names the configured commands every phase must pass, each with the values of
 its parameters. A parameter left out is not given, so a run of `test` on some files never counts
 for `{ command: 'test' }`, and neither does a run of a command of that name whose `env` differs,
-such as one an agent of `agentAsTool` was given with a variable that skips the tests. At each barrier, before each review, and again after the review before a
-commit or the end of the run, the harness runs with no model each check that never ran, or ran on files that changed since, and
-does not run one that already failed for these files. A check that another check's run changed
-the files under runs again, up to 3 passes in all, so a check that writes, such as a snapshot,
-settles. It asks no approver, whatever
-`autoApprove` says: listing a command in `requiredChecks` approves its runs. A check that does not pass sends the
-phase back to the executor with its output. A check that names no command, or a value that does
-not fit it, is an `InvalidAgentConfigError` when the orchestrator is built.
+such as one an agent of `agentAsTool` was given with a variable that skips the tests. At each
+barrier, before each review, and again after the review before a commit or the end of the run,
+the harness runs with no model each check that never ran, or ran on files that changed since,
+and does not run one that already failed for these files. A check that another check's run
+changed the files under runs again, up to 3 passes in all, so a check that writes, such as a
+snapshot, settles. It asks no approver, whatever `autoApprove` says: listing a command in
+`requiredChecks` approves its runs. A check that does not pass sends the phase back to the
+executor with its output. A check that names no command, or a value that does not fit it, is an
+`InvalidAgentConfigError` when the orchestrator is built.
 
 `limits` sets how far a run goes, each a positive integer:
 
@@ -725,28 +727,30 @@ never the provider keys. Its progress arrives with
 
 A commit holds what the reviewer read: the run's changes are taken before each review, and a
 repository where any of them changed since, or where the run changed another file since, as a
-command of the reviewer's can, is left uncommitted. It holds only the run's own
-files, never what else is staged. A file is left out, and the report says why, when it held
-changes of yours before the run, or a version of yours staged, there or in its way above or below it, changed after the run last
-changed it, was changed by someone else while the run worked, is a link or a submodule in
-git, or sits under a folder that became a link; files git ignores are not committed, and files
-a command of the run already committed are not committed again. A repository is left whole when no branch is checked out, or when git is in
-the middle of a merge, a rebase or another operation, or in a sparse checkout.
+command of the reviewer's can, is left uncommitted. It holds only the run's own files, never
+what else is staged. A file is left out, and the report says why, when it held changes of yours
+before the run, or a version of yours staged, there or in its way above or below it, changed
+after the run last changed it, was changed by someone else while the run worked, is a link or a
+submodule in git, or sits under a folder that became a link; files git ignores are not
+committed, and files a command of the run already committed are not committed again. A
+repository is left whole when no branch is checked out, or when git is in the middle of a merge,
+a rebase or another operation, or in a sparse checkout.
 
-The commit is one of the run's changes: undoing the run keeps, reverts or resets it, as for
-the commits of a command, and redoing puts it back. `AgentResponse.commits` reports it, every
-commit of the run together when it commits each phase:
-`committed`, `declined`, `nothing` when no file could be committed, or `failed` when git
-refused every commit, as a hook that rejects it does. The run succeeds either way, with the
-files changed. Each repository says its `outcome`, the commits made, the paths they hold and
-those left out, a hook's included, and `unreviewed`, the paths a hook, a filter or an edit made while git committed changed beyond
-what was reviewed. When git cannot be read, the run fails with `UnrecoverableError`, and so it does when
-the committer fails, as any role's failure ends the run. A run that fails once an earlier
-phase is committed rejects with `RecoverableCommittedRunError` or
-`UnrecoverableCommittedRunError`, of the failure's own kind, which carry the run's `commits`,
-`phases` and `runId`, since those commits stay in git; a cancellation is let through as it is. An orchestrator that runs inside another agent's run, as an agent of `agentAsTool`, never
-commits: that run holds the other agent's changes too. It does not commit
-on Windows, where `autoCommit` is an `InvalidAgentConfigError`.
+The commit is one of the run's changes: undoing the run keeps, reverts or resets it, as for the
+commits of a command, and redoing puts it back. `AgentResponse.commits` reports it, every commit
+of the run together when it commits each phase: `committed`, `declined`, `nothing` when no file
+could be committed, or `failed` when git refused every commit, as a hook that rejects it does.
+The run succeeds either way, with the files changed. Each repository says its `outcome`, the
+commits made, the paths they hold and those left out, a hook's included, and `unreviewed`, the
+paths a hook, a filter or an edit made while git committed changed beyond what was reviewed.
+When git cannot be read, the run fails with `UnrecoverableError`, and so it does when the
+committer fails, as any role's failure ends the run. A run that fails once an earlier phase is
+committed rejects with `RecoverableCommittedRunError` or `UnrecoverableCommittedRunError`, of
+the failure's own kind, which carry the run's `commits`, `phases` and `runId`, since those
+commits stay in git; a cancellation is let through as it is. An orchestrator that runs inside
+another agent's run, as an agent of `agentAsTool`, never commits: that run holds the other
+agent's changes too. It does not commit on Windows, where `autoCommit` is an
+`InvalidAgentConfigError`.
 
 ```ts
 const { commits } = await orchestrator.run(task, { ask });
@@ -906,16 +910,16 @@ await history.redo();
 await history.goTo(historyStart); // as it was before the agent's first run
 ```
 
-`list()` gives every run kept, oldest first, with its parent, status, the files it changed
-and the session it came from, and the run the workspace is at (`head`), absent at the
-start. A run of `createLLMOrchestrator` also says who changed each file, in `authors`: the
-role, such as `executor`, an agent it handed work to, as `executor › commit`, or `harness`
-for a required check the harness ran or what a hook changed while it committed; the diff
-`changes` gives says it too, as `# a.ts: changed by executor`. Runs form a tree: going back and writing again starts a new branch, and `goTo`
-reaches the old one. `redo` returns towards where the workspace was most recently. A
-run's `runId` is in its `AgentResponse` when it changed a file, and a run that failed or
-was cancelled after writing is still listed, with that status. A run that changed nothing
-is not kept.
+`list()` gives every run kept, oldest first, with its parent, status, the files it changed and
+the session it came from, and the run the workspace is at (`head`), absent at the start. A run
+of `createLLMOrchestrator` also says who changed each file, in `authors`: the role, such as
+`executor`, an agent it handed work to, as `executor › commit`, or `harness` for a required
+check the harness ran or what a hook changed while it committed; the diff `changes` gives says
+it too, as `# a.ts: changed by executor`. Runs form a tree: going back and writing again starts
+a new branch, and `goTo` reaches the old one. `redo` returns towards where the workspace was
+most recently. A run's `runId` is in its `AgentResponse` when it changed a file, and a run that
+failed or was cancelled after writing is still listed, with that status. A run that changed
+nothing is not kept.
 
 A move writes a file only if it still holds what the history expects. A file you
 changed since is left as it is and named in the move's `conflicts`, and the move is
@@ -925,8 +929,9 @@ reason is kept with the move.
 
 When a configured command commits, the run records the commits it made: those new on the
 branch it ran on, as long as that branch stayed checked out and only moved forward, so
-commits a `git pull` brings in count too. What undoing does with them is `commits` in the
-move's options:
+commits a `git pull` brings in count too. `list()` gives them in each run's `commits`, per
+branch of each repository, so a host can show them before a move that undoes the run. What
+undoing does with them is `commits` in the move's options:
 
 - `keep`, the default, leaves them on their branch. Git then shows the restored files as
   changes against a commit that still holds the run's.
@@ -1091,9 +1096,12 @@ without the model:
 - `/goto <run | start>` goes to a run, named by its id or its last six characters, or
   to `start`, before any run.
 
-Each move says what it will do and changes nothing until you answer `y`. It then
-asks why, and records the reason, if you give one, with the move. A move that left
-files as they were, because they changed since, names them. With `--llm` the executor
+Each move says what it will do and changes nothing until you answer `y`. When the runs it
+undoes made commits, it lists them first and, once you agree, asks whether to keep, revert or
+reset them; keep is the default. It then asks why, and records the reason, if you give one,
+with the move. After the move it prints what git did with each branch's commits, or why it
+could not, and names the files it left as they were because they changed since. A run that
+fails after committing prints those commits too, as a run that ends does. With `--llm` the executor
 writes to the current directory through the harness's tools, so its runs are in that
 history. The Agent SDK path changes files through its own tools, which the history does not
 record.
@@ -1108,12 +1116,13 @@ numbers its options, and you answer with a number, several separated by commas w
 allows more than one, or in your own words. With piped input nobody answers, and the model
 is told to decide and say what it assumed.
 
-With `--llm`, the agents can also [run commands](#running-the-projects-commands) you
-configure for the repository, in `~/.config/mikode-harness/config.json` (or under
-`$XDG_CONFIG_HOME`). The file maps each repository's real path to its `commands` and,
-optionally, its `maxSteps`, its `compactAt`, or `false` to turn compaction off, its
-`compaction` (`provider`, `recent` or `jev`, as `createLLMOrchestrator` takes them) and [`formatter`](#formatting-what-the-agent-writes). It lives outside every repository, so neither a cloned repository
-nor the agent decides what runs, or for how long:
+With `--llm`, the agents can also [run commands](#running-the-projects-commands) you configure
+for the repository, in `~/.config/mikode-harness/config.json` (or under `$XDG_CONFIG_HOME`). The
+file maps each repository's real path to its `commands` and, optionally, its `maxSteps`, its
+`compactAt`, or `false` to turn compaction off, its `compaction` (`provider`, `recent` or `jev`,
+as `createLLMOrchestrator` takes them) and [`formatter`](#formatting-what-the-agent-writes). It
+lives outside every repository, so neither a cloned repository nor the agent decides what runs,
+or for how long:
 
 ```json
 {

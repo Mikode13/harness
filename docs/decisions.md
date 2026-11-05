@@ -3065,3 +3065,26 @@ tags: #mikode-harness #orchestration #git #api-design
 - A phase committed before the run ends unfinished stays committed; the response says so, and so does the error of a run that fails.
 - A commit can hold several phases, when the user declined an earlier one.
 - A check a command of the reviewer's broke costs another executor round and review.
+
+## The CLI shows a run's commits before undoing it, and asks what to do with them
+
+tags: #mikode-harness #cli #recovery #git
+
+**Decision:**
+
+- **`HistoryRun.commits` lists the commits a run's commands made,** per branch of each repository, oldest first, a run retention chained into it included, as the run recorded them. Absent when it made none.
+- **`/undo`, and `/goto` back over runs, list the commits of the runs they undo** before asking to go ahead, and only then ask whether to keep, revert or reset them; keep is the default, and an answer that is none of them changes nothing. A move over runs that made no commit asks nothing more.
+- **Every move prints its `git`,** one line per branch: what it did with the commits, or that it could not, with git's reason, and each commit by its short SHA and subject, with the commit a cherry-picked one re-applies.
+- **A run that fails after committing prints what it committed,** from `RecoverableCommittedRunError` and `UnrecoverableCommittedRunError`, as a run that ends prints its `commits`.
+
+**Context:** #166, a leftover of the review of #163: `/undo` printed where the workspace was and the conflicts, ignored `Move.git`, and always kept the commits. On 2026-11-05 the user chose to ask only when there are commits, which needs the history to say which commits a run made, and to print a committed run's error in the same pull request. harness-cli, the CLI that will replace `cli/`, has no history commands yet, so nothing there is duplicated.
+
+**Alternatives considered:**
+
+- **An argument, `/undo [keep|revert|reset]`.** No change to the harness and no extra question, but the user must know the option exists, and does not see whether there are commits before choosing.
+- **Always asking.** No change to the harness, but a question on every move, most of which go over no commit.
+
+**Consequences:**
+
+- `HistoryRun` gains an optional field, a `feat`.
+- The commits listed are those the run recorded; a move since may have taken them back, which the move's own `git` then reports.

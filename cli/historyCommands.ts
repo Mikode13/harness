@@ -6,6 +6,8 @@ import {
 	UnknownRunError,
 	WorkspaceBusyError,
 	WorkspaceMovedError,
+	type BranchMove,
+	type CommitsPolicy,
 	type History,
 	type HistoryRun,
 	type Move,
@@ -43,6 +45,63 @@ function fileCount(run: HistoryRun): string {
 function describe(run: HistoryRun): string {
 	return `run ${shortId(run.runId)} (${startTime(run)}, ${fileCount(run)})`;
 }
+
+function commitList(
+	commits: readonly { sha: string; subject: string; original?: string }[],
+): string {
+	return commits
+		.map(({ sha, subject, original }) =>
+			original === undefined
+				? `${sha.slice(0, 7)} ${subject}`
+				: `${sha.slice(0, 7)} (again, was ${original.slice(0, 7)}) ${subject}`,
+		)
+		.join('; ');
+}
+
+/** What a move did, or could not do, with the commits of the runs it went over. */
+const done: Record<BranchMove['action'], string> = {
+	keep: 'kept on the branch',
+	revert: 'reverted',
+	reset: 'reset off the branch',
+	reapply: 'put back',
+};
+const notDone: Record<BranchMove['action'], string> = {
+	keep: 'could not keep',
+	revert: 'could not revert',
+	reset: 'could not reset',
+	reapply: 'could not put back',
+};
+
+/**
+ * One branch of a move's `git`. Commits kept while their run is undone hold what the files no
+ * longer do, which git then shows as changes.
+ */
+function gitLine(
+	{ repository, branch, action, outcome, reason, commits }: BranchMove,
+	undone: ReadonlySet<string>,
+): string {
+	const where = `git: ${repository} (${branch})`;
+	const list = commitList(commits);
+	if (outcome === 'done') {
+		const against =
+			action === 'keep' && commits.some(({ runId }) => undone.has(runId))
+				? ', so git shows what was undone as changes against them'
+				: '';
+		return `${where}: ${done[action]}${against}: ${list}`;
+	}
+	return `${where}: ${notDone[action]} ${list}, which stay as they were: ${reason ?? 'no reason given'}`;
+}
+
+/** The answers to what undoing does with the runs' commits; nothing given keeps them. */
+const policies: Record<string, CommitsPolicy> = {
+	'': 'keep',
+	k: 'keep',
+	keep: 'keep',
+	r: 'revert',
+	revert: 'revert',
+	s: 'reset',
+	reset: 'reset',
+};
 
 /**
  * The commands that move the workspace through the history of the runs that wrote to it,
@@ -149,10 +208,16 @@ export class HistoryCommands {
 		this.output.print(
 			`This undoes ${describe(current)}, taking the workspace back to ${parent ? describe(parent) : 'how it was before any run'}.`,
 		);
+		const committed = this.listCommits([current]);
 		if (!(await this.confirm(signal))) return;
+		const commits = committed ? await this.commitsPolicy(signal) : undefined;
+		if (commits === null) return;
 		const reason = await this.reason('Why are you going back? (optional): ', signal);
 		// Only from where the user saw it: a run that ended meanwhile is not the one confirmed.
-		this.report(await this.history.undo({ ...reason, from: current.runId }));
+		this.report(
+			await this.history.undo({ ...reason, from: current.runId, ...(commits ? { commits } : {}) }),
+			[current],
+		);
 	}
 
 	private async redo(signal: AbortSignal): Promise<void> {
@@ -167,7 +232,7 @@ export class HistoryCommands {
 		);
 		if (!(await this.confirm(signal))) return;
 		const reason = await this.reason('Why? (optional): ', signal);
-		this.report(await this.history.redo({ ...reason, from: head ?? historyStart }));
+		this.report(await this.history.redo({ ...reason, from: head ?? historyStart }), []);
 	}
 
 	private async goTo(target: string | undefined, signal: AbortSignal): Promise<void> {
@@ -206,13 +271,24 @@ export class HistoryCommands {
 		this.output.print(
 			`This moves the workspace to ${run ? `right after ${describe(run)}` : 'how it was before any run'}.`,
 		);
+		const undone = this.undoneBy(runId, head, runs);
+		const committed = this.listCommits(undone);
 		if (!(await this.confirm(signal))) return;
+		const commits = committed ? await this.commitsPolicy(signal) : undefined;
+		if (commits === null) return;
 		const back = runId === historyStart || this.isAncestor(runId, head, runs);
 		const reason = await this.reason(
 			back ? 'Why are you going back? (optional): ' : 'Why? (optional): ',
 			signal,
 		);
-		this.report(await this.history.goTo(runId, { ...reason, from: head ?? historyStart }));
+		this.report(
+			await this.history.goTo(runId, {
+				...reason,
+				from: head ?? historyStart,
+				...(commits ? { commits } : {}),
+			}),
+			undone,
+		);
 	}
 
 	/** Whether `runId` comes before `head` on the line from the start. */
@@ -222,6 +298,55 @@ export class HistoryCommands {
 			if (current === runId) return true;
 		}
 		return false;
+	}
+
+	/**
+	 * The runs a move from `head` to `target` undoes, newest first: those from `head` back to
+	 * where its line meets the line to `target`.
+	 */
+	private undoneBy(target: string, head: string | undefined, runs: HistoryRun[]): HistoryRun[] {
+		const byId = new Map(runs.map(run => [run.runId, run]));
+		const towards = new Set<string>();
+		for (
+			let at = byId.get(target);
+			at;
+			at = at.parentRunId ? byId.get(at.parentRunId) : undefined
+		) {
+			towards.add(at.runId);
+		}
+		const undone: HistoryRun[] = [];
+		for (let at = head ? byId.get(head) : undefined; at && !towards.has(at.runId);) {
+			undone.push(at);
+			at = at.parentRunId ? byId.get(at.parentRunId) : undefined;
+		}
+		return undone;
+	}
+
+	/** Prints the commits of `runs`, which a move that undoes them may take back: whether any. */
+	private listCommits(runs: readonly HistoryRun[]): boolean {
+		const lines = runs.flatMap(run =>
+			(run.commits ?? []).map(
+				({ repository, branch, commits }) =>
+					`  ${repository} (${branch}): ${commitList(commits)}${runs.length > 1 ? ` (run ${shortId(run.runId)})` : ''}`,
+			),
+		);
+		if (lines.length === 0) return false;
+		this.output.print(`${runs.length > 1 ? 'They' : 'It'} made these commits:`);
+		for (const line of lines) this.output.print(line);
+		return true;
+	}
+
+	/** What to do with the commits of the runs undone, or `null` for an answer that is none. */
+	private async commitsPolicy(signal: AbortSignal): Promise<CommitsPolicy | null> {
+		const answer = (
+			await this.promptEmitter.emit('Those commits: [k]eep, [r]evert or re[s]et? (keep): ', signal)
+		)
+			.trim()
+			.toLowerCase();
+		const policy = Object.hasOwn(policies, answer) ? policies[answer] : undefined;
+		if (policy !== undefined) return policy;
+		this.output.print('That is not keep, revert or reset. Nothing was changed.');
+		return null;
 	}
 
 	private async confirm(signal: AbortSignal): Promise<boolean> {
@@ -236,9 +361,13 @@ export class HistoryCommands {
 		return reason ? { reason } : {};
 	}
 
-	private report(move: Move): void {
+	/** What `move` did, which undid `undone`. */
+	private report(move: Move, undone: readonly HistoryRun[]): void {
 		const runs = move.to === undefined ? 'how it was before any run' : `run ${shortId(move.to)}`;
 		this.output.print(`The workspace is now at ${runs}.`);
+		// A commit names the run that made it, which may be one retention chained into a run undone.
+		const ids = new Set(undone.flatMap(run => [run.runId, ...(run.absorbed ?? [])]));
+		for (const branch of move.git ?? []) this.output.print(gitLine(branch, ids));
 		if (move.complete) return;
 		this.output.print('Left as they were, because they changed since:');
 		for (const conflict of move.conflicts) {
