@@ -301,7 +301,7 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		execFileSync('git', [...identity, 'commit', '--quiet', '--allow-empty', '-m', 'start'], {
 			cwd: nested,
 		});
-		const { run, committer, options } = await workingRun({
+		const { run, committer, options, opened, context } = await workingRun({
 			edit: 'echo two > a.txt && echo two > nested/n.txt',
 		});
 		await run('edit');
@@ -324,6 +324,48 @@ describe('the git committer', { timeout: 20_000 }, () => {
 			outcome: 'left',
 			reason: 'the task changed files after the review: generated.txt',
 		});
+		// The hook ran within the harness's commit.
+		const { entries } = await opened.store.readRun(context.firstRunId ?? '');
+		expect(entries.find(({ path }) => path.endsWith('generated.txt'))?.authors).toEqual([
+			'harness',
+		]);
+	});
+
+	it("commits a later repository holding a file the run created and deleted, after an earlier repository's commit", async () => {
+		const nested = join(root, 'nested');
+		execFileSync('git', ['init', '--quiet', '--initial-branch=main', nested]);
+		// git commits there too, and a runner cannot always guess an identity.
+		for (const [key, value] of [
+			['user.name', 'Test'],
+			['user.email', 'test@example.com'],
+			['commit.gpgsign', 'false'],
+		] as const) {
+			execFileSync('git', ['config', key, value], { cwd: nested });
+		}
+		execFileSync('git', ['commit', '--quiet', '--allow-empty', '-m', 'start'], { cwd: nested });
+		const { run, committer, options } = await workingRun({
+			edit: 'echo two > a.txt && echo two > nested/n.txt && echo tmp > nested/tmp.txt',
+			clean: 'rm nested/tmp.txt',
+		});
+		await run('edit');
+		await run('clean');
+		const frozen = await committer.freeze(options);
+
+		const reports = await committer.commit(
+			frozen ?? { repositories: [] },
+			new Map([
+				[root, 'Change a'],
+				[nested, 'Add n'],
+			]),
+			options,
+		);
+
+		expect(
+			reports.map(({ repository, outcome, reason }) => ({ repository, outcome, reason })),
+		).toEqual([
+			{ repository: root, outcome: 'done' },
+			{ repository: nested, outcome: 'done' },
+		]);
 	});
 
 	it('leaves the repository when the run changes another file after the review, as a command of the reviewer can', async () => {
@@ -928,6 +970,34 @@ describe('the git committer', { timeout: 20_000 }, () => {
 	it('finds nothing to commit when a command of the run committed it already', async () => {
 		const { run, committer, options } = await workingRun({
 			edit: `echo two > a.txt && git ${identity.join(' ')} commit --quiet -am "feat: by the executor"`,
+		});
+		await run('edit');
+
+		const frozen = await committer.freeze(options);
+
+		expect(frozen?.repositories[0]).toMatchObject({ paths: [], leftOut: [] });
+	});
+
+	it('commits a file the run put back as it found it after a commit of the run changed it', async () => {
+		// Two commands, as two phases: the first commits a change, the second puts the file back.
+		const { run, committer, options } = await workingRun({
+			edit: `echo two > a.txt && git ${identity.join(' ')} commit --quiet -am "feat: two"`,
+			revert: 'echo one > a.txt',
+		});
+		await run('edit');
+		await run('revert');
+
+		const frozen = await committer.freeze(options);
+
+		expect(frozen?.repositories[0]).toMatchObject({ paths: ['a.txt'], leftOut: [] });
+		expect(frozen?.repositories[0]?.diff).toContain('-two');
+		expect(frozen?.repositories[0]?.diff).toContain('+one');
+	});
+
+	it('names nothing of a file the run put back as it found it where no commit of the run holds it', async () => {
+		writeFileSync(join(root, '.gitignore'), 'ignored.txt\nmine\n');
+		const { run, committer, options } = await workingRun({
+			edit: `cp .gitignore saved && echo other > .gitignore && mv saved .gitignore && echo two > a.txt && git ${identity.join(' ')} commit --quiet -m "feat: two" -- a.txt`,
 		});
 		await run('edit');
 

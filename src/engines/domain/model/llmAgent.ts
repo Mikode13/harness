@@ -13,6 +13,7 @@ import {
 	ignoreProgress,
 } from '#src/agent/domain/agent';
 import {
+	authorOf,
 	delegationOf,
 	type RunEnd,
 	RunContext,
@@ -1345,6 +1346,7 @@ export class LLMAgent implements Agent {
 	): Promise<AgentResponse> {
 		const { signal, onProgress: callback = ignoreProgress } = options;
 		const delegation = delegationOf(options);
+		const author = authorOf(options);
 		// A tool narrates through this without ever failing: a failing callback would reach
 		// only the tool, which turns any failure into a result for the model. The run ends on
 		// it once that tool returns.
@@ -1693,6 +1695,7 @@ export class LLMAgent implements Agent {
 							depth: delegation?.depth ?? 0,
 							...(delegation?.writeCeiling ? { writeCeiling: delegation.writeCeiling } : {}),
 							...(this.writeRoots ? { agentWriteRoots: this.writeRoots } : {}),
+							...(author === undefined ? {} : { author }),
 							...(options.approve ? { approve: options.approve } : {}),
 							...(options.ask ? { ask: options.ask } : {}),
 						},

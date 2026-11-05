@@ -90,6 +90,7 @@ export function chainEntries(older: JournalEntry[], newer: JournalEntry[]): Jour
 			// Seen around commands only when no tool of the harness made any part of it.
 			const observers = new Set(segment.map(entry => entry.observedBy));
 			const observedBy = observers.has(undefined) ? undefined : [...observers].join(', ');
+			const authors = [...new Set(segment.flatMap(entry => entry.authors ?? []))];
 			chained.push({
 				sequence: chained.length + 1,
 				path,
@@ -97,6 +98,7 @@ export function chainEntries(older: JournalEntry[], newer: JournalEntry[]): Jour
 				after: last.after,
 				...(createdFolders.length > 0 ? { createdFolders } : {}),
 				...(observedBy === undefined ? {} : { observedBy }),
+				...(authors.length > 0 ? { authors } : {}),
 				// One change nobody could settle leaves the whole chain unsettled.
 				status: segment.some(entry => entry.status === 'prepared') ? 'prepared' : 'applied',
 			});

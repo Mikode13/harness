@@ -30,7 +30,7 @@ src/engines/domain/ LLMAgent, the agent that owns its conversation and calls an 
 src/llm/            the stateless model boundary: LLMClient, Message, Conversation, ToolDefinition
 src/tools/          what an agent can run: Tool, defineTool, the repository tools, and the file tools that change files
 src/factory/        createAgent, createOrchestrator and their model-API pair, the only public way to build agents
-src/orchestration/  planner -> executor -> reviewer, with a validated reviewer decision, then the commit
+src/orchestration/  planner -> executor -> reviewer, in phases on a workflow or in rounds, then the commit
 src/workflow/       stages of the consumer's agents, each answer validated before its transition
 src/recovery/       what a writing run changed, recorded outside the repository so it can be undone
 src/retry/          the retry decorator
@@ -50,7 +50,9 @@ provider: it drives whatever `LLMClient` it is given.
 
 `Agent`, `RunOptions`, `AgentResponse`, `ProgressEvent`, `Inbox`, the messages a consumer
 sends to a run while it works, read internally through `readerOf`, `OneRunAtATime` and its
-`RunInProgressError`, which let an agent instance take one run at a time, `newSession` and
+`RunInProgressError`, which let an agent instance take one run at a time,
+`RecoverableCommittedRunError` and `UnrecoverableCommittedRunError`, a failure of the kind it
+had, with what a run that committed after each phase had committed, `newSession` and
 `sessionOf`, which give each agent a `Session` of its own, with an id such as
 `smart-hawk-4821`, and read the one a run belongs to (the outer run's, then
 `RunOptions.session`), the approval contract (`ToolRisk`, `Approver`, and
@@ -109,7 +111,11 @@ Tools and their lifecycle:
   run's `approve` and `ask`, how many delegations deep the calling agent runs, the folders
   it may write in when an agent that delegated to it set a limit (`writeCeiling`), and the
   calling agent's own `write` roots (`agentWriteRoots`), which `writeCeiling.ts` narrows
-  into the limit of an agent the call starts.
+  into the limit of an agent the call starts, and who its changes are recorded as made by
+  (`author`). `PhasedOrchestrator` sets each role's in its run options under a private
+  symbol, `withAuthor` in `runContext.ts`, `LLMAgent` hands it to each call, an agent a call
+  starts writes as `role › name`, and the harness's own required checks and commit capture
+  write as `harness`.
 
 Reading:
 
@@ -214,14 +220,40 @@ Each role's default instructions and the data each round sends, `InstructedAgent
 attempt loop, per-run usage totals, and the validated reviewer decision. The `Committer` port
 commits what an approved run changed; `GitCommitter`, its infrastructure, takes the run's
 changes from the recovery store and commits them with git, inside the run's `WriteSession`.
+The `Verifier` port tells where each of a run's required checks stands, `passed`, `failed`,
+`stale`, `missing` or `unknown`, from real command results, with the pure `assessCheck` deciding
+one from the run's command runs and what its changed files hold now. `CommandVerifier`, its
+infrastructure, reads the runs the `WriteSession` recorded, from the model or the harness, and
+runs a missing, stale or unknown check itself through the same `runCommand` tool, and again, in
+up to 3 passes, one its own later check made stale, so the harness's
+run is captured, recorded and attributed as the model's. `PhasedOrchestrator` takes one as its
+barrier before each review, after the review before a commit or the end of the run, and as an
+unfinished run ends; `createLLMOrchestrator` builds one when
+`requiredChecks` names any, over a `runCommand` of its own. The result types the barrier
+returns, `Verification` and `CheckResult`, live in `src/agent/domain/phaseResult.ts` with
+`PhaseResult`, since `AgentResponse` carries them. `PhasedOrchestrator` is the phased flow of `createLLMOrchestrator`, built as a
+workflow of its own stages: the planner's, the executor's and the reviewer's, each answering
+JSON its `Validator` checks (`planValidator`, `phaseReportValidator`, `phaseReviewValidator`,
+in infrastructure), and code stages that ask the user to approve the plan, begin a phase, run
+the barrier and read the phase's diff, and commit. The `ChangeLog` port gives that diff;
+`RecordedChangeLog`, its infrastructure, reads it from the run's record in the recovery store,
+from a mark on: the run's start for the first phase, or, inside another agent's run, where
+the record stood when the plan was approved, and, for a later one, when the previous phase's diff was read, so what a command of the reviewer's
+or the barrier after the review changed is in the next phase's diff, under the note of who
+changed it. `CommitFlow` freezes, asks unless told not to, has the committer write
+each message and commits. `OrchestratorAgent`, the round-based flow, remains for
+`createOrchestrator` on the Agent SDKs, whose changes the history does not record, so it
+neither commits nor verifies.
 
 ### `src/workflow/`
 
 `WorkflowTransition`, whose `go` is typed against the workflow's map of stage inputs;
-`WorkflowStage` and `defineWorkflowStages`, which binds stages to that map;
+`WorkflowStage` and `defineWorkflowStages`, which binds stages to that map, and its `code`,
+which binds a `WorkflowCodeStage` that runs code with the run's options instead of an agent;
 `WorkflowResult`; and `WorkflowRunner` (internal), which runs one stage at a time with an
 agent each stage creates once per run, asks again when an answer is not JSON or its
-`Validator` rejects it, and passes only the transition's `input` to the next stage.
+`Validator` rejects it, runs a code stage once, and passes only the transition's `input` to
+the next stage.
 
 ### `src/recovery/`
 
@@ -235,7 +267,9 @@ is listed as `interrupted`, and the next run settles the changes it left prepare
 
 The journal also records an observation around something that changes files outside it, such
 as a command: it names a stored manifest of the files before, and the changes found after
-are recorded as its own entries, each `observedBy` it; an observation a dead run left open
+are recorded as its own entries, each `observedBy` it; each entry also names its `authors`,
+the tool call's author when it had one, and the observation keeps it for the entries it
+settles later, and retention keeps every author of the changes it chains; an observation a dead run left open
 is settled from its manifest. A run that finishes with an observation open, such as a
 command whose files could not be compared after it ran, keeps its status, is marked
 `unsettled` and is settled from the manifest at once, or by the next run or move if that
@@ -282,7 +316,8 @@ refers to are freed.
 
 `showChanges` renders a run's recorded effects as a git-style diff per file. `History` is
 the public view of all this, built by `createHistory` over its own `FileRecoveryStore` and
-implemented by `StoreHistory`: it lists the runs with the files each changed, shows a run's
+implemented by `StoreHistory`: it lists the runs with the files each changed and who changed
+each, as far as the entries name it, shows a run's
 diff, and moves the workspace, with paths relative to the root; the store, the journal and
 `Revision` stay internal. It depends on Node, on git through `runProcess` in `src/shared/`,
 and on `src/diff/`.
@@ -310,8 +345,8 @@ provider adapters and preserve their literal tuples.
 
 Two boundaries carry most of the design:
 
-**Everything is an `Agent`.** `ClaudeAgent`, `CodexAgent`, `LLMAgent`, `RetryingAgent` and
-`OrchestratorAgent` all implement `run(prompt, options)`, where `options` holds the run's
+**Everything is an `Agent`.** `ClaudeAgent`, `CodexAgent`, `LLMAgent`, `RetryingAgent`,
+`OrchestratorAgent` and `PhasedOrchestrator` all implement `run(prompt, options)`, where `options` holds the run's
 `signal`, its optional `onProgress`, its optional `approve`, asked before a model-backed
 agent runs a `destructive` tool call, and its optional `ask`, which answers what a model-backed
 agent asks its user. A decorator and a whole multi-agent workflow are
@@ -320,8 +355,8 @@ is driving. A decorator such as `InstructedAgent` passes `options` on whole, nev
 a field added to it reaches every agent without each decorator learning about it. Two copy it
 instead, both with object spread, so a field must be an own enumerable one to survive them:
 `RetryingAgent`, for a run with `ask`, replaces only `ask` with one that remembers the answers
-across attempts, and `OrchestratorAgent` makes one shallow copy per role with object
-spread, carrying the own enumerable string- and symbol-keyed fields, including the internal
+across attempts, and each orchestrator, `OrchestratorAgent` and `PhasedOrchestrator`, makes one
+shallow copy per role with object spread, carrying the own enumerable string- and symbol-keyed fields, including the internal
 `RunContext`, and replaces only `onProgress` with a wrapper that makes the role attribution
 authoritative. The same context therefore reaches every agent the run reaches, and no consumer can
 see or set it.
@@ -367,16 +402,19 @@ for the failure contract and `Tokens`; only its `infrastructure` imports an SDK.
 `src/llm/`, and `src/llm/` knows nothing about agents. `ClaudeAgent` imports `claudeModelIds`
 from `src/llm/infrastructure/`, the one table of the model each Claude alias names, so both
 Claude paths run the same model for the same name. `LLMAgent` also reads the workspace's
-history through the `src/recovery/` domain; the conversation itself knows only an opaque run id. `OrchestratorAgent` knows only the `Committer` port; `GitCommitter`, in `src/orchestration/infrastructure/`, depends on the `src/recovery/` store and git, and on the write session and command checkpoint of `src/tools/infrastructure/`, and only `src/factory/` builds it. `src/workflow/` depends only on `src/agent/` and
-`src/shared/`: a stage creates an `Agent`, whatever builds it. No module imports `src/factory/`, which is
+history through the `src/recovery/` domain; the conversation itself knows only an opaque run id. `PhasedOrchestrator` knows only the `Committer` port; `GitCommitter`, in `src/orchestration/infrastructure/`, depends on the `src/recovery/` store and git, and on the write session and command checkpoint of `src/tools/infrastructure/`, and only `src/factory/` builds it. `src/workflow/` depends only on `src/agent/` and
+`src/shared/`: a stage creates an `Agent`, whatever builds it. `src/orchestration/` depends on
+`src/workflow/`'s domain, whose `WorkflowRunner` runs `PhasedOrchestrator`'s stages. No module imports `src/factory/`, which is
 why it is the only place that knows every provider.
 
 `src/index.ts` is the public API: `createAgent`, `createOrchestrator`, `createLLMAgent`,
 `createLLMOrchestrator`, the `Agent`, `RunOptions`, `AgentResponse`, `Callback`, `ProgressEvent`,
-`ProgressAgent`, `StepContext`, `Session` and `Tokens` types, the `CommitReport`, `RepositoryCommit` and `MadeCommit` types of `AgentResponse.commits`, the `Transcript` and `TranscriptCallback` types
+`ProgressAgent`, `StepContext`, `Session` and `Tokens` types, the `CommitReport`, `RepositoryCommit` and `MadeCommit` types of `AgentResponse.commits`, the `PhaseResult`, `Verification`, `CheckResult` and `CheckStatus` types of `AgentResponse.phases` and `verification`, the `CommitQuestion`, `RequiredCheck` and `PhaseLimits` types of `createLLMOrchestrator`'s options, the `Transcript` and `TranscriptCallback` types
 of `onTranscript`, the `Asker`, `UserQuestion` and `QuestionOption` types of `RunOptions.ask`, `Inbox`, what
 `RunOptions.inbox` takes, `RunInProgressError`, the `UnrecoverableError` a run rejects with while another
-works on the same agent, the approval contract (`rememberApprovals` and the `Approver`,
+works on the same agent, `RecoverableCommittedRunError`, `UnrecoverableCommittedRunError` and the
+`CommittedRun` type they carry, what a run of `createLLMOrchestrator` that fails after a commit
+had committed, the approval contract (`rememberApprovals` and the `Approver`,
 `ApprovalRequest`, `ApprovalDecision`, `RememberableDecision`, `ToolRisk`, `CommandLine` and `WorktreeRemoval` types), the three
 failure types an agent rejects with, `isAbortError`, `isAgentProvider`, `agentProviders`, the
 provider-indexed `agentModels` and `agentReasoningEfforts` catalogs with their `isModelOf` and
@@ -391,11 +429,12 @@ the model-backed agent's tools it also exports the `Tool`, `ToolSummarizer`,
 `Commands`, `CommandDefinition`, `CommandArgument`, `CommandParameter` and `CommandRole` types, and `Formatter` for the formatter their edits run. For the history of what those runs wrote it exports `createHistory`, the `History`, `HistoryRun`, `Move`, `BranchMove`, `MovedCommit`, `MoveOptions` and `RunStatus` types,
 `historyStart`, and the `WorkspaceBusyError`, `WorkspaceMovedError`, `NothingToMoveError`,
 `UnknownRunError` and `HistoryExpiredError` errors; `AgentResponse.runId` names the run a writing run recorded, and `AgentResponse.session` and `HistoryRun.session` the session it belongs to. For runs that write apart it exports `createWorktree`. For workflows it exports `createWorkflow`, `defineWorkflowStages`, the `Workflow`,
-`WorkflowStage`, `WorkflowStageDefinition`, `WorkflowStageName`, `WorkflowTransition`,
+`WorkflowStage`, `WorkflowStageDefinition`, `WorkflowCodeStage`, `WorkflowCodeStageDefinition`,
+`WorkflowStageBinder`, `WorkflowStageName`, `WorkflowTransition`,
 `WorkflowResult`, `WorkflowStageReport` and `CreateWorkflowOptions` types, and `Validator`. `defineTool` takes a Zod 4 schema, so Zod's major
 version is part of the contract, and `zod` is a peer dependency, so the consumer's schemas and
 the harness share one copy. `RetryingAgent`,
-`OrchestratorAgent`, `WorkflowRunner`, `LLMAgent` and both engines are internal — the factories apply retry and the role
+`OrchestratorAgent`, `PhasedOrchestrator`, `WorkflowRunner`, `LLMAgent` and both engines are internal — the factories apply retry and the role
 defaults so a consumer never composes them, and a class that is not exported can change shape
 without a major release.
 
@@ -411,7 +450,8 @@ Four contracts have rules of their own:
   `AgentResponse`, whose `response` is empty when the run produced no text, or rejects with a
   `RecoverableError` or `UnrecoverableError` whose `tokens` hold what the run spent before
   failing. `RetryingAgent` adds failed attempts to whichever ends the run, and
-  `OrchestratorAgent` adds every earlier role. `tokens` is missing, not zero, when any response
+  `OrchestratorAgent`, and the workflow under `PhasedOrchestrator`, add every earlier role, and
+  `PhasedOrchestrator` adds its committer's. `tokens` is missing, not zero, when any response
   in the run came without usage: its call was billed, so a partial sum would look complete.
   A failure tells the two cases apart. The engine sets `usageUnreported` when the provider
   answered without usage before the run failed, which makes every total that includes it
@@ -427,8 +467,9 @@ Four contracts have rules of their own:
   know and ignore the rest, so a new type must never carry information a consumer needs to be
   correct. The result of a run travels in `AgentResponse`; progress is narration. Existing event
   shapes remain valid because `agent` is optional on every event and `summary`, `exitCode` and
-  `error` are optional on `tool` events. `OrchestratorAgent` supplies
-  `agent: 'planner' | 'executor' | 'reviewer' | 'committer'` for every event received from a role, including
+  `error` are optional on `tool` events. Each orchestrator supplies
+  `agent: 'planner' | 'executor' | 'reviewer' | 'committer'` for every event received from a role,
+  `'committer'` only from `PhasedOrchestrator`, including
   retries and later rounds, and overwrites an inner value rather than trusting it. A
   `tool.summary` is owned by the tool and is only a short description of the model-supplied call;
   `tool.exitCode` narrates the exit code of a configured command that failed, and `tool.error`
@@ -446,7 +487,7 @@ Four contracts have rules of their own:
   events keep arriving after it, and a `subagentEnded` event, with the same call id, number and
   `name`, says when each ended and whether it `answered`, `failed` or was `stopped` when the run
   ended. It is narration: the answer reaches only the model that sent the agent.
-  `OrchestratorAgent` stamps the outer wrapper with the role that made the call. An agent on
+  Each orchestrator stamps the outer wrapper with the role that made the call. An agent on
   the model APIs emits `compaction` when its context was compacted, with who compacted it, why,
   and, when known, how many tokens of context it compacted. The provider's follows the `step`
   of the call that compacted, whose tokens it includes; the harness's comes once its summary is
@@ -500,8 +541,9 @@ that may write outside it. The planner and the reviewer have no `write` roots, s
 only read; each role gets the consumer's agents `agents` names for it beside its own tools. Explorers and such agents work in the background while the agent that sent them
 goes on, and the session makes every change and command of the run one at a time. The executor gets
 `fileToolsFor` its provider. Each role gets `runCommand` with the `commands` whose `roles` name
-it, the executor by default. `OrchestratorAgent` creates one `RunContext` for a whole run, so the
-executor's writes are one run of the history, and names it in its response. It sends each role only the round's data; an agent
+it, the executor by default. `PhasedOrchestrator` runs a whole run as one workflow, whose
+`RunContext` makes every phase's writes one run of the history, and names it in its response. It
+sends each role only the phase's data; an agent
 without a system prompt gets its instructions at the head of every prompt from `InstructedAgent`. The Agent SDK path stays the default: `createAgent`
 and `createOrchestrator` use the provider's own login, while the model API path needs
 `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` and bills per token. Both paths name a provider by its company, `'anthropic'` or `'openai'`, and
@@ -519,8 +561,8 @@ previous failure appended to the original prompt — an attempt that failed befo
 registered the turn left no session that remembers it. On exhaustion it throws
 `UnrecoverableError`.
 
-**A workflow turn.** `OrchestratorAgent.run` loops up to `maxAttempts` rounds of planner →
-executor → reviewer. The reviewer is asked for JSON and its answer goes through
+**A workflow turn.** On `createOrchestrator`, `OrchestratorAgent.run` loops up to `maxAttempts`
+rounds of planner → executor → reviewer; `createLLMOrchestrator`'s phased turn follows. The reviewer is asked for JSON and its answer goes through
 `ReviewerDecisionValidator`, so a decision is `{ decision: 'approved' }` or
 `{ decision: 'rejected', feedback }` and never free text. An unusable reviewer answer retries
 only the reviewer call, with the parse failure fed back — a malformed decision is not evidence
@@ -531,17 +573,61 @@ options, carrying the own enumerable fields such as `signal`, `approve` and the 
 therefore lets one cancellation stop the whole workflow, and every wrapper forwards progress to the
 consumer through one stream.
 
-**Committing an approved run.** `createLLMOrchestrator` gives `OrchestratorAgent` a
+**A phased turn.** `createLLMOrchestrator`'s `PhasedOrchestrator.run` builds the run's stages
+and runs them on a `WorkflowRunner`, with the orchestrator's own session when the options name
+none. Each stage returns the role agent the orchestrator holds, so each role goes on with its
+conversation across phases and across the orchestrator's runs, and every role's events carry
+its name. The planner's plan, at most `limits.phases` phases, goes to the `approve` code stage:
+with no `ask` it begins at once; with one, `Approve` begins, `Stop` ends the run stopped, and
+any other answer goes back to the planner as a correction; past `limits.corrections`
+corrections, such an answer ends the run stopped before any phase, logged as a warning, so an
+asker that never approves cannot keep the planner planning; either stop says when, in a run of
+its own, a command of the planner's changed files, which stay. `begin` records how far the run
+got, and the executor gets the plan with the phase in progress and any feedback, never the
+request. Its `done` goes to `verify`: the `Verifier`, when there is one, must find every
+required check passed, or the phase goes back to the executor with the checks' results, as a
+rejection; then the `ChangeLog` reads the phase's diff since its mark: where the run began for the first phase of a run of its own, where the plan was approved inside another agent's, and where the previous diff was read for a later one, and before a review a
+commit follows, `CommitFlow` freezes what that commit would hold. The reviewer gets the request,
+the plan, the phase, the executor's summary, the checks' results and the diff. Its approval
+goes to the `commit` code stage when a commit follows it, or when it is the last phase and the
+run has a `Verifier`: the barrier runs again, since a command of the reviewer's may have changed
+what the checks saw, and a check that no longer passes sends the phase back to the executor as a
+rejection; otherwise `CommitFlow` commits, when a commit follows. Then the next
+phase begins, or the run completes. Whether a commit follows is decided at `approve`, for a run
+of its own that may commit: after the last phase or after each, as `commitQuestion` says, asked
+before each commit unless `autoCommit` is set; with `plan`, the user's answer to the plan
+chooses after the last, after each, or none, and nothing is asked again. A rejection goes back to the executor, and once `limits.rejections` in a row are
+reached, to the planner's `replan` stage, as an executor's or a reviewer's `replan` does; the
+planner's phases replace the plan from the phase in progress on, and the phase keeps its mark.
+A first plan past the limit is asked again, as any invalid answer is; a replan's answer is not
+held to it, and a plan it grows past the limit ends the run. A phase that has
+gone to the planner `limits.replans` times, or a replan that grows the plan past
+`limits.phases`, goes to the `unfinished` code stage, which runs the barrier once more and stops
+the run with a response that says what is unfinished and which required checks do not pass for
+the files as they are, logged as a warning: what the phases changed stays on disk, and nothing more
+is committed. Every result carries `phases`, each approved, unfinished or pending, and the
+`verification` of the files as the run left them; the commits of a run that commits each phase report as one. A
+failure that ends a run after a commit, which the workflow throws, is rethrown as
+`RecoverableCommittedRunError` or `UnrecoverableCommittedRunError`, of its own kind, with the
+commits, the phases of the plan as the run last held it and its `runId`, which the orchestrator
+keeps as each phase begins, the planner replans and a commit is made. Every
+prompt ends with the JSON its answer takes, so a role's own instructions need not describe it.
+
+**Committing an approved run.** `createLLMOrchestrator` gives its orchestrator a
 `GitCommitter` over a writable workspace, and a committer agent on the executor's provider's
 cheaper model, with no tools, a new one for each message. The stage runs only when the run has `ask` or `autoCommit` is
-set. Before each review, `freeze` reads the run's changes from its journal, groups them by
+set. Before each review a commit follows, `freeze` reads the run's changes from its journal, groups them by
 repository, and keeps those it may commit: the file holds what the run left, by the history's
 hash, and held what the run's start held, by git's own normalization (`hash-object --path`)
 and its modes, which follow `core.fileMode`,
 against the parent of the run's first commit there, or `HEAD`. Every other path is left out
 with a reason; a repository without a branch, or where `notReady` finds an operation in
-progress or a sparse checkout, is refused whole. Once the reviewer approves, the orchestrator
-asks through `ask`, unless `autoCommit` is set, then runs the committer agent once per
+progress or a sparse checkout, is refused whole. A file a commit of the run already holds, as
+`HEAD` does, is not frozen again, so a later phase's commit holds only what changed since. A
+file the run put back as it found it is frozen only where a commit of the run holds it
+otherwise, so a phase that undoes what an earlier phase committed commits that too. Once
+the reviewer approves, the orchestrator asks through `ask`, unless the user or `autoCommit`
+already said yes, then runs the committer agent once per
 repository with the request, the plan, the bounded diff from `HEAD` of what it would commit,
 and the branch's recent subjects.
 `commit` takes the session's write lock (`exclusive`), leaves a repository where the run's
@@ -574,6 +660,14 @@ the signal before each stage and answer and after each agent call, so a cancella
 stops the work after it. An agent's classified failure propagates with the usage of every earlier
 answer added; an unclassified one, a throwing agent factory, prompt, validator, transition,
 progress callback or logger, an invalid transition or an unknown stage is an `UnrecoverableError`.
+A code stage, bound with `stage.code`, has no agent: the runner checks the signal, emits its
+`workflowStage` event, checks the signal again, and calls its `run` with the stage's input and
+the run's options, which carry the shared `RunContext`. Its transition is checked as an agent
+stage's, and it reports one attempt, an `undefined` output and no usage. A cancellation while
+it runs does not discard its transition, since what it did, such as a commit, stays done: a
+`complete` or `stop` ends the run with its result, and a `go` meets the cancellation as the
+next stage begins. A cancellation, a `RecoverableError` or an
+`UnrecoverableError` it throws propagates as it is; anything else becomes an `UnrecoverableError`.
 
 **A model-backed turn.** `LLMAgent.run` sends the stored context, the new prompt and the
 definitions of its tools to its `LLMClient`, inside `classifyProviderFailure`; the client
@@ -670,7 +764,8 @@ summed over every call of the run: one call without usage leaves the total unkno
 failure carries what the earlier calls spent. The agent emits no `turnStarted` or
 `turnEnded`: like the other engines, it leaves turn boundaries to the consumer. The tool-to-consumer
 narration path is `Tool.summarize` → `LLMAgent`'s optional `tool.summary` events →
-`OrchestratorAgent`'s authoritative role label → the consumer's progress callback. No stage makes
+the orchestrator's authoritative role label, from `OrchestratorAgent` or `PhasedOrchestrator` →
+the consumer's progress callback. No stage makes
 the summary part of the model context or the run result. After each call to the model, once its
 tokens are counted, `LLMAgent` emits a `step` event: the call's tokens and a `StepContext`, the
 characters it sent by origin (system prompt, tool definitions, text, reasoning, tool calls, each
@@ -713,7 +808,8 @@ and "An edit shows the lines the formatter rewrote, and has the file read again"
 otherwise see every previous run's tokens reported again.
 
 **An agent instance takes one run at a time.** It continues one conversation, or one provider
-session or thread, so `LLMAgent`, both Agent SDK engines and `OrchestratorAgent` reject a run
+session or thread, so `LLMAgent`, both Agent SDK engines, `OrchestratorAgent` and
+`PhasedOrchestrator` reject a run
 that starts while another works on them with `RunInProgressError` (`OneRunAtATime`), before it
 sends anything. The orchestrator checks before any role starts. A consumer queues what arrives
 meanwhile, or sends it to the run in progress through its `Inbox`. See "An agent takes one run
@@ -725,10 +821,13 @@ at a time, and reads what the user sends meanwhile" in [`decisions.md`](decision
   it happened, without redoing another role's successful work. The cost is that a workflow has
   no single retry budget: each role carries its own.
 - **Each role's instructions are a default a caller can replace.** The harness's own live in
-  `src/orchestration/domain/model/orchestratorAgent.ts`, apart from the data each round sends.
-  Both orchestrator factories take `systemPrompts`, per role, and use a replacement word for
-  word; a role left out keeps the default. The reviewer's JSON decision is the one part the
-  workflow depends on, so a replaced reviewer prompt must still ask for it.
+  `src/orchestration/domain/model/orchestratorAgent.ts` for `createOrchestrator` and in
+  `phasedOrchestrator.ts` for `createLLMOrchestrator`, apart from the data each round or phase
+  sends. Both orchestrator factories take `systemPrompts`, per role, and use a replacement word
+  for word; a role left out keeps the default. On `createOrchestrator`, the reviewer's JSON
+  decision is the one part the workflow depends on, so a replaced reviewer prompt must still ask
+  for it; `createLLMOrchestrator` says how to answer in every prompt, so its replacements need
+  not.
 - **The mandatory test suite never contacts a provider.** Both engines and `LLMAgent` with
   both `LLMClient`s are exercised through offline fakes of their SDK surfaces. Provider-boundary correctness — authentication, request
   shape, model availability — is not covered by an automated suite and surfaces through real

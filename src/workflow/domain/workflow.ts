@@ -48,6 +48,28 @@ export interface WorkflowStageDefinition<
 	readonly maxAttempts?: number;
 }
 
+/**
+ * A step of a workflow that runs code instead of an agent, such as asking the user, running a
+ * check or reading what the run changed: it receives the stage's input and the run's own
+ * options, and chooses the transition itself. It gives no answer to validate, so it runs once.
+ */
+export interface WorkflowCodeStageDefinition<
+	Inputs,
+	Name extends WorkflowStageName<Inputs>,
+	Result,
+> {
+	/**
+	 * A failure it throws ends the run as an agent's does: a cancellation, a `RecoverableError`
+	 * or an `UnrecoverableError` as it is, anything else as an `UnrecoverableError`. The
+	 * transition it returns stands even when the run was cancelled meanwhile, as what it did
+	 * stays done; the next stage, if any, then does not begin.
+	 */
+	run(
+		input: Inputs[Name],
+		options: RunOptions,
+	): WorkflowTransition<Inputs, Result> | PromiseLike<WorkflowTransition<Inputs, Result>>;
+}
+
 /** A stage bound to its name, as `defineWorkflowStages` returns it. */
 export interface WorkflowStage<
 	Inputs,
@@ -57,31 +79,61 @@ export interface WorkflowStage<
 	readonly name: Name;
 }
 
+/** A code stage bound to its name, as `defineWorkflowStages` returns it. */
+export interface WorkflowCodeStage<
+	Inputs,
+	Result,
+	Name extends WorkflowStageName<Inputs> = WorkflowStageName<Inputs>,
+> extends WorkflowCodeStageDefinition<Inputs, Name, Result> {
+	readonly name: Name;
+}
+
+/**
+ * Binds a stage to its name: an agent's, whose output it infers from the validator, or, through
+ * `code`, a code stage.
+ */
+export interface WorkflowStageBinder<Inputs, Result> {
+	<Name extends WorkflowStageName<Inputs>, Output>(
+		name: Name,
+		definition: WorkflowStageDefinition<Inputs, Name, Output, Result>,
+	): WorkflowStage<Inputs, Result, Name>;
+	code<Name extends WorkflowStageName<Inputs>>(
+		name: Name,
+		definition: WorkflowCodeStageDefinition<Inputs, Name, Result>,
+	): WorkflowCodeStage<Inputs, Result, Name>;
+}
+
 /**
  * Binds stage definitions to one workflow's map of stage inputs and its result. The function it
- * returns infers each stage's output from its validator.
+ * returns infers each stage's output from its validator; its `code` binds a code stage.
  *
  * @example
  * const stage = defineWorkflowStages<{ triage: string; draft: Brief }, string>();
  * const triage = stage('triage', { agent, prompt, validator, transition });
+ * const check = stage.code('draft', { run: async (brief, options) => ({ type: 'complete', result }) });
  */
-export function defineWorkflowStages<Inputs, Result>(): <
-	Name extends WorkflowStageName<Inputs>,
-	Output,
->(
-	name: Name,
-	definition: WorkflowStageDefinition<Inputs, Name, Output, Result>,
-) => WorkflowStage<Inputs, Result, Name> {
-	return (name, definition) => ({ ...definition, name });
+export function defineWorkflowStages<Inputs, Result>(): WorkflowStageBinder<Inputs, Result> {
+	return Object.assign(
+		<Name extends WorkflowStageName<Inputs>, Output>(
+			name: Name,
+			definition: WorkflowStageDefinition<Inputs, Name, Output, Result>,
+		): WorkflowStage<Inputs, Result, Name> => ({ ...definition, name }),
+		{
+			code: <Name extends WorkflowStageName<Inputs>>(
+				name: Name,
+				definition: WorkflowCodeStageDefinition<Inputs, Name, Result>,
+			): WorkflowCodeStage<Inputs, Result, Name> => ({ ...definition, name }),
+		},
+	);
 }
 
 export interface WorkflowStageReport {
 	stage: string;
 	/** What the stage received. */
 	input: unknown;
-	/** The stage's validated answer. */
+	/** The stage's validated answer; `undefined` for a code stage, which gives none. */
 	output: unknown;
-	/** How many answers the stage's agent gave, the last one valid. */
+	/** How many answers the stage's agent gave, the last one valid; 1 for a code stage. */
 	attempts: number;
 	/** Seconds. */
 	duration: number;
@@ -119,8 +171,9 @@ export interface CreateWorkflowOptions<
 	initialStage: Initial;
 	/** Every stage, under its own name. */
 	stages: {
-		readonly [Name in WorkflowStageName<Inputs>]: WorkflowStage<Inputs, Result, Name>;
-	} & Readonly<Record<string, WorkflowStage<Inputs, Result>>>;
+		readonly [Name in WorkflowStageName<Inputs>]:
+			WorkflowStage<Inputs, Result, Name> | WorkflowCodeStage<Inputs, Result, Name>;
+	} & Readonly<Record<string, WorkflowStage<Inputs, Result> | WorkflowCodeStage<Inputs, Result>>>;
 	/** The default for a stage without its own. Defaults to 3. */
 	maxAttempts?: number;
 	/** How many times a run may `go` to a stage, so a loop of stages ends. Defaults to 100. */

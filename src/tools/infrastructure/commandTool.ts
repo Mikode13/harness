@@ -150,6 +150,7 @@ export async function createCommandTool({
 						line,
 						definition: command.definition,
 						context: run,
+						author: call.author,
 						signal: runSignal,
 						ended: end => {
 							ending = end;
@@ -164,6 +165,8 @@ export async function createCommandTool({
 		line: CommandLine;
 		definition: CommandDefinition;
 		context: RunContext;
+		/** Who runs it, as one of `JournalEntry.authors`. */
+		author: string | undefined;
 		signal: AbortSignal;
 		/** Told how the command ended, once it ran to an end and everything it changed is recorded. */
 		ended: (ending: CommandEnding) => void;
@@ -176,14 +179,14 @@ export async function createCommandTool({
 	}
 
 	async function runCommandAlone(
-		{ name, line, definition, signal, ended }: CommandRun,
+		{ name, line, definition, author, signal, ended: onEnded }: CommandRun,
 		session: WriteSession,
 	): Promise<string> {
 		signal.throwIfAborted();
 		const journal = await session.journalForChange();
 		let checkpoint: CommandCheckpoint;
 		try {
-			checkpoint = await CommandCheckpoint.begin({ journal, covered, by: name, signal });
+			checkpoint = await CommandCheckpoint.begin({ journal, covered, by: name, author, signal });
 		} catch (error) {
 			signal.throwIfAborted();
 			throw new EditRefusedError(
@@ -228,6 +231,17 @@ export async function createCommandTool({
 		}
 
 		const complete = result?.stopped ?? true;
+		const endingOf = (ran: CommandProcessResult, state?: string): CommandEnding => ({
+			passed: ran.outcome === 'exited' && ran.exitCode === 0,
+			how: howItEnded(ran),
+			output: withoutColors(ran.output),
+			fingerprint: fingerprint.digest(),
+			...(state === undefined ? {} : { state }),
+			changed: journal.appliedPaths.map(path => displayPath(base, path)),
+		});
+		// One that ended is evidence that it ran even when the harness could not record all it
+		// changed: of files no longer known, so with no state. One cancelled never ended.
+		const ended = result?.stopped === true && result.outcome !== 'cancelled' ? result : undefined;
 		// Before the files: a failure comparing them must not lose the commits, and with them a run
 		// that changed nothing else.
 		let commits: CommitsSeen = { made: [] };
@@ -247,12 +261,24 @@ export async function createCommandTool({
 			observed = await checkpoint.end({ complete });
 		} catch (error) {
 			session.stop('Writing stopped: the harness could not record what a command changed');
+			if (ended)
+				session.recordCommand({ name, line, ...envOf(definition), ending: endingOf(ended) });
 			logAbsorbed(absorbed);
 			throw new EditUnconfirmedError(
 				`"${name}" ran, but the harness could not record what it changed; writing has stopped for this run`,
 				{ cause: error },
 			);
 		}
+		// Before anything is logged: a logger that fails ends the run, and what ran stays recorded.
+		const ending =
+			ended &&
+			endingOf(
+				ended,
+				unrecordedCommits === undefined && observed.unrecorded.length === 0
+					? journal.contentState()
+					: undefined,
+			);
+		if (ending) session.recordCommand({ name, line, ...envOf(definition), ending });
 		logAbsorbed(absorbed);
 
 		if (unrecordedCommits !== undefined) throw unrecordedCommits;
@@ -269,14 +295,7 @@ export async function createCommandTool({
 		}
 		// After its changes are recorded: a cancelled command is never reported as finished.
 		if (result.outcome === 'cancelled') signal.throwIfAborted();
-		ended({
-			passed: result.outcome === 'exited' && result.exitCode === 0,
-			how: howItEnded(result),
-			output: withoutColors(result.output),
-			fingerprint: fingerprint.digest(),
-			...(observed.unrecorded.length === 0 ? { state: journal.contentState() } : {}),
-			changed: journal.appliedPaths.map(path => displayPath(base, path)),
-		});
+		if (ending) onEnded(ending);
 		if (result.outcome !== 'exited') throw new ToolExecutionError(report);
 		if (result.exitCode !== 0) {
 			throw new ToolExecutionError(report, {
@@ -556,4 +575,9 @@ function parameterSchema(parameter: CommandParameter): z.ZodType {
 				: text.nullable().describe(`${description} null to leave it out.`);
 		}
 	}
+}
+
+/** The variables a command's definition sets, as a recorded run keeps them. */
+function envOf({ env }: CommandDefinition): { env?: Readonly<Record<string, string>> } {
+	return env === undefined ? {} : { env: { ...env } };
 }

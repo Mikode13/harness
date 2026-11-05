@@ -46,17 +46,20 @@ chat loop itself never knows the difference.
   configure, such as the tests, recording what each one changed too. `agentAsTool` offers
   one agent to another as a tool, such as a cheaper committer to a coding agent, working
   inside the caller's run.
-- **`OrchestratorAgent`**: coordinates a planner, an executor, and a reviewer
-  (each an injected `Agent`) in a plan → execute → review loop. The reviewer's
-  decision is a Zod-validated structured `{decision, feedback}`, not free text —
-  a rejected or malformed decision retries with the reason fed back, bounded by
-  `maxAttempts`, converting to `UnrecoverableError` only once exhausted. A
-  malformed reviewer response retries only the reviewer call, not the whole
-  cycle. Because it implements `Agent` itself, the chat loop drives it exactly
-  like it drives a bare engine.
+- **The orchestrators**: coordinate a planner, an executor, and a reviewer.
+  `createLLMOrchestrator` runs them in phases, on the workflow primitive: the
+  planner plans the task in phases, which the user approves; each phase goes to
+  the executor, which gets the plan and never the request, then to the reviewer
+  with the phase's own diff, once the required checks you name pass, which the harness
+  runs itself. A rejection goes back to the executor, and the second in a row to the
+  planner, which replaces what is left of the plan. Every answer is JSON, validated
+  before it is used. `createOrchestrator`, on the Agent SDKs and their subscriptions,
+  runs one plan → execute → review round per attempt. Because both implement
+  `Agent`, the chat loop drives them exactly like it drives a bare engine.
 - **Workflows** (`createWorkflow`): stages you define, each with an agent and a context
-  of its own. A stage's JSON answer is validated before its transition picks the next
-  stage, stops the run on purpose, or completes it. Only the data a transition hands
+  of its own, or code of yours, such as a check or a question to the user. A stage's JSON
+  answer is validated before its transition picks the next stage, stops the run on purpose,
+  or completes it. Only the data a transition hands
   over crosses to the next stage, and the types check it against what that stage takes.
 - **Live progress streaming**: every engine reports ongoing activity (tool
   calls, searches, file changes, reasoning) through a typed `ProgressEvent`
@@ -270,8 +273,17 @@ console.log(result.status, result.result, result.stages, result.tokens);
   `undefined`, is asked for again with the reason. The stage's agent answers at most
   `maxAttempts` times, 3 by default and settable per stage. Then the run fails with an
   `UnrecoverableError` carrying every answer's usage.
+- **Code stages:** `stage.code(name, { run })` binds a stage that runs your code instead of an
+  agent, such as a check, a question to the user or a read of what the run changed. `run`
+  receives the stage's input and the run's own options, with its `signal` and `ask`, and
+  returns the transition itself, checked as an agent stage's is. It runs once: there is no
+  answer to validate. A failure ends the run as an agent's does: a cancellation or a
+  `RecoverableError` or `UnrecoverableError` as it is, anything else as an
+  `UnrecoverableError`. What it returns stands even if the run was cancelled while it ran,
+  since what it did stays done; the next stage then does not begin.
 - **What the run knows:** `result.stages` records, for each stage run in order, its input,
-  its validated output, its attempts, usage and duration, and the transition it chose.
+  its validated output, its attempts, usage and duration, and the transition it chose; a code
+  stage's output is `undefined`, after one attempt.
 - **Bounds:** `maxTransitions`, 100 by default, ends a loop of stages. Without the types, from
   JavaScript, `createWorkflow` checks the stage names and the initial stage; a `go` to a stage
   that does not exist fails the run when it is taken.
@@ -559,7 +571,8 @@ run stays as it ended.
 
 `createLLMOrchestrator()` takes the options of `createOrchestrator()` plus `workspace`,
 `maxSteps`, `compactAt`, `commands`, `formatter`, `summarizeUndone`, `onTranscript`,
-`removeWorktree`, `agents` and `autoCommit`, and returns a promise. Every role runs on the
+`removeWorktree`, `agents`, `autoCommit`, `commitQuestion`, `requiredChecks` and `limits`, and
+returns a promise. Every role runs on the
 model APIs:
 
 - the planner and the reviewer read, with a `showChanges` tool that gives the current task's
@@ -637,12 +650,71 @@ tokens of context it compacted: after the `step` of the call that compacted, or 
 harness's summary is written. The summary's tokens count in the run's.
 
 Without `workspace` it works on the current directory, read only. One run of the
-orchestrator is one run of the history, every round included.
+orchestrator is one run of the history, every phase included.
+
+#### Phases, checks and limits
+
+The planner answers with a plan in phases. With `ask`, the user approves it first: **Approve**
+carries it out, **Stop** ends the run before any phase, and any other answer is a correction
+the planner plans again with. Each phase goes to the executor, then to its barrier, then to the
+reviewer with the phase's diff. A rejection goes back to the executor, and so does a phase
+whose required checks do not pass.
+
+`requiredChecks` names the configured commands every phase must pass, each with the values of
+its parameters. A parameter left out is not given, so a run of `test` on some files never counts
+for `{ command: 'test' }`, and neither does a run of a command of that name whose `env` differs,
+such as one an agent of `agentAsTool` was given with a variable that skips the tests. At each barrier, before each review, and again after the review before a
+commit or the end of the run, the harness runs with no model each check that never ran, or ran on files that changed since, and
+does not run one that already failed for these files. A check that another check's run changed
+the files under runs again, up to 3 passes in all, so a check that writes, such as a snapshot,
+settles. It asks no approver, whatever
+`autoApprove` says: listing a command in `requiredChecks` approves its runs. A check that does not pass sends the
+phase back to the executor with its output. A check that names no command, or a value that does
+not fit it, is an `InvalidAgentConfigError` when the orchestrator is built.
+
+`limits` sets how far a run goes, each a positive integer:
+
+- `rejections`, 2: rejections of a phase in a row before it goes to the planner, which replaces
+  what is left of the plan, as it does when the executor or the reviewer says the plan is wrong;
+- `replans`, 2: times a phase may go to the planner;
+- `phases`, 50: the phases a plan may hold;
+- `corrections`, 3: the user's corrections of the plan.
+
+A first plan longer than `phases` is an invalid answer, which the planner is asked for again. Past
+any other limit, the run does not throw. Its `response` says what is unfinished and which checks do
+not pass, the logger is warned, and nothing more is committed; what the phases changed stays on
+disk. `AgentResponse.phases` lists each phase of the plan, `approved`, `unfinished` or
+`pending`, with what the executor said, its checks and, when the run commits each phase, its
+commit. `AgentResponse.verification` holds the checks for the files as the run left them, `met` or
+not: an unfinished run runs them once more as it ends. The last commit's hooks run after that
+check, so what a hook changed, such as a formatter's rewrite, is not checked; the commit's
+report names it in `unreviewed`.
+
+```ts
+const orchestrator = await createLLMOrchestrator({
+	workspace,
+	commands,
+	requiredChecks: [{ command: 'test' }, { command: 'lint' }],
+	limits: { rejections: 3 },
+});
+const { response, verification, phases } = await orchestrator.run(task, { signal, ask });
+if (verification && !verification.met) console.warn(response);
+```
 
 Once the reviewer approves a run that changed files in a `write` root, the orchestrator can
-commit them. It asks first, through `ask`: only the answer **Commit** commits, and anything
-else, words of your own included, leaves the files changed and uncommitted. `autoCommit: true`
-commits without asking, for CI; without `ask` and without it, nothing is committed. The
+commit them, after the required checks pass again. `commitQuestion` says when it asks, through
+`ask`:
+
+- `'end'`, the default: once the last phase is approved, for one commit with everything;
+- `'phase'`: after each approved phase, for a commit of its own. What the user declines is
+  asked about again with the next phase;
+- `'plan'`: with the plan, where the user chooses **Approve, commit at the end**, **Approve,
+  commit each phase** or **Approve, do not commit**, and is not asked again.
+
+Only the answer **Commit** commits, and anything else, words of your own included, leaves the
+files changed and uncommitted. `autoCommit: true` commits without asking, for CI, at the end or
+after each phase; with `'plan'`, which only asks, it is an `InvalidAgentConfigError`. Without
+`ask` and without it, nothing is committed. The
 `committer`, on the executor's provider's cheaper model, with no tools, writes the message
 from the request, the plan, the diff and the branch's recent subjects, and the harness
 commits with git, so the repository's hooks run, with a command's environment and what
@@ -662,13 +734,17 @@ a command of the run already committed are not committed again. A repository is 
 the middle of a merge, a rebase or another operation, or in a sparse checkout.
 
 The commit is one of the run's changes: undoing the run keeps, reverts or resets it, as for
-the commits of a command, and redoing puts it back. `AgentResponse.commits` reports it:
+the commits of a command, and redoing puts it back. `AgentResponse.commits` reports it, every
+commit of the run together when it commits each phase:
 `committed`, `declined`, `nothing` when no file could be committed, or `failed` when git
 refused every commit, as a hook that rejects it does. The run succeeds either way, with the
 files changed. Each repository says its `outcome`, the commits made, the paths they hold and
 those left out, a hook's included, and `unreviewed`, the paths a hook, a filter or an edit made while git committed changed beyond
 what was reviewed. When git cannot be read, the run fails with `UnrecoverableError`, and so it does when
-the committer fails, as any role's failure ends the run. An orchestrator that runs inside another agent's run, as an agent of `agentAsTool`, never
+the committer fails, as any role's failure ends the run. A run that fails once an earlier
+phase is committed rejects with `RecoverableCommittedRunError` or
+`UnrecoverableCommittedRunError`, of the failure's own kind, which carry the run's `commits`,
+`phases` and `runId`, since those commits stay in git; a cancellation is let through as it is. An orchestrator that runs inside another agent's run, as an agent of `agentAsTool`, never
 commits: that run holds the other agent's changes too. It does not commit
 on Windows, where `autoCommit` is an `InvalidAgentConfigError`.
 
@@ -767,8 +843,9 @@ const tools = await createFileTools('openai', workspace, {
 
 - **Parameters:** `paths` inside the roots that the agent may read; a `choice` among the
   values you list; or `text` that matches your pattern and never starts with `-`.
-- **Approval:** every call asks the approver, which sees the exact program, arguments and
-  folder in `request.command`. `autoApprove` skips it.
+- **Approval:** every call of an agent asks the approver, which sees the exact program,
+  arguments and folder in `request.command`. `autoApprove` skips it. The `requiredChecks` the
+  harness runs itself never ask: listing a command there approves it.
 - **Roles:** in `createLLMOrchestrator`, a command goes to the executor, or to the roles its
   `roles` lists, such as `['planner', 'executor']` for one that reads an issue. Whoever runs it,
   its files are captured around it. `createFileTools` offers every command.
@@ -831,7 +908,10 @@ await history.goTo(historyStart); // as it was before the agent's first run
 
 `list()` gives every run kept, oldest first, with its parent, status, the files it changed
 and the session it came from, and the run the workspace is at (`head`), absent at the
-start. Runs form a tree: going back and writing again starts a new branch, and `goTo`
+start. A run of `createLLMOrchestrator` also says who changed each file, in `authors`: the
+role, such as `executor`, an agent it handed work to, as `executor › commit`, or `harness`
+for a required check the harness ran or what a hook changed while it committed; the diff
+`changes` gives says it too, as `# a.ts: changed by executor`. Runs form a tree: going back and writing again starts a new branch, and `goTo`
 reaches the old one. `redo` returns towards where the workspace was most recently. A
 run's `runId` is in its `AgentResponse` when it changed a file, and a run that failed or
 was cancelled after writing is still listed, with that status. A run that changed nothing

@@ -34,7 +34,9 @@ export function createWorkflow<Inputs, Result, Initial extends WorkflowStageName
 		if (stage.name !== name) {
 			throw new RangeError(`workflow stage "${stage.name}" is listed as "${name}"`);
 		}
-		if (stage.maxAttempts !== undefined) positiveInteger(stage.maxAttempts, 'maxAttempts', 1);
+		if (!('run' in stage) && stage.maxAttempts !== undefined) {
+			positiveInteger(stage.maxAttempts, 'maxAttempts', 1);
+		}
 		runnable.set(name, stage);
 	}
 	if (runnable.size === 0) throw new RangeError('stages must not be empty');

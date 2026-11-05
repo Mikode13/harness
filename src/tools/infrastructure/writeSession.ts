@@ -1,3 +1,4 @@
+import type { CommandLine } from '#src/agent/domain/approval';
 import type { Session } from '#src/shared/domain/session';
 import {
 	type RecoveryStore,
@@ -6,9 +7,19 @@ import {
 	WorkspaceBusyError,
 } from '#src/recovery/domain/recoveryStore';
 import { EditRefusedError } from '../domain/fileEdits.ts';
+import type { CommandEnding } from '../domain/preparedCall.ts';
 
 // Far more than a task needs; a run past it is more likely looping than working.
 const defaultMaxChanges = 500;
+
+/** A configured command that ran to an end in a run, and how it ended. */
+export interface RecordedCommand {
+	readonly name: string;
+	readonly line: CommandLine;
+	/** The variables its definition set, which the line does not show. */
+	readonly env?: Readonly<Record<string, string>>;
+	readonly ending: CommandEnding;
+}
 
 /**
  * Everything one top-level run writes, across all its roles and rounds. Its journal starts on
@@ -25,6 +36,7 @@ export class WriteSession {
 	private journal: Promise<RunJournal> | undefined;
 	private changes = 0;
 	private stopped: string | undefined;
+	private readonly commands: RecordedCommand[] = [];
 	// The end of the last write waiting or running, which the next one starts after.
 	private writing: Promise<unknown> = Promise.resolve();
 
@@ -114,6 +126,30 @@ export class WriteSession {
 	/** Refuses every further write, for this reason. The first reason given is kept. */
 	stop(reason: string): void {
 		this.stopped ??= reason;
+	}
+
+	/**
+	 * Every configured command that ran to an end in this run, in order, whichever agent or the
+	 * harness itself ran it: the evidence of what the run checked.
+	 */
+	get commandsRun(): readonly RecordedCommand[] {
+		return this.commands;
+	}
+
+	/** Records a command that ran to an end, once what it changed is recorded. */
+	recordCommand(run: RecordedCommand): void {
+		this.commands.push(run);
+	}
+
+	/**
+	 * What the files this run changed hold now, as `RunJournal.contentState` gives it. `undefined`
+	 * before its first change, once it finished, and once writing stopped: every stop is a change
+	 * the history may not hold, so what the files hold is not known.
+	 */
+	async contentState(): Promise<string | undefined> {
+		if (this.stopped !== undefined) return undefined;
+		const journal = await this.journal?.catch(() => undefined);
+		return journal?.contentState();
 	}
 
 	/** The run's id once it has written, which is what an undo needs. */

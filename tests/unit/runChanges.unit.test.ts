@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FileState, RunJournal } from '../../src/recovery/domain/recoveryStore.ts';
-import { showChanges } from '../../src/recovery/domain/runChanges.ts';
+import { latestChange, showChanges } from '../../src/recovery/domain/runChanges.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
 
 let parent: string;
@@ -42,6 +42,45 @@ async function change(
 }
 
 describe('showChanges', () => {
+	it('shows only what changed since a point, each file from what it held then', async () => {
+		await change('a.txt', await state('one\n'), await state('two\n'));
+		await change('b.txt', await state('b\n'), await state('B\n'));
+		const since = await latestChange(store, run.runId);
+		await change('a.txt', await state('two\n'), await state('three\n'));
+
+		await expect(showChanges(store, run.runId, { since })).resolves.toBe(
+			[
+				'diff --git a/a.txt b/a.txt',
+				'--- a/a.txt',
+				'+++ b/a.txt',
+				'@@ -1 +1 @@',
+				'-two',
+				'+three',
+			].join('\n'),
+		);
+		await run.finish('completed');
+	});
+
+	it('names only the changes it could not copy that came after the point, which counts them too', async () => {
+		await run.unrecorded(join(root, 'old'), 'build');
+		const since = await latestChange(store, run.runId);
+		expect(since).toBe(1);
+		await run.unrecorded(join(root, 'new'), 'build');
+
+		const shown = await showChanges(store, run.runId, { since });
+		expect(shown).toContain('# new: changed while the command "build" ran');
+		expect(shown).not.toContain('# old:');
+		await run.finish('completed');
+	});
+
+	it('counts no change before the first', async () => {
+		await expect(latestChange(store, run.runId)).resolves.toBe(0);
+		await change('a.txt', await state('one\n'), await state('two\n'));
+
+		await expect(showChanges(store, run.runId, { since: 0 })).resolves.toContain('+two');
+		await run.finish('completed');
+	});
+
 	it('shows a changed file as git does, by its path in the root', async () => {
 		await change('src/app.ts', await state('a\nb\nc\n'), await state('a\nB\nc\n'));
 

@@ -64,9 +64,9 @@ export class WorkspaceWrites {
 		if (refusal !== undefined) throw new EditRefusedError(refusal);
 	}
 
-	/** An editor over this run's session, under this set of tools' policy. */
-	editorFor(context: RunContext): FileEditor {
-		return new FileEditor({ policy: this.policy, session: this.sessionFor(context) });
+	/** An editor over this run's session, under this set of tools' policy, writing as `author`. */
+	editorFor(context: RunContext, author?: string): FileEditor {
+		return new FileEditor({ policy: this.policy, session: this.sessionFor(context), author });
 	}
 
 	/**

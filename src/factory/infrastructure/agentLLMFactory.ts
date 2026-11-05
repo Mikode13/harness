@@ -18,17 +18,25 @@ import {
 	openAIModels,
 	openAIReasoningEfforts,
 } from '#src/llm/infrastructure/openAILLMClient';
+import { committerInstructions } from '#src/orchestration/domain/model/commitFlow';
 import {
-	committerInstructions,
-	executorInstructions,
-	executorInstructionsWithoutCommands,
-	OrchestratorAgent,
-	plannerInstructions,
-	reviewerInstructions,
-	reviewerInstructionsWithoutCommands,
-} from '#src/orchestration/domain/model/orchestratorAgent';
+	PhasedOrchestrator,
+	phasedExecutorInstructions,
+	phasedExecutorInstructionsWithoutCommands,
+	phasedPlannerInstructions,
+	phasedReviewerInstructions,
+	phasedReviewerInstructionsWithoutCommands,
+} from '#src/orchestration/domain/model/phasedOrchestrator';
+import type { CommitQuestion, PhaseLimits } from '#src/orchestration/domain/model/phases';
+import type { RequiredCheck, Verifier } from '#src/orchestration/domain/model/verification';
+import { CommandVerifier } from '#src/orchestration/infrastructure/model/commandVerifier';
 import { GitCommitter } from '#src/orchestration/infrastructure/model/gitCommitter';
-import { ReviewerDecisionValidator } from '#src/orchestration/infrastructure/model/reviewerDecisionValidator';
+import {
+	phaseReportValidator,
+	phaseReviewValidator,
+	planValidator,
+} from '#src/orchestration/infrastructure/model/phaseValidators';
+import { RecordedChangeLog } from '#src/orchestration/infrastructure/model/recordedChangeLog';
 import type { RecoveryStore } from '#src/recovery/domain/recoveryStore';
 import { RetryingAgent } from '#src/retry/domain/model/retryingAgent';
 import { InvalidAgentConfigError } from '#src/shared/domain/errors';
@@ -57,6 +65,7 @@ import {
 	type WorkspaceOptions,
 } from '#src/tools/infrastructure/fileTools';
 import type { DelegationTool } from '#src/tools/infrastructure/agentAsTool';
+import { createCommandTool } from '#src/tools/infrastructure/commandTool';
 import { createExploreTool } from '#src/tools/infrastructure/exploreTool';
 import { createShowChangesTool } from '#src/tools/infrastructure/showChangesTool';
 import { createRemoveWorktreeTool } from '#src/tools/infrastructure/removeWorktreeTool';
@@ -294,14 +303,36 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	 */
 	agents?: RoleAgents;
 	/**
-	 * Commits what an approved run changed without asking. Without it, once the reviewer approves
-	 * a run that changed files, the run asks the user through its `ask` whether to commit, and a
-	 * run with no `ask` commits nothing. The harness makes the commit with `git commit --only`,
-	 * so what else is staged stays staged and git's hooks run, and the committer, on the
-	 * executor's provider's cheaper model, writes its message. See `AgentResponse.commits`.
-	 * Not supported on Windows yet. Defaults to `false`.
+	 * Commits what an approved run changed without asking. Without it, the run asks the user
+	 * through its `ask`, when `commitQuestion` says, and a run with no `ask` commits nothing. The
+	 * harness makes the commit with `git commit --only`, so what else is staged stays staged and
+	 * git's hooks run, and the committer, on the executor's provider's cheaper model, writes its
+	 * message. See `AgentResponse.commits`. Not supported on Windows yet. Defaults to `false`.
 	 */
 	autoCommit?: boolean;
+	/**
+	 * When the user is asked about committing: once the last phase is approved, after each
+	 * phase, or with the plan, where the user chooses how. See `CommitQuestion`. Defaults to
+	 * `'end'`, one commit with everything.
+	 */
+	commitQuestion?: CommitQuestion;
+	/**
+	 * The configured commands each phase must pass, such as `[{ command: 'test' }]`, each with the
+	 * values of its parameters; a parameter left out is not given. Before each review, and again
+	 * after the review before a commit or the end of the run, and as an unfinished run ends, the
+	 * harness itself runs, with no model, each one that never ran or ran on
+	 * files that changed since, and a phase whose checks do not pass goes back to the executor
+	 * with their output, as a rejection. Each names one of `commands`, and they run in a `write`
+	 * root. The harness's runs ask no approver, whatever `autoApprove` says: listing a command
+	 * here approves its runs. See `AgentResponse.verification`.
+	 */
+	requiredChecks?: RequiredCheck[];
+	/**
+	 * How far a run goes before it ends unfinished, each a positive integer: rejections of a phase
+	 * in a row before it goes to the planner (2), times a phase may go to the planner (2), phases
+	 * a plan may hold (50), and the user's corrections of the plan (3).
+	 */
+	limits?: Partial<PhaseLimits>;
 }
 
 const defaultLLMAgentModels = {
@@ -776,9 +807,27 @@ const repositoryGuidance: Record<CommandRole, string> = {
 };
 
 /**
- * Builds the planner → executor → reviewer workflow with every role on the model APIs, each
- * holding its role's instructions, or `systemPrompts`, as its system prompt, followed by the
- * workspace's roots.
+ * Builds the planner → executor → reviewer workflow in phases, with every role on the model
+ * APIs, each holding its role's instructions, or `systemPrompts`, as its system prompt, followed
+ * by the workspace's roots.
+ *
+ * - The planner plans the task in phases, at most 50, which the user approves through `ask`
+ *   when the run has one: `Approve` carries them out, `Stop` ends the run with nothing done, and
+ *   any other answer is a correction the planner plans again with, up to 3, after which such an
+ *   answer ends the run with nothing done. With `commitQuestion: 'plan'`, the approval also
+ *   says when to commit.
+ * - Each phase goes to the executor, which gets the plan, never the request, then through the
+ *   `requiredChecks`, then to the reviewer, with the phase's own diff. A rejection, or a check
+ *   that does not pass, goes back to the executor with its feedback, and the second in a row to
+ *   the planner, which replaces what is left of the plan, as it does when the executor or the
+ *   reviewer says the plan is wrong. A phase that went to the planner twice ends the run
+ *   unfinished: it returns and says why. The `limits` change these numbers.
+ * - Once the reviewer approves the last phase, or one a commit follows, the checks run again,
+ *   and what the reviewer approved is committed at the end, or after each phase; see
+ *   `autoCommit` and `commitQuestion`.
+ * - Every prompt says how to answer, in JSON, so a role's own `systemPrompts` need not.
+ * - The `AgentResponse` reports each phase, the last checks and every commit, in `phases`,
+ *   `verification` and `commits`.
  *
  * - The planner and the reviewer read: `listFiles`, `searchText`, `readFile`, `readFiles`, `showChanges`,
  *   the current task's changes as far as each may read them, and `explore`, which sends up to 4
@@ -795,11 +844,14 @@ const repositoryGuidance: Record<CommandRole, string> = {
  *   one, both are told the tests were not run, and the reviewer judges from the code whether
  *   they would pass.
  *
- * One run of the orchestrator is one run of the workspace's history, every round and retry
- * included, and its `AgentResponse` names it. Every role follows what the user undoes.
+ * One run of the orchestrator is one run of the workspace's history, every phase and retry
+ * included, and its `AgentResponse` names it. Each role keeps its agent, and its conversation,
+ * across the orchestrator's runs. Every role follows what the user undoes.
  * Asynchronous because opening the workspace is.
  *
- * @throws {InvalidAgentConfigError} for an unknown provider, or a workspace with no root.
+ * @throws {InvalidAgentConfigError} for an unknown provider, a workspace with no root, an
+ * invalid `limits` or `commitQuestion`, `commitQuestion: 'plan'` with `autoCommit`, or
+ * `requiredChecks` with no `commands`.
  * @throws {UnrecoverableError} when a role cannot be set up, for example because
  * `OPENAI_API_KEY` is missing, or when no program can read the repository.
  */
@@ -819,6 +871,9 @@ export async function createLLMOrchestrator({
 	removeWorktree = false,
 	agents = {},
 	autoCommit = false,
+	commitQuestion,
+	requiredChecks,
+	limits,
 }: CreateLLMOrchestratorOptions = {}): Promise<Agent> {
 	// Its commit stops the hooks it runs as a command is stopped, which Windows cannot do.
 	const canCommit = process.platform !== 'win32';
@@ -901,20 +956,21 @@ export async function createLLMOrchestrator({
 	// The executor and the reviewer are told whether the tests were run, which only an executor
 	// with a command can do.
 	const executorRuns = executorToolset.some(tool => tool.name === 'runCommand');
+	const verifier = await verifierOf(requiredChecks, commands, opened);
 
-	return new OrchestratorAgent({
-		plannerAgent: await reader(
+	return new PhasedOrchestrator({
+		planner: await reader(
 			roles.planner,
 			'planner',
-			prompt('planner', systemPrompts.planner, plannerInstructions),
+			prompt('planner', systemPrompts.planner, phasedPlannerInstructions),
 		),
-		executorAgent: buildLLMAgent(executor.provider, {
+		executor: buildLLMAgent(executor.provider, {
 			model: executor.model,
 			reasoningEffort: executor.reasoningEffort,
 			systemPrompt: prompt(
 				'executor',
 				systemPrompts.executor,
-				executorRuns ? executorInstructions : executorInstructionsWithoutCommands,
+				executorRuns ? phasedExecutorInstructions : phasedExecutorInstructionsWithoutCommands,
 			),
 			tools: [...executorToolset, ...agentsOf.executor],
 			maxSteps: steps.executor,
@@ -924,16 +980,25 @@ export async function createLLMOrchestrator({
 			writeRoots: writeRootsOf(workspace.roots),
 			...shared,
 		}),
-		reviewerAgent: await reader(
+		reviewer: await reader(
 			roles.reviewer,
 			'reviewer',
 			prompt(
 				'reviewer',
 				systemPrompts.reviewer,
-				executorRuns ? reviewerInstructions : reviewerInstructionsWithoutCommands,
+				executorRuns ? phasedReviewerInstructions : phasedReviewerInstructionsWithoutCommands,
 			),
 		),
-		reviewerDecisionValidator: new ReviewerDecisionValidator(),
+		validators: {
+			plan: planValidator,
+			report: phaseReportValidator,
+			review: phaseReviewValidator,
+		},
+		changes: new RecordedChangeLog({ store: opened.store, policy: opened.policy }),
+		...(verifier ? { verifier } : {}),
+		autoCommit,
+		...(commitQuestion === undefined ? {} : { commitQuestion }),
+		...(limits === undefined ? {} : { limits }),
 		logger,
 		// Only a workspace it may write can hold a run's changes to commit.
 		...(opened.writable && canCommit
@@ -955,8 +1020,38 @@ export async function createLLMOrchestrator({
 							logger,
 							onTranscript: transcriptsOf('committer'),
 						}),
-					autoCommit,
 				}
 			: {}),
 	});
+}
+
+/**
+ * What verifies the required checks, through a `runCommand` of its own over every command, so its
+ * runs are recorded as a model's are; none for no check. The commands already have a `write`
+ * root to run in, or opening the executor's tools refused them.
+ *
+ * @throws {InvalidAgentConfigError} for checks with no commands, or a check that names no command
+ * or a value that does not fit it.
+ */
+async function verifierOf(
+	checks: RequiredCheck[] | undefined,
+	commands: Commands | undefined,
+	opened: OpenedWorkspace,
+): Promise<Verifier | undefined> {
+	if (checks === undefined || checks.length === 0) return undefined;
+	if (commands === undefined) {
+		throw new InvalidAgentConfigError(
+			'requiredChecks name commands, and no commands are configured',
+		);
+	}
+	const { policy, writes, covered, base } = opened;
+	const tool = await createCommandTool({
+		commands,
+		policy,
+		writes,
+		covered,
+		base,
+		logger: opened.logger,
+	});
+	return new CommandVerifier({ checks, commands, tool, writes });
 }

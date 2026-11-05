@@ -37,7 +37,7 @@ async function afterFormatting(
 	writes: WorkspaceWrites,
 	editor: FileEditor,
 	{ path, absolute, written }: { path: string; absolute: string; written: Buffer },
-	{ run, reads }: ToolCallContext,
+	{ run, reads, author }: ToolCallContext,
 	signal: AbortSignal,
 ): Promise<{ content: Buffer | undefined; note: string }> {
 	const { formatter } = writes;
@@ -46,7 +46,7 @@ async function afterFormatting(
 		reads.record(absolute, hashOf(written));
 		return { content: written, note: '' };
 	}
-	const failure = await formatter.format(absolute, writes.sessionFor(run), signal);
+	const failure = await formatter.format(absolute, writes.sessionFor(run), signal, author);
 	const { content } = await editor.current(path, signal);
 	if (content?.equals(written)) reads.record(absolute, hashOf(content));
 	else reads.forget(absolute);
@@ -72,7 +72,7 @@ export async function prepareTrackedEdit(
 ): Promise<PreparedCall> {
 	const { run, reads } = call;
 	await writes.checkCeiling(call);
-	const editor = writes.editorFor(run);
+	const editor = writes.editorFor(run, call.author);
 	const { path } = request;
 
 	if (request.kind === 'create') {

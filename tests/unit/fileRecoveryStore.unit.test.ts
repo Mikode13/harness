@@ -423,6 +423,22 @@ describe('FileRecoveryStore', () => {
 			await run.finish('completed');
 		});
 
+		it('gives a new state for each change it could not copy, whose content it does not know', async () => {
+			const store = await FileRecoveryStore.open({ root, directory });
+			const run = await store.startRun();
+			const initial = run.contentState();
+
+			// Such as a command that leaves a symbolic link where a file was, twice.
+			await run.unrecorded('b.txt', 'runCommand');
+			const once = run.contentState();
+			await run.unrecorded('b.txt', 'runCommand');
+
+			expect(once).not.toBe(initial);
+			expect(run.contentState()).not.toBe(once);
+			expect(run.contentState()).not.toBe(initial);
+			await run.finish('completed');
+		});
+
 		it('takes a run that changed nothing out of the history, back to the run before it', async () => {
 			const store = await FileRecoveryStore.open({ root, directory });
 			const kept = await store.startRun();
@@ -556,7 +572,11 @@ describe('FileRecoveryStore', () => {
 					[formatted, deleted, untouched].map(({ path, state }) => [path, state]),
 				),
 			};
-			await dead.observe(await dead.saveContent(Buffer.from(JSON.stringify(manifest))), 'format');
+			await dead.observe(
+				await dead.saveContent(Buffer.from(JSON.stringify(manifest))),
+				'format',
+				'executor',
+			);
 			// The command ran, and the process died before comparing the files.
 			writeFileSync(formatted.path, 'a;\n');
 			rmSync(deleted.path);
@@ -568,8 +588,20 @@ describe('FileRecoveryStore', () => {
 
 			const { entries } = await store.readRun(dead.runId);
 			expect(entries).toMatchObject([
-				{ path: formatted.path, before: formatted.state, status: 'applied', observedBy: 'format' },
-				{ path: deleted.path, after: absent, status: 'applied', observedBy: 'format' },
+				{
+					path: formatted.path,
+					before: formatted.state,
+					status: 'applied',
+					observedBy: 'format',
+					authors: ['executor'],
+				},
+				{
+					path: deleted.path,
+					after: absent,
+					status: 'applied',
+					observedBy: 'format',
+					authors: ['executor'],
+				},
 			]);
 			// A file it created was never captured, so the settled run cannot know of it.
 			expect(entries).toHaveLength(2);
@@ -611,8 +643,8 @@ describe('FileRecoveryStore', () => {
 			expect(entries).toEqual([]);
 			// One still too large is not covered at all: whether it changed is unknown.
 			expect(unrecorded).toEqual([
-				{ path: path('small.txt'), by: 'build' },
-				{ path: path('shrunk.bin'), by: 'build' },
+				{ path: path('small.txt'), by: 'build', sequence: 2 },
+				{ path: path('shrunk.bin'), by: 'build', sequence: 3 },
 			]);
 			await expect(store.goTo(historyStart)).resolves.toMatchObject({ complete: false });
 			expect(readFileSync(path('shrunk.bin'), 'utf8')).toBe('shrunk\n');

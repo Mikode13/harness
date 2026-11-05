@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
+import { withAuthor } from '../../src/agent/domain/runContext.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import type { LLMClient, LLMResponse } from '../../src/llm/domain/llm.ts';
 import type { Message } from '../../src/llm/domain/message.ts';
@@ -500,6 +501,17 @@ describe('formatting what an edit wrote', () => {
 		await store.undo();
 
 		expect(onDisk('a.ts')).toBe('const a = 1;\nconst b = 2;\n');
+	});
+
+	it("records the edit and what the formatter changed as the author's", async () => {
+		const model = new CallingModel().then(read('a.ts'), modify('a.ts', 'a = 1;', 'a = 10 ;'));
+
+		const { runId } = await (
+			await agentOver(model, { formatter: tidy, history: store })
+		).run('change it', withAuthor({ signal }, 'executor'));
+
+		const { entries } = await store.readRun(runId ?? '');
+		expect(entries.map(({ authors }) => authors)).toEqual([['executor'], ['executor']]);
 	});
 
 	it('keeps the file as written, and says why, when the formatter fails', async () => {

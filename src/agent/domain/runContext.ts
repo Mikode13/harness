@@ -120,3 +120,25 @@ export function delegationOf(options: RunOptions): Delegation | undefined {
 export function withDelegation(options: RunOptions, delegation: Delegation): RunOptions {
 	return { ...options, [delegationKey]: delegation } as DelegatedRunOptions;
 }
+
+/** The author of what the harness runs itself, with no model, such as a required check. */
+export const harnessAuthor = 'harness';
+
+const authorKey = Symbol('mikode-harness.author');
+
+interface AuthoredRunOptions extends RunOptions {
+	[authorKey]?: string;
+}
+
+/**
+ * Who the changes of the agent these options reach are recorded as made by, such as the
+ * orchestrator's `executor`, if anyone set one. Internal, as the run context is.
+ */
+export function authorOf(options: RunOptions): string | undefined {
+	return (options as AuthoredRunOptions)[authorKey];
+}
+
+/** The same options, for an agent whose changes `author` makes. */
+export function withAuthor(options: RunOptions, author: string): RunOptions {
+	return { ...options, [authorKey]: author } as AuthoredRunOptions;
+}

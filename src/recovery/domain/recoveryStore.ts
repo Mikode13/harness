@@ -24,6 +24,13 @@ export interface JournalEntry {
 	 * itself. It was found by comparing the file before and after, not journaled before it was made.
 	 */
 	observedBy?: string;
+	/**
+	 * Who made it: the role of the orchestrator whose tool made it, such as `executor`, an agent
+	 * that role handed work to, as `executor › commit`, or `harness` for what the harness ran
+	 * itself. One, but several for a change retention chained from changes several made. Absent
+	 * outside an orchestrator.
+	 */
+	authors?: string[];
 	status: 'prepared' | 'applied' | 'abandoned';
 }
 
@@ -151,8 +158,9 @@ export interface RunJournal {
 	 * then recorded as its own entry, prepared and applied at once, before `observed`. If the run
 	 * stops first, the next run settles it: every file of the manifest that changed since is
 	 * recorded as changed by `by`. A file it created is not in the manifest, and is then missed.
+	 * `author` is who ran it, as one of `JournalEntry.authors`.
 	 */
-	observe(manifest: string, by: string): Promise<number>;
+	observe(manifest: string, by: string, author?: string): Promise<number>;
 	/**
 	 * Every change the observation found is recorded. `measure`, what capturing and comparing the
 	 * files cost, is kept with it.
@@ -175,7 +183,8 @@ export interface RunJournal {
 	/**
 	 * What the files this run changed hold now, as one hash of their paths and states. A file back
 	 * to what it held before the run's first change to it counts as unchanged, so a change undone
-	 * gives the state from before it.
+	 * gives the state from before it. A change it could not copy leaves a state no other gives,
+	 * since what the file holds is not known.
 	 */
 	contentState(): string;
 	/**
@@ -381,7 +390,8 @@ export interface RecoveryStore {
 	readRun(runId: string): Promise<{
 		record: RunRecord;
 		entries: JournalEntry[];
-		unrecorded: UnrecordedChange[];
+		/** Each numbered in the same sequence as `entries`, so `since` can tell when it happened. */
+		unrecorded: (UnrecordedChange & { sequence: number })[];
 		/** The commits its commands made, in the order they were recorded. */
 		commits: RecordedCommits[];
 	}>;

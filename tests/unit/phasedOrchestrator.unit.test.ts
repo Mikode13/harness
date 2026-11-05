@@ -1,0 +1,797 @@
+import { describe, expect, it, vi } from 'vitest';
+import type {
+	Agent,
+	AgentResponse,
+	ProgressEvent,
+	RunOptions,
+} from '../../src/agent/domain/agent.ts';
+import type { RepositoryCommit } from '../../src/agent/domain/commitReport.ts';
+import { Inbox } from '../../src/agent/domain/inbox.ts';
+import type { Asker } from '../../src/agent/domain/question.ts';
+import { authorOf, RunContext, withRunContext } from '../../src/agent/domain/runContext.ts';
+import type { ChangeLog } from '../../src/orchestration/domain/model/changeLog.ts';
+import type { Committer, FrozenChanges } from '../../src/orchestration/domain/model/committer.ts';
+import { PhasedOrchestrator } from '../../src/orchestration/domain/model/phasedOrchestrator.ts';
+import type { PhaseLimits, Plan } from '../../src/orchestration/domain/model/phases.ts';
+import type { Verification } from '../../src/agent/domain/phaseResult.ts';
+import type { Verifier } from '../../src/orchestration/domain/model/verification.ts';
+import {
+	phaseReportValidator,
+	phaseReviewValidator,
+	planValidator,
+} from '../../src/orchestration/infrastructure/model/phaseValidators.ts';
+import { isAbortError } from '../../src/shared/domain/isAbortError.ts';
+import { InvalidAgentConfigError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
+
+const signal = new AbortController().signal;
+const tokens = { inputTokens: 1, outputTokens: 1, readCacheTokens: 0, writtenCacheTokens: 0 };
+
+/** An agent that answers from its script, in order, and records every prompt it got. */
+function scripted(...answers: unknown[]) {
+	const prompts: string[] = [];
+	const run = vi.fn<Agent['run']>(prompt => {
+		prompts.push(prompt);
+		if (answers.length === 0) throw new Error('the fake agent ran out of answers');
+		const next = answers.shift();
+		const response: AgentResponse = {
+			response: typeof next === 'string' ? next : JSON.stringify(next),
+			duration: 1,
+			tokens,
+		};
+		return Promise.resolve(response);
+	});
+	return { agent: { run } satisfies Agent, run, prompts };
+}
+
+function planOf(...goals: string[]): Plan {
+	return {
+		summary: `The task, in ${String(goals.length)}`,
+		phases: goals.map(goal => ({ goal, files: [`${goal}.ts`], done: `${goal} works` })),
+	};
+}
+
+const done = (summary: string) => ({ status: 'done', summary });
+const approved = { decision: 'approved' };
+const rejected = (feedback: string) => ({ decision: 'rejected', feedback });
+
+/** A change log that marks each phase with a number and shows its diff by that number. */
+function fakeChanges() {
+	let marks = 0;
+	const since = vi.fn<ChangeLog['since']>(mark => Promise.resolve(`diff since ${String(mark)}`));
+	const mark = vi.fn<ChangeLog['mark']>(() => Promise.resolve(++marks));
+	return { changes: { mark, since } satisfies ChangeLog, mark, since };
+}
+
+/** A change log whose record holds nothing yet. */
+const unchanged: ChangeLog = { mark: () => Promise.resolve(0), since: () => Promise.resolve('') };
+
+function verifierOf(...results: Verification[]) {
+	const verify = vi.fn<Verifier['verify']>(() => {
+		const next = results.shift();
+		if (!next) throw new Error('the fake verifier ran out of results');
+		return Promise.resolve(next);
+	});
+	return { verifier: { verify } satisfies Verifier, verify };
+}
+
+const passed: Verification = {
+	met: true,
+	checks: [{ command: 'test', status: 'passed', how: 'exited with code 0', output: '' }],
+};
+const failing: Verification = {
+	met: false,
+	checks: [{ command: 'test', status: 'failed', how: 'exited with code 1', output: '1 failed' }],
+};
+
+const frozen: FrozenChanges = {
+	repositories: [
+		{ repository: '/repo', branch: 'main', paths: ['a.ts'], leftOut: [], diff: 'diff', style: [] },
+	],
+};
+const committed: RepositoryCommit = {
+	repository: '/repo',
+	branch: 'main',
+	outcome: 'done',
+	commits: [{ sha: 'a'.repeat(40), subject: 'Change a' }],
+	paths: ['a.ts'],
+	leftOut: [],
+	unreviewed: [],
+};
+
+function fakeCommitter() {
+	const freeze = vi.fn<Committer['freeze']>(() => Promise.resolve(frozen));
+	const commit = vi.fn<Committer['commit']>(() => Promise.resolve([committed]));
+	return { committer: { freeze, commit } satisfies Committer, freeze, commit };
+}
+
+function orchestrator({
+	planner,
+	executor,
+	reviewer,
+	changes = fakeChanges().changes,
+	verifier,
+	committer,
+	committerAgent,
+	autoCommit,
+	limits,
+	logger = { warn: vi.fn() },
+}: {
+	planner: Agent;
+	executor: Agent;
+	reviewer: Agent;
+	changes?: ChangeLog;
+	verifier?: Verifier;
+	committer?: Committer;
+	committerAgent?: Agent;
+	autoCommit?: boolean;
+	limits?: Partial<PhaseLimits>;
+	logger?: { warn: (...args: unknown[]) => void };
+}) {
+	return new PhasedOrchestrator({
+		planner,
+		executor,
+		reviewer,
+		validators: {
+			plan: planValidator,
+			report: phaseReportValidator,
+			review: phaseReviewValidator,
+		},
+		changes,
+		...(verifier ? { verifier } : {}),
+		...(committer ? { committer } : {}),
+		...(committerAgent ? { createCommitter: () => committerAgent } : {}),
+		...(autoCommit === undefined ? {} : { autoCommit }),
+		...(limits === undefined ? {} : { limits }),
+		logger,
+	});
+}
+
+describe('the phased orchestrator', () => {
+	it('carries out the plan phase by phase, each reviewed on its own diff', async () => {
+		const planner = scripted(planOf('parse', 'render'));
+		const executor = scripted(done('parsed'), done('rendered'));
+		const reviewer = scripted(approved, approved);
+
+		const result = await orchestrator({
+			planner: planner.agent,
+			executor: executor.agent,
+			reviewer: reviewer.agent,
+		}).run('Add a markdown preview', { signal });
+
+		expect(result.response).toBe(
+			'Carried out the plan in 2 phases:\n1. parse: parsed\n2. render: rendered',
+		);
+		expect(result.tokens).toEqual({ ...tokens, inputTokens: 5, outputTokens: 5 });
+		expect(planner.prompts[0]).toContain('Add a markdown preview');
+		// The executor gets the plan, never the request.
+		for (const prompt of executor.prompts) expect(prompt).not.toContain('markdown preview');
+		expect(executor.prompts[0]).toContain('Phase 1 of 2: parse');
+		expect(executor.prompts[1]).toContain('Phase 2 of 2: render');
+		expect(executor.prompts[1]).toContain('The executor said: parsed');
+		expect(reviewer.prompts[0]).toContain('Phase 1 of 2: parse');
+		// From the run's start, then from where the first diff was read.
+		expect(reviewer.prompts[0]).toContain('diff since 0');
+		expect(reviewer.prompts[1]).toContain('diff since 1');
+		expect(reviewer.prompts[1]).toContain('Add a markdown preview');
+		expect(result.phases).toEqual([
+			{ goal: 'parse', status: 'approved', summary: 'parsed' },
+			{ goal: 'render', status: 'approved', summary: 'rendered' },
+		]);
+		// No required checks, so no barrier to report.
+		expect(result).not.toHaveProperty('verification');
+	});
+
+	it("shows the next phase's reviewer what changed during the previous review", async () => {
+		// The record's position grows with each change; a role's run makes one.
+		let position = 0;
+		const writing = (agent: Agent): Agent => ({
+			run: (prompt, options) => {
+				position++;
+				return agent.run(prompt, options);
+			},
+		});
+		const changes: ChangeLog = {
+			mark: () => Promise.resolve(position),
+			since: mark => Promise.resolve(`changes after ${String(mark)} of ${String(position)}`),
+		};
+		const reviewer = scripted(approved, approved);
+
+		await orchestrator({
+			planner: scripted(planOf('parse', 'render')).agent,
+			executor: writing(scripted(done('parsed'), done('rendered')).agent),
+			// Such as a command of the reviewer's that updates a snapshot.
+			reviewer: writing(reviewer.agent),
+			changes,
+		}).run('task', { signal });
+
+		expect(reviewer.prompts[0]).toContain('changes after 0 of 1');
+		// The first reviewer's change, 2, and the second executor's, 3.
+		expect(reviewer.prompts[1]).toContain('changes after 1 of 3');
+	});
+
+	it("shows the first reviewer what the planner's commands wrote, in a run of its own only", async () => {
+		const reviewed = async (options: RunOptions) => {
+			// The planner's command wrote once before the plan was approved.
+			let position = 0;
+			const changes: ChangeLog = {
+				mark: () => Promise.resolve(position),
+				since: mark => Promise.resolve(`changes after ${String(mark)}`),
+			};
+			const planner = scripted(planOf('parse'));
+			const reviewer = scripted(approved);
+			await orchestrator({
+				planner: {
+					run: (prompt, runOptions) => {
+						position++;
+						return planner.agent.run(prompt, runOptions);
+					},
+				},
+				executor: scripted(done('parsed')).agent,
+				reviewer: reviewer.agent,
+				changes,
+			}).run('task', options);
+			return reviewer.prompts[0];
+		};
+
+		await expect(reviewed({ signal })).resolves.toContain('changes after 0');
+		await expect(
+			reviewed(withRunContext({ signal }, new RunContext({ id: 'outer' }))),
+		).resolves.toContain('changes after 1');
+	});
+
+	it('sends a rejection back to the executor with its feedback, and keeps the same executor', async () => {
+		const executor = scripted(done('first try'), done('fixed'));
+		const reviewer = scripted(rejected('the null case breaks'), approved);
+
+		const result = await orchestrator({
+			planner: scripted(planOf('parse')).agent,
+			executor: executor.agent,
+			reviewer: reviewer.agent,
+		}).run('task', { signal });
+
+		expect(result.response).toContain('1. parse: fixed');
+		expect(executor.prompts[1]).toContain('Fix this first:\n---\nthe null case breaks');
+		expect(executor.run).toHaveBeenCalledTimes(2);
+	});
+
+	it('sends a phase to the planner after rejections in a row, which replaces what is left', async () => {
+		const planner = scripted(planOf('parse', 'render'), planOf('parse safely', 'render'));
+		const executor = scripted(done('a'), done('b'), done('c'), done('d'));
+		const reviewer = scripted(rejected('wrong'), rejected('still wrong'), approved, approved);
+
+		const result = await orchestrator({
+			planner: planner.agent,
+			executor: executor.agent,
+			reviewer: reviewer.agent,
+		}).run('task', { signal });
+
+		expect(planner.prompts[1]).toContain('Phase 1 cannot be finished as planned');
+		expect(planner.prompts[1]).toContain('Rejected 2 times in a row; the last time:\nstill wrong');
+		expect(executor.prompts[2]).toContain('Phase 1 of 2: parse safely');
+		expect(executor.prompts[2]).not.toContain('Fix this first');
+		expect(result.response).toBe(
+			'Carried out the plan in 2 phases:\n1. parse safely: c\n2. render: d',
+		);
+	});
+
+	it('ends the run unfinished, without throwing, once a phase used up its replans', async () => {
+		const logger = { warn: vi.fn() };
+		const executor = scripted(done('a'), done('b'), done('c'), done('d'));
+		const reviewer = scripted(...['1', '2', '3', '4'].map(n => rejected(`no ${n}`)));
+
+		const result = await orchestrator({
+			planner: scripted(planOf('parse'), planOf('parse again')).agent,
+			executor: executor.agent,
+			reviewer: reviewer.agent,
+			limits: { replans: 1 },
+			logger,
+		}).run('task', { signal });
+
+		expect(result.response).toBe(
+			'The task is unfinished: phase 1 of 1, "parse again", could not be completed after 1 replan. The last reason:\nRejected 2 times in a row; the last time:\nno 4\nWhat the phases changed stays on disk, uncommitted.',
+		);
+		expect(logger.warn).toHaveBeenCalledWith(result.response);
+		expect(result.phases).toEqual([{ goal: 'parse again', status: 'unfinished' }]);
+	});
+
+	it('goes to the planner when the executor or the reviewer says the plan is wrong', async () => {
+		const planner = scripted(planOf('parse'), planOf('tokenize'), planOf('lex'));
+		const executor = scripted(
+			{ status: 'replan', reason: 'there is no parser' },
+			done('t'),
+			done('l'),
+		);
+		const reviewer = scripted(
+			{ decision: 'replan', feedback: 'tokens are the wrong level' },
+			approved,
+		);
+
+		const result = await orchestrator({
+			planner: planner.agent,
+			executor: executor.agent,
+			reviewer: reviewer.agent,
+		}).run('task', { signal });
+
+		expect(planner.prompts[1]).toContain('The executor: there is no parser');
+		expect(planner.prompts[2]).toContain('The reviewer: tokens are the wrong level');
+		expect(result.response).toBe('Carried out the plan in 1 phase:\n1. lex: l');
+	});
+
+	it('asks the planner again for a first plan past its phase limit', async () => {
+		const planner = scripted(planOf('a', 'b'), planOf('all'));
+
+		const result = await orchestrator({
+			planner: planner.agent,
+			executor: scripted(done('done')).agent,
+			reviewer: scripted(approved).agent,
+			limits: { phases: 1 },
+		}).run('task', { signal });
+
+		expect(planner.prompts[0]).toContain('at most 1 phases');
+		expect(planner.prompts[1]).toContain('it did not match the schema');
+		expect(result.response).toBe('Carried out the plan in 1 phase:\n1. all: done');
+	});
+
+	it('ends a replan that grows the plan past its phase limit', async () => {
+		const result = await orchestrator({
+			planner: scripted(planOf('a', 'b'), planOf('c', 'd')).agent,
+			executor: scripted(done('a'), done('b'), done('c')).agent,
+			reviewer: scripted(approved, { decision: 'replan', feedback: 'split it' }).agent,
+			limits: { phases: 2 },
+		}).run('task', { signal });
+
+		expect(result.response).toContain(
+			'phase 2 of 2, "b", could not be completed after 1 replan. The last reason:\nThe reviewer: split it\nThe new plan grew past 2 phases, the most a run may hold.',
+		);
+	});
+
+	it('ends a replan past the phase limit on its own, without asking the planner again', async () => {
+		const planner = scripted(planOf('a'), planOf('b', 'c'));
+
+		const result = await orchestrator({
+			planner: planner.agent,
+			executor: scripted(done('a')).agent,
+			reviewer: scripted({ decision: 'replan', feedback: 'split it' }).agent,
+			limits: { phases: 1 },
+		}).run('task', { signal });
+
+		expect(planner.run).toHaveBeenCalledTimes(2);
+		expect(result.response).toContain('The new plan grew past 1 phases, the most a run may hold.');
+	});
+
+	describe('with the user to approve the plan', () => {
+		it('asks once, and carries out the plan the user approves', async () => {
+			const ask = vi.fn<Asker>(() => ['Approve']);
+
+			const result = await orchestrator({
+				planner: scripted(planOf('parse')).agent,
+				executor: scripted(done('parsed')).agent,
+				reviewer: scripted(approved).agent,
+			}).run('task', { signal, ask });
+
+			expect(ask).toHaveBeenCalledTimes(1);
+			expect(ask.mock.calls[0]?.[0][0]?.question).toContain('Carry out this plan?');
+			expect(ask.mock.calls[0]?.[0][0]?.question).toContain('1. parse');
+			expect(result.response).toContain('1. parse: parsed');
+		});
+
+		it('plans again with what the user said, and asks again', async () => {
+			const ask = vi
+				.fn<Asker>()
+				.mockReturnValueOnce(['Split it in two'])
+				.mockReturnValue(['Approve']);
+			const planner = scripted(planOf('all'), planOf('one', 'two'));
+
+			const result = await orchestrator({
+				planner: planner.agent,
+				executor: scripted(done('1'), done('2')).agent,
+				reviewer: scripted(approved, approved).agent,
+			}).run('task', { signal, ask });
+
+			expect(planner.prompts[1]).toContain("The user's answer to it:\n---\nSplit it in two");
+			expect(ask).toHaveBeenCalledTimes(2);
+			expect(result.response).toContain('2 phases');
+		});
+
+		it('ends before any phase once the corrections run out, so an asker that never approves cannot loop', async () => {
+			const planner = scripted(planOf('a'), planOf('b'), planOf('c'));
+			const executor = scripted();
+			const logger = { warn: vi.fn() };
+
+			const result = await orchestrator({
+				planner: planner.agent,
+				executor: executor.agent,
+				reviewer: scripted().agent,
+				limits: { corrections: 2 },
+				logger,
+				changes: unchanged,
+			}).run('task', { signal, ask: () => ['Commit'] });
+
+			expect(planner.run).toHaveBeenCalledTimes(3);
+			expect(executor.run).not.toHaveBeenCalled();
+			expect(result.response).toBe(
+				'The task ends before any phase began: the plan was corrected 2 times, the most a run may take, and the last answer was not to approve it either:\nCommit',
+			);
+			expect(logger.warn).toHaveBeenCalledWith(result.response);
+		});
+
+		it('ends before any phase when the user stops it', async () => {
+			const executor = scripted();
+
+			const result = await orchestrator({
+				planner: scripted(planOf('all')).agent,
+				executor: executor.agent,
+				reviewer: scripted().agent,
+				changes: unchanged,
+			}).run('task', { signal, ask: () => ['Stop'] });
+
+			expect(result.response).toBe('The user stopped the task before it began.');
+			expect(executor.run).not.toHaveBeenCalled();
+			expect(result.phases).toEqual([{ goal: 'all', status: 'pending' }]);
+		});
+
+		it("says when a command of the planner's changed files, which a stop before the first phase leaves", async () => {
+			// The record holds one change, the planner's: of the run's own, or of another agent's run.
+			const changes: ChangeLog = {
+				mark: () => Promise.resolve(1),
+				since: () => Promise.resolve(''),
+			};
+			const stopped = (answer: string, options: RunOptions) =>
+				orchestrator({
+					planner: scripted(planOf('a'), planOf('b')).agent,
+					executor: scripted().agent,
+					reviewer: scripted().agent,
+					limits: { corrections: 1 },
+					changes,
+				}).run('task', { ...options, ask: () => [answer] });
+			const left = "What the planner's commands changed stays as it is.";
+
+			await expect(stopped('Stop', { signal })).resolves.toMatchObject({
+				response: `The user stopped the task before it began. ${left}`,
+			});
+			await expect(stopped('Split it', { signal })).resolves.toMatchObject({
+				response: expect.stringMatching(new RegExp(`:\\nSplit it\\n\\n${left}$`)) as unknown,
+			});
+			// Inside another agent's run, the record holds that agent's changes too.
+			await expect(
+				stopped('Stop', withRunContext({ signal }, new RunContext({ id: 'outer' }))),
+			).resolves.toMatchObject({ response: 'The user stopped the task before it began.' });
+		});
+
+		it('fails as a host failure when the asker answers wrongly', async () => {
+			await expect(
+				orchestrator({
+					planner: scripted(planOf('all')).agent,
+					executor: scripted().agent,
+					reviewer: scripted().agent,
+				}).run('task', { signal, ask: () => [] }),
+			).rejects.toSatisfy(error => error instanceof UnrecoverableError);
+		});
+
+		it('names why the asker failed', async () => {
+			await expect(
+				orchestrator({
+					planner: scripted(planOf('all')).agent,
+					executor: scripted().agent,
+					reviewer: scripted().agent,
+				}).run('task', { signal, ask: () => [] }),
+			).rejects.toMatchObject({
+				message: 'The asker failed',
+				cause: 'It must answer the question with some text.',
+			});
+		});
+	});
+
+	describe('with required checks', () => {
+		it('sends a phase whose checks fail back to the executor, with their output, before any review', async () => {
+			const { verifier, verify } = verifierOf(failing, passed, passed);
+			const executor = scripted(done('first'), done('fixed'));
+			const reviewer = scripted(approved);
+
+			await orchestrator({
+				planner: scripted(planOf('parse')).agent,
+				executor: executor.agent,
+				reviewer: reviewer.agent,
+				verifier,
+			}).run('task', { signal });
+
+			expect(verify).toHaveBeenCalledTimes(3);
+			expect(executor.prompts[1]).toContain(
+				'The required checks do not pass for the files as they are:\n- test: failed, exited with code 1\n1 failed',
+			);
+			expect(reviewer.run).toHaveBeenCalledTimes(1);
+			expect(reviewer.prompts[0]).toContain('The harness ran the required checks itself');
+			expect(reviewer.prompts[0]).toContain('- test: passed, exited with code 0');
+		});
+
+		it('counts failing checks as rejections, so a phase that never passes reaches the planner', async () => {
+			const planner = scripted(planOf('parse'), planOf('parse differently'));
+
+			const result = await orchestrator({
+				planner: planner.agent,
+				executor: scripted(done('a'), done('b'), done('c')).agent,
+				reviewer: scripted(approved).agent,
+				verifier: verifierOf(failing, failing, passed, passed).verifier,
+			}).run('task', { signal });
+
+			expect(planner.prompts[1]).toContain('The required checks do not pass');
+			expect(result.verification).toEqual(passed);
+			expect(result.phases).toEqual([
+				{ goal: 'parse differently', status: 'approved', summary: 'c', verification: passed },
+			]);
+		});
+
+		it('ends unmet, without throwing, saying which checks do not pass, and commits nothing', async () => {
+			const logger = { warn: vi.fn() };
+			const { committer, commit } = fakeCommitter();
+
+			const result = await orchestrator({
+				planner: scripted(planOf('parse'), planOf('parse again')).agent,
+				executor: scripted(done('a'), done('b'), done('c'), done('d')).agent,
+				reviewer: scripted().agent,
+				verifier: verifierOf(failing, failing, failing, failing, failing).verifier,
+				committer,
+				committerAgent: scripted().agent,
+				autoCommit: true,
+				limits: { replans: 1 },
+				logger,
+			}).run('task', { signal });
+
+			expect(result.response).toContain(
+				'\nThe required checks that do not pass: test (failed).\nWhat the phases changed stays on disk, uncommitted.',
+			);
+			expect(result.verification).toEqual(failing);
+			expect(result.phases).toEqual([
+				{ goal: 'parse again', status: 'unfinished', verification: failing },
+			]);
+			expect(result).not.toHaveProperty('commits');
+			expect(commit).not.toHaveBeenCalled();
+			expect(logger.warn).toHaveBeenCalledWith(result.response);
+		});
+
+		it('sends the last phase back to the executor when its checks fail after the review, with no commit', async () => {
+			const { verifier, verify } = verifierOf(passed, failing, passed, passed);
+			const executor = scripted(done('a'), done('b'));
+			const reviewer = scripted(approved, approved);
+
+			const result = await orchestrator({
+				planner: scripted(planOf('parse')).agent,
+				executor: executor.agent,
+				reviewer: reviewer.agent,
+				verifier,
+			}).run('task', { signal });
+
+			expect(executor.prompts[1]).toContain(
+				'After the review, the required checks do not pass for the files as they are:\n- test: failed',
+			);
+			expect(verify).toHaveBeenCalledTimes(4);
+			expect(reviewer.run).toHaveBeenCalledTimes(2);
+			expect(result.verification).toEqual(passed);
+			expect(result.phases).toEqual([
+				{ goal: 'parse', status: 'approved', summary: 'b', verification: passed },
+			]);
+		});
+
+		it('checks the files again when the run ends unfinished, and reports how they stand', async () => {
+			const result = await orchestrator({
+				planner: scripted(planOf('parse', 'print'), planOf('print again')).agent,
+				executor: scripted(
+					done('a'),
+					{ status: 'replan', reason: 'no printer' },
+					{ status: 'replan', reason: 'still no printer' },
+				).agent,
+				reviewer: scripted(approved).agent,
+				verifier: verifierOf(passed, failing).verifier,
+				limits: { replans: 1 },
+			}).run('task', { signal });
+
+			expect(result.response).toContain('The required checks that do not pass: test (failed).');
+			expect(result.verification).toEqual(failing);
+			expect(result.phases).toEqual([
+				{ goal: 'parse', status: 'approved', summary: 'a', verification: passed },
+				{ goal: 'print again', status: 'unfinished', verification: failing },
+			]);
+		});
+
+		it('classifies a verifier that fails as a local failure', async () => {
+			const verify = vi.fn<Verifier['verify']>(() => Promise.reject(new Error('git broke')));
+
+			await expect(
+				orchestrator({
+					planner: scripted(planOf('parse')).agent,
+					executor: scripted(done('a')).agent,
+					reviewer: scripted().agent,
+					verifier: { verify },
+				}).run('task', { signal }),
+			).rejects.toBeInstanceOf(UnrecoverableError);
+		});
+	});
+
+	describe('with a committer', () => {
+		it('freezes before the last review only, and commits once at the end with what the user approved', async () => {
+			const { committer, freeze, commit } = fakeCommitter();
+			const committerAgent = scripted('Add the preview');
+			const ask = vi.fn<Asker>().mockReturnValueOnce(['Approve']).mockReturnValueOnce(['Commit']);
+
+			const result = await orchestrator({
+				planner: scripted(planOf('parse', 'render')).agent,
+				executor: scripted(done('a'), done('b')).agent,
+				reviewer: scripted(approved, approved).agent,
+				committer,
+				committerAgent: committerAgent.agent,
+			}).run('task', { signal, ask });
+
+			expect(freeze).toHaveBeenCalledTimes(1);
+			expect(commit).toHaveBeenCalledWith(
+				frozen,
+				new Map([['/repo', 'Add the preview']]),
+				expect.anything(),
+			);
+			expect(result.commits).toEqual({ outcome: 'committed', repositories: [committed] });
+			// The committer's answer is paid for too.
+			expect(result.tokens).toEqual({ ...tokens, inputTokens: 6, outputTokens: 6 });
+			expect(committerAgent.prompts[0]).toContain('1. parse');
+		});
+
+		it('keeps the inbox from the committer, so what the user sends meanwhile stays for the next run', async () => {
+			const committerAgent = scripted('Parse');
+			const inbox = new Inbox();
+			inbox.send('also rename b');
+
+			await orchestrator({
+				planner: scripted(planOf('parse')).agent,
+				executor: scripted(done('a')).agent,
+				reviewer: scripted(approved).agent,
+				committer: fakeCommitter().committer,
+				committerAgent: committerAgent.agent,
+				autoCommit: true,
+			}).run('task', { signal, inbox });
+
+			expect(committerAgent.run.mock.calls[0]?.[1].inbox).toBeUndefined();
+			expect(inbox.close()).toEqual(['also rename b']);
+		});
+
+		it('commits without asking with autoCommit, and not at all inside another run', async () => {
+			const first = fakeCommitter();
+			const own = await orchestrator({
+				planner: scripted(planOf('parse')).agent,
+				executor: scripted(done('a')).agent,
+				reviewer: scripted(approved).agent,
+				committer: first.committer,
+				committerAgent: scripted('Parse').agent,
+				autoCommit: true,
+			}).run('task', { signal });
+			expect(own.commits?.outcome).toBe('committed');
+
+			const second = fakeCommitter();
+			const context = new RunContext({ id: 'outer' });
+			const inner = await orchestrator({
+				planner: scripted(planOf('parse')).agent,
+				executor: scripted(done('a')).agent,
+				reviewer: scripted(approved).agent,
+				committer: second.committer,
+				committerAgent: scripted('Parse').agent,
+				autoCommit: true,
+			}).run('task', withRunContext({ signal }, context));
+			expect(second.freeze).not.toHaveBeenCalled();
+			expect(inner).not.toHaveProperty('commits');
+			expect(inner).not.toHaveProperty('runId');
+		});
+	});
+
+	it("names each role in its agents' events", async () => {
+		const events: ProgressEvent[] = [];
+		const talking = (role: string, answer: unknown): Agent => ({
+			run: (_prompt, options) => {
+				options.onProgress?.({ type: 'agentMessage', message: role });
+				return Promise.resolve({ response: JSON.stringify(answer), duration: 1 });
+			},
+		});
+
+		await orchestrator({
+			planner: talking('planner', planOf('parse')),
+			executor: talking('executor', done('a')),
+			reviewer: talking('reviewer', approved),
+		}).run('task', { signal, onProgress: event => events.push(event) });
+
+		expect(events.filter(({ type }) => type === 'agentMessage')).toEqual([
+			{ type: 'agentMessage', message: 'planner', agent: 'planner' },
+			{ type: 'agentMessage', message: 'executor', agent: 'executor' },
+			{ type: 'agentMessage', message: 'reviewer', agent: 'reviewer' },
+		]);
+	});
+
+	it("records each role's changes as made by it", async () => {
+		const authors: (string | undefined)[] = [];
+		const noting = (answer: unknown): Agent => ({
+			run: (_prompt, options) => {
+				authors.push(authorOf(options));
+				return Promise.resolve({ response: JSON.stringify(answer), duration: 1 });
+			},
+		});
+
+		await orchestrator({
+			planner: noting(planOf('parse')),
+			executor: noting(done('a')),
+			reviewer: noting(approved),
+		}).run('task', { signal });
+
+		expect(authors).toEqual(['planner', 'executor', 'reviewer']);
+	});
+
+	it('keeps each role agent across runs, so the CLI goes on with its conversations', async () => {
+		const executor = scripted(done('a'), done('b'));
+		const phased = orchestrator({
+			planner: scripted(planOf('one'), planOf('two')).agent,
+			executor: executor.agent,
+			reviewer: scripted(approved, approved).agent,
+		});
+
+		await phased.run('first', { signal });
+		await phased.run('second', { signal });
+
+		expect(executor.run).toHaveBeenCalledTimes(2);
+	});
+
+	it('stops on cancellation', async () => {
+		const controller = new AbortController();
+		const executor: Agent = {
+			run: () => {
+				controller.abort();
+				return Promise.resolve({ response: JSON.stringify(done('a')), duration: 1 });
+			},
+		};
+
+		await expect(
+			orchestrator({
+				planner: scripted(planOf('parse')).agent,
+				executor,
+				reviewer: scripted().agent,
+			}).run('task', { signal: controller.signal }),
+		).rejects.toSatisfy(isAbortError);
+	});
+
+	it('keeps the default of a limit given as undefined', async () => {
+		const executor = scripted(done('a'), done('b'));
+
+		const result = await orchestrator({
+			planner: scripted(planOf('parse')).agent,
+			executor: executor.agent,
+			reviewer: scripted(rejected('no'), approved).agent,
+			limits: { rejections: undefined },
+		}).run('task', { signal });
+
+		expect(executor.run).toHaveBeenCalledTimes(2);
+		expect(result.phases).toEqual([{ goal: 'parse', status: 'approved', summary: 'b' }]);
+	});
+
+	it('refuses a limit that is not a positive integer, or names no limit', () => {
+		const limited = (limits: Partial<PhaseLimits>) => () =>
+			orchestrator({
+				planner: scripted().agent,
+				executor: scripted().agent,
+				reviewer: scripted().agent,
+				limits,
+			});
+
+		expect(limited({ rejections: 0 })).toThrow(
+			new InvalidAgentConfigError('limits.rejections must be a positive integer'),
+		);
+		expect(limited({ corrections: 1.5 })).toThrow(
+			new InvalidAgentConfigError('limits.corrections must be a positive integer'),
+		);
+		expect(limited({ replans: '2' } as unknown as Partial<PhaseLimits>)).toThrow(
+			new InvalidAgentConfigError('limits.replans must be a positive integer'),
+		);
+		for (const limits of [null, [], true]) {
+			expect(limited(limits as unknown as Partial<PhaseLimits>)).toThrow(
+				new InvalidAgentConfigError('limits must be an object'),
+			);
+		}
+		expect(limited({ rounds: 3 } as Partial<PhaseLimits>)).toThrow(
+			new InvalidAgentConfigError(
+				'limits.rounds is not a limit; expected one of: rejections, replans, phases, corrections',
+			),
+		);
+	});
+});

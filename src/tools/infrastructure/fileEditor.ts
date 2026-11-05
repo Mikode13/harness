@@ -115,19 +115,24 @@ export function editRisk(prepared: PreparedEdit): ToolRisk {
 export class FileEditor {
 	private readonly policy: AccessPolicy;
 	private readonly session: WriteSession;
+	private readonly author: string | undefined;
 	private readonly maxFileBytes: number;
 
 	constructor({
 		policy,
 		session,
+		author,
 		maxFileBytes = defaultMaxFileBytes,
 	}: {
 		policy: AccessPolicy;
 		session: WriteSession;
+		/** Who its changes are recorded as made by, as one of `JournalEntry.authors`. */
+		author?: string | undefined;
 		maxFileBytes?: number;
 	}) {
 		this.policy = policy;
 		this.session = session;
+		this.author = author;
 		this.maxFileBytes = maxFileBytes;
 	}
 
@@ -218,6 +223,7 @@ export class FileEditor {
 				before: current.state,
 				after,
 				...(createdFolders.length > 0 ? { createdFolders } : {}),
+				...(this.author === undefined ? {} : { authors: [this.author] }),
 			}),
 		);
 

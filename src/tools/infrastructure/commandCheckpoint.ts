@@ -38,6 +38,7 @@ export class CommandCheckpoint {
 	private readonly journal: RunJournal;
 	private readonly covered: CoveredFiles;
 	private readonly by: string;
+	private readonly author: string | undefined;
 	private readonly manifest: Manifest;
 	/** Covered files it could not copy before, which it leaves out after too. */
 	private readonly uncopyable: ReadonlySet<string>;
@@ -48,6 +49,7 @@ export class CommandCheckpoint {
 		journal: RunJournal;
 		covered: CoveredFiles;
 		by: string;
+		author: string | undefined;
 		manifest: Manifest;
 		uncopyable: ReadonlySet<string>;
 		sequence: number;
@@ -56,6 +58,7 @@ export class CommandCheckpoint {
 		this.journal = fields.journal;
 		this.covered = fields.covered;
 		this.by = fields.by;
+		this.author = fields.author;
 		this.manifest = fields.manifest;
 		this.uncopyable = fields.uncopyable;
 		this.sequence = fields.sequence;
@@ -67,12 +70,15 @@ export class CommandCheckpoint {
 		journal,
 		covered,
 		by,
+		author,
 		signal,
 	}: {
 		journal: RunJournal;
 		covered: CoveredFiles;
 		/** The command, as the history will name it. */
 		by: string;
+		/** Who ran it, as one of `JournalEntry.authors`. */
+		author?: string | undefined;
 		signal: AbortSignal;
 	}): Promise<CommandCheckpoint> {
 		const started = performance.now();
@@ -107,11 +113,12 @@ export class CommandCheckpoint {
 		};
 		const hash = await journal.saveContent(Buffer.from(JSON.stringify(manifest)));
 		signal.throwIfAborted();
-		const sequence = await journal.observe(hash, by);
+		const sequence = await journal.observe(hash, by, author);
 		return new CommandCheckpoint({
 			journal,
 			covered,
 			by,
+			author,
 			manifest,
 			uncopyable,
 			sequence,
@@ -166,7 +173,13 @@ export class CommandCheckpoint {
 			if (sameState(before, after)) continue;
 			// Stored only now that it changed, so an unchanged file costs no write.
 			if (read.content) await this.journal.saveContent(read.content);
-			const sequence = await this.journal.prepare({ path, before, after, observedBy: this.by });
+			const sequence = await this.journal.prepare({
+				path,
+				before,
+				after,
+				observedBy: this.by,
+				...(this.author === undefined ? {} : { authors: [this.author] }),
+			});
 			await this.journal.applied(sequence);
 			changes.push({ path, before, after });
 		}

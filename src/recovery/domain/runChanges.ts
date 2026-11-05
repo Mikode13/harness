@@ -14,6 +14,21 @@ export interface ShowChangesOptions {
 	 * named: only how many there were is said. Defaults to every file.
 	 */
 	visible?: (path: string) => Promise<boolean>;
+	/**
+	 * Only what the run changed after the change of this sequence number, each file from what it
+	 * held then, such as since a phase of a task began; a change the history could not copy is
+	 * named only when it came after too. Defaults to the whole run.
+	 */
+	since?: number;
+}
+
+/** The sequence number of the run's latest change, 0 before its first: a point `since` takes. */
+export async function latestChange(store: RecoveryStore, runId: string): Promise<number> {
+	const { entries, unrecorded } = await store.readRun(runId);
+	return [...entries, ...unrecorded].reduce(
+		(latest, { sequence }) => Math.max(latest, sequence),
+		0,
+	);
 }
 
 /**
@@ -26,9 +41,13 @@ export interface ShowChangesOptions {
 export async function showChanges(
 	store: RecoveryStore,
 	runId: string,
-	{ maxLines = 1000, visible }: ShowChangesOptions = {},
+	{ maxLines = 1000, visible, since }: ShowChangesOptions = {},
 ): Promise<string> {
-	const { record, entries, unrecorded } = await store.readRun(runId);
+	const { record, ...recorded } = await store.readRun(runId);
+	const after = <Change extends { sequence: number }>(changes: Change[]): Change[] =>
+		since === undefined ? changes : changes.filter(({ sequence }) => sequence > since);
+	const entries = after(recorded.entries);
+	const unrecorded = after(recorded.unrecorded);
 	const all = changedFiles(record, entries);
 	const changes: FileChange[] = [];
 	for (const change of all) if (!visible || (await visible(change.path))) changes.push(change);
@@ -92,6 +111,9 @@ async function renderFile(
 	const lines: string[] = [];
 	if (change.uncertain) {
 		lines.push(`# ${name}: the run stopped while changing this file; it may not hold this change`);
+	}
+	if (change.authors.length > 0) {
+		lines.push(`# ${name}: changed by ${change.authors.join(', ')}`);
 	}
 	if (change.observedBy.length > 0) {
 		const commands = change.observedBy.map(command => `"${command}"`).join(', ');

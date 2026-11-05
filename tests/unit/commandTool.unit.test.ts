@@ -95,7 +95,8 @@ async function call(
 	{
 		context = new RunContext({ id: 'test-session' }),
 		runSignal = signal,
-	}: { context?: RunContext; runSignal?: AbortSignal } = {},
+		author,
+	}: { context?: RunContext; runSignal?: AbortSignal; author?: string } = {},
 ): Promise<{ output?: string; error?: unknown; context: RunContext }> {
 	try {
 		const prepared = await tool.prepare(input, signal, {
@@ -105,6 +106,7 @@ async function call(
 			onProgress: () => undefined,
 			spend: () => undefined,
 			depth: 0,
+			...(author === undefined ? {} : { author }),
 		});
 		const output = await prepared.run(runSignal);
 		await context.finish('completed');
@@ -153,6 +155,26 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		// The change is not taken for the command's.
 		expect(output).not.toContain('src/b.ts');
 		expect(read('src/b.ts')).toBe('changed\n');
+	});
+
+	it('records who ran the command as the author of what it changed', async () => {
+		const opened = await open();
+		const tool = await commandToolFor(opened, {
+			format: shell("sed -i.bak 's/ ;/;/' src/a.ts && rm src/a.ts.bak"),
+		});
+
+		const { context } = await call(
+			tool as PreparingTool,
+			{ command: { name: 'format' } },
+			{ author: 'reviewer' },
+		);
+
+		const runId = context.firstRunId ?? '';
+		const { entries } = await opened.store.readRun(runId);
+		expect(entries).toMatchObject([{ observedBy: 'format', authors: ['reviewer'] }]);
+		await expect(showChanges(opened.store, runId)).resolves.toContain(
+			'# src/a.ts: changed by reviewer',
+		);
 	});
 
 	it('records what a formatter-like command changed, and it can be undone', async () => {

@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { withAuthor } from '../../src/agent/domain/runContext.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import {
 	createHistory,
@@ -223,6 +224,27 @@ describe('the run an agent recorded', () => {
 		expect(runs).toEqual([
 			expect.objectContaining({ runId: head, status: 'completed', files: ['a.txt'] }),
 		]);
+	});
+
+	it('names who changed each file, and says it in the diff', async () => {
+		const agent = await agentWriting(write, textResponse('done'));
+
+		const response = await agent.run('change it', withAuthor({ signal }, 'executor'));
+
+		const { runs } = await history.list();
+		expect(runs[0]?.authors).toEqual({ 'a.txt': ['executor'] });
+		await expect(history.changes(response.runId ?? '')).resolves.toContain(
+			'# a.txt: changed by executor',
+		);
+	});
+
+	it('names no one for an agent outside an orchestrator', async () => {
+		const agent = await agentWriting(write, textResponse('done'));
+
+		await agent.run('change it', { signal });
+
+		const { runs } = await history.list();
+		expect(runs[0]).not.toHaveProperty('authors');
 	});
 
 	it('is absent from the response of a run that wrote nothing', async () => {

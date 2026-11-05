@@ -22,6 +22,8 @@ export interface FileChange {
 	createdFolders: string[];
 	/** The commands seen changing it, for changes no tool of the harness made itself. */
 	observedBy: string[];
+	/** Who changed it, in the order each first did, as `JournalEntry.authors`; empty when none was named. */
+	authors: string[];
 }
 
 export function sameState(a: FileState, b: FileState): boolean {
@@ -56,6 +58,9 @@ export function fileChanges(entries: JournalEntry[], stopped: boolean): FileChan
 			if (entry.observedBy !== undefined && !known.observedBy.includes(entry.observedBy)) {
 				known.observedBy.push(entry.observedBy);
 			}
+			known.authors.push(
+				...(entry.authors ?? []).filter(author => !known.authors.includes(author)),
+			);
 		} else {
 			byPath.set(entry.path, {
 				path: entry.path,
@@ -66,6 +71,7 @@ export function fileChanges(entries: JournalEntry[], stopped: boolean): FileChan
 				pending,
 				createdFolders: [...folders],
 				observedBy: entry.observedBy === undefined ? [] : [entry.observedBy],
+				authors: [...new Set(entry.authors ?? [])],
 			});
 		}
 	}

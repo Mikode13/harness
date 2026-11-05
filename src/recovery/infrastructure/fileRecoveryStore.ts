@@ -229,7 +229,7 @@ interface Head {
 type JournalLine =
 	| ({ type: 'prepared'; sequence: number } & Omit<JournalEntry, 'sequence' | 'status'>)
 	| { type: 'applied' | 'abandoned'; sequence: number }
-	| { type: 'observing'; sequence: number; manifest: string; by: string }
+	| { type: 'observing'; sequence: number; manifest: string; by: string; author?: string }
 	| { type: 'observed'; sequence: number; measure?: ObservationMeasure }
 	| ({ type: 'unrecorded'; sequence: number } & UnrecordedChange)
 	| ({ type: 'committed'; sequence: number } & RecordedCommits);
@@ -239,6 +239,7 @@ interface OpenObservation {
 	sequence: number;
 	manifest: string;
 	by: string;
+	author?: string;
 }
 
 /**
@@ -444,7 +445,7 @@ export class FileRecoveryStore implements RecoveryStore {
 	async readRun(runId: string): Promise<{
 		record: RunRecord;
 		entries: JournalEntry[];
-		unrecorded: UnrecordedChange[];
+		unrecorded: (UnrecordedChange & { sequence: number })[];
 		commits: RecordedCommits[];
 	}> {
 		// An id from outside is checked before it names a folder.
@@ -464,7 +465,7 @@ export class FileRecoveryStore implements RecoveryStore {
 		return {
 			record: withLiveStatus(record, holder),
 			entries,
-			unrecorded: unrecorded.map(({ path, by }) => ({ path, by })),
+			unrecorded: unrecorded.map(({ path, by, sequence }) => ({ path, by, sequence })),
 			commits,
 		};
 	}
@@ -1161,7 +1162,15 @@ export class FileRecoveryStore implements RecoveryStore {
 			if (sameState(after, before)) continue;
 			sequence++;
 			lines.push(
-				{ type: 'prepared', sequence, path, before, after, observedBy: observation.by },
+				{
+					type: 'prepared',
+					sequence,
+					path,
+					before,
+					after,
+					observedBy: observation.by,
+					...(observation.author === undefined ? {} : { authors: [observation.author] }),
+				},
 				{ type: 'applied', sequence },
 			);
 		}
@@ -1230,7 +1239,6 @@ export class FileRecoveryStore implements RecoveryStore {
 	): Promise<{
 		entries: JournalEntry[];
 		observations: OpenObservation[];
-		/** With the sequence of its line, which `readRun` leaves out. */
 		unrecorded: (UnrecordedChange & { sequence: number })[];
 		commits: RecordedCommits[];
 		lastSequence: number;
@@ -1267,7 +1275,7 @@ export class FileRecoveryStore implements RecoveryStore {
 			}
 			lastSequence = Math.max(lastSequence, line.sequence);
 			if (line.type === 'prepared') {
-				const { sequence, path, before, after, createdFolders, observedBy } = line;
+				const { sequence, path, before, after, createdFolders, observedBy, authors } = line;
 				entries.set(sequence, {
 					sequence,
 					path,
@@ -1275,13 +1283,19 @@ export class FileRecoveryStore implements RecoveryStore {
 					after,
 					...(createdFolders ? { createdFolders } : {}),
 					...(observedBy === undefined ? {} : { observedBy }),
+					...(authors === undefined ? {} : { authors }),
 					status: 'prepared',
 				});
 				return;
 			}
 			if (line.type === 'observing') {
-				const { sequence, manifest, by } = line;
-				observations.set(sequence, { sequence, manifest, by });
+				const { sequence, manifest, by, author } = line;
+				observations.set(sequence, {
+					sequence,
+					manifest,
+					by,
+					...(author === undefined ? {} : { author }),
+				});
 				return;
 			}
 			if (line.type === 'observed') {
@@ -1502,7 +1516,10 @@ class FileRunJournal implements RunJournal {
 	private readonly firstStates = new Map<string, FileState>();
 	private readonly currentStates = new Map<string, FileState>();
 	private readonly appliedInOrder: string[] = [];
-	private state: { applied: number; hash: string } | undefined;
+	// How many changes it could not copy: each leaves a file in a state the content state cannot
+	// know, so it counts as a change of its own.
+	private uncopied = 0;
+	private state: { applied: number; uncopied: number; hash: string } | undefined;
 	// The changes recorded as prepared and not abandoned: those that may have reached a file. One
 	// whose `prepared` line failed is not here, since nothing writes a file before that line.
 	private readonly effects = new Set<number>();
@@ -1587,10 +1604,16 @@ class FileRunJournal implements RunJournal {
 		this.pendingStates.delete(sequence);
 	}
 
-	async observe(manifest: string, by: string): Promise<number> {
+	async observe(manifest: string, by: string, author?: string): Promise<number> {
 		this.assertOpen();
 		const sequence = ++this.sequence;
-		await this.append({ type: 'observing', sequence, manifest, by });
+		await this.append({
+			type: 'observing',
+			sequence,
+			manifest,
+			by,
+			...(author === undefined ? {} : { author }),
+		});
 		// Until it is observed, whatever ran may have changed a file.
 		this.effects.add(sequence);
 		this.observing.add(sequence);
@@ -1609,6 +1632,7 @@ class FileRunJournal implements RunJournal {
 		this.assertOpen();
 		await this.append({ type: 'unrecorded', sequence: ++this.sequence, path, by });
 		this.lost = true;
+		this.uncopied++;
 	}
 
 	async committed(commits: RecordedCommits): Promise<void> {
@@ -1625,18 +1649,21 @@ class FileRunJournal implements RunJournal {
 		return this.appliedInOrder;
 	}
 
-	// Computed again only after a change was applied.
+	// Computed again only after a change was applied or could not be copied.
 	contentState(): string {
-		if (this.state?.applied !== this.appliedInOrder.length) {
+		const applied = this.appliedInOrder.length;
+		if (this.state?.applied !== applied || this.state.uncopied !== this.uncopied) {
 			const changed = [...this.currentStates]
 				.filter(([path, current]) => {
 					const first = this.firstStates.get(path);
 					return !first || !sameState(first, current);
 				})
 				.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+			const known = this.uncopied === 0 ? changed : [changed, this.uncopied];
 			this.state = {
-				applied: this.appliedInOrder.length,
-				hash: hashOf(Buffer.from(JSON.stringify(changed))),
+				applied,
+				uncopied: this.uncopied,
+				hash: hashOf(Buffer.from(JSON.stringify(known))),
 			};
 		}
 		return this.state.hash;

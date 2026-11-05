@@ -2927,6 +2927,8 @@ tags: #mikode-harness #recovery #git #api-design
 
 tags: #mikode-harness #orchestration #git #api-design
 
+partially superseded by: "The phased orchestrator commits at the end, after each phase or as the user chooses, and checks before each commit" (below) — the commit can follow each phase, a barrier of required checks runs before it, and `createOrchestrator`, on the Agent SDKs, never commits.
+
 **Decision:**
 
 - **The harness commits, a model writes only the message.** Once the reviewer approves a run of `createLLMOrchestrator` that changed files, a `committer` agent on the executor's provider's cheaper model, Claude Haiku 5.5 or `gpt-5.6-luna`, with no tools, writes the message from the request, the plan, the diff and the branch's recent subjects. The harness commits with `git commit --only -F <file> -- <paths>`, each path `:(literal)`, not `GIT_LITERAL_PATHSPECS`, which would reach the hooks and make their own patterns match nothing, and with `i18n.commitEncoding=UTF-8`, the message's encoding, after `git add` of the run's new files, so the repository's hooks run and the rest of the index stays as the user left it.
@@ -2960,3 +2962,106 @@ tags: #mikode-harness #orchestration #git #api-design
 - On Windows, which the harness does not support yet, that environment matches `PATH` by its exact name, which Node gives as `Path`, and leaves out `SystemRoot` and the other variables Windows programs expect, so every git call of the harness would miss them. The user chose on 2026-11-02 to leave it to Windows support, <https://github.com/Mikode13/harness/issues/96>.
 - Each git call that reads or stages stops with the run, and fails after two minutes, so a filter that hangs ends the run instead of holding it.
 - A consumer that never passes `ask` gets no commit unless it sets `autoCommit`.
+
+---
+
+## A coding run's required checks are verified with real command runs, and the harness runs what is missing
+
+tags: #mikode-harness #orchestration #verification #api-design
+
+**Decision:**
+
+- **The consumer names the checks a task requires,** as an option of the orchestrator, `requiredChecks`, not as a field of the command: the same command can be required in one flow and not in another. Each names a configured command with the exact values of its parameters, `{ command: 'test', values: { suite: 'unit' } }`, and a parameter left out is not given, so `'test'` alone is the whole run, and a run of it on one file never counts for it. An unknown command, a value for what is not a parameter, a wrong value or a missing required one is an `InvalidAgentConfigError` before the agent is built. The formatter is not a command, so it can never count as a check.
+- **The evidence is the run's own record of its commands.** Every configured command that runs to an end, whether the model or the harness ran it, is recorded in the run's `WriteSession` with its exact program, arguments and folder, the variables its definition sets, how it ended, and what the files the run changed held then, the history's content hash. A model's account of its checks is never evidence. Codex found on 2026-11-05 that a run with the same line but another `env`, from a command an agent the run delegated to was configured with, counted for the check; the variables are compared too. It also found that a change the history could not copy, such as a link a commit's hook left where a file was, left the hash as it was, so a check that passed before it still counted; each such change now gives a hash of its own.
+- **Stale means the content changed.** A check is stale when what the files the run changed hold now differs from what they held when it ran. A change put back to what the check saw keeps it current. A later command that changed something the history could not record makes it `unknown`, and so does writing stopped for any reason, since each stop is a change the history may not hold. A check the harness cannot run then says why.
+- **The harness runs what is missing.** A check that is missing, stale or unknown is run by the harness, with no model, through the same `runCommand` tool, so its changes are captured and its commits attributed as for the model's runs. It asks nobody, since the consumer declared it, but keeps to the write limit of an agent that delegated the run, as the model's runs do: a check it may not run keeps its status and says why. A check that failed for the files as they are is not run again: the executor has to change something first. Every check is assessed again once the others ran, since one may change what another saw, and one the harness's own later check made stale runs again, in up to 3 passes, so checks that write, such as a snapshot, settle; checks that keep changing the files end stale, and the barrier unmet. The pipeline's review of #171 found that such a check sent a sound phase back to the executor as a rejection, and the user chose on 2026-11-04 the bounded re-run over not counting that staleness as a rejection, which lets a run go on unmet, and over leaving it to the consumer not to use a check that writes. Each assessment waits for any write of the run still in progress, so a command still running is never read through.
+
+**Context:** #121, delivered inside the phased orchestrator of #167. The user chose on 2026-11-02 the option on the orchestrator over a field of the command, any change over changes inside the check's folder, the harness running what is missing over sending the executor back to run it, the exact values in the configuration over counting only the run with no parameters, and the content hash over any later change.
+
+**Alternatives considered:**
+
+- **A `check` field on `CommandDefinition`.** Everything about a command in one place, but the command's definition, which `createFileTools` shares outside the orchestrator, would carry one flow's policy.
+- **Only the whole run counts,** with no values in the configuration. Simpler, but a command with a required parameter could never be a check.
+- **Any later change makes a check stale.** Simpler to explain, but an edit and its own revert would run every check again.
+- **The executor runs what is missing.** The harness never runs a command on its own, but a model turn would be spent only to start a command.
+
+**Consequences:**
+
+- The checks the harness runs take the time they take, with no tokens.
+- A change the run does not record, such as the user's own edit while the run works, does not make a check stale.
+
+---
+
+## The model-API orchestrator runs in phases, as a workflow with code stages
+
+tags: #mikode-harness #orchestration #workflow #api-design
+
+partially superseded by: "The phased orchestrator commits at the end, after each phase or as the user chooses, and checks before each commit" (below) — the commit is no longer asked only once, at the end, and the limits are configurable.
+
+**Decision:**
+
+- **`createLLMOrchestrator` is a workflow of its own stages.** The planner's, the executor's and the reviewer's answers are JSON a validator checks, as any workflow stage's. What is not an agent runs as a code stage: asking the user to approve the plan, marking where a phase begins, the barrier of required checks with the phase's diff, and the commit.
+- **The workflow gains code stages,** public: `stage.code(name, { run })` receives the stage's input and the run's options, and chooses the transition itself. A separate `code` binder, rather than an overload of the stage binder, keeps a `transition` with no parameters typed as before.
+- **The planner runs again only when asked:** when the executor or the reviewer answers `replan`, saying the plan, not the work, is wrong, or after 2 rejections in a row of one phase. Its phases replace the plan from the phase in progress on. There is no planner pass between phases or at the end.
+- **The user approves the plan,** when the run has `ask`: `Approve` carries it out, `Stop` ends the run with nothing done, and any other answer is a correction the planner plans again with, and the user is asked again. A replan is not asked. A run with no `ask` begins at once.
+- **The executor gets the plan, never the request.** The planner is told to write each phase so it can be carried out from the plan alone.
+- **A phase's required checks that do not pass count as a rejection,** so a phase that never passes them reaches the planner, and then the end of the run, instead of looping.
+- **A replan that grows the plan past its phase limit ends the run unfinished,** never asked again, even when the planner's answer alone is past it. A first plan past the limit is an invalid answer, asked again like any other. The user chose this on 2026-11-03, after Opus found that a replan's answer past the limit was retried and could throw, while one that only grew the total ended the run. The alternatives were holding a replan to the phases left and asking again, which can still throw once the attempts run out, and both, which needs the workflow to tell a limit failure from other invalid answers.
+- **A phase keeps its mark across a replan.** What the failed attempts changed stays on disk, so the reviewer of the replacement sees it in the phase's diff.
+- **Every prompt says how to answer.** The JSON each role answers with is in the prompt of each round, not only in the role's instructions, so a consumer's own `systemPrompts` keep working.
+- **Each role keeps its agent across runs,** as `OrchestratorAgent` did, so the CLI's roles go on with their conversations; a workflow's own stages create theirs per run.
+- **A code stage's transition stands when the run is cancelled while it runs.** What it did, a commit above all, cannot be taken back, so a `complete` or `stop` keeps its result and the commit's report; a `go` meets the cancellation as the next stage begins. Opus found on 2026-11-03 that the runner's check after the stage threw away a commit already made, which `OrchestratorAgent` kept.
+- **The user's corrections of the plan are limited, to 3 by default.** Past them, an answer that neither approves nor stops ends the run with nothing done, and the logger is warned. Opus found on 2026-11-03 that nothing else bounded the plan → approve → plan cycle, so an asker that always gave the same answer, such as `Commit`, kept paying the planner without end. The user chose a limit of its own, `corrections`, over counting corrections as replans, which mixes the user's corrections with the planner's replans, over stopping on a repeated answer, which an asker that varies its answer escapes, and over leaving the loop to the consumer's asker.
+- **For now, the commit is asked once, at the end,** and the limits keep their defaults: 2 rejections, 2 replans, 50 phases and 3 corrections. Making both configurable, the barrier before the commit, and the result fields are the next change.
+
+**Context:** #167, the second of its three pull requests. On 2026-11-02 the user chose code stages over passing the run to every stage callback and over a class of its own, and running the planner only when asked over after every phase and over only on escalation.
+
+**Alternatives considered:**
+
+- **The run in every stage callback,** `prompt(input, run)` and `transition(output, input, run)`. A smaller change, but the approval and the barrier would hide inside transitions, never shown as stages in the run's reports and events.
+- **A class of its own,** as `OrchestratorAgent`. No change to the workflow, but it repeats the runner's JSON, retry and validation logic, and drops building on the workflow.
+- **The planner after every phase.** The plan adapts to what each phase found, but each phase pays a call of the most expensive role.
+- **The planner only on escalation.** The cheapest, but the plan never adapts to what a phase found.
+
+**Consequences:**
+
+- The executor answers JSON, so an executor that finishes in prose is asked again, as any stage is.
+- A model has to notice that the plan is wrong for the planner to run before 2 rejections.
+- `createOrchestrator`, on the Agent SDKs, still runs `OrchestratorAgent`'s rounds.
+- `WorkflowStageReport.output` is `undefined` for a code stage, and its `attempts` is 1.
+
+---
+
+## The phased orchestrator commits at the end, after each phase or as the user chooses, and checks before each commit
+
+tags: #mikode-harness #orchestration #git #api-design
+
+**Decision:**
+
+- **`commitQuestion` says when the commit is asked:** `'end'`, the default, once the last phase is approved; `'phase'`, after each phase the reviewer approves; `'plan'`, the user chooses when approving the plan, between committing at the end, after each phase, or not at all. With `autoCommit`, `'end'` and `'phase'` commit without asking, and `'plan'` is an `InvalidAgentConfigError`, since there is no user to choose. A run that cannot commit offers only `Approve` and `Stop`. The user chose on 2026-11-03 to let the user choose in plan mode over an approval that authorizes one commit at the end, which commits a diff the user never saw, and over one that authorizes a commit per phase, which ties when to ask to how many commits.
+- **A phase whose commit is declined accumulates into the next.** Its changes stay on disk, uncommitted, and the next commit holds them with that phase's own, since the freeze skips only the files `HEAD` already holds. The user chose this on 2026-11-03 over a decline that stops the commits for the rest of the run, which loses the later phases when only one was unwanted, and over keeping each commit to its own phase, which cannot separate a file two phases changed.
+- **Required checks run again before each commit,** not only before the review, since a command of the reviewer's may have changed files. A check that fails then sends the phase back to the executor and counts as a rejection, as a failure before the review does. The user chose this on 2026-11-03 over committing nothing and ending the run unmet, which leaves approved work uncommitted even when the fix is trivial, and over asking whether to commit anyway, which `autoCommit` has nobody to ask.
+- **The run ends on the files as they are.** With required checks, the last phase's approval goes through the barrier again even when no commit follows, and a run that ends unfinished runs the checks once more, so `AgentResponse.verification` never reports a check that a later change made stale. The pipeline's review of #171 found that a run with no commit reported the checks from before its last review, and an unfinished one an earlier phase's. The user chose on 2026-11-03 to run them again over re-assessing them without running, which needs a method of its own in the verifier and can end a run unmet over a reviewer's change, and over a final barrier only for completed runs, which leaves an unfinished run with no verification.
+- **A hook of the last commit is not checked.** The final barrier runs before the last commit, so what a pre-commit hook changes is not in `AgentResponse.verification`; the commit's report names those paths in `unreviewed`. Codex found on 2026-11-05 that such a hook could leave `verification` met for files that no longer pass. The user chose to document it over checking again after the commit, reported or sent back to the executor: the repository owns its hooks, which lint or format, and what they change is usually meant for the commit.
+- **The result reports each phase.** `AgentResponse.phases` holds each phase's goal, its status, `approved`, `unfinished` or `pending`, the executor's summary, its last verification and its commits. `AgentResponse.verification` is that of the files as the run left them, and `AgentResponse.commits` merges every commit of the run, by repository. The user chose this shape on 2026-11-03 over phases with only their goal, status and summary.
+- **A later phase's diff starts where the previous phase's review began.** A command the reviewer may run, one with `roles: ['reviewer']` that writes, such as a test that updates a snapshot, and the checks of the barrier after the review, change files after the phase's diff was read; the next phase's diff starts there, not where the phase begins, so every change a commit holds was in some reviewed diff. The first phase's starts at the run's start, so what a command of the planner's wrote before the plan was approved is reviewed too; inside another agent's run, which never commits, it starts where the record stood when the plan was approved, since that record holds the other agent's changes too. The pipeline's review of #171 found that such changes reached a later commit in no diff. The user chose this on 2026-11-05 over a separate, labelled block for them, which the authors below make clear enough, over leaving them out of the commit, which needs each change attributed and drops a legitimate fix of the reviewer's, and over an issue for later.
+- **Each recorded change names who made it.** The journal records the `authors` of each change, a list so a change retention chained from several keeps each one: the orchestrator's role whose tool made it, `planner`, `executor` or `reviewer`, an agent that role handed work to through `agentAsTool`, as `executor › commit`, or `harness` for a required check the harness ran or a hook that changed a file while it committed. The diff the reviewer reads, and `showChanges`, say it as `# a.ts: changed by executor`, and `HistoryRun.authors` gives it per file. An agent outside an orchestrator names no author. The author travels in the run options under a private symbol, as the run context does, and in `ToolCallContext`. The user asked for it on 2026-11-05 so the next reviewer can tell whose change it reads, and chose `harness` for its own checks over the phase's role, which hides that the harness ran them, the role and the agent's name for a delegated agent over the role alone, and a public field over keeping it internal, so the CLI can show it.
+- **A run that fails after a commit says what it committed.** A classified failure that ends a run which already committed, after an earlier phase, throws `RecoverableCommittedRunError` or `UnrecoverableCommittedRunError`, of the failure's own kind, with its message and cause, the run's `commits`, `phases` and `runId`; a run that committed nothing, and a cancellation, fail as before. The pipeline's review of #171 found that such a run threw with only its tokens, so the consumer could neither report nor undo commits already in git. The user chose on 2026-11-04 a class for each kind over these fields on `RecoverableError` and `UnrecoverableError`, which every engine shares, over a single class of one kind, which turns a fatal failure retryable or a passing one fatal, over ending the run unfinished, which drops the failure's classification, and over only documenting that the commits are in git. A subclass such as `MaxContextError` keeps its message and cause, not its class.
+- **The limits are configurable,** `limits: { rejections, replans, phases, corrections }`, each a positive integer, with the defaults of the previous entry. An unknown name or any other value is an `InvalidAgentConfigError`.
+- **`requiredChecks` need `commands`.** The harness runs a check through the same `runCommand` tool as the model's, so a run with checks and no commands is an `InvalidAgentConfigError`.
+- **`OrchestratorAgent` stays, without the commit.** It runs `createOrchestrator`, on the Agent SDKs, so the subscription keeps working. #167 had planned to remove it; the user chose on 2026-11-03 to keep it for compatibility and to revisit the subscription path once the model APIs work better. The commit and the required checks are only on `createLLMOrchestrator`, since only its executor writes through the harness's own tools.
+
+**Context:** #167, the third of its three pull requests.
+
+**Alternatives considered:**
+
+- **A plan approval that authorizes a fixed commit,** one at the end or one per phase. One question less, but the user commits without seeing the diff, or gets a commit per phase whether wanted or not.
+- **Ending the run when the barrier before a commit fails,** or asking whether to commit anyway. Each is simpler, but the first leaves approved work uncommitted, and the second cannot work with `autoCommit`.
+- **Removing `OrchestratorAgent`,** as #167 planned. One orchestrator fewer, but the Agent SDK path, and with it the subscription, would lose its orchestrator.
+
+**Consequences:**
+
+- In `'phase'` mode each committed phase costs one call to the committer's model per repository.
+- A phase committed before the run ends unfinished stays committed; the response says so, and so does the error of a run that fails.
+- A commit can hold several phases, when the user declined an earlier one.
+- A check a command of the reviewer's broke costs another executor round and review.

@@ -9,7 +9,12 @@ import type {
 	ProgressEvent,
 	RunOptions,
 } from '../../src/agent/domain/agent.ts';
-import { delegationOf, runContextOf } from '../../src/agent/domain/runContext.ts';
+import {
+	authorOf,
+	delegationOf,
+	runContextOf,
+	withAuthor,
+} from '../../src/agent/domain/runContext.ts';
 import type { Transcript } from '../../src/agent/domain/transcript.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import type { LLMClient, LLMResponse } from '../../src/llm/domain/llm.ts';
@@ -204,6 +209,26 @@ describe('agentAsTool', () => {
 			name: 'commit',
 			outcome: 'answered',
 		});
+	});
+
+	it("records what an agent changes as its caller's, through it", async () => {
+		const runs: RunOptions[] = [];
+		const tool = delegation({
+			createAgent: () => ({
+				run: (_prompt, options) => {
+					runs.push(options);
+					return Promise.resolve({ response: 'committed', duration: 1 });
+				},
+			}),
+		});
+
+		await delegatingParent(tool, 'Commit a.txt').agent.run(
+			'work',
+			withAuthor({ signal }, 'executor'),
+		);
+		await delegatingParent(tool, 'Commit a.txt').agent.run('work', { signal });
+
+		expect(runs.map(options => authorOf(options))).toEqual(['executor › commit', undefined]);
 	});
 
 	it('lets the caller work while its agents do, and gives it each answer as it arrives', async () => {
