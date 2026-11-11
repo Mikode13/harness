@@ -61,6 +61,7 @@ beforeAll(() => {
 	symlinkSync('src', join(repo, 'src-link'));
 	write(join(repo, '.env'), 'KEY=secret\n');
 	write(join(repo, '.env.example'), 'KEY=\n');
+	write(join(repo, '.npmrc'), 'engine-strict=true\n');
 	write(join(repo, 'config', 'app.pem'), 'key\n');
 	write(join(repo, 'store', 'run.json'), '{}');
 	symlinkSync('store', join(repo, 'store-link'));
@@ -308,6 +309,16 @@ describe('RootsAccessPolicy', () => {
 			});
 			expect(await denial('.env', 'write', options)).toContain('may hold secrets');
 			expect(await denial('src/.env.local', 'read', options)).toContain('may hold secrets');
+		});
+
+		// A committed `.npmrc` may hold no token, but the policy goes by name: the host opens it.
+		it("refuses a project's .npmrc until the host allows it", async () => {
+			expect(await denial('.npmrc', 'read')).toContain('may hold secrets');
+
+			const opened = await policy({ secrets: { allow: [{ path: '.npmrc', access: 'read' }] } });
+			await expect(opened.check('.npmrc', 'read', signal)).resolves.toMatchObject({
+				relative: '.npmrc',
+			});
 		});
 
 		it('opens an exact file the host allows for writing', async () => {
