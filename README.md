@@ -545,8 +545,11 @@ Every tool goes through one access policy:
 
 - it refuses a path outside the roots;
 - it refuses a file `.gitignore` excludes;
-- it refuses git's metadata, the history itself, and a secret such as `.env`. Add more
-  secrets with `secrets.protect`, or open exact files with `secrets.allow`.
+- it refuses git's metadata, the history itself, and a secret such as `.env`, `.env-production`,
+  `prod.env`, `.npmrc`, `.pypirc`, `credentials.json`, `terraform.tfvars` or a private key such
+  as `id_rsa_work` (never a `.pub` key). Templates such as `.env.example` stay open. Add more
+  secrets with `secrets.protect`, or open exact files, such as a committed `.npmrc` without a
+  token, with `secrets.allow`.
 
 A change happens only in a `write` root, and only from a version of the file the agent
 read: editing a file it never read is `READ_REQUIRED`, and editing one that changed since
@@ -1160,8 +1163,14 @@ read them.
 
 `cli/cli.ts` currently enables `autoApprove` for its Agent SDK agents, not for `--llm`.
 This maps to each provider's permission-bypass mode and grants those processes
-unrestricted command access. Keep it disabled when the host may receive untrusted
-prompts, or provide an approval workflow from the entry point.
+unrestricted command access. Their changes are not in the history, so `/undo` cannot take
+them back; the CLI says so in one line when it starts without `--llm`. Keep it disabled when
+the host may receive untrusted prompts, or provide an approval workflow from the entry point.
+
+Everything the CLI prints reaches the terminal without the control sequences a model may
+have written, which could move the cursor, rewrite earlier lines or hide text: escape
+sequences, carriage returns and other control characters are removed. Only the colors and
+weights the CLI gives its own progress lines are kept.
 
 Real consumers (a future REST/WebSocket server, a chatbot UI) build agents
 through `createAgent` and `createOrchestrator` and bring their own I/O, and

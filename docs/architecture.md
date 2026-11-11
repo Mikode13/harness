@@ -330,7 +330,9 @@ into the next call.
 ### `src/shared/`
 
 `ILogger` and its stderr implementation, `runProcess`, which runs a program with its arguments
-as an array and never through a shell, `inheritedEnvironment`, the few variables a program of
+as an array and never through a shell, on POSIX as the leader of a process group of its own that
+each of its stops signals whole, keeping only the first megabyte of its error output,
+`inheritedEnvironment`, the few variables a program of
 the repository's gets, and `gitEnvironment`, those and what git needs to find its configuration,
 sign and name the author, never a secret, since git runs the repository's hooks, filters and
 drivers, nor the `GIT_` variables that would point it at another repository, `isAbortError`,
@@ -402,7 +404,8 @@ Dependencies point inward. `src/engines/` and `src/factory/` depend on `src/agen
 the failure contract and `Tokens`; only its `infrastructure` imports an SDK. `LLMAgent` depends
 on `src/llm/`, and `src/llm/` knows nothing about agents. `ClaudeAgent` imports `claudeModelIds`
 from `src/llm/infrastructure/`, the one table of the model each Claude alias names, so both
-Claude paths run the same model for the same name. `LLMAgent` also reads the workspace's history
+Claude paths run the same model for the same name, and `unrecoverableClaudeStatuses`, the HTTP
+statuses a retry cannot fix, so both classify the same rejection the same way. `LLMAgent` also reads the workspace's history
 through the `src/recovery/` domain; the conversation itself knows only an opaque run id.
 `PhasedOrchestrator` knows only the `Committer` port; `GitCommitter`, in
 `src/orchestration/infrastructure/`, depends on the `src/recovery/` store and git, and on the
@@ -536,7 +539,10 @@ belongs to the consumer.
 
 Conversation continuity is each agent's own responsibility and is not modelled at the `Agent`
 seam. `CodexAgent` keeps one SDK `Thread` across turns; `ClaudeAgent` captures a `session_id`
-from the first turn and resumes with it. Either way the provider keeps the context server-side.
+from the first turn and resumes with it. Neither sets a turn limit: a run is bounded by the
+caller's `signal`. A Claude result the SDK reports as `success` with `is_error` set is a failure,
+never an answer: unrecoverable when its `api_error_status` is one a retry cannot fix, and
+recoverable otherwise. Either way the provider keeps the context server-side.
 `LLMAgent` is the exception: it keeps its own `Conversation` in process and sends the whole
 context on every call, so the model behind it holds no state. Its adapters are
 `OpenAILLMClient`, on the OpenAI Responses API with `store: false`, and `ClaudeLLMClient`, on

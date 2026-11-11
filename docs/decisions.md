@@ -1083,6 +1083,8 @@ tags: #mikode-harness #permissions #agent-loops #public-api
 
 tags: #mikode-harness #tools #filesystem #security
 
+partially superseded by: "The default secrets list closes more credential files, a committed `.npmrc` included" (below) — the list of names below is no longer complete.
+
 **Decision:** before a tool touches a path, `RootsAccessPolicy` decides, and refuses unless every step allows it:
 
 1. **Location.** The path's real location, every symlink resolved, is inside a declared root. A symlink is followed and judged by where it leads, so `CLAUDE.md → AGENTS.md` works and a link out of the roots does not. A link that leads nowhere is refused, because writing to it would create its target wherever that is.
@@ -3088,3 +3090,121 @@ tags: #mikode-harness #cli #recovery #git
 
 - `HistoryRun` gains an optional field, a `feat`.
 - The commits listed are those the run recorded; a move since may have taken them back, which the move's own `git` then reports.
+
+## A Claude result marked as an error is a failure, classified by its HTTP status
+
+tags: #mikode-harness #agent-sdks #error-handling
+
+**Decision:** `ClaudeAgent` throws on a `success` result whose `is_error` is set, instead of returning its `result` as the answer. The failure carries the result's text as its cause and the turn's usage as its `tokens`, as a failed result already did. Its kind follows `api_error_status`, the way `ClaudeLLMClient` classifies an HTTP status: one a retry cannot fix (400, 401, 403, 404, 413, 422) is an `UnrecoverableError`, and any other, or none, a `RecoverableError`, as provider failures are by default. The list moves to `src/llm/infrastructure/claudeRejectedStatuses.ts`, which both Claude paths import, as they import `claudeModelIds`.
+
+**Context:** #175, its first finding. The SDK reports some failures, such as an invalid key or no credit, as a `success` whose `result` is the error's text. `ClaudeAgent` read only `subtype`, so it returned that text as the agent's answer, and `OrchestratorAgent` would have handed it to the executor as the plan.
+
+**Alternatives considered:**
+
+- **Always recoverable,** as the failed results are. Simpler, but `RetryingAgent` would send an invalid key again on every attempt, each one billed nothing and fixing nothing.
+- **A list of its own in the engine.** No import across modules, but the two Claude paths could drift apart on the same status.
+
+**Consequences:**
+
+- A Claude run with a rejected key fails at once instead of answering with the error's text.
+- An error with no status, or one such as an overload, is retried as a transport failure.
+
+## The Agent SDK's Claude runs without a turn limit of its own
+
+tags: #mikode-harness #agent-sdks #retry
+
+**Decision:** `ClaudeAgent` no longer passes `maxTurns: 3`. The SDK's own default applies: with no `maxTurns`, its `query()` passes no `--max-turns` to the Claude Code process, and its typings document the option only as "Maximum number of conversation turns before the query stops", with no default of their own. A run is bounded by the caller's `signal`, as `CodexAgent`'s already is, which never had a turn limit.
+
+**Context:** #175, its second finding. The limit had been there since the first version of `ClaudeAgent` and was never recorded here. Reaching it ends the turn with an `error_max_turns` result, which became a `RecoverableError`, so `RetryingAgent` sent the prompt again although the turn may already have written files. Three turns is also short for an executor that reads, edits and tests. The audit marked it to confirm with a live run; none was made for this change.
+
+**Alternatives considered:**
+
+- **A higher limit.** Still a number nobody chose from a measurement, and reaching it would still be retried after the turn changed files.
+- **Making the limit an option.** A new public option is a `feat`, and a consumer already bounds a run with its signal.
+- **Making `error_max_turns` unrecoverable.** It keeps a limit nobody decided on, and is no longer needed once there is none.
+
+**Consequences:**
+
+- A Claude run that never ends by itself runs until the caller cancels it; the CLI's Ctrl+C does.
+- Both Agent SDK engines behave alike on how long a turn may go on.
+
+## The CLI says, when it starts without `--llm`, that nothing asks and nothing undoes
+
+tags: #mikode-harness #cli #security
+
+**Decision:** the default mode stays: without `--llm`, the Agent SDK agents run with their permission checks bypassed in the current folder. The CLI now says so when it starts, in one line through `Output.print`: their changes are not in the history, so `/undo` cannot take them back, and `--llm` asks before each destructive call. The text lives in `cli/startupNotice.ts`, so it is tested apart from `cli/cli.ts`.
+
+**Context:** #175, its third finding. The mode with no safety net is the one that needs no flag, and nothing said so when it started. The decision to run those engines with their bypass stands: nobody answers their own permission prompts in the CLI.
+
+**Alternatives considered:**
+
+- **`--llm` as the default.** Safer, but it needs both API keys where the Agent SDKs run on a subscription, and changes what `pnpm run dev` does for everyone.
+- **A confirmation before the first prompt.** It stops the user once per session for something one line can say.
+
+**Consequences:**
+
+- Every start without `--llm` prints one more line.
+
+## The default secrets list closes more credential files, a committed `.npmrc` included
+
+tags: #mikode-harness #tools #security
+
+**Decision:** `isSecretName` also closes, by default:
+
+- `.env-*` and `.env_*`, as `.env.*` already were;
+- any name ending in `.env`, such as `prod.env`;
+- `.npmrc`, `.pypirc`, `.dev.vars`, `.vault-token`, `.htpasswd`, `.dockercfg` and `credentials.json`, wherever they are;
+- names ending in `.tfvars`, `.tfvars.json` or `.kdbx`;
+- a private key whose name starts with `id_rsa`, `id_dsa`, `id_ecdsa` or `id_ed25519` followed by `_`, `-` or `.`, such as `id_rsa_work`, but never a `.pub` file, so `id_rsa.pub` stays open.
+
+A template stays open. Its ending, `example`, `sample` or `template`, now counts after any of `.`, `-` and `_`, so `.env-example` is a template as `.env.example` is, and so is `.env.local-example`, which was closed before. `~/.npmrc` and `~/.pypirc` leave the home files list, since their names close them everywhere.
+
+**Context:** #175, its fourth finding: `isSecretName` let `.env-production`, `.env_local`, `prod.env`, a project's `.npmrc`, `.pypirc`, `terraform.tfvars`, `credentials.json`, `.dev.vars` and `id_rsa_work` through. It only matters for a file `.gitignore` does not exclude, but an `.npmrc` with an `_authToken` is often committed. The list still goes by names and places, as "One access policy decides every path a tool reads or writes" (above) chose.
+
+**Alternatives considered:**
+
+- **Reading an `.npmrc` to look for a token.** It would keep a token-free one open, but the policy decides by name before anything is read, and a detector is what that decision ruled out.
+- **Closing `.npmrc` only under the home directory,** as before. It leaves the committed one, the case the audit names.
+
+**Consequences:**
+
+- A committed `.npmrc` without a token, such as one that only sets `engine-strict`, is closed too, until the host opens it with `secrets.allow`.
+- A folder with one of these names closes what is below it, as `.env/` already did.
+
+## `runProcess` stops the whole process group, and keeps the first megabyte of its error output
+
+tags: #mikode-harness #tools #processes
+
+**Decision:** on POSIX, `runProcess` starts its program as the leader of a process group of its own, as `runCommandProcess` does, and each of its stops, the output limit, a failing `onLine` and the caller's cancellation, sends `SIGTERM` to the whole group. The contract is otherwise the same: a cancellation still rejects with the signal's `AbortError`, which `spawn` raises from its own `signal`, and a missing program still rejects with `spawn`'s error. Of the program's standard error, only the first megabyte is kept and the rest is dropped, without failing it.
+
+**Context:** #175, its fifth finding. `stdout` stopped at 64 MB but `stderr` had no limit, and a stop killed only the program, not what it started: git runs the repository's hooks. Every caller reads only the first line of `stderr`.
+
+**Alternatives considered:**
+
+- **Using `runCommandProcess`.** It already stops a group, with a grace period and a kill, but it also keeps a tail of the output, a timeout and an exit hook that `runProcess`'s callers do not need.
+- **Failing a program whose error output passes the limit,** as the standard output does. Its first line is what callers read, and a program that says too much on stderr has not failed.
+
+**Consequences:**
+
+- A program is no longer in the terminal's process group, so a terminal's Ctrl+C does not reach it by itself. In the CLI nothing changes: its readline takes Ctrl+C itself, so no signal reached the program before either, and it cancels the run, which now stops the whole group.
+- A grandchild that ignores `SIGTERM` is not killed; nothing waits for the group to be gone, unlike `runCommandProcess`.
+- Windows keeps killing the program alone.
+
+## The CLI prints no terminal control sequence a model wrote
+
+tags: #mikode-harness #cli #security
+
+**Decision:** `Output.print` and `printError` remove every terminal control sequence before writing: CSI, OSC and the other string commands up to their BEL or ST, other escapes, and every remaining C0 and C1 control character but the line feed and the tab. A carriage return is dropped, so a line cannot overwrite what was printed before it on the same line. `printError` writes what `console.error` showed, the message, the cause and the stack, without colors. The CLI's progress keeps its own colors: `ProgressEventFormatter` cleans every string of an event before it styles it, and prints through `Output.printStyled`, which keeps only color and weight sequences. The cleaning is `withoutControlSequences` in `cli/terminalText.ts`.
+
+**Context:** #175, its sixth finding: text a prompt injection made the model print could hide or rewrite what the terminal shows, such as the lines before an approval question. The CLI's only own sequences are the styles `styleText` writes in `ProgressEventFormatter`; the spinner writes to stdout directly and is unchanged.
+
+**Alternatives considered:**
+
+- **Keeping color sequences in everything `Output.print` writes.** Simpler, but a model's own "conceal" or a color matching the background would still hide the dangerous part of an approval request.
+- **Removing every sequence, styles included.** One path, but the CLI would lose the colors that tell agents working at once apart.
+- **Escaping the sequences visibly.** It shows the user what the model tried, but fills the terminal with noise for text that is usually harmless.
+
+**Consequences:**
+
+- A model's text loses its own colors, and its carriage returns.
+- Anything new that prints with styles must clean what it styles, or print through `Output.print`.
