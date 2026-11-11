@@ -71,6 +71,9 @@ function file(name: string, content: string | Buffer): string {
 	return path;
 }
 
+// Permissions do not stop root, so a case built with chmod cannot fail there.
+const asRoot = process.getuid?.() === 0;
+
 describe('the readFile of an editing agent', () => {
 	it('stops at 16 KB of a prose file, and says where to continue', async () => {
 		file('architecture.md', `${Array.from({ length: 50 }, () => 'x'.repeat(3000)).join('\n')}\n`);
@@ -129,7 +132,7 @@ describe('the readFile of an editing agent', () => {
 		await expect(readFile(42 as unknown as string)).resolves.toMatch(/^error: .*path/s);
 	});
 
-	it.each([
+	it.skipIf(asRoot).each([
 		[
 			'a file it may not open',
 			() => {

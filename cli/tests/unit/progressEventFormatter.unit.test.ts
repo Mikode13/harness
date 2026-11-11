@@ -170,6 +170,28 @@ describe('ProgressEventFormatter', () => {
 		expect(reasoning).toBeDefined();
 	});
 
+	it('cleans what an event carries of terminal sequences before styling it', () => {
+		const style: ProgressStyler = (format, text) =>
+			`<${String(format)}>${text}</${String(format)}>`;
+		const formatter = new ProgressEventFormatter({ style, now: () => 0 });
+		const esc = String.fromCharCode(27);
+
+		expect(
+			formatter.format({
+				type: 'agentMessage',
+				agent: 'planner',
+				message: `Plan${esc}[1A${esc}[2K\rdone`,
+			}),
+		).toBe('\n<bold>planner</bold>\nPlandone');
+		expect(
+			formatter.format({
+				type: 'reasoning',
+				agent: 'planner',
+				message: `${esc}[8mhidden${esc}]0;title\u0007`,
+			}),
+		).toBe('<dim><italic>hidden</italic></dim>');
+	});
+
 	it('allows tests to verify role, message, tool and reasoning styles', () => {
 		const style: ProgressStyler = (format, text) =>
 			`<${String(format)}>${text}</${String(format)}>`;

@@ -1,5 +1,6 @@
 import { styleText } from 'node:util';
 import type { ProgressEvent } from '../src/index.ts';
+import { withoutControlSequencesIn } from './terminalText.ts';
 
 type StyleFormat = Parameters<typeof styleText>[0];
 export type ProgressStyler = (format: StyleFormat, text: string) => string;
@@ -62,7 +63,13 @@ export class ProgressEventFormatter {
 		this.style = style;
 	}
 
-	format(item: ProgressEvent): string | undefined {
+	/**
+	 * The line to print for `event`, if any. Every string of the event is cleaned of what would
+	 * drive the terminal before it is styled, since much of it is what a model wrote: the line's
+	 * own styles are then the only sequences in it.
+	 */
+	format(event: ProgressEvent): string | undefined {
+		const item = withoutControlSequencesIn(event);
 		switch (item.type) {
 			case 'agentMessage':
 				return this.withRole(item.agent, item.message);

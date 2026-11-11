@@ -694,3 +694,44 @@ taken as `gpt-5.6-sol`'s.
 - **What changed:** no harness decision changed. The rounds led to decisions in decisions.md
   under "The model-API orchestrator runs in phases, as a workflow with code stages". The
   comparison covers one pull request, so it is evidence for choosing a reviewer, not a rule.
+
+## The audit of #175 (2026-11-11)
+
+Claude read the access policy, the commands, the file editor, both Agent SDK engines, retry,
+failure classification and the CLI of `main` at 490b1fb, and ran the offline suite as root and
+as an ordinary user. Nothing ran against a real provider.
+
+### A field the SDK's types offered was not read
+
+- **What happened:** `ClaudeAgent` decided a turn had succeeded from `subtype` alone. The SDK's
+  `SDKResultSuccess` also carries `is_error` and `api_error_status`, and reports some failures,
+  such as an invalid key, as a `success` whose result is the error's text.
+- **Evidence:** the SDK's `sdk.d.ts`; no live run reproduced it.
+- **What changed:** see "A Claude result marked as an error is a failure, classified by its HTTP
+  status" in decisions.md.
+
+### A constant nobody recorded decided what was retried
+
+- **What happened:** `maxTurns: 3` had been in `ClaudeAgent` since its first version, and
+  reaching it turned into a `RecoverableError`, so a turn that may have written files was sent
+  again.
+- **Evidence:** no entry in decisions.md mentioned it, and `CodexAgent` had no such limit.
+- **What changed:** see "The Agent SDK's Claude runs without a turn limit of its own" in
+  decisions.md. The other findings led to the entries that follow it there.
+
+### The suite depended on the machine it ran on
+
+- **What happened:** of 1,686 tests, 18 failed as root and 3 as an ordinary user in a plain
+  container, for reasons outside the code under test.
+- **Evidence:**
+  - tests that made a file unreadable with `chmod` passed only where permissions stop the user,
+    and root ignores them;
+  - a test helper recorded every edit with mode 0644, so under a umask of 002 a diff showed a
+    mode change the run never made;
+  - a test needed `ssh-keygen`;
+  - a test of a fake `gpg` program read the machine's global git configuration, whose
+    `gpg.format=ssh` sent git to another program;
+  - a killed process left a zombie where PID 1 does not reap, and `kill(pid, 0)` still found it.
+- **What changed:** the tests skip what root cannot fail, follow the file's mode, skip without
+  `ssh-keygen`, set the signing format they fake, and count a zombie as gone on Linux. No
+  production code changed for them.

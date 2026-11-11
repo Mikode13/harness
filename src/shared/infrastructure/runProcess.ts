@@ -4,10 +4,19 @@ import { StringDecoder } from 'node:string_decoder';
 // What a program may print, or one line of it may hold, before it is stopped. Beyond this it
 // has printed far more than anyone can read.
 const maxOutputBytes = 64 * 1024 * 1024;
+// What is kept of its error output. Callers read its first line; the rest is dropped, so a
+// program that writes without end to it cannot fill this process's memory.
+const maxErrorBytes = 1024 * 1024;
+
+// On POSIX the program leads a process group of its own, so a stop reaches what it started too,
+// such as the hooks git runs. Node gives it one only with `detached`, which starts a session as
+// well, so the program has no controlling terminal. Windows has no process groups.
+const inOwnGroup = process.platform !== 'win32';
 
 export interface ProcessResult {
 	/** Empty when the output went to `onLine` instead. */
 	stdout: string;
+	/** Its first megabyte, and nothing past it. */
 	stderr: string;
 	exitCode: number;
 }
@@ -16,7 +25,9 @@ export interface ProcessResult {
  * Runs a program with its arguments as an array, never through a shell, so nothing a model
  * writes can become a command. Standard input is closed: ripgrep given no path searches its
  * standard input whenever that is a pipe. A cancelled signal kills the process and rejects
- * with the signal's `AbortError`.
+ * with the signal's `AbortError`. On POSIX the program runs as the leader of its own process
+ * group, and every stop, the cancellation included, signals the whole group, so nothing it
+ * started outlives the stop. Only the first megabyte of its error output is kept.
  *
  * With `onLine`, each line of the output is handed over as it arrives and nothing is kept, so
  * the caller decides what to hold; only a single line is then bound by the size limit. An
@@ -40,17 +51,41 @@ export function runProcess(
 	},
 ): Promise<ProcessResult> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(command, args, { cwd, signal, env, stdio: ['ignore', 'pipe', 'pipe'] });
+		// The signal stays with `spawn`, which turns the cancellation into the `AbortError` callers
+		// expect and kills the leader; `killGroup` reaches the rest of the group.
+		const child = spawn(command, args, {
+			cwd,
+			signal,
+			env,
+			detached: inOwnGroup,
+			stdio: ['ignore', 'pipe', 'pipe'],
+		});
 		const decoder = new StringDecoder('utf8');
 		const stdout: string[] = [];
 		const stderr: Buffer[] = [];
+		let stderrSize = 0;
 		let pending = '';
 		let size = 0;
 		let failure: Error | undefined;
 
+		const killGroup = () => {
+			if (inOwnGroup && child.pid !== undefined) {
+				try {
+					process.kill(-child.pid, 'SIGTERM');
+					return;
+				} catch {
+					// The group is gone, or this process may not signal it: the leader is all that is left.
+				}
+			}
+			child.kill();
+		};
+		const onAbort = killGroup;
+		if (signal.aborted) killGroup();
+		else signal.addEventListener('abort', onAbort, { once: true });
+
 		const stop = (error: Error) => {
 			failure ??= error;
-			child.kill();
+			killGroup();
 		};
 
 		const deliver = (text: string) => {
@@ -78,11 +113,21 @@ export function runProcess(
 				stop(error instanceof Error ? error : new Error(String(error)));
 			}
 		});
-		child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+		child.stderr.on('data', (chunk: Buffer) => {
+			const kept = chunk.subarray(0, maxErrorBytes - stderrSize);
+			stderrSize += kept.length;
+			if (kept.length > 0) stderr.push(kept);
+		});
 
 		// A missing program, or the cancellation, which arrives as an `AbortError`.
-		child.on('error', reject);
+		child.on('error', error => {
+			// Not on the cancellation: `spawn`'s own listener raises it while the signal still
+			// dispatches, and removing `onAbort` then would keep the rest of the group running.
+			if (!signal.aborted) signal.removeEventListener('abort', onAbort);
+			reject(error);
+		});
 		child.on('close', (code, killedBy) => {
+			signal.removeEventListener('abort', onAbort);
 			// Stopped from outside, such as by the out-of-memory killer: what it printed is not the
 			// whole answer, and an exit code would pass it off as one. Its own stops set `failure`.
 			if (code === null && !failure) {

@@ -14,7 +14,10 @@ import type {
 	RunJournal,
 } from '../../src/recovery/domain/recoveryStore.ts';
 
-/** A change a run makes: the file's new content, or `undefined` to delete it. */
+/**
+ * A change a run makes: the file's new content, or `undefined` to delete it, and its mode,
+ * which defaults to the one the file has, as the editor keeps it, or 0644 for a new file.
+ */
 export type Edit = [name: string, content: string | undefined, mode?: number];
 
 async function stateOnDisk(journal: RunJournal, path: string): Promise<FileState> {
@@ -45,9 +48,12 @@ export async function recordRun(
 	edits: Edit[],
 ): Promise<string> {
 	const journal = await store.startRun();
-	for (const [name, content, mode = 0o644] of edits) {
+	for (const [name, content, givenMode] of edits) {
 		const path = join(root, name);
 		const before = await stateOnDisk(journal, path);
+		// Not a fixed 0644: under a umask such as 002 a file the test wrote is 0664, and a run
+		// that changed its mode would show that in its diff.
+		const mode = givenMode ?? (before.exists ? before.mode : 0o644);
 		const after: FileState =
 			content === undefined
 				? { exists: false }

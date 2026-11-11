@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { liveGroupIds, runCommandProcess } from '../../src/tools/infrastructure/commandProcess.ts';
+import { isAlive } from '../support/processes.ts';
 
 let folder: string;
 
@@ -32,15 +33,6 @@ function run(
 		signal: options.signal ?? signal,
 		gracePeriodMs: 200,
 	});
-}
-
-function isAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
 }
 
 /** The pid a script wrote to `name`, waiting for it to appear. */

@@ -35,6 +35,7 @@ import { OneRunAtATime } from '#src/agent/domain/oneRunAtATime';
 import { newSession, sessionOf } from '#src/agent/domain/session';
 import { isOneOf } from '#src/shared/domain/isOneOf';
 import { claudeModelIds } from '#src/llm/infrastructure/claudeModelIds';
+import { unrecoverableClaudeStatuses } from '#src/llm/infrastructure/claudeRejectedStatuses';
 
 // The SDK types `model` as a plain string, so this list is maintained by hand. Each is sent as
 // the ID `claudeModelIds` pins, not as the alias, which the Agent SDK would resolve its own way.
@@ -78,6 +79,20 @@ function toTokens(usage: NonNullableUsage): Tokens {
 		writtenCacheTokens: usage.cache_creation_input_tokens,
 		outputTokens: usage.output_tokens,
 	};
+}
+
+// Classified like the Messages API classifies the same HTTP status: a rejection a retry cannot
+// fix is unrecoverable, and anything else, a missing status included, is a provider failure.
+function failedTurn(message: SDKResultSuccess): RecoverableError | UnrecoverableError {
+	const status = message.api_error_status;
+	const options = {
+		cause: message.result,
+		// The failed turn still reports what it spent.
+		tokens: toTokens(message.usage),
+	};
+	return typeof status === 'number' && unrecoverableClaudeStatuses.includes(status)
+		? new UnrecoverableError('Claude rejected the request', options)
+		: new RecoverableError('Claude sdk error', options);
 }
 
 function emitProgress(callback: Callback, event: ProgressEvent): void {
@@ -250,7 +265,6 @@ export class ClaudeAgent implements Agent {
 				options: {
 					effort: this.reasoningEffort,
 					model: claudeModelIds[this.model],
-					maxTurns: 3,
 					cwd: process.cwd(),
 					resume: this.providerSessionId,
 					...(this.autoApprove
@@ -310,7 +324,11 @@ export class ClaudeAgent implements Agent {
 							this.handleUserMessage(message, pendingTools, callback);
 							break;
 						case 'result':
-							if (message.subtype === 'success') {
+							if (message.subtype === 'success' && message.is_error) {
+								// The SDK reports some failures, such as an invalid key or no credit, as a
+								// `success` whose result is the error's text: it is not an answer.
+								throw failedTurn(message);
+							} else if (message.subtype === 'success') {
 								lines.push(message.result);
 								resultMessage = message;
 							} else {

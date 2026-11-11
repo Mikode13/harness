@@ -10,10 +10,10 @@ importers:
     dependencies:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.3.220
-        version: 0.3.220(@anthropic-ai/sdk@0.115.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.4.3))(zod@4.4.3)
+        version: 0.3.220(@anthropic-ai/sdk@0.115.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.6.7))(zod@4.6.7)
       '@anthropic-ai/sdk':
         specifier: ^0.115.0
-        version: 0.115.0(zod@4.4.3)
+        version: 0.115.0(zod@4.6.7)
       '@openai/codex-sdk':
         specifier: ^0.154.0
         version: 0.154.0
@@ -25,7 +25,7 @@ importers:
         version: 1.18.0
       openai:
         specifier: ^7.23.0
-        version: 7.23.0(zod@4.4.3)
+        version: 7.23.0(zod@4.6.7)
     devDependencies:
       '@mikode13/code-quality':
         specifier: 1.0.0
@@ -61,8 +61,8 @@ importers:
         specifier: ^4.1.11
         version: 4.1.11(@types/node@26.1.2)(@vitest/coverage-v8@4.1.11)(vite@8.2.2(@types/node@26.1.2)(jiti@2.6.1))
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.7
+        version: 4.6.7
 
   cli: {}
 
@@ -2134,8 +2134,8 @@ packages:
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
 
-  zod@4.4.3:
-    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
+  zod@4.6.7:
+    resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
 
 snapshots:
 
@@ -2163,11 +2163,11 @@ snapshots:
   '@anthropic-ai/claude-agent-sdk-win32-x64@0.3.220':
     optional: true
 
-  '@anthropic-ai/claude-agent-sdk@0.3.220(@anthropic-ai/sdk@0.115.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.4.3))(zod@4.4.3)':
+  '@anthropic-ai/claude-agent-sdk@0.3.220(@anthropic-ai/sdk@0.115.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.6.7))(zod@4.6.7)':
     dependencies:
-      '@anthropic-ai/sdk': 0.115.0(zod@4.4.3)
-      '@modelcontextprotocol/sdk': 1.30.0(supports-color@7.2.0)(zod@4.4.3)
-      zod: 4.4.3
+      '@anthropic-ai/sdk': 0.115.0(zod@4.6.7)
+      '@modelcontextprotocol/sdk': 1.30.0(supports-color@7.2.0)(zod@4.6.7)
+      zod: 4.6.7
     optionalDependencies:
       '@anthropic-ai/claude-agent-sdk-darwin-arm64': 0.3.220
       '@anthropic-ai/claude-agent-sdk-darwin-x64': 0.3.220
@@ -2178,12 +2178,12 @@ snapshots:
       '@anthropic-ai/claude-agent-sdk-win32-arm64': 0.3.220
       '@anthropic-ai/claude-agent-sdk-win32-x64': 0.3.220
 
-  '@anthropic-ai/sdk@0.115.0(zod@4.4.3)':
+  '@anthropic-ai/sdk@0.115.0(zod@4.6.7)':
     dependencies:
       json-schema-to-ts: 3.1.1
       standardwebhooks: 1.0.0
     optionalDependencies:
-      zod: 4.4.3
+      zod: 4.6.7
 
   '@babel/code-frame@7.29.7':
     dependencies:
@@ -2457,7 +2457,7 @@ snapshots:
       eslint: 10.8.0(jiti@2.6.1)(supports-color@7.2.0)
       ts-pattern: 5.9.0
       typescript: 6.0.3
-      zod: 4.4.3
+      zod: 4.6.7
     transitivePeerDependencies:
       - supports-color
 
@@ -2576,7 +2576,7 @@ snapshots:
 
   '@mikode13/tsconfig@1.0.0': {}
 
-  '@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.4.3)':
+  '@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.6.7)':
     dependencies:
       '@hono/node-server': 2.0.12(hono@4.12.32)
       ajv: 8.20.0
@@ -2593,8 +2593,8 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 4.4.3
-      zod-to-json-schema: 3.25.2(zod@4.4.3)
+      zod: 4.6.7
+      zod-to-json-schema: 3.25.2(zod@4.6.7)
     transitivePeerDependencies:
       - supports-color
 
@@ -3255,8 +3255,8 @@ snapshots:
       '@babel/parser': 7.29.7
       eslint: 10.8.0(jiti@2.6.1)(supports-color@7.2.0)
       hermes-parser: 0.25.1
-      zod: 4.4.3
-      zod-validation-error: 4.0.2(zod@4.4.3)
+      zod: 4.6.7
+      zod-validation-error: 4.0.2(zod@4.6.7)
     transitivePeerDependencies:
       - supports-color
 
@@ -3795,9 +3795,9 @@ snapshots:
     dependencies:
       wrappy: 1.0.2
 
-  openai@7.23.0(zod@4.4.3):
+  openai@7.23.0(zod@4.6.7):
     optionalDependencies:
-      zod: 4.4.3
+      zod: 4.6.7
 
   optionator@0.9.4:
     dependencies:
@@ -4150,12 +4150,12 @@ snapshots:
 
   yocto-queue@0.1.0: {}
 
-  zod-to-json-schema@3.25.2(zod@4.4.3):
+  zod-to-json-schema@3.25.2(zod@4.6.7):
     dependencies:
-      zod: 4.4.3
+      zod: 4.6.7
 
-  zod-validation-error@4.0.2(zod@4.4.3):
+  zod-validation-error@4.0.2(zod@4.6.7):
     dependencies:
-      zod: 4.4.3
+      zod: 4.6.7
 
-  zod@4.4.3: {}
+  zod@4.6.7: {}

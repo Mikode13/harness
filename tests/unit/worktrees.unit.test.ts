@@ -39,6 +39,9 @@ import {
 	toolCall,
 } from '../support/fakeLlmClient.ts';
 
+// Permissions do not stop root, so a case built with chmod cannot fail there.
+const asRoot = process.getuid?.() === 0;
+
 const signal = new AbortController().signal;
 
 // Lets a test have `rev-list` fail, as when git cannot read an object.
@@ -204,7 +207,7 @@ describe('createWorktree', () => {
 		expect(branches(repository)).toEqual(['main']);
 	});
 
-	it('leaves no branch or folder of its own when git fails', async () => {
+	it.skipIf(asRoot)('leaves no branch or folder of its own when git fails', async () => {
 		const locked = join(parent, 'locked');
 		mkdirSync(locked);
 		chmodSync(locked, 0o555);

@@ -29,6 +29,9 @@ import {
 	FileRecoveryStore,
 } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
 
+// Permissions do not stop root, so a case built with chmod cannot fail there.
+const asRoot = process.getuid?.() === 0;
+
 let parent: string;
 let root: string;
 let directory: string;
@@ -717,88 +720,97 @@ describe('FileRecoveryStore', () => {
 			return join(workspaceFolder(), 'content', hash.slice(0, 2), hash);
 		}
 
-		it('settles what a run was observing when it finished, and the next run if that fails', async () => {
-			const warn = vi.fn();
-			const store = await FileRecoveryStore.open({ root, directory, logger: { warn } });
-			const run = await store.startRun();
-			const { path, state, manifest } = await observe(run, 'a.txt', 'a ;\n');
-			// The command ran, and comparing the files after it failed.
-			writeFileSync(path, 'a;\n');
-			chmodSync(contentFile(manifest), 0o000);
+		it.skipIf(asRoot)(
+			'settles what a run was observing when it finished, and the next run if that fails',
+			async () => {
+				const warn = vi.fn();
+				const store = await FileRecoveryStore.open({ root, directory, logger: { warn } });
+				const run = await store.startRun();
+				const { path, state, manifest } = await observe(run, 'a.txt', 'a ;\n');
+				// The command ran, and comparing the files after it failed.
+				writeFileSync(path, 'a;\n');
+				chmodSync(contentFile(manifest), 0o000);
 
-			await run.finish('failed');
-
-			expect(warn).toHaveBeenCalledWith(
-				expect.stringContaining(`could not settle what run ${run.runId} was observing`),
-			);
-			await expect(store.readRun(run.runId)).resolves.toMatchObject({
-				record: { status: 'failed', unsettled: true },
-				entries: [],
-			});
-
-			chmodSync(contentFile(manifest), 0o600);
-			await (await store.startRun()).finish('completed');
-
-			const { record, entries } = await store.readRun(run.runId);
-			expect(record.status).toBe('failed');
-			expect(record).not.toHaveProperty('unsettled');
-			expect(entries).toMatchObject([
-				{ path, before: state, status: 'applied', observedBy: 'format' },
-			]);
-			await store.goTo(historyStart);
-			expect(readFileSync(path, 'utf8')).toBe('a ;\n');
-		});
-
-		it('leaves an observation open when the history cannot store what a file holds now', async () => {
-			const warn = vi.fn();
-			const store = await FileRecoveryStore.open({ root, directory, logger: { warn } });
-			const run = await store.startRun();
-			const { path, state } = await observe(run, 'a.txt', 'a ;\n');
-			writeFileSync(path, 'a;\n');
-			// The file reads, but no new content can be stored.
-			const content = join(workspaceFolder(), 'content');
-			const folders = [content, ...readdirSync(content).map(prefix => join(content, prefix))];
-			for (const folder of folders) chmodSync(folder, 0o500);
-
-			try {
 				await run.finish('failed');
-			} finally {
-				for (const folder of folders) chmodSync(folder, 0o700);
-			}
 
-			expect(warn).toHaveBeenCalledOnce();
-			expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not settle'));
-			await expect(store.readRun(run.runId)).resolves.toMatchObject({
-				record: { unsettled: true },
-				entries: [],
-				unrecorded: [],
-			});
-			await (await store.startRun()).finish('completed');
-			await expect(store.readRun(run.runId)).resolves.toMatchObject({
-				entries: [{ path, before: state, status: 'applied', observedBy: 'format' }],
-			});
-		});
+				expect(warn).toHaveBeenCalledWith(
+					expect.stringContaining(`could not settle what run ${run.runId} was observing`),
+				);
+				await expect(store.readRun(run.runId)).resolves.toMatchObject({
+					record: { status: 'failed', unsettled: true },
+					entries: [],
+				});
 
-		it('settles a file it cannot read as a change undo cannot take back, and says so', async () => {
-			const warn = vi.fn();
-			const store = await FileRecoveryStore.open({ root, directory, logger: { warn } });
-			const run = await store.startRun();
-			const { path } = await observe(run, 'a.txt', 'a ;\n');
-			writeFileSync(path, 'a;\n');
-			chmodSync(path, 0o000);
+				chmodSync(contentFile(manifest), 0o600);
+				await (await store.startRun()).finish('completed');
 
-			await run.finish('failed');
+				const { record, entries } = await store.readRun(run.runId);
+				expect(record.status).toBe('failed');
+				expect(record).not.toHaveProperty('unsettled');
+				expect(entries).toMatchObject([
+					{ path, before: state, status: 'applied', observedBy: 'format' },
+				]);
+				await store.goTo(historyStart);
+				expect(readFileSync(path, 'utf8')).toBe('a ;\n');
+			},
+		);
 
-			expect(warn).toHaveBeenCalledWith(expect.stringContaining(`could not read ${path}`));
-			await expect(store.readRun(run.runId)).resolves.toMatchObject({
-				record: { status: 'failed' },
-				entries: [],
-				unrecorded: [{ path, by: 'format' }],
-			});
-			chmodSync(path, 0o644);
-			await expect(store.goTo(historyStart)).resolves.toMatchObject({ complete: false });
-			expect(readFileSync(path, 'utf8')).toBe('a;\n');
-		});
+		it.skipIf(asRoot)(
+			'leaves an observation open when the history cannot store what a file holds now',
+			async () => {
+				const warn = vi.fn();
+				const store = await FileRecoveryStore.open({ root, directory, logger: { warn } });
+				const run = await store.startRun();
+				const { path, state } = await observe(run, 'a.txt', 'a ;\n');
+				writeFileSync(path, 'a;\n');
+				// The file reads, but no new content can be stored.
+				const content = join(workspaceFolder(), 'content');
+				const folders = [content, ...readdirSync(content).map(prefix => join(content, prefix))];
+				for (const folder of folders) chmodSync(folder, 0o500);
+
+				try {
+					await run.finish('failed');
+				} finally {
+					for (const folder of folders) chmodSync(folder, 0o700);
+				}
+
+				expect(warn).toHaveBeenCalledOnce();
+				expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not settle'));
+				await expect(store.readRun(run.runId)).resolves.toMatchObject({
+					record: { unsettled: true },
+					entries: [],
+					unrecorded: [],
+				});
+				await (await store.startRun()).finish('completed');
+				await expect(store.readRun(run.runId)).resolves.toMatchObject({
+					entries: [{ path, before: state, status: 'applied', observedBy: 'format' }],
+				});
+			},
+		);
+
+		it.skipIf(asRoot)(
+			'settles a file it cannot read as a change undo cannot take back, and says so',
+			async () => {
+				const warn = vi.fn();
+				const store = await FileRecoveryStore.open({ root, directory, logger: { warn } });
+				const run = await store.startRun();
+				const { path } = await observe(run, 'a.txt', 'a ;\n');
+				writeFileSync(path, 'a;\n');
+				chmodSync(path, 0o000);
+
+				await run.finish('failed');
+
+				expect(warn).toHaveBeenCalledWith(expect.stringContaining(`could not read ${path}`));
+				await expect(store.readRun(run.runId)).resolves.toMatchObject({
+					record: { status: 'failed' },
+					entries: [],
+					unrecorded: [{ path, by: 'format' }],
+				});
+				chmodSync(path, 0o644);
+				await expect(store.goTo(historyStart)).resolves.toMatchObject({ complete: false });
+				expect(readFileSync(path, 'utf8')).toBe('a;\n');
+			},
+		);
 
 		it('keeps what an open observation needs from cleanup, in a run finished before runs were marked unsettled', async () => {
 			const store = await FileRecoveryStore.open({ root, directory });
@@ -894,30 +906,33 @@ describe('FileRecoveryStore', () => {
 			expect((await store.listRuns()).runs.at(-1)).toMatchObject({ parentRunId: kept.runId });
 		});
 
-		it('hides a run that changed nothing when removing it and its lock both fail', async () => {
-			const store = await FileRecoveryStore.open({ root, directory });
-			const run = await store.startRun();
-			chmodSync(workspaceFolder(), 0o500);
-			try {
-				await expect(run.finish('completed')).rejects.toThrow();
-			} finally {
-				chmodSync(workspaceFolder(), 0o700);
-			}
-			// The lock still names this process, which lives on.
-			expect(existsSync(join(workspaceFolder(), 'lock'))).toBe(true);
+		it.skipIf(asRoot)(
+			'hides a run that changed nothing when removing it and its lock both fail',
+			async () => {
+				const store = await FileRecoveryStore.open({ root, directory });
+				const run = await store.startRun();
+				chmodSync(workspaceFolder(), 0o500);
+				try {
+					await expect(run.finish('completed')).rejects.toThrow();
+				} finally {
+					chmodSync(workspaceFolder(), 0o700);
+				}
+				// The lock still names this process, which lives on.
+				expect(existsSync(join(workspaceFolder(), 'lock'))).toBe(true);
 
-			await expect(store.listRuns()).resolves.toEqual({ runs: [] });
-			// Its lock is stale: the next run takes the workspace and finishes the removal.
-			const next = await store.startRun();
-			expect(existsSync(join(workspaceFolder(), 'runs', run.runId))).toBe(false);
-			await change(next);
-			await next.finish('completed');
-			expect((await store.listRuns()).runs).toEqual([
-				expect.objectContaining({ runId: next.runId }),
-			]);
-		});
+				await expect(store.listRuns()).resolves.toEqual({ runs: [] });
+				// Its lock is stale: the next run takes the workspace and finishes the removal.
+				const next = await store.startRun();
+				expect(existsSync(join(workspaceFolder(), 'runs', run.runId))).toBe(false);
+				await change(next);
+				await next.finish('completed');
+				expect((await store.listRuns()).runs).toEqual([
+					expect.objectContaining({ runId: next.runId }),
+				]);
+			},
+		);
 
-		it('takes over a lock this process left when releasing it failed', async () => {
+		it.skipIf(asRoot)('takes over a lock this process left when releasing it failed', async () => {
 			const store = await FileRecoveryStore.open({ root, directory });
 			const run = await store.startRun();
 			await change(run);
@@ -950,24 +965,27 @@ describe('FileRecoveryStore', () => {
 			});
 		});
 
-		it('hides a run that changed nothing when removing it fails, and the next run removes it', async () => {
-			const store = await FileRecoveryStore.open({ root, directory });
-			const run = await store.startRun();
-			const folder = join(workspaceFolder(), 'runs', run.runId);
-			chmodSync(folder, 0o500);
-			try {
-				await expect(run.finish('completed')).rejects.toThrow();
-			} finally {
-				chmodSync(folder, 0o700);
-			}
+		it.skipIf(asRoot)(
+			'hides a run that changed nothing when removing it fails, and the next run removes it',
+			async () => {
+				const store = await FileRecoveryStore.open({ root, directory });
+				const run = await store.startRun();
+				const folder = join(workspaceFolder(), 'runs', run.runId);
+				chmodSync(folder, 0o500);
+				try {
+					await expect(run.finish('completed')).rejects.toThrow();
+				} finally {
+					chmodSync(folder, 0o700);
+				}
 
-			await expect(store.listRuns()).resolves.toEqual({ runs: [] });
-			// The workspace is free, and the next run finishes the removal.
-			const next = await store.startRun();
-			expect(existsSync(folder)).toBe(false);
-			await change(next);
-			await next.finish('completed');
-		});
+				await expect(store.listRuns()).resolves.toEqual({ runs: [] });
+				// The workspace is free, and the next run finishes the removal.
+				const next = await store.startRun();
+				expect(existsSync(folder)).toBe(false);
+				await change(next);
+				await next.finish('completed');
+			},
+		);
 
 		it('leaves out a run whose process died before writing its record', async () => {
 			const store = await FileRecoveryStore.open({ root, directory });

@@ -34,6 +34,7 @@ import type { LLMClient, LLMResponse, StopReason } from '../domain/llm.ts';
 import { type Message, type MessagePart, sentContext } from '../domain/message.ts';
 import { type NativeTool, nativeOf, type ToolDefinition } from '../domain/tool.ts';
 import { claudeModelIds } from './claudeModelIds.ts';
+import { unrecoverableClaudeStatuses } from './claudeRejectedStatuses.ts';
 
 // The Messages API takes full model IDs; `claudeModelIds` pins the one each alias names.
 export const claudeLLMModels = [
@@ -58,9 +59,6 @@ export type ClaudeLLMReasoningEffort = (typeof claudeLLMReasoningEfforts)[number
 // it refuse more than about 21,000 without a stream. Every model the aliases name writes up to
 // 128,000; Haiku 5.5 at `xhigh` once spent 64,000 on one answer.
 const maxOutputTokens = 128_000;
-
-// The request itself is wrong or not allowed, so sending it again cannot succeed.
-const unrecoverableStatuses = [400, 401, 403, 404, 413, 422];
 
 // The account is out of credit, or its key cannot make the request. Resending cannot fix
 // either, whatever status the error arrives with.
@@ -361,7 +359,7 @@ function classifyClaudeFailure(error: unknown, connected: boolean): Error {
 		}
 		if (
 			unrecoverableErrorTypes.some(type => type === error.type) ||
-			unrecoverableStatuses.some(status => status === error.status)
+			unrecoverableClaudeStatuses.some(status => status === error.status)
 		) {
 			return new UnrecoverableError('Claude rejected the request', {
 				cause: describeFailure(error),
