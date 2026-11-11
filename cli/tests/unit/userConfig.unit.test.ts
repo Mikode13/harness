@@ -72,6 +72,12 @@ describe('loadUserConfig', () => {
 		await expect(loadUserConfig(repository, path)).rejects.toThrow(/inside the repository/);
 	});
 
+	it('refuses a file in a folder of the repository whose name starts with two dots', async () => {
+		const path = config({ [repository]: {} }, join(repository, '..config', 'config.json'));
+
+		await expect(loadUserConfig(repository, path)).rejects.toThrow(/inside the repository/);
+	});
+
 	it.each([
 		['not JSON', () => '{', /not valid JSON/],
 		['not an object of repositories', () => '[]', /must map each repository/],

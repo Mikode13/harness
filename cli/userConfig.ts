@@ -1,6 +1,6 @@
 import { readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { isAbsolute, join, relative } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import type { CompactionMode, Commands, Formatter, RoleSteps, RoleTokens } from '../src/index.ts';
 
 /** What the CLI reads for one repository from the user's configuration. */
@@ -63,8 +63,10 @@ export async function loadUserConfig(
 		throw error;
 	}
 	const real = await realpath(repository);
-	const inside = relative(real, await realpath(path));
-	if (!inside.startsWith('..') && !isAbsolute(inside)) {
+	const below = relative(real, await realpath(path));
+	// Only `..` as a whole segment leaves the repository: a folder named `..config` is inside it.
+	const outside = below === '..' || below.startsWith(`..${sep}`) || isAbsolute(below);
+	if (!outside) {
 		throw new Error(`${path} is inside the repository, where the agent could change it`);
 	}
 

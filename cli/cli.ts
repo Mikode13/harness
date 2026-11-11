@@ -23,6 +23,7 @@ import { HistoryCommands } from './historyCommands.ts';
 import { formatSpinnerLine } from './spinner.ts';
 import { DebugRecorder } from './debugRecorder.ts';
 import { createPromptQueue } from './promptQueue.ts';
+import { startupNotice } from './startupNotice.ts';
 
 const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 let spinnerFrame = 0;
@@ -70,6 +71,8 @@ const { values: flags } = parseArgs({
 		debug: { type: 'string' },
 	},
 });
+const notice = startupNotice({ llm: flags.llm });
+if (notice) output.print(notice);
 const stepsFile = flags.steps;
 // Opened now, so a path that cannot be written fails before any call to the model is billed.
 if (stepsFile) appendFileSync(stepsFile, '');
@@ -138,7 +141,7 @@ async function whileAsking<Answer>(answer: () => Promise<Answer>): Promise<Answe
 		return await answer();
 	} finally {
 		asking = false;
-		for (const message of held.splice(0)) output.print(message);
+		for (const message of held.splice(0)) output.printStyled(message);
 		startSpinner(progressFormatter.spinnerDescription());
 	}
 }
@@ -198,7 +201,7 @@ const loop = new ConversationLoop(
 
 		stopSpinner();
 		if (message) {
-			output.print(message);
+			output.printStyled(message);
 		}
 		startSpinner(progressFormatter.spinnerDescription());
 	},
