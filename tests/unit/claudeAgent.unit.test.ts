@@ -365,12 +365,22 @@ describe('ClaudeAgent', () => {
 				allowDangerouslySkipPermissions: true,
 				cwd: process.cwd(),
 				effort: 'low',
-				maxTurns: 3,
 				model: 'claude-sonnet-5-5',
 				permissionMode: 'bypassPermissions',
 				resume: sessionId,
 			},
 		});
+	});
+
+	// A run is bounded by the caller's signal, as with Codex; see docs/decisions.md.
+	it('sets no turn limit of its own', async () => {
+		vi.mocked(query).mockReturnValue(stream([result()]));
+
+		await new ClaudeAgent({ model: 'sonnet', logger: createLogger() }).run('prompt', {
+			signal: new AbortController().signal,
+		});
+
+		expect(vi.mocked(query).mock.calls[0]?.[0].options).not.toHaveProperty('maxTurns');
 	});
 
 	it('keeps permission checks enabled by default', async () => {
@@ -385,7 +395,6 @@ describe('ClaudeAgent', () => {
 			options: {
 				cwd: process.cwd(),
 				effort: 'high',
-				maxTurns: 3,
 				model: 'claude-sonnet-5-5',
 				resume: undefined,
 			},
@@ -498,6 +507,62 @@ describe('ClaudeAgent', () => {
 			cause: 'error,temporary failure,rate limited',
 			tokens: { inputTokens: 4, outputTokens: 2, readCacheTokens: 1, writtenCacheTokens: 0 },
 			usageUnreported: false,
+		});
+	});
+
+	describe('a success result the SDK marks as an error', () => {
+		function failedSuccess(status?: number | null): Record<string, unknown> {
+			return {
+				...result('Invalid API key · Please run /login'),
+				is_error: true,
+				...(status === undefined ? {} : { api_error_status: status }),
+			};
+		}
+
+		it.each([401, 403, 400])(
+			'refuses to answer with it, unrecoverably, when the API rejected the request with %i',
+			async status => {
+				vi.mocked(query).mockReturnValue(stream([failedSuccess(status)]));
+
+				const failure = await new ClaudeAgent({ model: 'sonnet', logger: createLogger() })
+					.run('prompt', { signal: new AbortController().signal })
+					.catch((error: unknown) => error);
+
+				expect(failure).toBeInstanceOf(UnrecoverableError);
+				expect(failure).toMatchObject({
+					cause: 'Invalid API key · Please run /login',
+					tokens: { inputTokens: 11, outputTokens: 7, readCacheTokens: 5, writtenCacheTokens: 3 },
+					usageUnreported: false,
+				});
+			},
+		);
+
+		it.each([
+			['a status a retry can fix', 529],
+			['no status', null],
+			['the status left out', undefined],
+		])('refuses to answer with it, recoverably, given %s', async (_case, status) => {
+			vi.mocked(query).mockReturnValue(stream([failedSuccess(status)]));
+
+			const failure = await new ClaudeAgent({ model: 'sonnet', logger: createLogger() })
+				.run('prompt', { signal: new AbortController().signal })
+				.catch((error: unknown) => error);
+
+			expect(failure).toBeInstanceOf(RecoverableError);
+			expect(failure).toMatchObject({
+				cause: 'Invalid API key · Please run /login',
+				tokens: { inputTokens: 11, outputTokens: 7, readCacheTokens: 5, writtenCacheTokens: 3 },
+			});
+		});
+
+		it('keeps answering with a success result that is not an error', async () => {
+			vi.mocked(query).mockReturnValue(stream([{ ...result('done'), is_error: false }]));
+
+			await expect(
+				new ClaudeAgent({ model: 'sonnet', logger: createLogger() }).run('prompt', {
+					signal: new AbortController().signal,
+				}),
+			).resolves.toMatchObject({ response: 'done' });
 		});
 	});
 
