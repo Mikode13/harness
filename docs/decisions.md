@@ -3187,6 +3187,7 @@ tags: #mikode-harness #tools #processes
 **Consequences:**
 
 - A program is no longer in the terminal's process group, so a terminal's Ctrl+C does not reach it by itself. In the CLI nothing changes: its readline takes Ctrl+C itself, so no signal reached the program before either, and it cancels the run, which now stops the whole group.
+- The program also starts a session of its own, since Node changes the process group only with `detached`, which calls `setsid`. So it has no controlling terminal, and neither has anything it starts: a program that asks on `/dev/tty` fails where it used to ask, such as ssh signing a commit of a history move with a key that has a passphrase and no agent, or git asking for a credential. `git commit` already ran this way, through `runCommandProcess`.
 - A grandchild that ignores `SIGTERM` is not killed; nothing waits for the group to be gone, unlike `runCommandProcess`.
 - Windows keeps killing the program alone.
 

@@ -9,7 +9,8 @@ const maxOutputBytes = 64 * 1024 * 1024;
 const maxErrorBytes = 1024 * 1024;
 
 // On POSIX the program leads a process group of its own, so a stop reaches what it started too,
-// such as the hooks git runs. Windows has no process groups.
+// such as the hooks git runs. Node gives it one only with `detached`, which starts a session as
+// well, so the program has no controlling terminal. Windows has no process groups.
 const inOwnGroup = process.platform !== 'win32';
 
 export interface ProcessResult {

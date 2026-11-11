@@ -331,7 +331,8 @@ into the next call.
 
 `ILogger` and its stderr implementation, `runProcess`, which runs a program with its arguments
 as an array and never through a shell, on POSIX as the leader of a process group of its own that
-each of its stops signals whole, keeping only the first megabyte of its error output,
+each of its stops signals whole, in a session of its own and so with no controlling terminal,
+keeping only the first megabyte of its error output,
 `inheritedEnvironment`, the few variables a program of
 the repository's gets, and `gitEnvironment`, those and what git needs to find its configuration,
 sign and name the author, never a secret, since git runs the repository's hooks, filters and
