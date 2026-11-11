@@ -1,5 +1,10 @@
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { gitEnvironment, runProcess } from '../../src/shared/infrastructure/runProcess.ts';
+import { isAlive } from '../support/processes.ts';
 
 // Node itself is the one program every machine running these tests has.
 const node = process.execPath;
@@ -86,7 +91,78 @@ describe('runProcess', () => {
 
 		await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
 	});
+
+	it('keeps the first megabyte of the error output and drops the rest, without failing', async () => {
+		const { stderr, exitCode } = await runProcess(
+			node,
+			['-e', 'process.stderr.write("first line\\n" + "x".repeat(3 * 1024 * 1024))'],
+			{ cwd, signal },
+		);
+
+		expect(exitCode).toBe(0);
+		expect(stderr.startsWith('first line\n')).toBe(true);
+		expect(stderr).toHaveLength(1024 * 1024);
+	});
+
+	// git runs the repository's hooks, which can start programs of their own.
+	describe.skipIf(process.platform === 'win32')('what the program started', () => {
+		/**
+		 * Runs `sh`, which starts a `sleep` and writes its pid, then stops the run: by cancelling it,
+		 * or through `onLine` when one is given.
+		 */
+		async function withGrandchild(
+			onLine?: (line: string) => void,
+		): Promise<{ failure: unknown; grandchild: number }> {
+			const folder = realpathSync(mkdtempSync(join(tmpdir(), 'harness-process-')));
+			try {
+				const controller = new AbortController();
+				const running = runProcess('sh', ['-c', 'sleep 30 & echo $! > child; echo started; wait'], {
+					cwd: folder,
+					signal: controller.signal,
+					...(onLine ? { onLine } : {}),
+				}).catch((error: unknown) => error);
+				const grandchild = await pidIn(join(folder, 'child'));
+				if (!onLine) controller.abort();
+				const failure = await running;
+				// Signalled, not reaped: give the system a moment.
+				for (let attempt = 0; attempt < 100 && isAlive(grandchild); attempt++) await delay(20);
+				return { failure, grandchild };
+			} finally {
+				rmSync(folder, { recursive: true, force: true });
+			}
+		}
+
+		it('stops it too when the run is cancelled, rejecting with the cancellation', async () => {
+			const { failure, grandchild } = await withGrandchild();
+
+			expect(failure).toMatchObject({ name: 'AbortError' });
+			expect(isAlive(grandchild)).toBe(false);
+		});
+
+		it('stops it too when a line handler fails', async () => {
+			const limit = new Error('too many lines');
+			const { failure, grandchild } = await withGrandchild(() => {
+				throw limit;
+			});
+
+			expect(failure).toBe(limit);
+			expect(isAlive(grandchild)).toBe(false);
+		});
+	});
 });
+
+/** The pid a script wrote to `path`, waiting for it to appear. */
+async function pidIn(path: string): Promise<number> {
+	for (;;) {
+		try {
+			const pid = Number(readFileSync(path, 'utf8'));
+			if (pid > 0) return pid;
+		} catch {
+			// Not written yet.
+		}
+		await delay(10);
+	}
+}
 
 describe('gitEnvironment', () => {
 	it("gives git a command's variables, what signing needs and who commits, never a secret or another GIT_ variable", () => {
