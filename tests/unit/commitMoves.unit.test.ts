@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
 	existsSync,
 	mkdtempSync,
@@ -42,6 +42,9 @@ const gitConfig = [
 	'-c',
 	'core.hooksPath=/dev/null',
 ];
+
+// Signing with SSH needs a key, which only `ssh-keygen` makes; not every machine has it.
+const hasSshKeygen = spawnSync('ssh-keygen', ['-?']).error === undefined;
 
 let parent: string;
 let root: string;
@@ -291,28 +294,31 @@ describe('runCommand', { timeout: 20_000 }, () => {
 		expect(runId).toBe('');
 	});
 
-	it('reads only commits from a log configured to show signatures', async () => {
-		const key = join(parent, 'key');
-		execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', key]);
-		git('config', 'log.showSignature', 'true');
-		const before = await tip();
-		git(
-			'-c',
-			'gpg.format=ssh',
-			'-c',
-			`user.signingkey=${key}`,
-			'commit',
-			'--quiet',
-			'-S',
-			'--allow-empty',
-			'-m',
-			'signed',
-		);
+	it.skipIf(!hasSshKeygen)(
+		'reads only commits from a log configured to show signatures',
+		async () => {
+			const key = join(parent, 'key');
+			execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', key]);
+			git('config', 'log.showSignature', 'true');
+			const before = await tip();
+			git(
+				'-c',
+				'gpg.format=ssh',
+				'-c',
+				`user.signingkey=${key}`,
+				'commit',
+				'--quiet',
+				'-S',
+				'--allow-empty',
+				'-m',
+				'signed',
+			);
 
-		await expect(gitCommits.commitsBetween(before, await tip(), signal)).resolves.toEqual([
-			{ sha: head(), subject: 'signed' },
-		]);
-	});
+			await expect(gitCommits.commitsBetween(before, await tip(), signal)).resolves.toEqual([
+				{ sha: head(), subject: 'signed' },
+			]);
+		},
+	);
 
 	it('ends the run once what the command changed is recorded, when the logger fails', async () => {
 		vi.mocked(gitCommits.commitsBetween).mockRejectedValueOnce(new Error('git broke'));
@@ -655,6 +661,8 @@ describe('undoing and redoing commits', { timeout: 20_000 }, () => {
 			{ mode: 0o755 },
 		);
 		git('config', 'commit.gpgsign', 'true');
+		// The program answers as gpg does, whatever format the machine's own configuration signs in.
+		git('config', 'gpg.format', 'openpgp');
 		git('config', 'gpg.program', program);
 
 		const undone = await history.undo({ commits: 'revert' });

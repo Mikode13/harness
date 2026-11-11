@@ -33,6 +33,9 @@ import {
 import { readUnder, recordRun } from '../support/recordedRuns.ts';
 import { replaceTool, writesOver } from '../support/replaceTool.ts';
 
+// Permissions do not stop root, so a case built with chmod cannot fail there.
+const asRoot = process.getuid?.() === 0;
+
 let parent: string;
 let root: string;
 let stateDirectory: string;
@@ -293,56 +296,62 @@ describe('the run an agent recorded', () => {
 		await expect(history.list()).resolves.toEqual({ runs: [] });
 	});
 
-	it('is neither named nor kept when the run started recording but changed nothing', async () => {
-		const agent = await agentWriting(write, textResponse('it could not be written'));
-		// The temporary beside the file cannot be created, so the write fails once recording began.
-		chmodSync(root, 0o555);
-		let response;
-		try {
-			response = await agent.run('change it', { signal });
-		} finally {
-			chmodSync(root, 0o755);
-		}
+	it.skipIf(asRoot)(
+		'is neither named nor kept when the run started recording but changed nothing',
+		async () => {
+			const agent = await agentWriting(write, textResponse('it could not be written'));
+			// The temporary beside the file cannot be created, so the write fails once recording began.
+			chmodSync(root, 0o555);
+			let response;
+			try {
+				response = await agent.run('change it', { signal });
+			} finally {
+				chmodSync(root, 0o755);
+			}
 
-		expect(readUnder(root, 'a.txt')).toBe('original');
-		expect(response).not.toHaveProperty('runId');
-		await expect(history.list()).resolves.toEqual({ runs: [] });
-	});
+			expect(readUnder(root, 'a.txt')).toBe('original');
+			expect(response).not.toHaveProperty('runId');
+			await expect(history.list()).resolves.toEqual({ runs: [] });
+		},
+	);
 
-	it('is neither named nor listed when removing a run that changed nothing fails', async () => {
-		writeFileSync(join(root, 'a.txt'), 'original');
-		const workspaces = join(stateDirectory, 'workspaces');
-		let runFolder: string | undefined;
-		const warn = vi.fn();
-		const agent = new LLMAgent({
-			llmClient: {
-				send: () => {
-					if (runFolder !== undefined) throw new Error('called a third time');
-					const runs = join(workspaces, readdirSync(workspaces)[0] ?? '', 'runs');
-					const started = readdirSync(runs);
-					if (started.length === 0) return Promise.resolve(write);
-					// The write failed; the run's folder cannot be emptied when the run ends.
-					runFolder = join(runs, started[0] ?? '');
-					chmodSync(runFolder, 0o500);
-					return Promise.resolve(textResponse('it could not be written'));
+	it.skipIf(asRoot)(
+		'is neither named nor listed when removing a run that changed nothing fails',
+		async () => {
+			writeFileSync(join(root, 'a.txt'), 'original');
+			const workspaces = join(stateDirectory, 'workspaces');
+			let runFolder: string | undefined;
+			const warn = vi.fn();
+			const agent = new LLMAgent({
+				llmClient: {
+					send: () => {
+						if (runFolder !== undefined) throw new Error('called a third time');
+						const runs = join(workspaces, readdirSync(workspaces)[0] ?? '', 'runs');
+						const started = readdirSync(runs);
+						if (started.length === 0) return Promise.resolve(write);
+						// The write failed; the run's folder cannot be emptied when the run ends.
+						runFolder = join(runs, started[0] ?? '');
+						chmodSync(runFolder, 0o500);
+						return Promise.resolve(textResponse('it could not be written'));
+					},
 				},
-			},
-			tools: [replaceTool(await writesOver(root, store))],
-			logger: { warn },
-		});
-		chmodSync(root, 0o555);
-		let response;
-		try {
-			response = await agent.run('change it', { signal });
-		} finally {
-			chmodSync(root, 0o755);
-			if (runFolder !== undefined) chmodSync(runFolder, 0o700);
-		}
+				tools: [replaceTool(await writesOver(root, store))],
+				logger: { warn },
+			});
+			chmodSync(root, 0o555);
+			let response;
+			try {
+				response = await agent.run('change it', { signal });
+			} finally {
+				chmodSync(root, 0o755);
+				if (runFolder !== undefined) chmodSync(runFolder, 0o700);
+			}
 
-		expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not close its records'));
-		expect(response).not.toHaveProperty('runId');
-		await expect(history.list()).resolves.toEqual({ runs: [] });
-	});
+			expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not close its records'));
+			expect(response).not.toHaveProperty('runId');
+			await expect(history.list()).resolves.toEqual({ runs: [] });
+		},
+	);
 
 	it('stays in the history, failed, when the run fails after writing', async () => {
 		const agent = await agentWriting(write, new Error('the model is down'));

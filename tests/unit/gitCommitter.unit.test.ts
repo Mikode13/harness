@@ -22,6 +22,9 @@ import type { PreparingTool } from '../../src/tools/domain/preparedCall.ts';
 import { ReadRegistry } from '../../src/tools/domain/readRegistry.ts';
 import { commandToolFor, openWorkspace } from '../../src/tools/infrastructure/fileTools.ts';
 
+// Permissions do not stop root, so a case built with chmod cannot fail there.
+const asRoot = process.getuid?.() === 0;
+
 const signal = new AbortController().signal;
 // Whatever the machine's own configuration says: no signing, a known author, no hook but the
 // tests' own.
@@ -155,36 +158,39 @@ describe('the git committer', { timeout: 20_000 }, () => {
 		expect(undone.git?.[0]).toMatchObject({ action: 'revert', outcome: 'done' });
 	});
 
-	it('records the commit it made when it cannot remove the folder that held its message, and warns', async () => {
-		const temporary = join(parent, 'tmp');
-		mkdirSync(temporary);
-		// Locks the message's folder once git committed, so removing what it holds fails.
-		hook('post-commit', `chmod 500 "${temporary}"/harness-commit-*`);
-		const { run, committer, options, context, warnings } = await workingRun({
-			edit: 'echo two > a.txt',
-		});
-		await run('edit');
-		const frozen = await committer.freeze(options);
+	it.skipIf(asRoot)(
+		'records the commit it made when it cannot remove the folder that held its message, and warns',
+		async () => {
+			const temporary = join(parent, 'tmp');
+			mkdirSync(temporary);
+			// Locks the message's folder once git committed, so removing what it holds fails.
+			hook('post-commit', `chmod 500 "${temporary}"/harness-commit-*`);
+			const { run, committer, options, context, warnings } = await workingRun({
+				edit: 'echo two > a.txt',
+			});
+			await run('edit');
+			const frozen = await committer.freeze(options);
 
-		vi.stubEnv('TMPDIR', temporary);
-		try {
-			const reports = await committer.commit(
-				frozen ?? { repositories: [] },
-				new Map([[root, 'Change a']]),
-				options,
-			);
-			expect(reports[0]).toMatchObject({ outcome: 'done', commits: [{ sha: head() }] });
-		} finally {
-			vi.unstubAllEnvs();
-			execFileSync('chmod', ['-R', 'u+w', temporary]);
-		}
-		expect(warnings).toEqual([expect.stringContaining('which held its message')]);
+			vi.stubEnv('TMPDIR', temporary);
+			try {
+				const reports = await committer.commit(
+					frozen ?? { repositories: [] },
+					new Map([[root, 'Change a']]),
+					options,
+				);
+				expect(reports[0]).toMatchObject({ outcome: 'done', commits: [{ sha: head() }] });
+			} finally {
+				vi.unstubAllEnvs();
+				execFileSync('chmod', ['-R', 'u+w', temporary]);
+			}
+			expect(warnings).toEqual([expect.stringContaining('which held its message')]);
 
-		await context.finish('completed');
-		const history = await createHistory({ root, stateDirectory: join(parent, 'state') });
-		const undone = await history.undo({ commits: 'revert' });
-		expect(undone.git?.[0]).toMatchObject({ action: 'revert', outcome: 'done' });
-	});
+			await context.finish('completed');
+			const history = await createHistory({ root, stateDirectory: join(parent, 'state') });
+			const undone = await history.undo({ commits: 'revert' });
+			expect(undone.git?.[0]).toMatchObject({ action: 'revert', outcome: 'done' });
+		},
+	);
 
 	it("freezes its own history's run when a tool of the run wrote to another history last", async () => {
 		mkdirSync(join(root, 'sub'));

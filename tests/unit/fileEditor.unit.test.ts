@@ -29,6 +29,9 @@ import { GitIgnoreRules } from '../../src/tools/infrastructure/gitIgnoreRules.ts
 import { RootsAccessPolicy } from '../../src/tools/infrastructure/rootsAccessPolicy.ts';
 import { WriteSession } from '../../src/tools/infrastructure/writeSession.ts';
 
+// Permissions do not stop root, so a case built with chmod cannot fail there.
+const asRoot = process.getuid?.() === 0;
+
 /**
  * ```text
  * parent/repo/
@@ -491,22 +494,25 @@ describe('FileEditor', () => {
 			expect(read('clean.ts')).toBe('approved\n');
 		});
 
-		it('abandons a change it could not write, and removes the folders it made for it', async () => {
-			mkdirSync(file('locked'));
-			chmodSync(file('locked'), 0o555);
-			try {
-				const error = await refusal(
-					change({ kind: 'create', path: 'locked/deep/e.ts', content: text('e\n') }),
-				);
+		it.skipIf(asRoot)(
+			'abandons a change it could not write, and removes the folders it made for it',
+			async () => {
+				mkdirSync(file('locked'));
+				chmodSync(file('locked'), 0o555);
+				try {
+					const error = await refusal(
+						change({ kind: 'create', path: 'locked/deep/e.ts', content: text('e\n') }),
+					);
 
-				expect(error.message).toMatch(/Could not write "locked\/deep\/e.ts" \(EACCES\)/);
-				expect(existsSync(file('locked/deep'))).toBe(false);
-				const [entry] = await entries();
-				expect(entry?.status).toBe('abandoned');
-			} finally {
-				chmodSync(file('locked'), 0o755);
-			}
-		});
+					expect(error.message).toMatch(/Could not write "locked\/deep\/e.ts" \(EACCES\)/);
+					expect(existsSync(file('locked/deep'))).toBe(false);
+					const [entry] = await entries();
+					expect(entry?.status).toBe('abandoned');
+				} finally {
+					chmodSync(file('locked'), 0o755);
+				}
+			},
+		);
 
 		it('abandons a change cancelled after it was recorded, before writing', async () => {
 			const controller = new AbortController();

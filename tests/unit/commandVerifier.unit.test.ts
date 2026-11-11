@@ -20,6 +20,9 @@ import type { PreparingTool } from '../../src/tools/domain/preparedCall.ts';
 import { ReadRegistry } from '../../src/tools/domain/readRegistry.ts';
 import { commandToolFor, openWorkspace } from '../../src/tools/infrastructure/fileTools.ts';
 
+// Permissions do not stop root, so a case built with chmod cannot fail there.
+const asRoot = process.getuid?.() === 0;
+
 const signal = new AbortController().signal;
 
 let parent: string;
@@ -378,53 +381,59 @@ describe('the command verifier', { timeout: 20_000 }, () => {
 		expect(runs('test')).toBe(1);
 	});
 
-	it('keeps a check that ran as unknown when the harness could not record what it changed', async () => {
-		const { options, run, verifier } = await verifiedRun(
-			// Unreadable once it ends, so what it changed cannot be compared.
-			{ test: counted('test', 'echo two > a.txt; chmod 000 a.txt; echo ok') },
-			[{ command: 'test' }],
-		);
-		await run('test');
+	it.skipIf(asRoot)(
+		'keeps a check that ran as unknown when the harness could not record what it changed',
+		async () => {
+			const { options, run, verifier } = await verifiedRun(
+				// Unreadable once it ends, so what it changed cannot be compared.
+				{ test: counted('test', 'echo two > a.txt; chmod 000 a.txt; echo ok') },
+				[{ command: 'test' }],
+			);
+			await run('test');
 
-		const result = await verifier.verify(options);
+			const result = await verifier.verify(options);
 
-		expect(result.checks).toEqual([
-			{
-				command: 'test',
-				status: 'unknown',
-				how: expect.stringMatching(/^could not run: Writing stopped/) as string,
-				output: 'ok\n',
-			},
-		]);
-		expect(runs('test')).toBe(1);
-	});
+			expect(result.checks).toEqual([
+				{
+					command: 'test',
+					status: 'unknown',
+					how: expect.stringMatching(/^could not run: Writing stopped/) as string,
+					output: 'ok\n',
+				},
+			]);
+			expect(runs('test')).toBe(1);
+		},
+	);
 
-	it('reports a check it ran itself unknown when the harness could not record what it changed', async () => {
-		const { options, verifier } = await verifiedRun(
-			{
-				lint: counted('lint', 'exit 0'),
-				test: counted('test', 'echo two > a.txt; chmod 000 a.txt; echo ok'),
-			},
-			[{ command: 'test' }, { command: 'lint' }],
-		);
+	it.skipIf(asRoot)(
+		'reports a check it ran itself unknown when the harness could not record what it changed',
+		async () => {
+			const { options, verifier } = await verifiedRun(
+				{
+					lint: counted('lint', 'exit 0'),
+					test: counted('test', 'echo two > a.txt; chmod 000 a.txt; echo ok'),
+				},
+				[{ command: 'test' }, { command: 'lint' }],
+			);
 
-		const result = await verifier.verify(options);
+			const result = await verifier.verify(options);
 
-		expect(result.checks).toEqual([
-			{
-				command: 'test',
-				status: 'unknown',
-				how: '"test" ran, but the harness could not record what it changed; writing has stopped for this run',
-				output: 'ok\n',
-			},
-			{
-				command: 'lint',
-				status: 'missing',
-				how: 'could not run: Writing stopped: the harness could not record what a command changed',
-			},
-		]);
-		expect(runs('lint')).toBe(0);
-	});
+			expect(result.checks).toEqual([
+				{
+					command: 'test',
+					status: 'unknown',
+					how: '"test" ran, but the harness could not record what it changed; writing has stopped for this run',
+					output: 'ok\n',
+				},
+				{
+					command: 'lint',
+					status: 'missing',
+					how: 'could not run: Writing stopped: the harness could not record what a command changed',
+				},
+			]);
+			expect(runs('lint')).toBe(0);
+		},
+	);
 
 	it('waits for a command of the run still running before it judges the checks', async () => {
 		const { options, run, verifier } = await verifiedRun(
