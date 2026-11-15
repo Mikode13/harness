@@ -1341,6 +1341,8 @@ A move with conflicts is recorded as not `complete`. Each move is appended to `r
 
 tags: #mikode-harness #recovery #undo
 
+partially superseded by: "The harness names no session manager: a consumer stores what it saves" (below) — what this entry leaves to the Session Manager is left to the consumer that stores it; the harness has no such component, and #29 became the issue for delegated agents working in the background.
+
 **Decision:** before a run starts, the store brings its history down so that, with the new run, it holds at most 25 runs per workspace (`keepRuns`). Each step removes one run:
 
 - **an abandoned branch first**, a leaf at a time, oldest first, removed whole since nothing depends on it;
@@ -2054,6 +2056,8 @@ The user's view: the provider knows how to keep its own cache and signed blocks,
 
 tags: #mikode-harness #workflow #api-design
 
+partially superseded by: "The harness names no session manager: a consumer stores what it saves" (below) — what this entry leaves to the Session Manager is left to the consumer that stores it; the harness has no such component, and #29 became the issue for delegated agents working in the background.
+
 **Decision:**
 
 - **A workflow works like a middleware chain.** Each stage has a function that creates its agent, a `prompt` built from the stage's input, a `Validator` for the agent's JSON answer, and a `transition` that receives the valid answer and the stage's own input. A stage's agent starts with an empty context and builds its own conversation; only the transition's `input` crosses into the next stage.
@@ -2255,6 +2259,8 @@ tags: #mikode-harness #orchestration
 ## A run hands over what its model saw only when asked, and a failure to take it is logged
 
 tags: #mikode-harness #llm #debugging
+
+partially superseded by: "The harness names no session manager: a consumer stores what it saves" (below) — what this entry leaves to the Session Manager is left to the consumer that stores it; the harness has no such component, and #29 became the issue for delegated agents working in the background.
 
 **Decision:** `createLLMAgent` and `createLLMOrchestrator` take an `onTranscript` callback. Once a run of `LLMAgent` ends, completed, failed or cancelled, it receives a `Transcript`: the run's `outcome`, the role in an orchestrator or `explorer`, and a `content` of plain JSON with the instructions, the tool definitions, the run's context with the model's answers and the tools' results, and the error. `content` has no stable shape: it can change in any release. A callback that fails is logged through `ILogger.warn`, and the run keeps its outcome. The CLI's `--debug <folder>` writes each transcript to a file, beside every progress event. A `tool` event that ends in `error` also carries, in `error`, what the model was told.
 
@@ -3209,3 +3215,18 @@ tags: #mikode-harness #cli #security
 
 - A model's text loses its own colors, and its carriage returns.
 - Anything new that prints with styles must clean what it styles, or print through `Output.print`.
+
+## The harness names no session manager: a consumer stores what it saves
+
+tags: #mikode-harness #architecture #persistence
+
+**Decision:** the harness has no Session Manager and its documents name none. It lets a consumer take what an agent needs to continue, and restore it: one agent's conversation (#111), then a composed execution at safe boundaries (#136). The consumer that takes it owns where it is stored, how it is named and listed, how long it is kept and who may read it.
+
+**Context:** earlier entries leave work to "the Session Manager (#29)": what a workflow knows, a stage's conversation, a typed transcript, and the retention of the history. That named a component that was never designed, as if it were part of the harness. #29 itself was given another purpose on 2026-10-23, delegated agents that work in the background, so the reference no longer leads to that work. #111 and #136 already split it: the harness owns the format, its validation and the restore, and whoever stores it owns the rest.
+
+**Consequences:**
+
+- The architecture says that a consumer cannot save or restore a conversation yet, and points to #111.
+- The harness learns nothing about who stores a conversation, or why.
+- The retention of the history stays as it is, in the harness. Whether a consumer should set it is not decided.
+- #111 and #136 still say "Session Manager" for the owner of the storage; they keep their text until they are refined.

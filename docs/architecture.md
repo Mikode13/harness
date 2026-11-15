@@ -925,8 +925,8 @@ at a time, and reads what the user sends meanwhile" in [`decisions.md`](decision
   others' writes until it ends.
 - **The seam has no memory or routing model.** MCP, long-term memory, graph execution and
   file-based agent registries are deliberately absent; each waits for a real consumer.
-  `LLMAgent`'s `Conversation` lives only as long as the agent: persisting it waits for the
-  session manager (#29).
+  `LLMAgent`'s `Conversation` lives only as long as the agent: a consumer cannot save or
+  restore it yet (#111), and where it is stored is the consumer's.
 - **Reasoning is replayed only to the provider that produced it.** Each client keeps its
   signed or encrypted reasoning as a `providerData` part labelled with its own `source`, and
   sends back only its own. A conversation handed to the other provider keeps its text, tool

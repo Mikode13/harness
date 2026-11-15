@@ -144,7 +144,7 @@ describe('ClaudeLLMClient', () => {
 			signal,
 		);
 
-		// What a session manager would persist, handed to a new SDK instance and a new agent.
+		// What a consumer would store, handed to a new SDK instance and a new agent.
 		const persisted = [userMessage('My name is Miki.'), first.message];
 		const answer = await new LLMAgent({ llmClient: createClient(), messages: persisted }).run(
 			'What is my name?',
