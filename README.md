@@ -2,8 +2,8 @@
 
 A small, hand-built agent harness in TypeScript. It coordinates OpenAI Codex and
 Claude Agent SDK instances — as a single terminal chat, or as a multi-agent
-plan → execute → review workflow — and is growing into the runtime that
-coordinates specialized agents across MiKode projects.
+plan → execute → review workflow — and is the library its consumers run their
+agents on.
 
 ## Motivation
 
@@ -14,9 +14,10 @@ This project exists for three reasons, in this order:
    coordination — by building the fundamental parts personally instead of
    consuming a framework. No LangGraph, no OpenAI Agents SDK as the engine;
    those come later as comparison points, not as foundations.
-2. **A reusable base.** The harness is the substrate for a future chatbot and
-   for MiKode tooling: routing, typed tools, specialized agents, memory, and
-   validation layers will be added on top of it once real consumers need them.
+2. **A reusable base.** The harness is the library its consumers run agents on.
+   It gains a capability, such as routing, typed tools or specialized agents,
+   once a real consumer needs it. What a consumer builds on top, such as storing
+   conversations or a memory, stays in that consumer.
 3. **Defining how AI works inside MiKode.** Standards, explicit per-agent
    responsibilities and tools, traceability, and reproducible runs — following
    the conventions of the `mikode-engineering` repository.
