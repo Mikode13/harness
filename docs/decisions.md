@@ -1341,7 +1341,7 @@ A move with conflicts is recorded as not `complete`. Each move is appended to `r
 
 tags: #mikode-harness #recovery #undo
 
-partially superseded by: "The harness names no session manager: a consumer stores what it saves" (below) — what this entry leaves to the Session Manager is left to the consumer that stores it; the harness has no such component, and #29 became the issue for delegated agents working in the background.
+partially superseded by: "The harness names no session manager: a consumer stores what it saves" (below) — the retention is not expected to move: it stays in the harness, which has no Session Manager, and whether a consumer may set it is not decided. #29 became the issue for delegated agents working in the background.
 
 **Decision:** before a run starts, the store brings its history down so that, with the new run, it holds at most 25 runs per workspace (`keepRuns`). Each step removes one run:
 
