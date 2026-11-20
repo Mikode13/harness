@@ -1,9 +1,25 @@
 # @mikode13/harness
 
-A small, hand-built agent harness in TypeScript. It coordinates OpenAI Codex and
-Claude Agent SDK instances — as a single terminal chat, or as a multi-agent
-plan → execute → review workflow — and is the library its consumers run their
-agents on.
+A TypeScript library for running and composing coding agents. It provides its own
+model API tool loop for OpenAI and Anthropic, alongside adapters for the Codex and
+Claude Agent SDKs. Consumers supply the interface and conversation storage.
+
+## Choose an execution path
+
+| Path       | Factories                                 | Context and tools                                                                      | Authentication                                        |
+| ---------- | ----------------------------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Model APIs | `createLLMAgent`, `createLLMOrchestrator` | The harness owns the conversation and tool loop; callers choose tools and instructions | Provider API keys, billed by the provider             |
+| Agent SDKs | `createAgent`, `createOrchestrator`       | The provider SDK owns its session and coding tools                                     | Codex or Claude login; Claude can also use an API key |
+
+Both paths implement `Agent` and can be composed into workflows. They do not have identical
+capabilities or billing: see [authentication](#authentication) and
+[agents that own their conversation](#agents-that-own-their-conversation).
+
+Start with [installation](#install), then choose [workflows](#composing-agents-into-a-workflow),
+[file tools](#agents-that-change-files), [code recovery](#going-back-through-what-an-agent-wrote)
+or [worktrees](#working-apart-in-a-worktree). The [architecture](#architecture) describes
+boundaries; [tests](#tests) and the [local smoke test](#local-development-smoke-test) cover
+contributing and trying the library.
 
 ## Motivation
 
@@ -28,14 +44,14 @@ there is at least one real consumer.
 
 ## What it does today
 
-An interactive terminal chat, backed by one `Agent` — a single engine, or a full
-multi-agent workflow, chosen entirely by what gets wired up in `cli/cli.ts`; the
-chat loop itself never knows the difference.
+The library runs a single agent or a composed workflow through the same `Agent` contract.
+The repository's `cli/cli.ts` is a development chat for trying that contract, not a
+persistent conversation service.
 
 - **A provider-agnostic `Agent` contract** (`run(prompt, { signal, onProgress })`) with
   two paths to each provider — swapping one agent for another, anywhere in the
   composition, changes nothing else.
-- **The Agent SDK path, the default**: `CodexAgent` and `ClaudeAgent` drive Codex
+- **The Agent SDK path, the development CLI's default**: `CodexAgent` and `ClaudeAgent` drive Codex
   and Claude Code. Codex reuses one `Thread` across turns and Claude resumes via a
   captured `session_id`, so the provider keeps the context.
 - **The model API path**: `LLMAgent` calls the OpenAI Responses API or the
@@ -62,11 +78,10 @@ chat loop itself never knows the difference.
   answer is validated before its transition picks the next stage, stops the run on purpose,
   or completes it. Only the data a transition hands
   over crosses to the next stage, and the types check it against what that stage takes.
-- **Live progress streaming**: every engine reports ongoing activity (tool
-  calls, searches, file changes, reasoning) through a typed `ProgressEvent`
-  callback, separate from the final response — so an agent's own words never
-  get mixed with narration of what it did to produce them, and a caller (the
-  CLI today, a future web UI) decides how to render it.
+- **Progress events**: engines report activity through a typed `ProgressEvent`
+  callback, separate from the final response, so a caller decides how to render activity
+  and the agent's answer. Available events depend on the path; the model API path does
+  not stream response tokens.
 - **Retry policy** (`RetryingAgent`) wraps individual agents, not whole
   workflows — a transient failure in one sub-agent is absorbed locally, without
   redoing another sub-agent's already-successful work.
@@ -79,6 +94,19 @@ chat loop itself never knows the difference.
 boundaries, the dependency direction, the public contract, and the failure classification
 every engine goes through. [`docs/decisions.md`](docs/decisions.md) keeps why each of them
 was chosen.
+
+## Current limitations
+
+Conversation continuity within an agent instance is not durable conversation storage.
+Saving and restoring conversation snapshots is still pending
+([#111](https://github.com/Mikode13/harness/issues/111)); consumers own their persistence.
+The file-change history already writes recovery data to disk, which is a separate capability.
+`ProgressEvent` is activity narration, not the durable, ordered observation contract proposed
+in [#177](https://github.com/Mikode13/harness/issues/177).
+
+Worktrees and file-access policies are not an operating-system sandbox. Consumers running
+untrusted repository commands need to provide execution isolation. The library supports macOS
+and Linux; Windows support is not available.
 
 ## Where it is going
 
@@ -95,8 +123,9 @@ file-based agent registries — each waits for a real need.
 ## Adding an engine
 
 A new provider only needs one thing to compose safely into everything above:
-**it must only ever reject with `RecoverableError` or `UnrecoverableError`**
-(`src/shared/domain/errors.ts`), never a raw SDK error. `RetryingAgent` and
+**it must classify provider failures as `RecoverableError` or `UnrecoverableError`**
+(`src/shared/domain/errors.ts`), rather than leaking a raw SDK error. Deliberate `AbortError`
+and `TimeoutError` cancellation exceptions remain unchanged. `RetryingAgent` and
 `OrchestratorAgent` both decide what to do next by `instanceof`-checking
 against those two types; anything else leaking through is treated as
 unrecoverable and ends the run, because nothing above the adapter can tell
