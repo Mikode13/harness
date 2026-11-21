@@ -1,9 +1,14 @@
 import { resolve } from 'node:path';
-import type { Agent } from '#src/agent/domain/agent';
+import type { Agent, AgentResponse, RunOptions } from '#src/agent/domain/agent';
+import type { ConversationAgent, ConversationSnapshot } from '#src/agent/domain/snapshot';
 import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcript';
 import type { HistoryReader } from '#src/engines/domain/model/historyFollower';
 import { type Compactor, recentKeptSteps } from '#src/engines/domain/model/compactor';
-import { LLMAgent } from '#src/engines/domain/model/llmAgent';
+import {
+	LLMAgent,
+	type RestoredConversation,
+	snapshotInRun,
+} from '#src/engines/domain/model/llmAgent';
 import { JevContextTriage } from '#src/llm/infrastructure/jevContextTriage';
 import type { LLMClient } from '#src/llm/domain/llm';
 import {
@@ -70,6 +75,7 @@ import { createExploreTool } from '#src/tools/infrastructure/exploreTool';
 import { createShowChangesTool } from '#src/tools/infrastructure/showChangesTool';
 import { createRemoveWorktreeTool } from '#src/tools/infrastructure/removeWorktreeTool';
 import { listWorktrees } from '#src/tools/infrastructure/worktrees';
+import { readConversationSnapshot } from './conversationSnapshot.ts';
 import {
 	createTrackedReadFile,
 	createTrackedReadFiles,
@@ -180,6 +186,15 @@ export interface CreateLLMAgentOptions {
 	 * cancelled, for debugging. See `Transcript`. Without it, nothing is kept.
 	 */
 	onTranscript?: TranscriptCallback;
+	/**
+	 * A snapshot an agent's `snapshot()` took, parsed from the JSON it was stored as, to go on
+	 * from: the new agent continues its conversation, in its session, following the workspace's
+	 * history from where it last looked. The system prompt, the tools, the model and every other
+	 * option are this call's, not the snapshot's, and the agent reads a file again before it
+	 * changes it. It may be another provider's: each client sends back only its own opaque data.
+	 * Checked whole before the agent is built.
+	 */
+	restore?: ConversationSnapshot;
 }
 
 /** Who compacts an agent's context; see `CreateLLMAgentOptions.compaction`. */
@@ -518,6 +533,7 @@ function buildLLMAgent(
 		logger,
 		onTranscript,
 		writeRoots,
+		restore,
 	}: {
 		model?: AgentModel;
 		reasoningEffort?: ReasoningEffort;
@@ -534,8 +550,10 @@ function buildLLMAgent(
 		onTranscript?: TranscriptCallback | undefined;
 		/** See `LLMAgent`: where an agent it delegates to may write. */
 		writeRoots?: readonly string[];
+		/** What a snapshot held, already read and checked. */
+		restore?: RestoredConversation;
 	},
-): Agent {
+): ConversationAgent {
 	const chosen = model ?? defaultModelOf(provider);
 	const llmClient = llmClientFor(provider, {
 		model: chosen,
@@ -543,23 +561,50 @@ function buildLLMAgent(
 		systemPrompt,
 		logger,
 	});
-	// LLMAgent records nothing from a failed call, so the original prompt is the whole story.
-	return new RetryingAgent({
-		inner: new LLMAgent({
-			llmClient,
-			tools,
-			autoApprove,
-			logger,
-			...(history ? { history } : {}),
-			...(summarizer ? { summarizer } : {}),
-			...(maxSteps === undefined ? {} : { maxSteps }),
-			...(onTranscript ? { onTranscript } : {}),
-			...(writeRoots ? { writeRoots } : {}),
-			compactor: compactorFor(chosen, compactAt, compaction),
-		}),
+	const inner = new LLMAgent({
+		llmClient,
+		tools,
+		autoApprove,
 		logger,
-		noteFailures: false,
+		...(history ? { history } : {}),
+		...(summarizer ? { summarizer } : {}),
+		...(maxSteps === undefined ? {} : { maxSteps }),
+		...(onTranscript ? { onTranscript } : {}),
+		...(writeRoots ? { writeRoots } : {}),
+		...(restore ? { restore } : {}),
+		compactor: compactorFor(chosen, compactAt, compaction),
 	});
+	// LLMAgent records nothing from a failed call, so the original prompt is the whole story.
+	return new SnapshotAgent(new RetryingAgent({ inner, logger, noteFailures: false }), inner);
+}
+
+/**
+ * An agent wrapped in retry, whose snapshot is its engine's. Taken only while no run works on
+ * it: between two attempts of one run the engine is idle, but the run is not over.
+ */
+class SnapshotAgent implements ConversationAgent {
+	private readonly outer: RetryingAgent;
+	private readonly inner: LLMAgent;
+	private running = 0;
+
+	constructor(outer: RetryingAgent, inner: LLMAgent) {
+		this.outer = outer;
+		this.inner = inner;
+	}
+
+	async run(prompt: string, options: RunOptions): Promise<AgentResponse> {
+		this.running++;
+		try {
+			return await this.outer.run(prompt, options);
+		} finally {
+			this.running--;
+		}
+	}
+
+	snapshot(): ConversationSnapshot {
+		if (this.running > 0) throw snapshotInRun();
+		return this.inner.snapshot();
+	}
 }
 
 /**
@@ -568,8 +613,13 @@ function buildLLMAgent(
  * `createAgent` uses the Agent SDK's login. Each tool judges the risk of each call; a
  * `destructive` one runs only when the run's `approve` allows it, or with `autoApprove`.
  *
+ * The agent it returns can take a snapshot of its conversation between runs, which `restore`
+ * goes on from in a fresh agent; see `ConversationSnapshot`.
+ *
  * @throws {InvalidAgentConfigError} for an unknown provider, a model or reasoning effort its
  * client does not support, two tools that share a name, or a workspace given with no tools.
+ * @throws {InvalidSnapshotError} for a `restore` that is not a whole, valid snapshot, and
+ * `UnsupportedSnapshotVersionError`, one of them, for a version this release cannot restore.
  * @throws {UnrecoverableError} when the client cannot be set up, for example because
  * `OPENAI_API_KEY` is missing. The Anthropic SDK resolves credentials lazily, so a missing
  * `ANTHROPIC_API_KEY` fails the first run instead, with an `UnrecoverableError`.
@@ -589,8 +639,11 @@ export function createLLMAgent(
 		autoApprove,
 		logger = new Logger(),
 		onTranscript,
+		restore,
 	}: CreateLLMAgentOptions,
-): Agent {
+): ConversationAgent {
+	// First, so a snapshot that cannot be restored fails before anything is built.
+	const restored = restore === undefined ? undefined : readConversationSnapshot(restore);
 	// Told where to work with nothing to work with, the model would only pretend: it writes its
 	// tool calls as text, and the run returns them as its answer.
 	if (workspace && tools.length === 0) {
@@ -616,6 +669,7 @@ export function createLLMAgent(
 		onTranscript,
 		// An agent it delegates to writes only where its workspace lets it.
 		...(workspace ? { writeRoots: writeRootsOf(workspace.roots) } : {}),
+		...(restored ? { restore: restored } : {}),
 	});
 }
 

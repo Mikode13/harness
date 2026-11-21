@@ -97,10 +97,13 @@ was chosen.
 
 ## Current limitations
 
-Conversation continuity within an agent instance is not durable conversation storage.
-Saving and restoring conversation snapshots is still pending
-([#111](https://github.com/Mikode13/harness/issues/111)); consumers own their persistence.
-The file-change history already writes recovery data to disk, which is a separate capability.
+Conversation continuity within an agent instance is not durable conversation storage. An agent
+of `createLLMAgent` can take a snapshot of its conversation, which a fresh agent restores
+([saving and restoring a conversation](#saving-and-restoring-a-conversation)); where it is
+stored is the consumer's. Snapshots of `createLLMOrchestrator` and of workflows are still pending
+([#136](https://github.com/Mikode13/harness/issues/136)), and so are the Agent SDK engines',
+whose conversations their providers keep. The file-change history already writes recovery data
+to disk, which is a separate capability.
 `ProgressEvent` is activity narration, not the durable, ordered observation contract proposed
 in [#177](https://github.com/Mikode13/harness/issues/177).
 
@@ -536,6 +539,75 @@ one for each run that names none. A session without a `name`, or with a blank on
 its `id`. Each run that writes records its session in the workspace's history, as
 `HistoryRun.session`, so a host can say whose change an undo takes back. It is the harness's
 session, not a provider's, which stays inside its engine.
+
+### Saving and restoring a conversation
+
+An agent of `createLLMAgent` is a `ConversationAgent`: between runs, `snapshot()` gives
+everything it recorded as plain JSON, and `createLLMAgent`'s `restore` builds a fresh agent that
+goes on from it, as in a new process after a restart:
+
+```ts
+import { createLLMAgent, type ConversationSnapshot } from '@mikode13/harness';
+
+const agent = createLLMAgent('anthropic', { systemPrompt, tools, workspace });
+await agent.run('Add the export button', { signal });
+await db.save(chatId, JSON.stringify(agent.snapshot()));
+
+// Later, maybe in another process:
+const saved = JSON.parse(await db.load(chatId)) as ConversationSnapshot;
+const again = createLLMAgent('anthropic', { systemPrompt, tools, workspace, restore: saved });
+await again.run('Make it a dropdown too', { signal });
+```
+
+The harness owns the format, its checks and the restore; you own where a snapshot is stored,
+how it is named and listed, how long it is kept, and who may read it.
+
+**What a snapshot holds.** The conversation's whole tree of turns: each turn, with every prompt,
+answer, tool call and tool result in it, the turn it followed and the run of the workspace's
+history it wrote in, and the turn the next run follows. Runs the harness keeps although they
+failed are in it too: one cut by the output limit, and one stopped on a command or on calls that
+kept repeating, each with every tool call answered. It also holds the agent's own
+[session](#sessions), the latest move through the history the conversation followed, and the size
+of the context the model was last sent, which decides when the harness compacts it. It holds the
+providers' opaque data word for word, such as Claude's signed thinking and OpenAI's encrypted
+reasoning. A snapshot is versioned, and each release says which versions it restores.
+
+**It can hold secrets.** Tool results hold the contents of the files the agent read and the
+output of the commands it ran, which may include whatever those printed. Store a snapshot as you
+would the repository and its logs: with the same access, and deleted with them.
+
+**What it does not hold.** No system prompt, no tool, no model, no credential, no approver: the
+agent that restores it takes all of them from its own options, so a snapshot can never grant a
+tool or an approval the restoring configuration does not. An approval remembered with
+`rememberApprovals` lives in your approver, and a restored agent asks again. What the
+conversation had read of each file is not kept either: a restored agent reads a file again before
+it changes it, since the file may have changed meanwhile. Nor is what a run was doing: take a
+snapshot once `run()` settles. While a run works on the agent, including between two attempts
+of one retried run, `snapshot()` throws `RunInProgressError`; the run is recorded only when it
+ends, so a snapshot never holds half a run.
+
+**Another provider.** A snapshot one provider's agent took can be restored on the other's. Each
+provider's client sends back only its own opaque data, so the other provider reads the text,
+the tool calls and their results, and not the private reasoning, which stays in the conversation
+and goes back to the first provider if the conversation returns to it. The size of the context is
+measured again: providers count tokens their own way.
+
+**The workspace's history.** A restored agent given the same `workspace` follows the history from
+where the snapshot left it. A move made since, such as an undo in another process, is followed as
+the agent would have followed it: the undone turns leave the context and the model is told what
+was undone. A turn whose run retention chained into a later one counts as that run. A turn whose
+run retention removed whole was on a branch the workspace had left, since retention removes whole
+only runs off its current line, so it reads as undone, and the note names no file for it. A turn
+whose run the history does not know is taken as a turn that wrote nothing, belonging to the run
+of the turn before it: a run whose process died before it changed anything leaves the history so,
+and so does a snapshot restored over another folder's history.
+
+**When it cannot be restored.** `createLLMAgent` checks a snapshot whole before it builds
+anything, so no model or tool runs. A snapshot of a version this release does not restore throws
+`UnsupportedSnapshotVersionError`, an `InvalidSnapshotError` with the `version` it names; anything
+else that is not a whole
+snapshot, such as a part of an unknown type, a turn that follows a later one or a tool call
+without its result, throws `InvalidSnapshotError`. Both are `UnrecoverableError`s.
 
 ### Agents that change files
 

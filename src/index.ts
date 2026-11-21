@@ -71,6 +71,12 @@ export type {
 export type { CommitQuestion, PhaseLimits } from './orchestration/domain/model/phases.ts';
 export type { RequiredCheck } from './orchestration/domain/model/verification.ts';
 export type { Transcript, TranscriptCallback } from './agent/domain/transcript.ts';
+export {
+	InvalidSnapshotError,
+	UnsupportedSnapshotVersionError,
+	type ConversationAgent,
+	type ConversationSnapshot,
+} from './agent/domain/snapshot.ts';
 export { Inbox } from './agent/domain/inbox.ts';
 export { RunInProgressError } from './agent/domain/oneRunAtATime.ts';
 export {

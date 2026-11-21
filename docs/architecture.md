@@ -59,7 +59,9 @@ had, with what a run that committed after each phase had committed, `newSession`
 `rememberApprovals`, which remembers what an approver allowed); `RunContext`, what one
 top-level run shares with every agent and tool inside it, carried in `RunOptions` under a
 private symbol, and `Delegation`, the call that started an agent another agent's tool runs,
-carried the same way (both internal). The approval types live here, not in `src/tools`,
+carried the same way (both internal); `ConversationSnapshot`, the versioned JSON of one model-API
+agent's conversation, `ConversationAgent`, an `Agent` that takes one between runs, and
+`InvalidSnapshotError` and its `UnsupportedSnapshotVersionError`, why one cannot be restored. The approval types live here, not in `src/tools`,
 because `RunOptions` carries the approver and this module depends on nothing but
 `src/shared`.
 
@@ -83,7 +85,8 @@ compactor with Jev's triage of `triagedCompaction.ts` (internal).
 
 `LLMClient`, the stateless model port; `Message` and its parts, including opaque
 `providerData`; `Conversation`, a tree of turns whose context is the path to one of them,
-each turn tied to the history run it belongs to; the `ToolDefinition` a client describes to
+each turn tied to the history run it belongs to, which gives its `ConversationState` as plain
+data and goes on from one (`fromState`), once `checkConversationState` found it whole; the `ToolDefinition` a client describes to
 the model, and the internal mark (`asNative`, `nativeOf`) that declares one as a provider's
 native tool, `applyPatch` or `textEditor`, which a client declares its provider's way when
 it `supportsNative` it: `OpenAILLMClient` maps OpenAI's `apply_patch` calls and outputs to
@@ -212,7 +215,10 @@ explorer is. `src/llm/` does not know it exists.
 ### `src/factory/`
 
 Provider selection, default model and reasoning effort per role, and composition with the
-retry decorator.
+retry decorator. `SnapshotAgent` (internal) is what `createLLMAgent` returns: the retried agent,
+whose `snapshot()` is its `LLMAgent`'s, refused while a run works on it.
+`readConversationSnapshot` checks a snapshot with Zod, its version first, and gives the
+`RestoredConversation` an `LLMAgent` goes on from.
 
 ### `src/orchestration/`
 
@@ -425,7 +431,9 @@ and `verification`, the `CommitQuestion`, `RequiredCheck` and `PhaseLimits` type
 `createLLMOrchestrator`'s options, the `Transcript` and `TranscriptCallback` types of
 `onTranscript`, the `Asker`, `UserQuestion` and `QuestionOption` types of `RunOptions.ask`,
 `Inbox`, what `RunOptions.inbox` takes, `RunInProgressError`, the `UnrecoverableError` a run
-rejects with while another works on the same agent, `RecoverableCommittedRunError`,
+rejects with while another works on the same agent, and a snapshot is refused with, the
+`ConversationAgent` `createLLMAgent` returns and the `ConversationSnapshot` it takes and restores,
+with `InvalidSnapshotError` and `UnsupportedSnapshotVersionError`, `RecoverableCommittedRunError`,
 `UnrecoverableCommittedRunError` and the `CommittedRun` type they carry, what a run of
 `createLLMOrchestrator` that fails after a commit had committed, the approval contract
 (`rememberApprovals` and the `Approver`, `ApprovalRequest`, `ApprovalDecision`,
@@ -534,7 +542,7 @@ only from its own engine, `openai` and `@anthropic-ai/sdk`, each reached only fr
 `LLMClient`, `@typesafe-ai/sdk`, reached only from `JevContextTriage` and only in the `jev`
 compaction mode, which sends it the tool results it judges, and `zod`, used by
 `ReviewerDecisionValidator` behind the `Validator<T>` interface of `src/shared/`, by
-`defineTool`, and by a consumer's own workflow validators. `ILogger` is the one outbound port:
+`defineTool`, by `readConversationSnapshot`, and by a consumer's own workflow validators. `ILogger` is the one outbound port:
 the factories default it to a stderr logger, and nothing in `src/` writes to stdout, which
 belongs to the consumer.
 
@@ -834,6 +842,32 @@ stops writing for the run. See "The edits run the consumer's formatter on each f
 and "An edit shows the lines the formatter rewrote, and has the file read again" in
 [`decisions.md`](decisions.md).
 
+**Saving and restoring a conversation.** `snapshot()` on the agent `createLLMAgent` returns is
+refused with `RunInProgressError` while a run works on it, between the attempts of a retried run
+too, since `SnapshotAgent` counts the runs in progress and not only the engine's. Otherwise
+`LLMAgent.snapshot()` gives a `ConversationSnapshot`, `format` `mikode-harness/conversation`,
+`version` 1: the conversation's `ConversationState`, its initial messages and every turn with its
+messages, the turn it followed and the run id it wrote in, then the current turn, with the agent's
+default `Session`, the latest revision of the history it followed (`seenRevision`), and the tokens
+of context its model was last sent, labelled with its client's `providerDataSource`. It is a deep
+copy, plain JSON. `createLLMAgent` with `restore` calls `readConversationSnapshot` before it
+builds anything: a value that is not an object of the format is an `InvalidSnapshotError`, an
+unknown version an `UnsupportedSnapshotVersionError`, and the rest is checked by a strict Zod
+schema of every message part, then by `checkConversationState`: each turn follows an earlier one
+and starts with a prompt, every tool call has its result in the next message and nothing else
+does, and the current turn exists. What restores is the value given, not Zod's copy, so the
+providers' data keeps its keys in their order. The `LLMAgent` built from it starts its
+`Conversation` with `fromState`, keeps the session, `seenRevision`, and the context's size only
+when its client has the same `providerDataSource`, and starts its `ReadRegistry` empty. The system
+prompt, the tools and every other option are the new agent's.
+
+Following the history then resolves the run each turn names. A run the history lists, or one that
+retention chained into a run it lists (`absorbed`), is that run. For any other, `followHistory`
+asks `readRun` once per agent (`UnlistedRuns`): `HistoryExpiredError`, retention removed it, so it
+is off every line as before; `UnknownRunError`, or a record the list hides, such as a dead run that
+changed nothing, means the history does not know it, and its turns count as turns that wrote
+nothing, of the run of the turn before them. `undoNote` names no file for either.
+
 **Usage accounting belongs to a `run()`, not to an instance.** The totals are created inside
 `run()` and passed down. A consumer that keeps one orchestrator for a whole session would
 otherwise see every previous run's tokens reported again.
@@ -925,8 +959,9 @@ at a time, and reads what the user sends meanwhile" in [`decisions.md`](decision
   others' writes until it ends.
 - **The seam has no memory or routing model.** MCP, long-term memory, graph execution and
   file-based agent registries are deliberately absent; each waits for a real consumer.
-  `LLMAgent`'s `Conversation` lives only as long as the agent: a consumer cannot save or
-  restore it yet (#111), and where it is stored is the consumer's.
+  `LLMAgent`'s `Conversation` lives as long as the agent, unless the consumer takes a snapshot
+  of it and restores it; where a snapshot is stored is the consumer's. An orchestrator and a
+  workflow take none yet (#136).
 - **Reasoning is replayed only to the provider that produced it.** Each client keeps its
   signed or encrypted reasoning as a `providerData` part labelled with its own `source`, and
   sends back only its own. A conversation handed to the other provider keeps its text, tool

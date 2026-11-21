@@ -1,0 +1,87 @@
+import { UnrecoverableError } from '#src/shared/domain/errors';
+import type { Session } from '#src/shared/domain/session';
+import type { Agent } from './agent.ts';
+
+/** The `format` of a `ConversationSnapshot`. */
+export const conversationFormat = 'mikode-harness/conversation';
+
+/** The versions of `ConversationSnapshot` this release restores. */
+export const conversationVersions = [1] as const;
+
+/**
+ * Everything one agent on the model APIs recorded, as plain JSON, taken between its runs with
+ * `ConversationAgent.snapshot()`: `JSON.stringify` it to store it, and give it back, parsed, to
+ * `createLLMAgent`'s `restore` to build a fresh agent that goes on from it.
+ *
+ * It holds what the model was sent and answered, word for word: prompts, answers, tool calls and
+ * their results, which can hold the contents of files the agent read and the output of the
+ * commands it ran, and the providers' opaque data, such as signed or encrypted reasoning. Store
+ * it as you would those files. It holds no system prompt, no tool, no credential and no
+ * approval: those come from the agent that restores it.
+ *
+ * `format` and `version` say what it is; the rest is the harness's to read, and is checked
+ * whole when it is restored. A later release may add a version, and still restores this one.
+ */
+export interface ConversationSnapshot {
+	format: typeof conversationFormat;
+	version: 1;
+	/** The session the agent's runs belonged to when their options named none. */
+	session: Session;
+	/** The messages the conversation started with, before any turn. */
+	initial: unknown[];
+	/**
+	 * Every turn recorded, oldest first: the turn it followed, by its index here, the run of the
+	 * workspace's history it wrote in, and what was said in it, as plain JSON of no stable shape.
+	 */
+	turns: { parent?: number; runId?: string; messages: unknown[] }[];
+	/** The turn the next run follows, unless the workspace moved since. Absent before the first. */
+	currentTurn?: number;
+	/** The latest move through the workspace's history the conversation followed. */
+	seenRevision: number;
+	/**
+	 * The tokens of context the model was last sent, as the provider labelled `source` counted
+	 * them, which decides when the harness compacts it. Absent when unknown.
+	 */
+	context?: { tokens: number; source?: string };
+}
+
+/** An agent whose conversation can be taken as a snapshot between runs, and restored. */
+export interface ConversationAgent extends Agent {
+	/**
+	 * A copy of what the agent recorded, as plain JSON. It records a run only once the run ends,
+	 * so a snapshot taken once `run()` settled holds that run, and never half of one.
+	 *
+	 * @throws {RunInProgressError} while a run works on the agent, including between the attempts
+	 * of a run that is retried: take it once `run()` settles.
+	 */
+	snapshot(): ConversationSnapshot;
+}
+
+type Options = ConstructorParameters<typeof UnrecoverableError>[1];
+
+/**
+ * A snapshot given to restore is not one this release can read: not a snapshot, or one whose
+ * content breaks its format. Thrown while the agent is built, before any model or tool runs.
+ */
+export class InvalidSnapshotError extends UnrecoverableError {
+	// The parameters keep the shape `withSpentTokens` copies a classified failure with.
+	constructor(message: string, options: Options) {
+		super(message, options);
+		this.name = 'InvalidSnapshotError';
+	}
+}
+
+/**
+ * A snapshot of a version this release does not restore, such as one a later release took.
+ * Thrown while the agent is built, before any model or tool runs.
+ */
+export class UnsupportedSnapshotVersionError extends InvalidSnapshotError {
+	/** The version the snapshot names, as it names it. */
+	readonly version: unknown;
+
+	constructor(message: string, options: Options & { version?: unknown }) {
+		super(message, options);
+		this.name = 'UnsupportedSnapshotVersionError';
+		this.version = options.version;
+	}
+}

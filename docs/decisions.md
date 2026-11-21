@@ -1374,6 +1374,8 @@ tags: #mikode-harness #recovery #undo #llm
 
 partially superseded by: "A run cut by the output limit stays in the conversation" (below) — such a run is recorded, so its note is not given again.
 
+partially superseded by: "A model-API agent's conversation is saved as a versioned snapshot, and restored through its factory" (below) — a turn whose run the history does not know, such as a dead run that changed nothing, counts as a turn that wrote nothing.
+
 **Decision:** an `LLMAgent` given the workspace's history (`history`) follows the user's moves through it before each run.
 
 - **A conversation is a tree of turns.** A turn that wrote is tied to the history run it wrote in. The tie lives in an object the run's context shares, so a turn recorded before the run first wrote still learns it. A turn that wrote nothing belongs to the run of the turn it followed.
@@ -3220,6 +3222,8 @@ tags: #mikode-harness #cli #security
 
 tags: #mikode-harness #architecture #persistence
 
+partially superseded by: "A model-API agent's conversation is saved as a versioned snapshot, and restored through its factory" (below) — a consumer can now save and restore one agent's conversation.
+
 **Decision:** the harness has no Session Manager and its documents name none. It lets a consumer take what an agent needs to continue, and restore it: one agent's conversation (#111), then a composed execution at safe boundaries (#136). The consumer that takes it owns where it is stored, how it is named and listed, how long it is kept and who may read it.
 
 **Context:** earlier entries leave work to "the Session Manager (#29)": what a workflow knows, a stage's conversation, a typed transcript, and the retention of the history. That named a component that was never designed, as if it were part of the harness. #29 itself was given another purpose on 2026-10-23, delegated agents that work in the background, so the reference no longer leads to that work. #111 and #136 already split it: the harness owns the format, its validation and the restore, and whoever stores it owns the rest.
@@ -3230,3 +3234,34 @@ tags: #mikode-harness #architecture #persistence
 - The harness learns nothing about who stores a conversation, or why.
 - The retention of the history stays as it is, in the harness. Whether a consumer should set it is not decided.
 - #111 and #136 still say "Session Manager" for the owner of the storage; they keep their text until they are refined.
+
+## A model-API agent's conversation is saved as a versioned snapshot, and restored through its factory
+
+tags: #mikode-harness #persistence #llm #api-design
+
+**Decision:**
+
+- **The agent `createLLMAgent` returns is a `ConversationAgent`:** an `Agent` with `snapshot()`, which gives a `ConversationSnapshot`, plain JSON, `format` `mikode-harness/conversation` and `version` 1. It holds the initial messages, every turn with its messages, the turn it followed and the history run it wrote in, the current turn, the agent's own session, the latest move through the history the conversation followed, and the tokens of context the model was last sent, labelled with the provider that counted them. Every kept failed run is in it, since it is in the conversation.
+- **A snapshot is restored through the factory,** with `createLLMAgent`'s `restore`, never by handing out the `Conversation`. The system prompt, the tools, the model and every other option are the restoring call's. The size of the context is restored only for the provider that counted it; what the conversation had read of each file is not restored, so a restored agent reads a file again before it changes it.
+- **A snapshot is taken between runs.** While a run works on the agent, including between two attempts of a retried run, `snapshot()` throws `RunInProgressError`. It does not return the state before the run instead.
+- **A snapshot that cannot be restored fails before anything is built,** with `InvalidSnapshotError`, an `UnrecoverableError`, or its subclass `UnsupportedSnapshotVersionError` for a version this release does not restore, which names the version. Every part is checked strictly, and so is the tree: each turn follows an earlier one and starts with a prompt, every tool call has its result in the next message, and the current turn exists.
+- **Provider data is kept word for word,** and restored from the value given rather than from Zod's copy, so its keys keep their order. A snapshot of one provider's agent can be restored on the other's: each client sends back only its own data, as it already did.
+- **A turn whose run the history no longer lists** is resolved once per agent with `readRun`. One chained into a later run counts as that run, as before. One retention removed whole is off every line, as before: retention removes whole only runs on an abandoned branch, so the turn had been undone. One the history does not know, never having had it or having discarded it as a run that changed nothing, counts as a turn that wrote nothing, belonging to the run of the turn before it, and the undo note names no file for it.
+
+**Context:** #111. The comment of 2026-10-22 on it found the case: a turn names a run whose process died while it was running, the next run settles it, finds it changed nothing and discards it, and the restored conversation then reported the turn as undone and failed reading the missing run. That cannot happen in one process, since the conversation dies with the process. It offered two ways out: keep an interrupted run that changed nothing, or restore a turn whose run is unknown as one that wrote nothing, and said that the second could not tell a discarded run from one retention removed. It can: retention records what it removes in `pruned.jsonl` and what it chains in `absorbed`, and `readRun` answers `HistoryExpiredError` for both. The comment of 2026-11-21 on #136 says the product takes its snapshot when a run ends, so nothing in it takes one during a run; the public API still has to say what happens then. Both choices were left to this change, and its pull request lists them for the maintainer to check.
+
+**Alternatives considered:**
+
+- **Keeping an interrupted run that changed nothing,** as a finished one already is. Not chosen: the history would list empty runs, an undo would step over nothing, they would count against retention, and a snapshot restored over another folder's history would still name runs that history never had.
+- **Returning the previous stable state when a run is in progress.** It never fails, but a consumer that took it "after the run" with a bug in its ordering would store a conversation without that run, silently.
+- **A snapshot method on `Agent`, or a free `snapshotOf(agent)`.** `Agent` is the seam every engine implements, and the Agent SDK engines keep their conversations with their providers; a free function would have to find the engine behind the retry decorator by a private mark. A subtype returned by the factory needs neither, and an existing `Agent` variable still accepts it.
+- **Publishing the message types in the snapshot's type.** It would make `Message` and its parts public API. The messages are `unknown[]`, as a `Transcript`'s content is `unknown`, and the version is what a consumer checks.
+- **Leaving the session and the size of the context out.** Without the session, a restored agent would answer with another one; without the size, the harness's compactor would not compact before the first call where the agent that was saved would have.
+
+**Consequences:**
+
+- `createLLMAgent` returns `ConversationAgent`; `ConversationAgent`, `ConversationSnapshot`, `InvalidSnapshotError` and `UnsupportedSnapshotVersionError` are public, a `feat`.
+- A snapshot can hold file contents and command output; the README says so, and what its storage owes.
+- The narration of a step after a restore names a large result by its tool's name only: the summaries of earlier calls are narration, not context, and are not kept.
+- A turn restored over another folder's history keeps its context and writes nothing there; the workspace is not checked to be the snapshot's.
+- `createLLMOrchestrator` and workflows take no snapshot yet (#136); the Agent SDK engines take none.
