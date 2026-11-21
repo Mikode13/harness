@@ -3230,3 +3230,43 @@ tags: #mikode-harness #architecture #persistence
 - The harness learns nothing about who stores a conversation, or why.
 - The retention of the history stays as it is, in the harness. Whether a consumer should set it is not decided.
 - #111 and #136 still say "Session Manager" for the owner of the storage; they keep their text until they are refined.
+
+## A run's record is a second, complete channel beside the narration
+
+tags: #mikode-harness #api-design #progress #persistence
+
+**Decision:** a run given `RunOptions.onRecord` hands it the run's record: one ordered stream of `RunEntry`s, every progress event, each question and approval request with its answer or decision, and the run's end. The rules:
+
+- **A second channel, not new progress types.** The rule that a `ProgressEvent` never carries what a consumer needs to be correct stays. Progress stays optional narration, and the record wraps each event in a `progress` entry, so the record is the one place a consumer reads everything from.
+- **Its own contract for unknown types.** A consumer needs every entry type, so it may not skip one. A new entry type, or a change an older reader would read wrongly, bumps `runRecordVersion` and is a major release; a field no reader needs may be added in a minor one. The event inside a `progress` entry keeps `ProgressEvent`'s rule.
+- **Every entry carries `version`.** A consumer such as the API stores entries long after the release that wrote them, and reads one written by an older release next to one written by a newer: the version tells it which shape it holds without the harness version that produced it. A consumer meeting a version it does not know must not read the entry as one it knows.
+- **Plain JSON.** An entry can be stored as it is. A failure is described, not stored as an error object: its kind, message, cause, tokens, and what a run of `createLLMOrchestrator` had committed.
+- **A question carries what the asker receives, an approval request what the approver receives,** each with an `id` its answer or decision shares, and an `origin`: the role of `createLLMOrchestrator` that asked, or that started the agent that did, and the delegations on the way, by the `name`, `callId` and `subagent` of their `subagent` events. Neither callback receives more than before.
+- **The end is one of three:** `completed` with the `AgentResponse`, `failed` with the error, or `cancelled`, by an abort or a timeout. `run()` still resolves with the response or rejects with the error, and a cancellation still rejects with the signal's reason, unchanged.
+- **The record is the run's, kept outermost.** Every factory wraps what it builds in a `RecordingAgent`, outside `RetryingAgent` and the orchestrators, which drops `onRecord` from what it passes in. A role, an agent another agent started or a retried attempt keeps no record of its own, so the record has one `end`. A question `rememberAnswers` answers on a retry is not asked, and not recorded, again.
+- **A delegated agent's questions are in the run's record, its end is narration.** It asks through the run's `ask` and `approve`, so its questions arrive in the one record with their `origin`. Its end is the `subagentEnded` event, as before: its answer reaches only the model that sent it, and the run ends only once every such agent stopped, so the run's `end` says that each did.
+- **The Agent SDK engines ask no one,** so their record holds progress and the end.
+- **The run waits for the record.** The callback takes one entry at a time, and a promise it returns holds the next. The run waits for every entry so far before it asks, before it acts on an answer or a decision, and before it ends, so what a consumer shows a user is stored first.
+- **A failure to take an entry ends the run as a host failure,** an `UnrecoverableError` no layer retries, as a failing `onProgress` does, so no tool that already had effects runs again. For each kind of entry: a progress entry, at the run's next narration or wait; a question, before the asker is called, so a question nobody recorded is never asked; an approval request, before the approver is called, so its call never runs; an answer or a decision, before the agent acts on it. After a failure the record takes nothing more. A run that completed but whose end the record did not take rejects with an `UnrecoverableError` with what it spent, since the consumer would otherwise hold a record without an end and a resolved run. A run that failed or was cancelled rejects with its own error, as the contract for cancellation requires, and the failure to take its end is logged.
+- **Who asked travels in an `AsyncLocalStorage`.** Between an agent that asks and the run's recorded `ask` are `RetryingAgent`'s memory and each delegation's watcher, and an asker receives only its questions. Each delegation's options and each phased role's options wrap `ask` and `approve` to add their part on the way out.
+
+**Context:** #177. A consumer that records a run and forwards it, such as the MiKode API, which stores every entry, numbers it in one order per conversation and sends it to clients that subscribe later, or the CLI's local store (Mikode13/harness-cli#21), had to rebuild one ordered record from three channels: `onProgress`, the `ask` and `approve` callbacks, and what `run()` resolves or rejects with. On 2026-11-21 the user chose the first option the issue laid out, a second, complete record beside the optional narration, with its own contract for unknown types, and kept the rule on what a `ProgressEvent` may carry. The callbacks and `AgentResponse` stay as they are.
+
+**Alternatives considered:**
+
+- **Changing the rule for these events only,** so a question or an end could be a `ProgressEvent`. Not chosen by the user: a consumer told to ignore unknown types could no longer do so safely for some of them, and every new type would have to say which rule it follows.
+- **A helper that merges the three channels.** Not chosen by the user: it leaves every consumer composing it right, and a failure in storing one of them would have no defined outcome for the run.
+- **No version on the entries,** with the harness's own version as the record's. Not chosen: a stored entry outlives the process that knew which release wrote it.
+- **Recording at each place that asks,** in `LLMAgent`, `CommandLoops`, `CommitFlow` and `PhasedOrchestrator`. Not chosen: every new place that asks would have to remember it, and a retry's remembered answer would be recorded as asked again.
+- **Passing who asked to the asker.** It would avoid `AsyncLocalStorage`, but it would change the public `Asker` and `Approver` and give them more than they receive today.
+- **Delivering entries without waiting.** Faster, but a question could reach a user before it is stored, and a failure to store it would have nowhere to go.
+- **Resolving a completed run whose end the record did not take, and logging it,** as `onTranscript` does. Not chosen: the record is what a consumer needs to be correct, not a debugging aid, and a resolved run would hide that it is incomplete.
+- **A record entry for each delegated agent's end, or for each retried attempt.** Left out: the first is narration the run's end already settles, and a retry is the agent's own business, as it is for progress.
+
+**Consequences:**
+
+- A `feat`: `RunOptions.onRecord`, `runRecordVersion` and the `RunEntry`, `RunRecordCallback`, `RecordedOrigin`, `RecordedDelegation` and `RecordedFailure` types are new, and a run without `onRecord` runs as before.
+- A slow callback slows the run at each question, approval and end, and holds the entries after it. A cancellation stops a wait before the run asks or acts on an answer, but the end is waited for however the run ended, so a callback that never settles holds `run()` there: a consumer that reads its store once `run()` settles finds the end in it.
+- The harness depends on `AsyncLocalStorage` from `node:async_hooks`, which it already could, since it runs only on Node.
+- A workflow from `createWorkflow` keeps no record of its own: the stages' agents from a factory each give the record of their own run, and the workflow's own events reach only `onProgress`. A record of a whole workflow is not designed.
+- A stored record and a restored conversation (#111, #136) stay different things: the record observes a run, and nothing restores a run from it.

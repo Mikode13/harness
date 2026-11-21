@@ -1,4 +1,5 @@
 import type { Agent } from '#src/agent/domain/agent';
+import { RecordingAgent } from '#src/agent/domain/recordingAgent';
 import { InvalidAgentConfigError } from '#src/shared/domain/errors';
 import {
 	ClaudeAgent,
@@ -119,7 +120,7 @@ export function createAgent(
 		}
 	}
 
-	return new RetryingAgent({ inner: engine, logger });
+	return new RecordingAgent({ inner: new RetryingAgent({ inner: engine, logger }), logger });
 }
 
 export interface Role {
@@ -188,11 +189,12 @@ export function createOrchestrator({
 			instructions,
 		});
 
-	return new OrchestratorAgent({
+	const orchestrator = new OrchestratorAgent({
 		plannerAgent: agentFor(roles.planner, systemPrompts.planner ?? plannerInstructions),
 		executorAgent: agentFor(roles.executor, systemPrompts.executor ?? executorInstructions),
 		reviewerAgent: agentFor(roles.reviewer, systemPrompts.reviewer ?? reviewerInstructions),
 		reviewerDecisionValidator: new ReviewerDecisionValidator(),
 		logger,
 	});
+	return new RecordingAgent({ inner: orchestrator, logger });
 }

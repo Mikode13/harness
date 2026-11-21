@@ -82,6 +82,9 @@ persistent conversation service.
   callback, separate from the final response, so a caller decides how to render activity
   and the agent's answer. Available events depend on the path; the model API path does
   not stream response tokens.
+- **The record of a run** (`onRecord`): the narration, each question and approval the run
+  asked, and how it ended, completed, failed or cancelled, in one ordered stream of plain JSON
+  entries, for a consumer that stores a run or forwards it.
 - **Retry policy** (`RetryingAgent`) wraps individual agents, not whole
   workflows — a transient failure in one sub-agent is absorbed locally, without
   redoing another sub-agent's already-successful work.
@@ -101,8 +104,8 @@ Conversation continuity within an agent instance is not durable conversation sto
 Saving and restoring conversation snapshots is still pending
 ([#111](https://github.com/Mikode13/harness/issues/111)); consumers own their persistence.
 The file-change history already writes recovery data to disk, which is a separate capability.
-`ProgressEvent` is activity narration, not the durable, ordered observation contract proposed
-in [#177](https://github.com/Mikode13/harness/issues/177).
+`ProgressEvent` is activity narration; a run's record (`onRecord`) is the complete, ordered
+observation of a run, but the harness stores neither: keeping the record is the consumer's.
 
 Worktrees and file-access policies are not an operating-system sandbox. Consumers running
 untrusted repository commands need to provide execution isolation. The library supports macOS
@@ -537,6 +540,71 @@ its `id`. Each run that writes records its session in the workspace's history, a
 `HistoryRun.session`, so a host can say whose change an undo takes back. It is the harness's
 session, not a provider's, which stays inside its engine.
 
+### The record of a run
+
+A consumer that stores a run, or sends it to clients that connect later, takes its record:
+everything the run produced, in the order it happened, from one callback.
+
+```ts
+import { runRecordVersion, type RunEntry } from '@mikode13/harness';
+
+await agent.run('Add the export button', {
+	signal,
+	ask,
+	approve,
+	onRecord: async (entry: RunEntry) => {
+		await store.append(conversationId, entry);
+	},
+});
+```
+
+Each entry is one of:
+
+- `progress`: an event the run narrated, as `onProgress` received it;
+- `question` and `answer`: what the run asked `ask`, as the asker receives it, and the answer,
+  paired by `id`;
+- `approvalRequest` and `approvalDecision`: what the run asked `approve`, as the approver
+  receives it, and the decision, paired by the same numbering;
+- `end`, always the last: `completed` with the `AgentResponse` that `run()` resolves with,
+  `failed` with the error it rejects with (its message, cause, kind, tokens and, from
+  `createLLMOrchestrator`, what it had committed), or `cancelled`, `by` an abort or a timeout,
+  when it rejects with the signal's reason, which it still does.
+
+The record observes the run: `onProgress`, `ask`, `approve` and the result work as they do
+without it. Unlike progress, it is complete, so its contract for unknown types differs. Every
+entry is plain JSON and carries `version`, `runRecordVersion` in the release that wrote it. A new
+entry type, or any change an older reader would read wrongly, is a new version and a major
+release; a field a reader does not need may be added in a minor one. Read an entry by its
+`version`, and treat one you do not know as unreadable, not as something to skip. The event of a
+`progress` entry is still narration: ignore an event type you do not know.
+
+The callback takes one entry at a time: a promise it returns holds the entries after it until it
+settles. The run waits for every entry so far before it asks, before it acts on the answer or the
+decision, and before it ends, so a question is stored before anyone sees it, and `run()` settles
+only once its end is taken. A cancellation stops the waits before asking and acting, not the one
+for the end. A callback that
+throws or rejects ends the run with an `UnrecoverableError`, which nothing retries, so no tool
+that already had effects runs again: a question it did not take is never asked, an approval it did
+not take is never asked for and its call never runs, and an answer or a decision it did not take
+is never acted on. It receives nothing more after that. A run that completed but whose end it did
+not take rejects with an `UnrecoverableError` too, with what the run spent; a run that failed or
+was cancelled rejects with its own error, and the record's failure is logged.
+
+What an agent another agent started asks is in the same record, with an `origin` that names the
+`delegation`: each agent on the way, the outermost first, by the `name`, `callId` and
+`subagent` of its `subagent` events. Its end is the `subagentEnded` event that narrates it; the
+record's one `end` is the run's, which comes only once every such agent has stopped. In
+`createLLMOrchestrator`, `origin.agent` names the role that asked, or that started the agent
+that did; what the orchestrator asks itself, such as whether to carry out the plan, has neither.
+The Agent SDK engines ask no one, so their record holds progress and the end.
+
+The record belongs to the run you started: agents inside it, its roles and the agents it hands
+work to, keep none of their own. A workflow from `createWorkflow` keeps no record of its own: it
+passes `onRecord` on to each stage's agent, so a stage whose agent comes from a factory gives the
+record of its own run, its `end` included, and the workflow's `workflowStage` and
+`workflowTransition` events reach only `onProgress`. The harness keeps no record: where it is
+stored, and for how long, is yours.
+
 ### Agents that change files
 
 `createFileTools` gives an agent the file tools of its provider, over the folders you
@@ -840,7 +908,8 @@ The agent works inside the caller's run:
 - its progress arrives as `subagent` events of the call, with the tool's `name`, and its
   transcript names the call in `delegation`. The call's own `tool` event ends with
   `status: 'sent'`, the agent's events keep arriving after it, and a `subagentEnded` event says
-  when it ended and how: `answered`, `failed`, or `stopped` because the run ended.
+  when it ended and how: `answered`, `failed`, or `stopped` because the run ended. In the run's
+  record, its questions and approvals name it in their `origin`.
 
 The call answers at once, telling the model the agent works in the background. When the agent
 finishes, only its answer reaches the caller's model, in a message of its own at the caller's

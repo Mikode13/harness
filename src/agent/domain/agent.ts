@@ -4,6 +4,7 @@ import type { CommitReport } from './commitReport.ts';
 import type { Inbox } from './inbox.ts';
 import type { PhaseResult, Verification } from './phaseResult.ts';
 import type { Asker } from './question.ts';
+import type { RunRecordCallback } from './runRecord.ts';
 import type { Session } from '#src/shared/domain/session';
 
 /**
@@ -61,9 +62,11 @@ export type Callback = (item: ProgressEvent) => void;
 
 /**
  * What a run needs besides its prompt. InstructedAgent passes it on whole. OrchestratorAgent
- * copies its own enumerable fields, replaces `onProgress` per role and drops `inbox`;
- * RetryingAgent does the same for a run with `ask`, replacing only `ask`. A field must therefore
- * be an own enumerable one to reach every agent.
+ * copies its own enumerable fields, replaces `onProgress` per role and drops `inbox`, and
+ * PhasedOrchestrator also wraps `ask` and `approve` so the record knows the role that asked;
+ * RetryingAgent does the same for a run with `ask`, replacing only `ask`; the agent that keeps
+ * a run's record replaces `onProgress`, `ask` and `approve` and drops `onRecord`. A field must
+ * therefore be an own enumerable one to reach every agent.
  */
 export interface RunOptions {
 	/**
@@ -100,15 +103,40 @@ export interface RunOptions {
 	 * `AgentResponse.session` returns. An agent another agent started belongs to the outer run's.
 	 */
 	session?: Session | undefined;
+	/**
+	 * Receives the run's record: every progress event, each question and approval request the run
+	 * makes and the answer or decision it gets, from the run's own agent or one another agent
+	 * started, and then how the run ended, completed, failed or cancelled, in the order it
+	 * happened. Unlike `onProgress`, the record is complete: see `RunEntry`. It observes the run;
+	 * `onProgress`, `ask` and `approve` work as they would without it, `run()` still resolves with
+	 * the response or rejects with the failure, and a cancellation still rejects with the signal's
+	 * reason.
+	 *
+	 * The run waits for every entry so far to be taken before it asks, before it acts on an
+	 * answer or a decision, which a cancellation interrupts, and before it ends, which it does
+	 * not: `run()` settles only once the end is taken, or failed to be. A callback that fails, by throwing or rejecting,
+	 * ends the run as an `UnrecoverableError`, which no layer retries, so no tool that already had
+	 * effects runs again: a question it did not take is never asked, an approval request it did
+	 * not take is never answered and its call never runs, and an answer or decision it did not take
+	 * is never acted on. After such a failure it receives nothing more. A run that completed but
+	 * whose end it did not take rejects with an `UnrecoverableError` too, since what it holds is
+	 * not the whole run; a run that failed or was cancelled rejects with its own error, and the
+	 * failure to take its end is logged.
+	 *
+	 * Only the agents the factories return keep a record; an agent another agent started, or a
+	 * role of an orchestrator, is part of the record of the run it works in.
+	 */
+	onRecord?: RunRecordCallback | undefined;
 }
 
 /** The `onProgress` of a run that gave none. */
 export const ignoreProgress: Callback = () => undefined;
 
 /**
- * Live activity during a run, for narration only: the result travels in `AgentResponse`.
- * New event types can arrive in a minor release, so render the types you know and ignore
- * the rest instead of switching over them exhaustively with a `never` check.
+ * Live activity during a run, for narration only: the result travels in `AgentResponse`, and
+ * what a consumer needs to be correct in order with the narration, in the run's record
+ * (`RunOptions.onRecord`). New event types can arrive in a minor release, so render the types
+ * you know and ignore the rest instead of switching over them exhaustively with a `never` check.
  */
 export type ProgressEvent =
 	| { type: 'command'; command: string; exitCode?: number; agent?: ProgressAgent }

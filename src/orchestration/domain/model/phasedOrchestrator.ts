@@ -10,6 +10,7 @@ import { type CommittedRun, withCommittedRun } from '#src/agent/domain/committed
 import type { PhaseResult, Verification } from '#src/agent/domain/phaseResult';
 import { OneRunAtATime } from '#src/agent/domain/oneRunAtATime';
 import { readAnswers, type UserQuestion } from '#src/agent/domain/question';
+import { roleAsking } from '#src/agent/domain/recordingAgent';
 import { runContextOf, withAuthor } from '#src/agent/domain/runContext';
 import { newSession, sessionOf } from '#src/agent/domain/session';
 import {
@@ -268,6 +269,8 @@ function roleOptions(options: RunOptions, agent: ProgressAgent): RunOptions {
 	return withAuthor(
 		{
 			...options,
+			// What the role asks, or an agent it started, the run's record says it asked.
+			...roleAsking(options, agent),
 			inbox: undefined,
 			onProgress: onProgress
 				? (event: ProgressEvent) => {

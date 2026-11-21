@@ -61,7 +61,10 @@ top-level run shares with every agent and tool inside it, carried in `RunOptions
 private symbol, and `Delegation`, the call that started an agent another agent's tool runs,
 carried the same way (both internal). The approval types live here, not in `src/tools`,
 because `RunOptions` carries the approver and this module depends on nothing but
-`src/shared`.
+`src/shared`. The run's record lives here too: `RunEntry`, `RunRecordCallback` and
+`runRecordVersion`, what `RunOptions.onRecord` receives, and `RecordingAgent` (internal), the
+decorator every factory puts outermost that keeps it, with `roleAsking` and `delegatedAsking`,
+which tell it who asked (see "A recorded run" below).
 
 ### `src/diff/`
 
@@ -212,7 +215,7 @@ explorer is. `src/llm/` does not know it exists.
 ### `src/factory/`
 
 Provider selection, default model and reasoning effort per role, and composition with the
-retry decorator.
+retry decorator and, outermost, the agent that keeps a run's record.
 
 ### `src/orchestration/`
 
@@ -349,7 +352,7 @@ provider adapters and preserve their literal tuples.
 Two boundaries carry most of the design:
 
 **Everything is an `Agent`.** `ClaudeAgent`, `CodexAgent`, `LLMAgent`, `RetryingAgent`,
-`OrchestratorAgent` and `PhasedOrchestrator` all implement `run(prompt, options)`, where
+`RecordingAgent`, `OrchestratorAgent` and `PhasedOrchestrator` all implement `run(prompt, options)`, where
 `options` holds the run's `signal`, its optional `onProgress`, its optional `approve`, asked
 before a model-backed agent runs a `destructive` tool call, and its optional `ask`, which
 answers what a model-backed agent asks its user. A decorator and a whole multi-agent workflow
@@ -361,8 +364,11 @@ instead, both with object spread, so a field must be an own enumerable one to su
 across attempts, and each orchestrator, `OrchestratorAgent` and `PhasedOrchestrator`, makes one
 shallow copy per role with object spread, carrying the own enumerable string- and symbol-keyed
 fields, including the internal `RunContext`, and replaces only `onProgress` with a wrapper that
-makes the role attribution authoritative. The same context therefore reaches every agent the run
-reaches, and no consumer can see or set it.
+makes the role attribution authoritative; `PhasedOrchestrator` also wraps `ask` and `approve`,
+which still reach the same callbacks, so the record knows the role that asked. `RecordingAgent`,
+for a run with `onRecord`, replaces `onProgress`, `ask` and `approve` with ones that record
+before they hand on, and drops `onRecord`, so no agent inside keeps a second record. The same
+context therefore reaches every agent the run reaches, and no consumer can see or set it.
 
 **Nothing escapes an `Agent` unclassified.** Every consumer branches on `RecoverableError`
 versus `UnrecoverableError`, so an unclassified error bypasses that decision entirely: it is
@@ -424,7 +430,9 @@ why it is the only place that knows every provider.
 and `verification`, the `CommitQuestion`, `RequiredCheck` and `PhaseLimits` types of
 `createLLMOrchestrator`'s options, the `Transcript` and `TranscriptCallback` types of
 `onTranscript`, the `Asker`, `UserQuestion` and `QuestionOption` types of `RunOptions.ask`,
-`Inbox`, what `RunOptions.inbox` takes, `RunInProgressError`, the `UnrecoverableError` a run
+`Inbox`, what `RunOptions.inbox` takes, `runRecordVersion` and the `RunEntry`,
+`RunRecordCallback`, `RecordedOrigin`, `RecordedDelegation` and `RecordedFailure` types of
+`RunOptions.onRecord`, `RunInProgressError`, the `UnrecoverableError` a run
 rejects with while another works on the same agent, `RecoverableCommittedRunError`,
 `UnrecoverableCommittedRunError` and the `CommittedRun` type they carry, what a run of
 `createLLMOrchestrator` that fails after a commit had committed, the approval contract
@@ -458,7 +466,7 @@ the consumer's schemas and the harness share one copy. `RetryingAgent`, `Orchest
 apply retry and the role defaults so a consumer never composes them, and a class that is not
 exported can change shape without a major release.
 
-Four contracts have rules of their own:
+Five contracts have rules of their own:
 
 - **`Tokens` is split into the categories providers bill separately.** `inputTokens`,
   `readCacheTokens`, `writtenCacheTokens` and `outputTokens` never overlap. They are counts,
@@ -485,7 +493,8 @@ Four contracts have rules of their own:
 
 - **`ProgressEvent` grows in minor releases.** Consumers are told to render the types they
   know and ignore the rest, so a new type must never carry information a consumer needs to be
-  correct. The result of a run travels in `AgentResponse`; progress is narration. Existing event
+  correct. The result of a run travels in `AgentResponse`, and what a consumer needs in order
+  with the narration in the run's record; progress is narration. Existing event
   shapes remain valid because `agent` is optional on every event and `summary`, `exitCode` and
   `error` are optional on `tool` events. Each orchestrator supplies
   `agent: 'planner' | 'executor' | 'reviewer' | 'committer'` for every event received from a role,
@@ -513,6 +522,17 @@ Four contracts have rules of their own:
   of the call that compacted, whose tokens it includes; the harness's comes once its summary is
   written, before the next call's `step`, and the summary call has no `step` of its own: its
   tokens are only in the run's total.
+- **A run's record is complete and versioned.** `RunOptions.onRecord` receives `RunEntry`s:
+  each progress event wrapped in a `progress` entry, `question` and `answer`, `approvalRequest`
+  and `approvalDecision`, numbered together per run so each pair shares an `id`, and one `end`,
+  the last, `completed` with the `AgentResponse`, `failed` with a description of the error, or
+  `cancelled`, by an abort or a timeout. A consumer needs every entry type, so a new type, or a
+  change an older reader would read wrongly, is a new `runRecordVersion` and a major release,
+  and every entry carries its `version`; a field no reader needs may be added in a minor one.
+  The event of a `progress` entry keeps `ProgressEvent`'s rule. Entries are plain JSON, so a
+  consumer stores them as they are. A question or an approval request carries what the asker or
+  approver receives, and its `origin`: the role of `createLLMOrchestrator` and the delegations
+  that led to the agent that asked.
 - **`Tool` narration stays outside the provider definition.** A tool may provide
   `summarize(input)`, but `ToolDefinition` sent to an `LLMClient` contains only `name`,
   `description` and `inputSchema`. `defineTool` validates the model input and passes that
@@ -832,6 +852,32 @@ the model does. A formatter that fails leaves the file as written and adds why t
 one whose changes cannot be recorded, or that cannot be confirmed stopped, fails the edit and
 stops writing for the run. See "The edits run the consumer's formatter on each file they write"
 and "An edit shows the lines the formatter rewrote, and has the file read again" in
+[`decisions.md`](decisions.md).
+
+**A recorded run.** Each factory returns its agent wrapped in a `RecordingAgent`, which does
+nothing for a run without `onRecord`. With one, it creates a `RunRecorder` for the run and gives
+the agent inside options whose `onProgress` hands each event to the consumer's, then to the
+record; whose `ask` records the question, waits until every entry so far is taken, asks, and
+records the answer before it returns it; and whose `approve` does the same with the request and
+the decision. An answer the agent would refuse, of the wrong shape or after a cancellation, is
+returned unrecorded, and the agent ends the run as before. Once the agent inside settles, it
+records the end and waits for it, however the run ended; a cancellation stops only the waits
+before asking and acting. The recorder hands entries to the callback one at a time: a
+promise holds the entries after it until it settles. A callback that fails, at once or later,
+stops the record; every later entry, and every wait, throws an `UnrecoverableError`, which the
+callers classify as a host failure, so the run ends without being retried, and a question,
+approval or answer behind it is never acted on. A completed run whose end was not taken rejects
+with an `UnrecoverableError` carrying its tokens; a failed or cancelled one rejects with its own
+error, and the failure is logged. `RecordingAgent` sits outside `RetryingAgent`, so a question
+`rememberAnswers` answers on a retry is not asked again and not recorded again. Who asked travels
+in an `AsyncLocalStorage`, because the asker and approver receive nothing but the questions or
+the request: `subagentOptions` wraps a delegated agent's `ask` and `approve` with
+`delegatedAsking`, and `PhasedOrchestrator`'s `roleOptions` with `roleAsking`, each adding its
+part as the call goes out through it, and the recorded asker reads it when it is called. A
+delegated agent's end is narration, its `subagentEnded`; the record's one `end` comes only once
+the run stopped every such agent. The Agent SDK engines call neither callback, so their record
+holds progress and the end. A workflow keeps no record of its own and passes `onRecord` on to its
+stages' agents. See "A run's record is a second, complete channel beside the narration" in
 [`decisions.md`](decisions.md).
 
 **Usage accounting belongs to a `run()`, not to an instance.** The totals are created inside

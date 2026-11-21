@@ -49,6 +49,18 @@ or changing an existing type's fields is breaking. Consumers are told to ignore 
 do not know, so a new type must never carry information a consumer needs to be correct:
 the result of a run travels in `AgentResponse`, and progress stays optional narration.
 
+**A run's record is complete, and versioned.** `RunOptions.onRecord` receives every progress
+event, each question and approval request with its answer or decision, and the run's end, in
+order. What a consumer needs to be correct in order with the narration, such as a question or
+how a run ended, goes there, never into a new `ProgressEvent` type. Consumers may not ignore an
+entry type, so a new entry type, or a change an older reader would read wrongly, bumps
+`runRecordVersion` and is breaking; only a field no reader needs to be correct may be added in a
+minor release. Every entry is plain JSON. A consumer that fails to take an entry ends the run as
+a host failure, as a failing `onProgress` does, and the run never asks, acts on or runs anything
+the record did not take first. The record is kept only by the `RecordingAgent` the factories put
+outermost; anything inside a run, and every place that calls `ask` or `approve`, reaches it
+through the options and leaves `onRecord` alone.
+
 ## Architecture
 
 [`docs/architecture.md`](docs/architecture.md) owns the module map, the dependency direction

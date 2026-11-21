@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 import type { Agent } from '#src/agent/domain/agent';
+import { RecordingAgent } from '#src/agent/domain/recordingAgent';
 import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcript';
 import type { HistoryReader } from '#src/engines/domain/model/historyFollower';
 import { type Compactor, recentKeptSteps } from '#src/engines/domain/model/compactor';
@@ -598,7 +599,7 @@ export function createLLMAgent(
 			'An agent given a workspace needs tools to work on it: pass those of createFileTools in `tools`',
 		);
 	}
-	return buildLLMAgent(provider, {
+	const agent = buildLLMAgent(provider, {
 		model,
 		reasoningEffort,
 		systemPrompt: workspace
@@ -617,6 +618,7 @@ export function createLLMAgent(
 		// An agent it delegates to writes only where its workspace lets it.
 		...(workspace ? { writeRoots: writeRootsOf(workspace.roots) } : {}),
 	});
+	return new RecordingAgent({ inner: agent, logger });
 }
 
 function writeRootsOf(roots: readonly WorkspaceRoot[]): string[] {
@@ -958,7 +960,7 @@ export async function createLLMOrchestrator({
 	const executorRuns = executorToolset.some(tool => tool.name === 'runCommand');
 	const verifier = await verifierOf(requiredChecks, commands, opened);
 
-	return new PhasedOrchestrator({
+	const orchestrator = new PhasedOrchestrator({
 		planner: await reader(
 			roles.planner,
 			'planner',
@@ -1023,6 +1025,7 @@ export async function createLLMOrchestrator({
 				}
 			: {}),
 	});
+	return new RecordingAgent({ inner: orchestrator, logger });
 }
 
 /**

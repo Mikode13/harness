@@ -70,6 +70,7 @@ import { defineTool } from '../../src/tools/infrastructure/defineTool.ts';
 import type { FileTool, WorkspaceOptions } from '../../src/tools/infrastructure/fileTools.ts';
 import { RunContext, runContextOf } from '../../src/agent/domain/runContext.ts';
 import type { Agent } from '../../src/agent/domain/agent.ts';
+import type { RunEntry } from '../../src/agent/domain/runRecord.ts';
 import { createWorkflow } from '../../src/factory/infrastructure/workflowFactory.ts';
 import { defineWorkflowStages } from '../../src/workflow/domain/workflow.ts';
 import type { PreparingTool } from '../../src/tools/domain/preparedCall.ts';
@@ -413,6 +414,25 @@ describe('createAgent', () => {
 		);
 	});
 
+	it('keeps the record of an Agent SDK run: its narration and its end, and no question, since it asks no one', async () => {
+		vi.mocked(query).mockReturnValue(claudeStream([claudeResult('hi')]));
+		const entries: RunEntry[] = [];
+		const ask = vi.fn(() => ['yes']);
+		const approve = vi.fn(() => ({ approved: true as const }));
+
+		const response = await createAgent('anthropic', { logger: createLogger() }).run('prompt', {
+			signal,
+			ask,
+			approve,
+			onRecord: entry => void entries.push(entry),
+		});
+
+		expect(entries.at(-1)).toEqual({ version: 1, type: 'end', outcome: 'completed', response });
+		expect(entries.every(entry => entry.type === 'progress' || entry.type === 'end')).toBe(true);
+		expect(ask).not.toHaveBeenCalled();
+		expect(approve).not.toHaveBeenCalled();
+	});
+
 	it('rejects an unknown provider coming from untyped input', () => {
 		expect(() => createAgent('astra' as AgentProvider, { logger: createLogger() })).toThrow(
 			InvalidAgentConfigError,
@@ -446,6 +466,20 @@ describe('createAgent', () => {
 });
 
 describe('createLLMAgent', () => {
+	it('keeps the record of a run given onRecord, ending with its response', async () => {
+		openAIReplying('hi');
+		const entries: RunEntry[] = [];
+
+		const response = await createLLMAgent('openai', {
+			systemPrompt: 'Be brief.',
+			logger: createLogger(),
+		}).run('prompt', { signal, onRecord: entry => void entries.push(entry) });
+
+		expect(entries.map(entry => entry.type)).toEqual(['progress', 'progress', 'end']);
+		expect(entries[1]).toMatchObject({ event: { type: 'agentMessage', message: 'hi' } });
+		expect(entries.at(-1)).toEqual({ version: 1, type: 'end', outcome: 'completed', response });
+	});
+
 	it('sends the system prompt with the default OpenAI model', async () => {
 		const create = openAIReplying('hi');
 
