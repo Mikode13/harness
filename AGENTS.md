@@ -58,8 +58,9 @@ entry type, so a new entry type, or a change an older reader would read wrongly,
 minor release. That holds for the types an entry carries too, `AgentResponse`, `ApprovalRequest`
 and `UserQuestion`: a field a reader needs added to one of them bumps the version, and a review
 checks it, since no test can. Every entry is plain JSON. A consumer that fails to take an entry ends the run as
-a host failure, as a failing `onProgress` does, and the run never asks, acts on or runs anything
-the record did not take first. The record is kept only by the `RecordingAgent` the factories put
+a host failure, as a failing `onProgress` does. The run never asks a question or an approval,
+nor acts on an answer or a decision, that the record did not take first; a progress entry it
+failed to take ends the run at its next narration or wait. The record is kept only by the `RecordingAgent` the factories put
 outermost; anything inside a run, and every place that calls `ask` or `approve`, reaches it
 through the options and leaves `onRecord` alone.
 
