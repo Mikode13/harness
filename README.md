@@ -602,12 +602,12 @@ run retention removed whole was on a branch the workspace had left, since retent
 only runs off its current line, so it reads as undone, and the note names no file for it. A turn
 whose run the history does not know is taken as a turn that wrote nothing, belonging to the run
 of the turn before it: a run whose process died before it changed anything leaves the history so,
-and so does a snapshot restored over another folder's history.
+and so does a snapshot restored over another folder's history, whose earlier moves the agent then
+takes as seen: the snapshot names the history it followed.
 
 **When it cannot be restored.** `createLLMAgent` checks a snapshot whole before it builds
 anything, so no model or tool runs. A snapshot whose version is a whole number this release does not restore throws
-`UnsupportedSnapshotVersionError`, an `InvalidSnapshotError` with the `version` it names; anything
-else, a missing version included, that is not a whole
+`UnsupportedSnapshotVersionError`, an `InvalidSnapshotError` with the `version` it names; anything else, a missing version included, that is not a whole
 snapshot, such as a part of an unknown type, a turn that follows a later one or a tool call
 without its result, throws `InvalidSnapshotError`. Both are `UnrecoverableError`s.
 

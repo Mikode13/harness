@@ -12,6 +12,8 @@ export interface RestoredConversation {
 	conversation: ConversationState;
 	session: Session;
 	seenRevision: number;
+	/** The history `seenRevision` counts in, when the agent had followed one. */
+	history?: string;
 	context?: { tokens: number; source?: string };
 }
 
@@ -35,18 +37,28 @@ export function snapshotInRun(): RunInProgressError {
 export class EnclosingRuns {
 	private readonly open = new Set<RunContext>();
 
-	/** Notes the run a turn was just recorded in. */
+	/** Notes the run a turn was just recorded in, and forgets those that ended. */
 	recorded(context: RunContext): void {
+		this.prune();
 		if (!context.finished) this.open.add(context);
+	}
+
+	/** Forgets a run that has ended, such as the agent's own once it finished. */
+	ended(context: RunContext): void {
+		this.open.delete(context);
+	}
+
+	private prune(): void {
+		for (const context of this.open) {
+			if (context.finished) this.open.delete(context);
+		}
 	}
 
 	/**
 	 * @throws {RunInProgressError} while one of them has not ended.
 	 */
 	assertEnded(): void {
-		for (const context of this.open) {
-			if (context.finished) this.open.delete(context);
-		}
+		this.prune();
 		if (this.open.size === 0) return;
 		throw new RunInProgressError(
 			"A run that one of the agent's turns belongs to is still open, so its snapshot cannot be taken",
@@ -63,12 +75,15 @@ export function conversationSnapshotOf({
 	conversation,
 	session,
 	seenRevision,
+	history,
 	contextTokens,
 	source,
 }: {
 	conversation: Conversation;
 	session: Session;
 	seenRevision: number;
+	/** The history `seenRevision` counts in, when known. */
+	history: string | undefined;
 	/** The tokens of context the model was last sent, when known. */
 	contextTokens: number | undefined;
 	/** The `providerDataSource` of the client that counted them. */
@@ -83,6 +98,7 @@ export function conversationSnapshotOf({
 		turns,
 		...(current === undefined ? {} : { currentTurn: current }),
 		seenRevision,
+		...(history === undefined ? {} : { history }),
 		...(contextTokens === undefined
 			? {}
 			: { context: { tokens: contextTokens, ...(source === undefined ? {} : { source }) } }),

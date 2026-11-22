@@ -853,21 +853,24 @@ history run on the run's first write and loses it if the run changed nothing. Ot
 `LLMAgent.snapshot()` gives a `ConversationSnapshot`, `format` `mikode-harness/conversation`,
 `version` 1: the conversation's `ConversationState`, its initial messages and every turn with its
 messages, the turn it followed and the run id it wrote in, then the current turn, with the agent's
-default `Session`, the latest revision of the history it followed (`seenRevision`), and the tokens
+default `Session`, the latest revision of the history it followed (`seenRevision`) and that
+history's `workspaceId` (`history`), and the tokens
 of context its model was last sent, labelled with its client's `providerDataSource`. It is a deep
 copy, plain JSON. `createLLMAgent` with `restore` calls `readConversationSnapshot` before it
 builds anything: a value that is not an object of the format, or whose version is not a whole
 number, is an `InvalidSnapshotError`, a version this release does not restore an
-`UnsupportedSnapshotVersionError`, and the rest is checked by a strict Zod
+`UnsupportedSnapshotVersionError`; it is read as JSON gives it back, so a key left `undefined` is
+gone, and a value JSON cannot hold is an `InvalidSnapshotError`; and the rest is checked by a strict Zod
 schema of every message part, then by `checkConversationState`: each turn follows an earlier one
 and starts with a prompt, every tool call has its result in the next message and nothing else
-does, and the current turn exists. What restores is the value given, not Zod's copy, so the
-providers' data keeps its keys in their order. The `LLMAgent` built from it starts its
+does, and a conversation with turns has a current turn, which exists. What restores is that JSON,
+not Zod's copy, so the providers' data keeps its keys in their order. The `LLMAgent` built from it starts its
 `Conversation` with `fromState`, keeps the session, `seenRevision`, and the context's size only
 when its client has the same `providerDataSource`, and starts its `ReadRegistry` empty. The system
 prompt, the tools and every other option are the new agent's.
 
-Following the history then resolves the run each turn names. A run the history lists, or one that
+An agent restored over another history than the snapshot's takes every move of that one as seen,
+on its first look. Following the history then resolves the run each turn names. A run the history lists, or one that
 retention chained into a run it lists (`absorbed`), is that run. For any other, `followHistory`
 asks `readRun` once per agent (`UnlistedRuns`): `HistoryExpiredError`, retention removed it, so it
 is off every line as before; `UnknownRunError`, or a record the list hides, such as a dead run that

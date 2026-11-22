@@ -322,6 +322,8 @@ export class LLMAgent implements Agent {
 	private contextTokens: number | undefined;
 	// The latest move through the history this conversation has followed.
 	private seenRevision = 0;
+	// The history `seenRevision` counts in, once the conversation followed one.
+	private historyId: string | undefined;
 	// What the history said of each run a turn names that it no longer lists, which it never
 	// lists again.
 	private readonly unlisted: UnlistedRuns = new Map();
@@ -406,6 +408,7 @@ export class LLMAgent implements Agent {
 			: new Conversation(messages);
 		this.session = restore ? { ...restore.session } : newSession();
 		this.seenRevision = restore?.seenRevision ?? 0;
+		this.historyId = restore?.history;
 		// Another provider counts tokens its own way, and is sent another context: it measures anew.
 		if (restore?.context && restore.context.source === llmClient.providerDataSource) {
 			this.contextTokens = restore.context.tokens;
@@ -455,6 +458,7 @@ export class LLMAgent implements Agent {
 			conversation: this.conversation,
 			session: this.session,
 			seenRevision: this.seenRevision,
+			history: this.historyId,
 			contextTokens: this.contextTokens,
 			source: this.llmClient.providerDataSource,
 		});
@@ -462,6 +466,12 @@ export class LLMAgent implements Agent {
 
 	private async followHistory(history: HistoryReader): Promise<Followed> {
 		try {
+			const id = await history.workspaceId;
+			// A conversation restored over another history never saw its moves: it starts after them.
+			if (this.historyId !== undefined && this.historyId !== id) {
+				this.seenRevision = (await history.listRevisions()).at(-1)?.revision ?? 0;
+			}
+			this.historyId = id;
 			return await followHistory(this.conversation, history, this.seenRevision, this.unlisted);
 		} catch (error) {
 			throw classifyLocalFailure(error, 'The workspace history could not be read');
@@ -1296,6 +1306,7 @@ export class LLMAgent implements Agent {
 			throw error;
 		} finally {
 			await this.finishContext(context, end);
+			this.enclosing.ended(context);
 		}
 		// Read once the run ended: a run that changed nothing left the history then.
 		const { runId } = await this.runIn(context);

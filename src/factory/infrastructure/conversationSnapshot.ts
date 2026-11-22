@@ -61,6 +61,7 @@ const snapshotSchema = z.strictObject({
 	),
 	currentTurn: index.optional(),
 	seenRevision: index,
+	history: z.string().min(1).optional(),
 	context: z
 		.strictObject({ tokens: z.int().nonnegative(), source: z.string().optional() })
 		.optional(),
@@ -98,7 +99,16 @@ export function readConversationSnapshot(value: unknown): RestoredConversation {
 		);
 	}
 
-	const parsed = snapshotSchema.safeParse(value);
+	// As storage gives it back: a key whose value is `undefined` is gone, as JSON drops it.
+	let json: unknown;
+	try {
+		json = JSON.parse(JSON.stringify(value));
+	} catch (error) {
+		throw invalid(
+			`It is not plain JSON: ${error instanceof Error ? error.message : String(error)}.`,
+		);
+	}
+	const parsed = snapshotSchema.safeParse(json);
 	if (!parsed.success) {
 		throw invalid(
 			parsed.error.issues
@@ -109,9 +119,9 @@ export function readConversationSnapshot(value: unknown): RestoredConversation {
 	}
 	// What was given, not what was parsed: every key was checked, and the providers' data keeps
 	// its keys in the order the provider sent them.
-	const { session, initial, turns, currentTurn, seenRevision, context } = structuredClone(
-		value as z.infer<typeof snapshotSchema>,
-	);
+	const { session, initial, turns, currentTurn, seenRevision, history, context } = json as z.infer<
+		typeof snapshotSchema
+	>;
 	const conversation = {
 		initial,
 		turns,
@@ -127,6 +137,7 @@ export function readConversationSnapshot(value: unknown): RestoredConversation {
 				? { id: session.id }
 				: { id: session.id, name: session.name },
 		seenRevision,
+		...(history === undefined ? {} : { history }),
 		...(context ? { context } : {}),
 	};
 }

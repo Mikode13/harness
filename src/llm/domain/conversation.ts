@@ -57,6 +57,10 @@ export function checkConversationState(state: ConversationState): string | undef
 		const unpaired = unpairedToolPart(turn.messages);
 		if (unpaired !== undefined) return `turn ${String(index)} ${unpaired}`;
 	}
+	// A conversation sets its current turn whenever it records one.
+	if (current === undefined && turns.length > 0) {
+		return 'current turn is missing, though it has turns';
+	}
 	if (
 		current !== undefined &&
 		!(Number.isInteger(current) && current >= 0 && current < turns.length)

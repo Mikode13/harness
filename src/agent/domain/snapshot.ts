@@ -39,6 +39,11 @@ export interface ConversationSnapshot {
 	/** The latest move through the workspace's history the conversation followed. */
 	seenRevision: number;
 	/**
+	 * The history the run ids and `seenRevision` belong to, once the agent followed one. Restored
+	 * over another, the agent starts after that history's moves.
+	 */
+	history?: string;
+	/**
 	 * The tokens of context the model was last sent, as the provider labelled `source` counted
 	 * them, which decides when the harness compacts it. Absent when unknown.
 	 */

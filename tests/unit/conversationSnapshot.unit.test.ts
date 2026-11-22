@@ -21,6 +21,7 @@ import {
 } from '../../src/agent/domain/snapshot.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import type { Compactor } from '../../src/engines/domain/model/compactor.ts';
+import { EnclosingRuns } from '../../src/engines/domain/model/agentSnapshot.ts';
 import { readConversationSnapshot } from '../../src/factory/infrastructure/conversationSnapshot.ts';
 import { Conversation } from '../../src/llm/domain/conversation.ts';
 import type { LLMClient, LLMResponse } from '../../src/llm/domain/llm.ts';
@@ -324,6 +325,51 @@ describe("a snapshot of an agent inside another agent's run", () => {
 
 		expect(resumed.contexts[0]).toEqual(reader.contexts.at(-1));
 		expect(texts(resumed.contexts[0])).not.toContain('look first');
+	});
+});
+
+describe('a snapshot restored over another history', () => {
+	it("starts after that history's moves, which the conversation never followed", async () => {
+		const compactor: Compactor = { by: 'harness', at: 10, keptSteps: 10 };
+		const big = textResponse('a big answer', { usage: { inputTokens: 50 } });
+		const agent = new LLMAgent({ llmClient: new FakeLLMClient(big), history: store, compactor });
+		await agent.run('first', { signal });
+		const snapshot = agent.snapshot();
+		expect(snapshot.history).toBe(store.workspaceId);
+
+		// Another history of the same folder, which has moved once.
+		const other = await FileRecoveryStore.open({ root: repo, directory: join(parent, 'other') });
+		await recordRun(other, repo, [['b.txt', 'b']]);
+		await other.undo();
+		const resumed = new FakeLLMClient(textResponse('summary'), textResponse('next'));
+		const restored = new LLMAgent({
+			llmClient: resumed,
+			history: other,
+			compactor,
+			restore: throughJson(snapshot),
+		});
+		await restored.run('next', { signal });
+
+		// The move it never saw does not make it measure its context anew: it compacts first, as the
+		// agent it was taken from would have.
+		expect(texts(resumed.contexts[0]).at(-1)).toContain('Write a summary of this conversation');
+		expect(restored.snapshot()).toMatchObject({ history: other.workspaceId, seenRevision: 1 });
+	});
+});
+
+describe('the runs an agent ran inside', () => {
+	it('forgets one that ended, even before it finished', () => {
+		const runs = new EnclosingRuns();
+		const run = new RunContext({ id: 'run' });
+		runs.recorded(run);
+
+		expect(() => {
+			runs.assertEnded();
+		}).toThrow(RunInProgressError);
+		runs.ended(run);
+		expect(() => {
+			runs.assertEnded();
+		}).not.toThrow();
 	});
 });
 
@@ -692,6 +738,12 @@ describe('reading a conversation snapshot', () => {
 		]);
 	});
 
+	it('reads one given as it is, not through JSON, with keys left undefined', async () => {
+		const snapshot = { ...(await valid()), context: undefined };
+
+		expect(() => readConversationSnapshot(snapshot)).not.toThrow();
+	});
+
 	it('refuses a version it does not restore, with the version', async () => {
 		const snapshot = { ...(await valid()), version: 2 };
 
@@ -745,6 +797,15 @@ describe('reading a conversation snapshot', () => {
 		],
 		['has a negative revision', snapshot => ({ ...snapshot, seenRevision: -1 })],
 		['has no version', snapshot => ({ ...snapshot, version: undefined })],
+		['has turns and no current turn', snapshot => ({ ...snapshot, currentTurn: undefined })],
+		[
+			'is not plain JSON',
+			snapshot => {
+				const cyclic: Record<string, unknown> = { ...snapshot };
+				cyclic.self = cyclic;
+				return cyclic;
+			},
+		],
 		['has a version that is not a number', snapshot => ({ ...snapshot, version: '1' })],
 		['has a version that is not a whole number', snapshot => ({ ...snapshot, version: 1.5 })],
 	];
