@@ -5,7 +5,7 @@ import {
 	sessionVersions,
 	UnsupportedSnapshotVersionError,
 } from '#src/agent/domain/snapshot';
-import type { RestoredConversation } from '#src/engines/domain/model/llmAgent';
+import type { RestoredConversation } from '#src/engines/domain/model/agentSnapshot';
 import type { Session } from '#src/shared/domain/session';
 import { readConversationSnapshot } from './conversationSnapshot.ts';
 
