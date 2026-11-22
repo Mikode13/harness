@@ -5,7 +5,7 @@ import {
 	InvalidSnapshotError,
 	UnsupportedSnapshotVersionError,
 } from '#src/agent/domain/snapshot';
-import type { RestoredConversation } from '#src/engines/domain/model/llmAgent';
+import type { RestoredConversation } from '#src/engines/domain/model/agentSnapshot';
 import { checkConversationState } from '#src/llm/domain/conversation';
 import type { Message, MessagePart } from '#src/llm/domain/message';
 

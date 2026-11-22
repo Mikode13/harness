@@ -79,7 +79,9 @@ workspace's history, it first follows the moves the user made through it, taking
 conversation back with the workspace and telling the model what was undone, with a summary
 from a cheap model when it has one; `Compactor`, how an `LLMAgent` keeps its context within
 the model, the provider's, the recent compactor of `recentCompaction.ts`, or the same
-compactor with Jev's triage of `triagedCompaction.ts` (internal).
+compactor with Jev's triage of `triagedCompaction.ts` (internal); `agentSnapshot.ts`, the
+`ConversationSnapshot` an `LLMAgent` gives, the `RestoredConversation` it goes on from, and
+`EnclosingRuns`, the runs its turns were recorded in that have not ended (internal).
 
 ### `src/llm/`
 

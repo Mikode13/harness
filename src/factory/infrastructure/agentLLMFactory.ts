@@ -4,11 +4,8 @@ import type { ConversationAgent, ConversationSnapshot } from '#src/agent/domain/
 import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcript';
 import type { HistoryReader } from '#src/engines/domain/model/historyFollower';
 import { type Compactor, recentKeptSteps } from '#src/engines/domain/model/compactor';
-import {
-	LLMAgent,
-	type RestoredConversation,
-	snapshotInRun,
-} from '#src/engines/domain/model/llmAgent';
+import { LLMAgent } from '#src/engines/domain/model/llmAgent';
+import { type RestoredConversation, snapshotInRun } from '#src/engines/domain/model/agentSnapshot';
 import { JevContextTriage } from '#src/llm/infrastructure/jevContextTriage';
 import type { LLMClient } from '#src/llm/domain/llm';
 import {
