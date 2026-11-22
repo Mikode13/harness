@@ -120,7 +120,7 @@ export interface RunOptions {
 	 * not take is never answered and its call never runs, and an answer or decision it did not take
 	 * is never acted on. After such a failure it receives nothing more. A run that completed but
 	 * whose end it did not take rejects with an `UnrecoverableError` too, since what it holds is
-	 * not the whole run; a run that failed or was cancelled rejects with its own error, and the
+	 * not the whole run, an `UnrecoverableCommittedRunError` with what it committed when it did; a run that failed or was cancelled rejects with its own error, and the
 	 * failure to take its end is logged.
 	 *
 	 * Only the agents the factories return keep a record; an agent another agent started, or a

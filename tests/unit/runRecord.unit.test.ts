@@ -7,6 +7,7 @@ import {
 	roleAsking,
 } from '../../src/agent/domain/recordingAgent.ts';
 import { runRecordVersion, type RunEntry } from '../../src/agent/domain/runRecord.ts';
+import { UnrecoverableCommittedRunError } from '../../src/agent/domain/committedRunError.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import { RetryingAgent } from '../../src/retry/domain/model/retryingAgent.ts';
 import { RecoverableError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
@@ -537,6 +538,44 @@ describe('the run record', () => {
 			});
 			expect(runs.count).toBe(1);
 			expect(llmClient.contexts).toHaveLength(2);
+		});
+
+		it('carries what a completed run committed when it did not take its end', async () => {
+			const commits = {
+				outcome: 'committed' as const,
+				repositories: [
+					{
+						repository: '/repo',
+						branch: 'main',
+						outcome: 'done' as const,
+						commits: [{ sha: 'a'.repeat(40), subject: 'Change a' }],
+						paths: ['a.ts'],
+						leftOut: [],
+						unreviewed: [],
+					},
+				],
+			};
+			const phases = [{ goal: 'parse', status: 'approved' as const, summary: 'parsed' }];
+			const committing: Agent = {
+				run: () =>
+					Promise.resolve({ response: 'done', duration: 0, commits, phases, runId: 'run-1' }),
+			};
+
+			const run = new RecordingAgent({ inner: committing, logger: logger() }).run('go', {
+				signal: new AbortController().signal,
+				onRecord: entry => {
+					if (entry.type === 'end') throw new Error('Disk full');
+				},
+			});
+
+			await expect(run).rejects.toBeInstanceOf(UnrecoverableCommittedRunError);
+			await expect(run).rejects.toMatchObject({
+				message: 'The run completed, but its record could not take every entry',
+				cause: 'Disk full',
+				commits,
+				phases,
+				runId: 'run-1',
+			});
 		});
 
 		it('keeps the failure or the cancellation of a run whose end it did not take, and logs it', async () => {

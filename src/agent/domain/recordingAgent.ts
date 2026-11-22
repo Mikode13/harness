@@ -8,6 +8,7 @@ import { readDecision, type Approver } from './approval.ts';
 import {
 	RecoverableCommittedRunError,
 	UnrecoverableCommittedRunError,
+	withCommittedRun,
 } from './committedRunError.ts';
 import { readAnswers, type Asker } from './question.ts';
 import type {
@@ -323,14 +324,22 @@ export class RecordingAgent implements Agent {
 			await recorder.flush();
 		} catch (error) {
 			// The run completed, but its record does not say so: the consumer must not take what it
-			// has for the whole run. Nothing runs again, since the error is not retried.
-			throw withSpentTokens(
+			// has for the whole run. Nothing runs again, since the error is not retried, and what the
+			// run committed travels with it, as with any failure after a commit.
+			const failure = withSpentTokens(
 				new UnrecoverableError('The run completed, but its record could not take every entry', {
 					cause: describeFailure(error),
 				}),
 				response.tokens,
 				response.tokens === undefined,
 			);
+			throw response.commits
+				? withCommittedRun(failure, {
+						commits: response.commits,
+						phases: response.phases ?? [],
+						...(response.runId === undefined ? {} : { runId: response.runId }),
+					})
+				: failure;
 		}
 		return response;
 	}

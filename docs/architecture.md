@@ -867,7 +867,8 @@ promise holds the entries after it until it settles. A callback that fails, at o
 stops the record; every later entry, and every wait, throws an `UnrecoverableError`, which the
 callers classify as a host failure, so the run ends without being retried, and a question,
 approval or answer behind it is never acted on. A completed run whose end was not taken rejects
-with an `UnrecoverableError` carrying its tokens; a failed or cancelled one rejects with its own
+with an `UnrecoverableError` carrying its tokens, and, through `withCommittedRun`, what it
+committed; a failed or cancelled one rejects with its own
 error, and the failure is logged. `RecordingAgent` sits outside `RetryingAgent`, so a question
 `rememberAnswers` answers on a retry is not asked again and not recorded again. Who asked travels
 in an `AsyncLocalStorage`, because the asker and approver receive nothing but the questions or

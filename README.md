@@ -587,7 +587,8 @@ throws or rejects ends the run with an `UnrecoverableError`, which nothing retri
 that already had effects runs again: a question it did not take is never asked, an approval it did
 not take is never asked for and its call never runs, and an answer or a decision it did not take
 is never acted on. It receives nothing more after that. A run that completed but whose end it did
-not take rejects with an `UnrecoverableError` too, with what the run spent; a run that failed or
+not take rejects with an `UnrecoverableError` too, with what the run spent and, from a run that
+committed, an `UnrecoverableCommittedRunError` with its commits, phases and `runId`; a run that failed or
 was cancelled rejects with its own error, and the record's failure is logged.
 
 What an agent another agent started asks is in the same record, with an `origin` that names the
@@ -601,8 +602,9 @@ The Agent SDK engines ask no one, so their record holds progress and the end.
 The record belongs to the run you started: agents inside it, its roles and the agents it hands
 work to, keep none of their own. A workflow from `createWorkflow` keeps no record of its own: it
 passes `onRecord` on to each stage's agent, so a stage whose agent comes from a factory gives the
-record of its own run, its `end` included, and the workflow's `workflowStage` and
-`workflowTransition` events reach only `onProgress`. The harness keeps no record: where it is
+record of its own run, one after the other in the same callback: each ends with its own `end`
+and numbers its questions and approvals from 1 again, so split the stream at each `end`. The
+workflow's own `workflowStage` and `workflowTransition` events reach only `onProgress`. The harness keeps no record: where it is
 stored, and for how long, is yours.
 
 ### Agents that change files
