@@ -357,13 +357,14 @@ export class RecordingAgent implements Agent {
 			recorder.push({ version: 1, type: 'end', outcome: 'completed', response });
 			await recorder.flush(options.signal);
 		} catch (error) {
-			// Cancelled while the record still takes the end: the cancellation is what the run
-			// rejects with, at once, and the record goes on taking its entries meanwhile.
+			// Cancelled while the record still takes the end of a run that completed: the run did
+			// complete, as its record says, so it resolves with its response, at once, with what it
+			// committed, and the record goes on taking its entries meanwhile.
 			if (isCancelled(options.signal) && isAbortError(error)) {
 				recorder.finishInBackground(failure => {
 					this.warn(failure);
 				});
-				throw error;
+				return response;
 			}
 			// The run completed, but its record does not say so: the consumer must not take what it
 			// has for the whole run. Nothing runs again, since the error is not retried, and what the

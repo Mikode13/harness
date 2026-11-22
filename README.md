@@ -583,8 +583,8 @@ settles. Each entry is the callback's own copy, taken when it happened, so chang
 nothing the run, the asker or the approver hold, nor what `run()` returns. The run waits for every
 entry so far before it asks, before it acts on the answer or the decision, and before it ends, so
 a question is stored before anyone sees it, and `run()` settles once its end is taken. A
-cancellation stops every one of those waits: a cancelled run rejects at once, even while the
-callback still holds an entry, and the record gets its `cancelled` end once the entries before it
+cancellation stops every one of those waits: a cancelled run rejects at once, and one that
+completed resolves with its response, even while the callback still holds an entry, and the record gets its `cancelled` end once the entries before it
 are taken. A callback that
 throws or rejects ends the run with an `UnrecoverableError`, which nothing retries, so no tool
 that already had effects runs again: a question it did not take is never asked, an approval it did

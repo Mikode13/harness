@@ -864,7 +864,8 @@ records the answer before it returns it; and whose `approve` does the same with 
 the decision. An answer the agent would refuse, of the wrong shape or after a cancellation, is
 returned unrecorded, and the agent ends the run as before. Once the agent inside settles, it
 records the end and waits for it, however the run ended, unless the run is cancelled: a
-cancellation stops every wait, so a cancelled run rejects at once while the recorder goes on
+cancellation stops every wait, so a cancelled run rejects at once, and one that completed
+resolves with its response, while the recorder goes on
 handing on the entries it holds, the end last, and logs a failure to take them. The recorder
 hands the callback a `structuredClone` of each entry, taken when it is pushed, so the callback
 and the run never share a value, and an entry that cannot be copied is a failure to take it. The recorder hands entries to the callback one at a time: a

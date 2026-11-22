@@ -395,24 +395,45 @@ describe('the run record', () => {
 		expect(error).toBeDefined();
 	});
 
-	it('ends a run cancelled while its record takes the completed end with the cancellation, at once', async () => {
+	it('resolves a run that completed with its response, at once, when it is cancelled while its record takes the end', async () => {
 		const controller = new AbortController();
 		const llmClient = new FakeLLMClient(textResponse('done'));
+		const entries: RunEntry[] = [];
 
-		const run = recorded(llmClient).run('design it', {
+		const response = await recorded(llmClient).run('design it', {
 			signal: controller.signal,
 			onRecord: entry => {
+				entries.push(entry);
 				if (entry.type !== 'end') return undefined;
 				setTimeout(() => {
 					controller.abort();
 				}, 5);
+				// A store that hangs on the end: the run completed, and is cancelled meanwhile.
 				return new Promise<void>(() => undefined);
 			},
 		});
 
-		const error = await run.catch((failure: unknown) => failure);
-		expect(error).toBe(controller.signal.reason);
-		expect(error).toBeDefined();
+		expect(response.response).toBe('done');
+		expect(entries.at(-1)).toMatchObject({ type: 'end', outcome: 'completed' });
+	});
+
+	it('resolves a run that completed after its signal aborted with its response, without waiting for the record', async () => {
+		const controller = new AbortController();
+		const inner: Agent = {
+			// An agent that completes although its run was cancelled, as a commit stage can.
+			run: () => {
+				controller.abort();
+				return Promise.resolve({ response: 'committed', duration: 0 });
+			},
+		};
+		const agent = new RecordingAgent({ inner, logger: logger() });
+
+		const response = await agent.run('design it', {
+			signal: controller.signal,
+			onRecord: entry => (entry.type === 'end' ? new Promise<void>(() => undefined) : undefined),
+		});
+
+		expect(response).toMatchObject({ response: 'committed' });
 	});
 
 	it('hands on every entry that waited, in order, when only some of them take time', async () => {
