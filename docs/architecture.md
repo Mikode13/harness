@@ -60,8 +60,10 @@ had, with what a run that committed after each phase had committed, `newSession`
 top-level run shares with every agent and tool inside it, carried in `RunOptions` under a
 private symbol, and `Delegation`, the call that started an agent another agent's tool runs,
 carried the same way (both internal); `ConversationSnapshot`, the versioned JSON of one model-API
-agent's conversation, `ConversationAgent`, an `Agent` that takes one between runs, and
-`InvalidSnapshotError` and its `UnsupportedSnapshotVersionError`, why one cannot be restored. The approval types live here, not in `src/tools`,
+agent's conversation, `ConversationAgent`, an `Agent` that takes one between runs,
+`SessionSnapshot`, the versioned JSON of `createLLMOrchestrator`'s roles' conversations at the end
+of a run, `SessionAgent`, an `Agent` that takes one, and `InvalidSnapshotError` and its
+`UnsupportedSnapshotVersionError`, why one cannot be restored. The approval types live here, not in `src/tools`,
 because `RunOptions` carries the approver and this module depends on nothing but
 `src/shared`.
 
@@ -220,7 +222,10 @@ Provider selection, default model and reasoning effort per role, and composition
 retry decorator. `SnapshotAgent` (internal) is what `createLLMAgent` returns: the retried agent,
 whose `snapshot()` is its `LLMAgent`'s, refused while a run works on it.
 `readConversationSnapshot` checks a snapshot with Zod, its version first, and gives the
-`RestoredConversation` an `LLMAgent` goes on from.
+`RestoredConversation` an `LLMAgent` goes on from. `SessionSnapshotAgent` (internal) is what
+`createLLMOrchestrator` returns: the `PhasedOrchestrator`, whose `snapshot()` holds its session
+and each role's `ConversationAgent.snapshot()`, refused while one of its runs works.
+`readSessionSnapshot` checks a session snapshot, then each role's with `readConversationSnapshot`.
 
 ### `src/orchestration/`
 
@@ -435,7 +440,8 @@ and `verification`, the `CommitQuestion`, `RequiredCheck` and `PhaseLimits` type
 `Inbox`, what `RunOptions.inbox` takes, `RunInProgressError`, the `UnrecoverableError` a run
 rejects with while another works on the same agent, and a snapshot is refused with, the
 `ConversationAgent` `createLLMAgent` returns and the `ConversationSnapshot` it takes and restores,
-with `InvalidSnapshotError` and `UnsupportedSnapshotVersionError`, `RecoverableCommittedRunError`,
+the `SessionAgent` `createLLMOrchestrator` returns and its `SessionSnapshot`, with
+`InvalidSnapshotError` and `UnsupportedSnapshotVersionError`, `RecoverableCommittedRunError`,
 `UnrecoverableCommittedRunError` and the `CommittedRun` type they carry, what a run of
 `createLLMOrchestrator` that fails after a commit had committed, the approval contract
 (`rememberApprovals` and the `Approver`, `ApprovalRequest`, `ApprovalDecision`,
@@ -877,6 +883,21 @@ is off every line as before; `UnknownRunError`, or a record the list hides, such
 changed nothing, means the history does not know it, and its turns count as turns that wrote
 nothing, of the run of the turn before them. `undoNote` names no file for either.
 
+**Saving and restoring a composed session.** The agent `createLLMOrchestrator` returns counts its
+runs in progress and refuses `snapshot()` with `RunInProgressError` during one, since its roles are
+idle between two stages. Otherwise it gives a `SessionSnapshot`: `format`
+`mikode-harness/session`, `version` 1, `flow` `llm-orchestrator`, `boundary` `completed`, the
+`Session` the factory gave the `PhasedOrchestrator`, and `roles`, the `ConversationSnapshot` of the
+planner, the executor and the reviewer, the agents `PhasedOrchestrator` keeps across runs. Nothing
+else outlives a run: explorers, committers, delegated agents and a workflow's stage agents are
+created inside it, and what they handed over is in the conversation of the role that received it.
+`createLLMOrchestrator` with `restore` calls `readSessionSnapshot` before it opens the workspace: the
+format, then the version, then exactly these keys, the flow, the boundary, the session, exactly
+these three roles, and each role's conversation, whose failure keeps its class and names the role.
+Each role is then built with its `RestoredConversation`, and the orchestrator with the session.
+A run the process did not finish is in no snapshot; its history run is `interrupted`, settled by
+the next run as any other, and restoring replays none of it.
+
 **Usage accounting belongs to a `run()`, not to an instance.** The totals are created inside
 `run()` and passed down. A consumer that keeps one orchestrator for a whole session would
 otherwise see every previous run's tokens reported again.
@@ -969,8 +990,9 @@ at a time, and reads what the user sends meanwhile" in [`decisions.md`](decision
 - **The seam has no memory or routing model.** MCP, long-term memory, graph execution and
   file-based agent registries are deliberately absent; each waits for a real consumer.
   `LLMAgent`'s `Conversation` lives as long as the agent, unless the consumer takes a snapshot
-  of it and restores it; where a snapshot is stored is the consumer's. An orchestrator and a
-  workflow take none yet (#136).
+  of it and restores it; where a snapshot is stored is the consumer's. `createLLMOrchestrator`'s
+  is taken at the end of a run; a checkpoint inside a run is not supported yet (#136), and a
+  workflow of `createWorkflow` keeps no conversation past a run.
 - **Reasoning is replayed only to the provider that produced it.** Each client keeps its
   signed or encrypted reasoning as a `providerData` part labelled with its own `source`, and
   sends back only its own. A conversation handed to the other provider keeps its text, tool

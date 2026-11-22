@@ -76,6 +76,8 @@ export {
 	UnsupportedSnapshotVersionError,
 	type ConversationAgent,
 	type ConversationSnapshot,
+	type SessionAgent,
+	type SessionSnapshot,
 } from './agent/domain/snapshot.ts';
 export { Inbox } from './agent/domain/inbox.ts';
 export { RunInProgressError } from './agent/domain/oneRunAtATime.ts';

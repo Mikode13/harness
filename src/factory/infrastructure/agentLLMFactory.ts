@@ -1,6 +1,14 @@
 import { resolve } from 'node:path';
 import type { Agent, AgentResponse, RunOptions } from '#src/agent/domain/agent';
-import type { ConversationAgent, ConversationSnapshot } from '#src/agent/domain/snapshot';
+import { newSession } from '#src/agent/domain/session';
+import {
+	type ConversationAgent,
+	type ConversationSnapshot,
+	type SessionAgent,
+	type SessionSnapshot,
+	sessionFormat,
+} from '#src/agent/domain/snapshot';
+import type { Session } from '#src/shared/domain/session';
 import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcript';
 import type { HistoryReader } from '#src/engines/domain/model/historyFollower';
 import { type Compactor, recentKeptSteps } from '#src/engines/domain/model/compactor';
@@ -73,6 +81,7 @@ import { createShowChangesTool } from '#src/tools/infrastructure/showChangesTool
 import { createRemoveWorktreeTool } from '#src/tools/infrastructure/removeWorktreeTool';
 import { listWorktrees } from '#src/tools/infrastructure/worktrees';
 import { readConversationSnapshot } from './conversationSnapshot.ts';
+import { readSessionSnapshot } from './sessionSnapshot.ts';
 import {
 	createTrackedReadFile,
 	createTrackedReadFiles,
@@ -345,6 +354,14 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	 * a plan may hold (50), and the user's corrections of the plan (3).
 	 */
 	limits?: Partial<PhaseLimits>;
+	/**
+	 * A snapshot the orchestrator's `snapshot()` took once a run ended, parsed from the JSON it
+	 * was stored as, to go on from: each role continues its conversation, in the orchestrator's
+	 * session, following the workspace's history from where it last looked, as `createLLMAgent`'s
+	 * `restore` does for one agent. Every option, the roles' prompts, models and tools, is this
+	 * call's. Checked whole before the workspace is opened or any agent is built.
+	 */
+	restore?: SessionSnapshot;
 }
 
 const defaultLLMAgentModels = {
@@ -925,7 +942,10 @@ export async function createLLMOrchestrator({
 	commitQuestion,
 	requiredChecks,
 	limits,
-}: CreateLLMOrchestratorOptions = {}): Promise<Agent> {
+	restore,
+}: CreateLLMOrchestratorOptions = {}): Promise<SessionAgent> {
+	// First, so a snapshot that cannot be restored fails before anything is opened or built.
+	const restored = restore === undefined ? undefined : readSessionSnapshot(restore);
 	// Its commit stops the hooks it runs as a command is stopped, which Windows cannot do.
 	const canCommit = process.platform !== 'win32';
 	if (autoCommit && !canCommit) {
@@ -983,6 +1003,7 @@ export async function createLLMOrchestrator({
 		systemPrompt: string,
 	) =>
 		buildLLMAgent(provider, {
+			...(restored ? { restore: restored.roles[role] } : {}),
 			model,
 			reasoningEffort,
 			systemPrompt,
@@ -1008,14 +1029,15 @@ export async function createLLMOrchestrator({
 	// with a command can do.
 	const executorRuns = executorToolset.some(tool => tool.name === 'runCommand');
 	const verifier = await verifierOf(requiredChecks, commands, opened);
-
-	return new PhasedOrchestrator({
+	const session = restored?.session ?? newSession();
+	const kept = {
 		planner: await reader(
 			roles.planner,
 			'planner',
 			prompt('planner', systemPrompts.planner, phasedPlannerInstructions),
 		),
 		executor: buildLLMAgent(executor.provider, {
+			...(restored ? { restore: restored.roles.executor } : {}),
 			model: executor.model,
 			reasoningEffort: executor.reasoningEffort,
 			systemPrompt: prompt(
@@ -1040,6 +1062,11 @@ export async function createLLMOrchestrator({
 				executorRuns ? phasedReviewerInstructions : phasedReviewerInstructionsWithoutCommands,
 			),
 		),
+	};
+
+	const orchestrator = new PhasedOrchestrator({
+		...kept,
+		session,
 		validators: {
 			plan: planValidator,
 			report: phaseReportValidator,
@@ -1074,7 +1101,52 @@ export async function createLLMOrchestrator({
 				}
 			: {}),
 	});
+	return new SessionSnapshotAgent(orchestrator, session, kept);
 }
+
+/**
+ * The orchestrator, whose snapshot is its roles' conversations at the end of a run. Its roles are
+ * idle between two stages of a run, so it counts its own runs in progress.
+ */
+class SessionSnapshotAgent implements SessionAgent {
+	private readonly orchestrator: Agent;
+	private readonly session: Session;
+	private readonly roles: SessionSnapshotRoles;
+	private running = 0;
+
+	constructor(orchestrator: Agent, session: Session, roles: SessionSnapshotRoles) {
+		this.orchestrator = orchestrator;
+		this.session = { ...session };
+		this.roles = roles;
+	}
+
+	async run(prompt: string, options: RunOptions): Promise<AgentResponse> {
+		this.running++;
+		try {
+			return await this.orchestrator.run(prompt, options);
+		} finally {
+			this.running--;
+		}
+	}
+
+	snapshot(): SessionSnapshot {
+		if (this.running > 0) throw snapshotInRun();
+		return {
+			format: sessionFormat,
+			version: 1,
+			flow: 'llm-orchestrator',
+			boundary: 'completed',
+			session: { ...this.session },
+			roles: {
+				planner: this.roles.planner.snapshot(),
+				executor: this.roles.executor.snapshot(),
+				reviewer: this.roles.reviewer.snapshot(),
+			},
+		};
+	}
+}
+
+type SessionSnapshotRoles = Record<OrchestratorRole, ConversationAgent>;
 
 /**
  * What verifies the required checks, through a `runCommand` of its own over every command, so its

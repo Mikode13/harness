@@ -18,6 +18,7 @@ import {
 	withSpentTokens,
 } from '#src/shared/domain/errors';
 import type { ILogger } from '#src/shared/domain/logger';
+import type { Session } from '#src/shared/domain/session';
 import {
 	classifyHostFailure,
 	classifyLocalFailure,
@@ -311,7 +312,7 @@ export class PhasedOrchestrator implements Agent {
 	private readonly logger: ILogger;
 	private readonly runs = new OneRunAtATime();
 	// The session its runs belong to when their options name none.
-	private readonly session = newSession();
+	private readonly session: Session;
 
 	/**
 	 * @throws {InvalidAgentConfigError} for a limit that is not a positive integer, or names no
@@ -330,6 +331,7 @@ export class PhasedOrchestrator implements Agent {
 		commitQuestion = 'end',
 		limits = {},
 		logger,
+		session,
 	}: {
 		/** Each role's agent, kept for every run, so it goes on with its conversation. */
 		planner: Agent;
@@ -357,6 +359,8 @@ export class PhasedOrchestrator implements Agent {
 		commitQuestion?: CommitQuestion;
 		limits?: Partial<PhaseLimits>;
 		logger: ILogger;
+		/** The session its runs belong to when their options name none, such as a restored one's. */
+		session?: Session;
 	}) {
 		const chosen = phaseLimits(limits);
 		if (!commitQuestions.includes(commitQuestion)) {
@@ -384,6 +388,7 @@ export class PhasedOrchestrator implements Agent {
 		this.commitQuestion = commitQuestion;
 		this.limits = chosen;
 		this.logger = logger;
+		this.session = session ? { ...session } : newSession();
 		this.commits = new CommitFlow({
 			committer,
 			createCommitter,
