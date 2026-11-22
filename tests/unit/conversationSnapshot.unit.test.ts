@@ -301,6 +301,32 @@ describe('a snapshot of a model-API agent', () => {
 	});
 });
 
+describe("a snapshot of an agent inside another agent's run", () => {
+	it('waits for that run to end, so its turns know the history run they belong to', async () => {
+		const outer = new RunContext({ id: 'outer' });
+		const inside = withRunContext({ signal }, outer);
+		// A stage that only reads, then one that writes, in the same run, as a workflow's are.
+		const reader = new ScriptedModel().answers('read').answers('after');
+		const agent = await agentOver(reader);
+		await agent.run('look first', inside);
+		await (await agentOver(new ScriptedModel().writes('a.txt', 'one'))).run('write', inside);
+
+		expect(() => agent.snapshot()).toThrow(RunInProgressError);
+		await outer.finish('completed');
+		const snapshot = agent.snapshot();
+		expect(snapshot.turns[0]?.runId).toBeDefined();
+
+		// The run is undone, so the turn that belongs to it is dropped by both agents alike.
+		await store.undo();
+		await agent.run('next', { signal });
+		const resumed = new ScriptedModel().answers('after');
+		await (await agentOver(resumed, { restore: snapshot })).run('next', { signal });
+
+		expect(resumed.contexts[0]).toEqual(reader.contexts.at(-1));
+		expect(texts(resumed.contexts[0])).not.toContain('look first');
+	});
+});
+
 describe('a restored agent and the files', () => {
 	it('reads a file again before it changes it', async () => {
 		const calls: [string, Record<string, unknown>][] = [
@@ -530,11 +556,25 @@ describe('a restored agent following the history', () => {
 			// Inside an outer run, as a role's is, so the run is still recording when the turn ends.
 			const outer = new RunContext({ id: 'outer' });
 			await agent.run('first', withRunContext({ signal }, outer));
-			const snapshot = agent.snapshot();
 			const [journal] = left;
 			if (!journal) throw new Error('The run never started');
 			if (settled) await journal.abandoned(1);
 			kill(journal);
+			// The agent takes no snapshot while that run is open; a snapshot can still name a run that
+			// died so, such as one restored over a history that settled it since, so it is written here
+			// as the agent would have taken it.
+			expect(() => agent.snapshot()).toThrow(RunInProgressError);
+			const [, second] = model.contexts;
+			const snapshot: ConversationSnapshot = {
+				...new LLMAgent({ llmClient: new FakeLLMClient() }).snapshot(),
+				turns: [
+					{
+						runId: journal.runId,
+						messages: [...(second ?? []), textResponse('done').message],
+					},
+				],
+				currentTurn: 0,
+			};
 			return { snapshot, runId: journal.runId };
 		}
 
@@ -704,6 +744,9 @@ describe('reading a conversation snapshot', () => {
 			}),
 		],
 		['has a negative revision', snapshot => ({ ...snapshot, seenRevision: -1 })],
+		['has no version', snapshot => ({ ...snapshot, version: undefined })],
+		['has a version that is not a number', snapshot => ({ ...snapshot, version: '1' })],
+		['has a version that is not a whole number', snapshot => ({ ...snapshot, version: 1.5 })],
 	];
 
 	it.each(broken)('refuses one that %s, classified', async (_, breakIt) => {

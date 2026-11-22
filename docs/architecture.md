@@ -844,15 +844,19 @@ and "An edit shows the lines the formatter rewrote, and has the file read again"
 
 **Saving and restoring a conversation.** `snapshot()` on the agent `createLLMAgent` returns is
 refused with `RunInProgressError` while a run works on it, between the attempts of a retried run
-too, since `SnapshotAgent` counts the runs in progress and not only the engine's. Otherwise
+too, since `SnapshotAgent` counts the runs in progress and not only the engine's. `LLMAgent` also
+refuses it while a `RunContext` one of its turns was recorded in has not `finished`, such as the
+run of a workflow it is a stage of: the turn's `TurnRun` is that context's, which learns its
+history run on the run's first write and loses it if the run changed nothing. Otherwise
 `LLMAgent.snapshot()` gives a `ConversationSnapshot`, `format` `mikode-harness/conversation`,
 `version` 1: the conversation's `ConversationState`, its initial messages and every turn with its
 messages, the turn it followed and the run id it wrote in, then the current turn, with the agent's
 default `Session`, the latest revision of the history it followed (`seenRevision`), and the tokens
 of context its model was last sent, labelled with its client's `providerDataSource`. It is a deep
 copy, plain JSON. `createLLMAgent` with `restore` calls `readConversationSnapshot` before it
-builds anything: a value that is not an object of the format is an `InvalidSnapshotError`, an
-unknown version an `UnsupportedSnapshotVersionError`, and the rest is checked by a strict Zod
+builds anything: a value that is not an object of the format, or whose version is not a whole
+number, is an `InvalidSnapshotError`, a version this release does not restore an
+`UnsupportedSnapshotVersionError`, and the rest is checked by a strict Zod
 schema of every message part, then by `checkConversationState`: each turn follows an earlier one
 and starts with a prompt, every tool call has its result in the next message and nothing else
 does, and the current turn exists. What restores is the value given, not Zod's copy, so the

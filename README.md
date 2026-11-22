@@ -584,7 +584,9 @@ conversation had read of each file is not kept either: a restored agent reads a 
 it changes it, since the file may have changed meanwhile. Nor is what a run was doing: take a
 snapshot once `run()` settles. While a run works on the agent, including between two attempts
 of one retried run, `snapshot()` throws `RunInProgressError`; the run is recorded only when it
-ends, so a snapshot never holds half a run.
+ends, so a snapshot never holds half a run. An agent that works inside another agent's run, such
+as a stage of a workflow or an agent another agent's tool calls, throws it too until that outer
+run ends: the run may still write, which ties the agent's turn to it.
 
 **Another provider.** A snapshot one provider's agent took can be restored on the other's. Each
 provider's client sends back only its own opaque data, so the other provider reads the text,
@@ -603,9 +605,9 @@ of the turn before it: a run whose process died before it changed anything leave
 and so does a snapshot restored over another folder's history.
 
 **When it cannot be restored.** `createLLMAgent` checks a snapshot whole before it builds
-anything, so no model or tool runs. A snapshot of a version this release does not restore throws
+anything, so no model or tool runs. A snapshot whose version is a whole number this release does not restore throws
 `UnsupportedSnapshotVersionError`, an `InvalidSnapshotError` with the `version` it names; anything
-else that is not a whole
+else, a missing version included, that is not a whole
 snapshot, such as a part of an unknown type, a turn that follows a later one or a tool call
 without its result, throws `InvalidSnapshotError`. Both are `UnrecoverableError`s.
 

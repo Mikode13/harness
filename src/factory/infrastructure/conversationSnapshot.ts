@@ -84,6 +84,10 @@ export function readConversationSnapshot(value: unknown): RestoredConversation {
 			`Its format is ${describe(format)}, not "${conversationFormat}": it is not a snapshot of an agent's conversation.`,
 		);
 	}
+	// A version that is no whole number is no version a release could have written.
+	if (typeof version !== 'number' || !Number.isInteger(version) || version < 1) {
+		throw invalid(`Its version is ${describe(version)}, not a version number.`);
+	}
 	if (!(conversationVersions as readonly unknown[]).includes(version)) {
 		throw new UnsupportedSnapshotVersionError(
 			'The conversation snapshot is of a version this release cannot restore',

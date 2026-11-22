@@ -298,6 +298,20 @@ function takeInbox(
 	return { texts, message: { role: 'user', content } };
 }
 
+/**
+ * Why a snapshot is not taken while a run that recorded one of its turns is still open: the
+ * run may yet write, which ties the turn to its history run, or end having changed nothing.
+ */
+function snapshotInOuterRun(): RunInProgressError {
+	return new RunInProgressError(
+		"A run that one of the agent's turns belongs to is still open, so its snapshot cannot be taken",
+		{
+			cause:
+				"The agent ran inside another agent's run, such as a workflow stage or a delegated agent, and that run has not ended: what it writes may still tie the turn to its history run. Take the snapshot once the outermost run settles.",
+		},
+	);
+}
+
 /** Why a snapshot is not taken while a run works on the agent. */
 export function snapshotInRun(): RunInProgressError {
 	return new RunInProgressError(
@@ -341,6 +355,9 @@ export class LLMAgent implements Agent {
 	// What the history said of each run a turn names that it no longer lists, which it never
 	// lists again.
 	private readonly unlisted: UnlistedRuns = new Map();
+	// The runs of other agents its turns were recorded in that had not ended then, whose history
+	// run a turn may still learn.
+	private readonly enclosing = new Set<RunContext>();
 	// What this conversation has seen of each file, so an edit starts from a version it read.
 	// A restored agent starts with none: the files may have changed since.
 	private readonly reads = new ReadRegistry();
@@ -464,6 +481,10 @@ export class LLMAgent implements Agent {
 	 */
 	snapshot(): ConversationSnapshot {
 		if (this.runs.busy) throw snapshotInRun();
+		for (const context of this.enclosing) {
+			if (context.finished) this.enclosing.delete(context);
+		}
+		if (this.enclosing.size > 0) throw snapshotInOuterRun();
 		const { initial, turns, current } = this.conversation.state();
 		const source = this.llmClient.providerDataSource;
 		return {
@@ -1513,6 +1534,9 @@ export class LLMAgent implements Agent {
 			const remember = () => {
 				unkept.length = 0;
 				this.conversation.addRunAfter(after, runMessages, ownRun);
+				// Until the run ends, the turn may still learn its history run, or lose it. Its own run
+				// ends with this one; one another agent owns, such as a workflow's, ends later.
+				if (!context.finished) this.enclosing.add(context);
 				// With the turns that read them, and only then.
 				reads.commit();
 				if (followed) this.seenRevision = followed.latestRevision;

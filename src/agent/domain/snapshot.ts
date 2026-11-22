@@ -52,7 +52,10 @@ export interface ConversationAgent extends Agent {
 	 * so a snapshot taken once `run()` settled holds that run, and never half of one.
 	 *
 	 * @throws {RunInProgressError} while a run works on the agent, including between the attempts
-	 * of a run that is retried: take it once `run()` settles.
+	 * of a run that is retried: take it once `run()` settles. Also while a run that one of its
+	 * turns was recorded in is still open, as another agent's run is when this agent works inside
+	 * it, such as a workflow's stage: that run may still tie the turn to the history run it writes,
+	 * so take the snapshot once the outermost run settles.
 	 */
 	snapshot(): ConversationSnapshot;
 }
