@@ -95,11 +95,22 @@ class RunRecorder {
 	}
 
 	/**
-	 * Hands `entry` on now, or once those before it are taken. Throws when an entry before it
-	 * failed, or when the callback throws at once.
+	 * Hands a copy of `entry` on now, or once those before it are taken. Throws when an entry
+	 * before it failed, when the callback throws at once, or when the entry cannot be copied.
+	 *
+	 * The copy is taken now, so the callback gets the entry as it was when it happened, and what
+	 * the callback does to it never reaches the asker, the approver, the agent or what `run()`
+	 * returns, which hold the same values.
 	 */
 	push(entry: RunEntry): void {
 		if (this.failure) throw this.failure;
+		let copy: RunEntry;
+		try {
+			copy = structuredClone(entry);
+		} catch (error) {
+			throw this.fail(error);
+		}
+		entry = copy;
 		this.pushed++;
 		if (this.delivering) {
 			this.waiting.push(entry);
@@ -121,6 +132,14 @@ class RunRecorder {
 			await (signal ? untilAborted(this.delivering, signal) : this.delivering);
 		}
 		if (this.failure) throw this.failure;
+	}
+
+	/**
+	 * Lets every entry pushed so far be taken after the run settled, without the run waiting for
+	 * it, and logs a failure to take one.
+	 */
+	finishInBackground(log: (failure: unknown) => void): void {
+		void this.flush().catch(log);
 	}
 
 	/** Hands `entry` to the callback, and returns the failure when it threw at once. */
@@ -165,6 +184,11 @@ class RunRecorder {
 		this.waiting.length = 0;
 		return this.failure;
 	}
+}
+
+/** Whether `signal` is aborted now, read where an earlier check may have narrowed it. */
+function isCancelled(signal: AbortSignal): boolean {
+	return signal.aborted;
 }
 
 /** `promise`, or the signal's reason once it aborts, whichever comes first. */
@@ -331,8 +355,16 @@ export class RecordingAgent implements Agent {
 
 		try {
 			recorder.push({ version: 1, type: 'end', outcome: 'completed', response });
-			await recorder.flush();
+			await recorder.flush(options.signal);
 		} catch (error) {
+			// Cancelled while the record still takes the end: the cancellation is what the run
+			// rejects with, at once, and the record goes on taking its entries meanwhile.
+			if (isCancelled(options.signal) && isAbortError(error)) {
+				recorder.finishInBackground(failure => {
+					this.warn(failure);
+				});
+				throw error;
+			}
 			// The run completed, but its record does not say so: the consumer must not take what it
 			// has for the whole run. Nothing runs again, since the error is not retried, and what the
 			// run committed travels with it, as with any failure after a commit.
@@ -368,13 +400,39 @@ export class RecordingAgent implements Agent {
 		if (recorder.broken) return;
 		try {
 			recorder.push(endOf(error, signal));
-			await recorder.flush();
 		} catch (failure) {
-			try {
-				this.logger.warn(`The run's record could not take its end: ${describeFailure(failure)}`);
-			} catch {
-				// The run's own failure, or its cancellation, is what the consumer must get.
+			this.warn(failure);
+			return;
+		}
+		// A cancelled run rejects at once: it never waits for an entry the record is still taking,
+		// and the end is handed on once those before it are taken. A run that failed waits for its
+		// end, unless it is cancelled while it does.
+		if (signal.aborted) {
+			recorder.finishInBackground(failure => {
+				this.warn(failure);
+			});
+			return;
+		}
+		try {
+			await recorder.flush(signal);
+		} catch (failure) {
+			// Read again: the signal may have aborted while the record took the end.
+			if (isCancelled(signal)) {
+				recorder.finishInBackground(later => {
+					this.warn(later);
+				});
+				return;
 			}
+			this.warn(failure);
+		}
+	}
+
+	/** Logs that the record could not take the run's end; the run's own outcome is what counts. */
+	private warn(failure: unknown): void {
+		try {
+			this.logger.warn(`The run's record could not take its end: ${describeFailure(failure)}`);
+		} catch {
+			// The run's own failure, or its cancellation, is what the consumer must get.
 		}
 	}
 }

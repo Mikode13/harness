@@ -344,7 +344,7 @@ describe('the run record', () => {
 		expect(taken.at(-1)).toBe('end');
 	});
 
-	it('lets a cancellation stop a run waiting for its record to take a question, and still ends the record', async () => {
+	it('lets a cancellation end a run at once while its record still takes a question, and ends the record after', async () => {
 		const controller = new AbortController();
 		const llmClient = new FakeLLMClient(assistantResponse([askCall()]), textResponse('done'));
 		const ask = vi.fn(() => ['One function']);
@@ -367,8 +367,52 @@ describe('the run record', () => {
 		const error = await run.catch((failure: unknown) => failure);
 		expect(error).toBe(controller.signal.reason);
 		expect(ask).not.toHaveBeenCalled();
-		// `run()` settles once the end, after the question, is taken.
+		// `run()` settled while the record still took the question: the end comes after it.
+		expect(entries.at(-1)).toMatchObject({ type: 'question' });
+		await new Promise(resolve => setTimeout(resolve, 50));
 		expect(entries.at(-1)).toEqual({ version: 1, type: 'end', outcome: 'cancelled', by: 'abort' });
+	});
+
+	it('ends a cancelled run at once even when its record never settles an entry', async () => {
+		const controller = new AbortController();
+		const llmClient = new FakeLLMClient(assistantResponse([askCall()]), textResponse('done'));
+
+		const run = recorded(llmClient).run('design it', {
+			signal: controller.signal,
+			ask: () => ['One function'],
+			onRecord: entry => {
+				if (entry.type !== 'question') return undefined;
+				setTimeout(() => {
+					controller.abort();
+				}, 5);
+				// A store that hangs: it never answers.
+				return new Promise<void>(() => undefined);
+			},
+		});
+
+		const error = await run.catch((failure: unknown) => failure);
+		expect(error).toBe(controller.signal.reason);
+		expect(error).toBeDefined();
+	});
+
+	it('ends a run cancelled while its record takes the completed end with the cancellation, at once', async () => {
+		const controller = new AbortController();
+		const llmClient = new FakeLLMClient(textResponse('done'));
+
+		const run = recorded(llmClient).run('design it', {
+			signal: controller.signal,
+			onRecord: entry => {
+				if (entry.type !== 'end') return undefined;
+				setTimeout(() => {
+					controller.abort();
+				}, 5);
+				return new Promise<void>(() => undefined);
+			},
+		});
+
+		const error = await run.catch((failure: unknown) => failure);
+		expect(error).toBe(controller.signal.reason);
+		expect(error).toBeDefined();
 	});
 
 	it('hands on every entry that waited, in order, when only some of them take time', async () => {
@@ -424,6 +468,48 @@ describe('the run record', () => {
 
 		expect(takenWhenAsked).toEqual(['question']);
 		expect(taken).toEqual(['question', 'progress', 'answer', 'end']);
+	});
+
+	it('hands the callback copies, so what it changes never reaches the asker or what run() returns', async () => {
+		const llmClient = new FakeLLMClient(assistantResponse([askCall()]), textResponse('done'));
+		const asked: unknown[] = [];
+
+		const response = await recorded(llmClient).run('design it', {
+			signal: new AbortController().signal,
+			ask: questions => {
+				asked.push(structuredClone(questions));
+				return ['Two functions'];
+			},
+			onRecord: entry => {
+				if (entry.type === 'question') {
+					(entry.questions[0] as { question: string }).question = 'Changed by the record';
+				}
+				if (entry.type === 'end' && entry.outcome === 'completed') {
+					(entry.response as { response: string }).response = 'Changed by the record';
+				}
+			},
+		});
+
+		expect(asked).toEqual([[question]]);
+		expect(response.response).toBe('done');
+	});
+
+	it('takes each entry as it was when it happened, even if the run changes the value after', async () => {
+		const llmClient = new FakeLLMClient(assistantResponse([askCall()]), textResponse('done'));
+		const { entries, onRecord } = collect();
+
+		await recorded(llmClient).run('design it', {
+			signal: new AbortController().signal,
+			ask: questions => {
+				(questions[0] as { question: string }).question = 'Changed by the asker';
+				return ['Two functions'];
+			},
+			onRecord,
+		});
+
+		expect(entries.find(entry => entry.type === 'question')).toMatchObject({
+			questions: [question],
+		});
 	});
 
 	it('leaves a run without onRecord exactly as it was', async () => {

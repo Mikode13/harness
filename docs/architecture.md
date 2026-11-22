@@ -863,8 +863,11 @@ record; whose `ask` records the question, waits until every entry so far is take
 records the answer before it returns it; and whose `approve` does the same with the request and
 the decision. An answer the agent would refuse, of the wrong shape or after a cancellation, is
 returned unrecorded, and the agent ends the run as before. Once the agent inside settles, it
-records the end and waits for it, however the run ended; a cancellation stops only the waits
-before asking and acting. The recorder hands entries to the callback one at a time: a
+records the end and waits for it, however the run ended, unless the run is cancelled: a
+cancellation stops every wait, so a cancelled run rejects at once while the recorder goes on
+handing on the entries it holds, the end last, and logs a failure to take them. The recorder
+hands the callback a `structuredClone` of each entry, taken when it is pushed, so the callback
+and the run never share a value, and an entry that cannot be copied is a failure to take it. The recorder hands entries to the callback one at a time: a
 promise holds the entries after it until it settles. A callback that fails, at once or later,
 stops the record; every later entry, and every wait, throws an `UnrecoverableError`, which the
 callers classify as a host failure, so the run ends without being retried, and a question,

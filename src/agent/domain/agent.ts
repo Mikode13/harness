@@ -112,9 +112,13 @@ export interface RunOptions {
 	 * the response or rejects with the failure, and a cancellation still rejects with the signal's
 	 * reason.
 	 *
-	 * The run waits for every entry so far to be taken before it asks, before it acts on an
-	 * answer or a decision, which a cancellation interrupts, and before it ends, which it does
-	 * not: `run()` settles only once the end is taken, or failed to be. A callback that fails, by throwing or rejecting,
+	 * Each entry is a copy, taken when it happened: what the callback does to it never reaches the
+	 * asker, the approver, the agent or what `run()` returns. The run waits for every entry so far
+	 * to be taken before it asks, before it acts on an answer or a decision, and before it ends, so
+	 * `run()` settles once its end is taken, or failed to be. A cancellation stops every one of
+	 * those waits: a cancelled run rejects at once with the signal's reason, even while the
+	 * callback still holds an entry, and its end is handed on once the entries before it are
+	 * taken. A callback that fails, by throwing or rejecting,
 	 * ends the run as an `UnrecoverableError`, which no layer retries, so no tool that already had
 	 * effects runs again: a question it did not take is never asked, an approval request it did
 	 * not take is never answered and its call never runs, and an answer or decision it did not take

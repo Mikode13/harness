@@ -579,10 +579,13 @@ release; a field a reader does not need may be added in a minor one. Read an ent
 `progress` entry is still narration: ignore an event type you do not know.
 
 The callback takes one entry at a time: a promise it returns holds the entries after it until it
-settles. The run waits for every entry so far before it asks, before it acts on the answer or the
-decision, and before it ends, so a question is stored before anyone sees it, and `run()` settles
-only once its end is taken. A cancellation stops the waits before asking and acting, not the one
-for the end. A callback that
+settles. Each entry is the callback's own copy, taken when it happened, so changing it changes
+nothing the run, the asker or the approver hold, nor what `run()` returns. The run waits for every
+entry so far before it asks, before it acts on the answer or the decision, and before it ends, so
+a question is stored before anyone sees it, and `run()` settles once its end is taken. A
+cancellation stops every one of those waits: a cancelled run rejects at once, even while the
+callback still holds an entry, and the record gets its `cancelled` end once the entries before it
+are taken. A callback that
 throws or rejects ends the run with an `UnrecoverableError`, which nothing retries, so no tool
 that already had effects runs again: a question it did not take is never asked, an approval it did
 not take is never asked for and its call never runs, and an answer or a decision it did not take

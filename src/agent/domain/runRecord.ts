@@ -93,8 +93,9 @@ export type RunEntry =
 
 /**
  * Takes each entry of a run's record, one at a time and in order: the next comes only once the
- * promise this one returned settled. The run waits for every entry so far before it asks a
- * question or an approval, before it acts on the answer, and before it ends. A failure, thrown or
+ * promise this one returned settled. Each entry is the callback's own copy. The run waits for
+ * every entry so far before it asks a question or an approval, before it acts on the answer, and
+ * before it ends, unless it is cancelled, which it never waits for. A failure, thrown or
  * rejected, ends the run as an `UnrecoverableError`, never retried; see `RunOptions.onRecord`.
  */
 export type RunRecordCallback = (entry: RunEntry) => void | Promise<void>;
