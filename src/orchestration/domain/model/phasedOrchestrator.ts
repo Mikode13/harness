@@ -11,6 +11,7 @@ import type { PhaseResult, Verification } from '#src/agent/domain/phaseResult';
 import { OneRunAtATime } from '#src/agent/domain/oneRunAtATime';
 import { readAnswers, type UserQuestion } from '#src/agent/domain/question';
 import { runContextOf, withAuthor } from '#src/agent/domain/runContext';
+import { recorderOf, recordRun } from '#src/agent/domain/runRecord';
 import { newSession, sessionOf } from '#src/agent/domain/session';
 import {
 	InvalidAgentConfigError,
@@ -406,7 +407,7 @@ export class PhasedOrchestrator implements Agent {
 	 * run committed.
 	 */
 	run(prompt: string, options: RunOptions): Promise<AgentResponse> {
-		return this.runs.run(() => this.runAlone(prompt, options));
+		return recordRun(options, recorded => this.runs.run(() => this.runAlone(prompt, recorded)));
 	}
 
 	private async runAlone(request: string, options: RunOptions): Promise<AgentResponse> {
@@ -595,6 +596,8 @@ export class PhasedOrchestrator implements Agent {
 			multiSelect: false,
 		};
 		signal.throwIfAborted();
+		// Recorded before it is asked: a record that cannot be delivered ends the run unasked.
+		recorderOf(options)?.record({ type: 'question', questions: [question] });
 		let answers: unknown;
 		try {
 			answers = await ask([question], signal);
@@ -609,6 +612,7 @@ export class PhasedOrchestrator implements Agent {
 				cause: 'It must answer the question with some text.',
 			});
 		}
+		recorderOf(options)?.record({ type: 'answer', answers: [answer] });
 		if (answer === stopLabel) {
 			const left = await this.leftByPlanner(ownRun, options);
 			return {

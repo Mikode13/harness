@@ -23,6 +23,7 @@ import {
 } from '#src/agent/domain/runContext';
 import { isAbortError } from '#src/shared/domain/isAbortError';
 import { OneRunAtATime } from '#src/agent/domain/oneRunAtATime';
+import { recordRun } from '#src/agent/domain/runRecord';
 import { newSession, sessionOf } from '#src/agent/domain/session';
 
 // Each role's standing instructions, kept apart from the data of a round so an agent with a
@@ -199,7 +200,7 @@ export class OrchestratorAgent implements Agent {
 	 * starts.
 	 */
 	run(prompt: string, options: RunOptions): Promise<AgentResponse> {
-		return this.runs.run(() => this.runAlone(prompt, options));
+		return recordRun(options, recorded => this.runs.run(() => this.runAlone(prompt, recorded)));
 	}
 
 	private async runAlone(prompt: string, options: RunOptions): Promise<AgentResponse> {

@@ -49,6 +49,15 @@ or changing an existing type's fields is breaking. Consumers are told to ignore 
 do not know, so a new type must never carry information a consumer needs to be correct:
 the result of a run travels in `AgentResponse`, and progress stays optional narration.
 
+**The run record is the complete, ordered account of a run.** Everything a consumer needs to be
+correct, every question and answer, every approval request and decision, and the run's outcome,
+goes to `onRecord`, one entry at a time, synchronously and in the order it happened. A question is
+recorded before `ask` is called, and an approval request before the approver is, so an entry that
+cannot be recorded stops the call it describes. A record that cannot be delivered is an
+`UnrecoverableError`, which `RetryingAgent` does not retry. Consumers forward or reject an entry type
+they do not know; they never skip it while treating the record as complete. `ProgressEvent` stays
+narration and is never the record.
+
 ## Architecture
 
 [`docs/architecture.md`](docs/architecture.md) owns the module map, the dependency direction

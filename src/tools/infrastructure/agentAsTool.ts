@@ -1,12 +1,11 @@
 import { z } from 'zod';
-import type { Agent, RunOptions } from '#src/agent/domain/agent';
+import type { Agent, AgentResponse, RunOptions } from '#src/agent/domain/agent';
 import { type Approver, readDecision, type ToolRisk } from '#src/agent/domain/approval';
 import { type Asker, readAnswers } from '#src/agent/domain/question';
 import {
 	InvalidAgentConfigError,
 	RecoverableError,
 	UnrecoverableError,
-	withSpentTokens,
 } from '#src/shared/domain/errors';
 import { isAbortError } from '#src/shared/domain/isAbortError';
 import { classifyHostFailure } from '#src/shared/domain/providerFailure';
@@ -14,7 +13,14 @@ import type { ToolDefinition } from '#src/llm/domain/tool';
 import { type DelegatedAnswer, RunEndingToolError } from '../domain/preparedCall.ts';
 import type { ToolCallContext } from '../domain/readRegistry.ts';
 import { defineDelegatingTool } from './defineTool.ts';
-import { cutAnswer, failureOf, subagentOptions } from './subagents.ts';
+import {
+	cutAnswer,
+	failureOf,
+	type HostFailure,
+	recordEnd,
+	subagentOptions,
+	unclassifiedFailure,
+} from './subagents.ts';
 import { delegateCeiling } from './writeCeiling.ts';
 
 declare const delegationToolBrand: unique symbol;
@@ -133,19 +139,19 @@ export function agentAsTool({
 	): Promise<DelegatedAnswer> {
 		// The run's approver and asker are host code: one that fails inside the agent ends the
 		// run, not just the agent's task.
-		const failed = { host: false };
+		const failed: HostFailure = { host: false };
 		const writeCeiling = await delegateCeiling(call);
+		const identity = { name, subagent: 1, task };
 		const options = subagentOptions(call, {
 			tool: name,
-			name,
-			subagent: 1,
-			task,
+			...identity,
 			options: {
 				signal,
 				...(call.approve ? { approve: watchedApprover(call.approve, failed) } : {}),
 				...(call.ask ? { ask: watchedAsker(call.ask, failed) } : {}),
 			} satisfies RunOptions,
 			writeCeiling,
+			failed,
 		});
 
 		let agent: Agent;
@@ -157,28 +163,31 @@ export function agentAsTool({
 			);
 		}
 
+		let response: AgentResponse;
 		try {
-			const { response, tokens } = await agent.run(task, options);
-			call.spend(tokens, tokens === undefined);
-			return { text: cutAnswer(response || 'It finished without an answer.') };
+			response = await agent.run(task, options);
 		} catch (error) {
-			if (isAbortError(error)) throw error;
+			if (isAbortError(error)) {
+				// A host failure inside the agent, not the cancellation, ended the run.
+				if (!failed.host) recordEnd(call, identity, { type: 'cancelled', error });
+				throw error;
+			}
 			const classified = error instanceof RecoverableError || error instanceof UnrecoverableError;
 			// Its failure carries what it spent, which the run's failure keeps.
 			if (classified && failed.host) throw new RunEndingToolError(error);
 			if (!classified) {
 				// It broke the contract of `Agent`, so what it spent is unknown, not nothing.
-				throw new RunEndingToolError(
-					withSpentTokens(
-						classifyHostFailure(error, `The agent for "${name}" failed`),
-						undefined,
-						true,
-					),
-				);
+				const failure = unclassifiedFailure(error, `The agent for "${name}" failed`);
+				recordEnd(call, identity, { type: 'failed', error: failure });
+				throw new RunEndingToolError(failure);
 			}
 			call.spend(error.tokens, error.usageUnreported);
+			recordEnd(call, identity, { type: 'failed', error });
 			return { text: `The agent failed: ${failureOf(error)}`, failed: true };
 		}
+		call.spend(response.tokens, response.tokens === undefined);
+		recordEnd(call, identity, { type: 'completed', response });
+		return { text: cutAnswer(response.response || 'It finished without an answer.') };
 	}
 
 	// A file tool's kind of brand: the harness built it, and only `createLLMAgent` takes it.

@@ -101,8 +101,8 @@ Conversation continuity within an agent instance is not durable conversation sto
 Saving and restoring conversation snapshots is still pending
 ([#111](https://github.com/Mikode13/harness/issues/111)); consumers own their persistence.
 The file-change history already writes recovery data to disk, which is a separate capability.
-`ProgressEvent` is activity narration, not the durable, ordered observation contract proposed
-in [#177](https://github.com/Mikode13/harness/issues/177).
+The run record (`onRecord`, see [The run record](#the-run-record)) is complete and ordered, but the
+harness does not store it: persisting it is the consumer's. `ProgressEvent` stays activity narration.
 
 Worktrees and file-access policies are not an operating-system sandbox. Consumers running
 untrusted repository commands need to provide execution isolation. The library supports macOS
@@ -207,6 +207,46 @@ optional fields.
 `systemPrompts: { planner, executor, reviewer }` replaces a role's instructions;
 a role left out keeps the harness's own, and the reviewer must still answer with
 the JSON decision described on the option.
+
+### The run record
+
+`onRecord` receives a run's complete record, one entry at a time and in the order things happened:
+its progress, each question with its answers, each approval request with its decision, and last one
+terminal entry: `completed` with the response, `failed` with the error the run rejects with, or
+`cancelled` with the `AbortError` or `TimeoutError` it rejects with. Nothing follows the terminal
+entry. `ProgressEvent` is narration: a consumer that must not miss a question, an approval or the
+outcome reads the record.
+
+```ts
+const record: RunRecordEntry[] = [];
+await agent.run('Add a cache to the client.', {
+	signal: controller.signal,
+	onRecord: entry => {
+		record.push(entry);
+	},
+});
+```
+
+The callback is synchronous. One that throws, or returns a promise, fails the run as an
+`UnrecoverableError`. Delivery stops at that failure, the terminal entry included, and the run
+rejects with that error, which `RetryingAgent` does not retry. If the run had committed, the error
+keeps its commits, phases and `runId`, as the committed-run errors of `createLLMOrchestrator` do. A
+cancellation stays a cancellation: the run rejects with the abort it was given, even when its
+`cancelled` entry could not be delivered.
+
+A question is recorded before `ask` is called, and an approval request before the approver is, so
+an entry that cannot be recorded stops the question or the call it describes. The Agent SDK engines
+ignore `ask` and the approver, so their records hold no question or approval entries.
+
+Delegated agents, such as `explore` and an agent offered as a tool, record their entries nested in
+a `subagent` entry, with the call, the subagent's number and its name. Each delegated progress event
+is also copied into the run record as a top-level progress entry whose `event` is the wrapped
+subagent `ProgressEvent`. Delegated questions, approvals and outcomes arrive in the record's own
+`subagent` entries, and their outcome stays inside their entry, never as the run's terminal entry.
+Entries of agents working at once arrive in the order they happened.
+
+New entry types can arrive in a minor release. Forward or reject an entry you do not know; never
+skip it while treating the record as complete.
 
 ### Composing agents into a workflow
 

@@ -1,6 +1,7 @@
 import type { Agent, AgentResponse, RunOptions } from '#src/agent/domain/agent';
 import type { CommitReport, RepositoryCommit } from '#src/agent/domain/commitReport';
 import { readAnswers, type UserQuestion } from '#src/agent/domain/question';
+import { recorderOf } from '#src/agent/domain/runRecord';
 import { UnrecoverableError } from '#src/shared/domain/errors';
 import { classifyHostFailure, classifyLocalFailure } from '#src/shared/domain/providerFailure';
 import type { Committer, FrozenChanges, FrozenRepository } from './committer.ts';
@@ -214,8 +215,9 @@ export class CommitFlow {
 		approved: string,
 		ready: readonly FrozenRepository[],
 		others: readonly FrozenRepository[],
-		{ ask, signal }: RunOptions,
+		options: RunOptions,
 	): Promise<boolean> {
+		const { ask, signal } = options;
 		if (!ask) return false;
 		const question: UserQuestion = {
 			question: describeCommit(approved, ready, others),
@@ -226,6 +228,8 @@ export class CommitFlow {
 			multiSelect: false,
 		};
 		signal.throwIfAborted();
+		// Recorded before it is asked: a record that cannot be delivered ends the run unasked.
+		recorderOf(options)?.record({ type: 'question', questions: [question] });
 		let answers: unknown;
 		try {
 			answers = await ask([question], signal);
@@ -234,13 +238,14 @@ export class CommitFlow {
 			throw classifyHostFailure(error, 'The asker failed');
 		}
 		signal.throwIfAborted();
-		const read = readAnswers(answers, [question]);
-		if (!read) {
+		const [answer] = readAnswers(answers, [question]) ?? [];
+		if (answer === undefined) {
 			throw new UnrecoverableError('The asker failed', {
 				cause: 'It must answer the question with some text.',
 			});
 		}
-		return read[0] === commitLabel;
+		recorderOf(options)?.record({ type: 'answer', answers: [answer] });
+		return answer === commitLabel;
 	}
 
 	/** The committer's message for one repository, or `undefined` when it wrote none. */

@@ -4,6 +4,7 @@ import type { CommitReport } from './commitReport.ts';
 import type { Inbox } from './inbox.ts';
 import type { PhaseResult, Verification } from './phaseResult.ts';
 import type { Asker } from './question.ts';
+import type { RecordCallback } from './runRecord.ts';
 import type { Session } from '#src/shared/domain/session';
 
 /**
@@ -73,6 +74,13 @@ export interface RunOptions {
 	signal: AbortSignal;
 	/** Receives the run's live activity. Without it, the run is silent. */
 	onProgress?: Callback | undefined;
+	/**
+	 * Receives the run's complete record, in order: its progress, each question and answer, each
+	 * approval request and decision, and the one terminal entry that ends it. Unlike `onProgress`,
+	 * which is narration, the record is what a consumer must not miss: see `RunRecordEntry`. It
+	 * is called synchronously, and a failure in it fails the run as an `UnrecoverableError`.
+	 */
+	onRecord?: RecordCallback | undefined;
 	/**
 	 * Asked before a model-backed agent runs a `destructive` tool call. Without it, such a call
 	 * is denied. An agent built with `autoApprove` never asks, and the Agent SDK engines ignore

@@ -15,6 +15,7 @@ import {
 	runContextOf,
 	withAuthor,
 } from '../../src/agent/domain/runContext.ts';
+import type { RunRecordEntry } from '../../src/agent/domain/runRecord.ts';
 import type { Transcript } from '../../src/agent/domain/transcript.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import type { LLMClient, LLMResponse } from '../../src/llm/domain/llm.ts';
@@ -1222,5 +1223,286 @@ describe('agentAsTool over a workspace', () => {
 		await top([repo], middle).run('nested', { signal });
 
 		expect(seen).toEqual([undefined, [repo], [join(repo, 'src')]]);
+	});
+});
+
+describe('agentAsTool record', () => {
+	const askCall = toolCall('ask-1', 'askUser', {
+		questions: [
+			{
+				question: 'Which message?',
+				options: [
+					{ label: 'Short', description: 'One line' },
+					{ label: 'Long', description: 'A body too' },
+				],
+				multiSelect: false,
+			},
+		],
+	});
+	const message = {
+		question: 'Which message?',
+		options: [
+			{ label: 'Short', description: 'One line' },
+			{ label: 'Long', description: 'A body too' },
+		],
+		multiSelect: false,
+	};
+
+	it("records a subagent's questions, approvals and outcome in its own entries, by its call", async () => {
+		const childClient = new FakeLLMClient(
+			assistantResponse([askCall]),
+			assistantResponse([toolCall('wipe-1', 'wipe', {})]),
+			textResponse('child done'),
+		);
+		const tool = delegation({
+			createAgent: () => new LLMAgent({ llmClient: childClient, tools: [destructiveTool()] }),
+		});
+		const { agent } = delegatingParent(tool, 'Commit');
+		const entries: RunRecordEntry[] = [];
+
+		await agent.run('work', {
+			signal,
+			ask: () => ['Short'],
+			approve: () => ({ approved: true }),
+			onRecord: entry => {
+				entries.push(entry);
+			},
+		});
+
+		const by = { type: 'subagent', callId: 'call-1', subagent: 1, name: 'commit', task: 'Commit' };
+		expect(entries.filter(entry => entry.type !== 'progress')).toEqual([
+			{ ...by, entry: { type: 'question', questions: [message] } },
+			{ ...by, entry: { type: 'answer', answers: ['Short'] } },
+			{
+				...by,
+				entry: {
+					type: 'approvalRequest',
+					request: { tool: 'wipe', input: {}, risk: 'destructive' },
+				},
+			},
+			{ ...by, entry: { type: 'approvalDecision', decision: { approved: true } } },
+			{
+				...by,
+				entry: {
+					type: 'completed',
+					response: expect.objectContaining({ response: 'child done' }) as unknown,
+				},
+			},
+			{
+				type: 'completed',
+				response: expect.objectContaining({ response: 'parent done' }) as unknown,
+			},
+		]);
+	});
+
+	it('records a subagent that failed as its failure, in its own entry', async () => {
+		const tool = delegation({
+			createAgent: () =>
+				new LLMAgent({ llmClient: new FakeLLMClient(textResponse('', { stopReason: 'refused' })) }),
+		});
+		const { agent } = delegatingParent(tool, 'Commit');
+		const entries: RunRecordEntry[] = [];
+
+		await agent.run('work', {
+			signal,
+			onRecord: entry => {
+				entries.push(entry);
+			},
+		});
+
+		expect(entries.filter(entry => entry.type !== 'progress')).toEqual([
+			{
+				type: 'subagent',
+				callId: 'call-1',
+				subagent: 1,
+				name: 'commit',
+				task: 'Commit',
+				entry: {
+					type: 'failed',
+					error: expect.objectContaining({
+						message: 'The LLM stopped before completing its answer',
+					}) as unknown,
+				},
+			},
+			{
+				type: 'completed',
+				response: expect.objectContaining({ response: 'parent done' }) as unknown,
+			},
+		]);
+	});
+
+	it('records a subagent stopped with the run as cancelled, and the run as cancelled', async () => {
+		const controller = new AbortController();
+		const tool = delegation({
+			createAgent: () =>
+				new LLMAgent({
+					llmClient: new FakeLLMClient(assistantResponse([askCall]), textResponse('never sent')),
+				}),
+		});
+		const { agent } = delegatingParent(tool, 'Commit');
+		const entries: RunRecordEntry[] = [];
+		const ask = (_questions: unknown, askSignal: AbortSignal) => {
+			controller.abort();
+			return Promise.reject(askSignal.reason as Error);
+		};
+
+		await expect(
+			agent.run('work', {
+				signal: controller.signal,
+				ask,
+				onRecord: entry => {
+					entries.push(entry);
+				},
+			}),
+		).rejects.toMatchObject({ name: 'AbortError' });
+
+		const [question, child, run] = entries.filter(entry => entry.type !== 'progress');
+		expect(question).toEqual({
+			type: 'subagent',
+			callId: 'call-1',
+			subagent: 1,
+			name: 'commit',
+			task: 'Commit',
+			entry: { type: 'question', questions: [message] },
+		});
+		expect(child).toMatchObject({ type: 'subagent', entry: { type: 'cancelled' } });
+		expect(run).toMatchObject({ type: 'cancelled', error: { name: 'AbortError' } });
+	});
+
+	it('records each explorer of one explore call in its own entry, as it finishes', async () => {
+		const finish: Record<string, (response: AgentResponse) => void> = {};
+		const explore = createExploreTool(() => ({
+			run: (question: string) =>
+				new Promise(resolve => {
+					finish[question] = resolve;
+				}),
+		}));
+		const llmClient = new FakeLLMClient(
+			assistantResponse([toolCall('call-1', 'explore', { questions: ['a?', 'b?'] })]),
+			textResponse('I wait for both.'),
+			textResponse('I wait for a.'),
+			textResponse('parent done'),
+		);
+		const entries: RunRecordEntry[] = [];
+		const running = new LLMAgent({ llmClient, tools: [explore] }).run('work', {
+			signal,
+			onRecord: entry => {
+				entries.push(entry);
+			},
+		});
+
+		await vi.waitFor(() => {
+			expect(llmClient.contexts).toHaveLength(2);
+		});
+		finish['b?']?.({ response: 'b is here', duration: 0 });
+		await vi.waitFor(() => {
+			expect(entries).toContainEqual(expect.objectContaining({ type: 'subagent', subagent: 2 }));
+		});
+		finish['a?']?.({ response: 'a is here', duration: 0 });
+		await running;
+
+		expect(entries.filter(entry => entry.type === 'subagent')).toEqual([
+			{
+				type: 'subagent',
+				callId: 'call-1',
+				subagent: 2,
+				name: 'explorer',
+				task: 'b?',
+				entry: {
+					type: 'completed',
+					response: expect.objectContaining({ response: 'b is here' }) as unknown,
+				},
+			},
+			{
+				type: 'subagent',
+				callId: 'call-1',
+				subagent: 1,
+				name: 'explorer',
+				task: 'a?',
+				entry: {
+					type: 'completed',
+					response: expect.objectContaining({ response: 'a is here' }) as unknown,
+				},
+			},
+		]);
+	});
+
+	it("nests a subagent's own subagent in its entry, under the call that started it", async () => {
+		const inner = delegation({
+			name: 'inner',
+			createAgent: () => new LLMAgent({ llmClient: new FakeLLMClient(textResponse('inner done')) }),
+		});
+		const childClient = new WaitingModel(
+			[assistantResponse([toolCall('inner-1', 'inner', { task: 'Inner' })])],
+			1,
+			'child done',
+		);
+		const tool = delegation({
+			createAgent: () => new LLMAgent({ llmClient: childClient, tools: [inner] }),
+		});
+		const { agent } = delegatingParent(tool, 'Outer');
+		const entries: RunRecordEntry[] = [];
+
+		await agent.run('work', {
+			signal,
+			onRecord: entry => {
+				entries.push(entry);
+			},
+		});
+
+		const outer = {
+			type: 'subagent',
+			callId: 'call-1',
+			subagent: 1,
+			name: 'commit',
+			task: 'Outer',
+		};
+		expect(entries.filter(entry => entry.type !== 'progress')).toEqual([
+			{
+				...outer,
+				entry: {
+					type: 'subagent',
+					callId: 'inner-1',
+					subagent: 1,
+					name: 'inner',
+					task: 'Inner',
+					entry: {
+						type: 'completed',
+						response: expect.objectContaining({ response: 'inner done' }) as unknown,
+					},
+				},
+			},
+			{
+				...outer,
+				entry: {
+					type: 'completed',
+					response: expect.objectContaining({ response: 'child done' }) as unknown,
+				},
+			},
+			{
+				type: 'completed',
+				response: expect.objectContaining({ response: 'parent done' }) as unknown,
+			},
+		]);
+	});
+
+	it('ends the run when a subagent entry cannot be recorded, without telling the model', async () => {
+		const tool = delegation({
+			createAgent: () => new LLMAgent({ llmClient: new FakeLLMClient(textResponse('child done')) }),
+		});
+		const { llmClient, agent } = delegatingParent(tool, 'Commit');
+
+		await expect(
+			agent.run('work', {
+				signal,
+				onRecord: entry => {
+					if (entry.type === 'subagent') throw new Error('disk full');
+				},
+			}),
+		).rejects.toBeInstanceOf(UnrecoverableError);
+
+		// The parent sent its call's result and waited; the child's answer never reached it.
+		expect(llmClient.contexts).toHaveLength(2);
+		expect(answersOf(llmClient)).toEqual([]);
 	});
 });

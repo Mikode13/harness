@@ -9,10 +9,16 @@ import type { RepositoryCommit } from '../../src/agent/domain/commitReport.ts';
 import { Inbox } from '../../src/agent/domain/inbox.ts';
 import type { Asker } from '../../src/agent/domain/question.ts';
 import { authorOf, RunContext, withRunContext } from '../../src/agent/domain/runContext.ts';
+import { UnrecoverableCommittedRunError } from '../../src/agent/domain/committedRunError.ts';
+import type { RunRecordEntry } from '../../src/agent/domain/runRecord.ts';
 import type { ChangeLog } from '../../src/orchestration/domain/model/changeLog.ts';
 import type { Committer, FrozenChanges } from '../../src/orchestration/domain/model/committer.ts';
 import { PhasedOrchestrator } from '../../src/orchestration/domain/model/phasedOrchestrator.ts';
-import type { PhaseLimits, Plan } from '../../src/orchestration/domain/model/phases.ts';
+import type {
+	CommitQuestion,
+	PhaseLimits,
+	Plan,
+} from '../../src/orchestration/domain/model/phases.ts';
 import type { Verification } from '../../src/agent/domain/phaseResult.ts';
 import type { Verifier } from '../../src/orchestration/domain/model/verification.ts';
 import {
@@ -113,6 +119,7 @@ function orchestrator({
 	committer,
 	committerAgent,
 	autoCommit,
+	commitQuestion,
 	limits,
 	logger = { warn: vi.fn() },
 }: {
@@ -124,6 +131,7 @@ function orchestrator({
 	committer?: Committer;
 	committerAgent?: Agent;
 	autoCommit?: boolean;
+	commitQuestion?: CommitQuestion;
 	limits?: Partial<PhaseLimits>;
 	logger?: { warn: (...args: unknown[]) => void };
 }) {
@@ -141,6 +149,7 @@ function orchestrator({
 		...(committer ? { committer } : {}),
 		...(committerAgent ? { createCommitter: () => committerAgent } : {}),
 		...(autoCommit === undefined ? {} : { autoCommit }),
+		...(commitQuestion === undefined ? {} : { commitQuestion }),
 		...(limits === undefined ? {} : { limits }),
 		logger,
 	});
@@ -793,5 +802,201 @@ describe('the phased orchestrator', () => {
 				'limits.rounds is not a limit; expected one of: rejections, replans, phases, corrections',
 			),
 		);
+	});
+
+	describe('recording the questions', () => {
+		it('records the plan question and its answer around the ask, in order, and ends the record once', async () => {
+			const order: string[] = [];
+			const entries: RunRecordEntry[] = [];
+			const ask = vi.fn<Asker>(() => {
+				order.push('asked');
+				return ['Approve'];
+			});
+
+			await orchestrator({
+				planner: scripted(planOf('parse')).agent,
+				executor: scripted(done('parsed')).agent,
+				reviewer: scripted(approved).agent,
+			}).run('task', {
+				signal,
+				ask,
+				onRecord: entry => {
+					if (entry.type !== 'progress') order.push(entry.type);
+					entries.push(entry);
+				},
+			});
+
+			expect(order.slice(0, 3)).toEqual(['question', 'asked', 'answer']);
+			expect(order.at(-1)).toBe('completed');
+			expect(order.filter(type => type === 'completed')).toHaveLength(1);
+			expect(entries.find(entry => entry.type === 'answer')).toEqual({
+				type: 'answer',
+				answers: ['Approve'],
+			});
+		});
+
+		it('does not ask the plan when its question cannot be recorded, and carries out no phase', async () => {
+			const ask = vi.fn<Asker>(() => ['Approve']);
+			const executor = scripted();
+
+			await expect(
+				orchestrator({
+					planner: scripted(planOf('all')).agent,
+					executor: executor.agent,
+					reviewer: scripted().agent,
+				}).run('task', {
+					signal,
+					ask,
+					onRecord: entry => {
+						if (entry.type === 'question') throw new Error('disk full');
+					},
+				}),
+			).rejects.toBeInstanceOf(UnrecoverableError);
+
+			expect(ask).not.toHaveBeenCalled();
+			expect(executor.run).not.toHaveBeenCalled();
+		});
+
+		it('does not ask the commit when its question cannot be recorded, and commits nothing', async () => {
+			const { committer, commit } = fakeCommitter();
+			const ask = vi.fn<Asker>(() => ['Approve']);
+			let questions = 0;
+
+			await expect(
+				orchestrator({
+					planner: scripted(planOf('parse')).agent,
+					executor: scripted(done('parsed')).agent,
+					reviewer: scripted(approved).agent,
+					committer,
+					committerAgent: scripted('Parse').agent,
+				}).run('task', {
+					signal,
+					ask,
+					onRecord: entry => {
+						// The plan's question is the first; the commit's is the second.
+						if (entry.type === 'question' && ++questions === 2) throw new Error('disk full');
+					},
+				}),
+			).rejects.toBeInstanceOf(UnrecoverableError);
+
+			expect(ask).toHaveBeenCalledTimes(1);
+			expect(commit).not.toHaveBeenCalled();
+		});
+
+		it('records the commit question and its answer before it commits', async () => {
+			const order: string[] = [];
+			const { committer, commit } = fakeCommitter();
+			commit.mockImplementationOnce(() => {
+				order.push('commit');
+				return Promise.resolve([committed]);
+			});
+			const ask = vi.fn<Asker>().mockReturnValueOnce(['Approve']).mockReturnValueOnce(['Commit']);
+
+			await orchestrator({
+				planner: scripted(planOf('parse')).agent,
+				executor: scripted(done('parsed')).agent,
+				reviewer: scripted(approved).agent,
+				committer,
+				committerAgent: scripted('Parse').agent,
+			}).run('task', {
+				signal,
+				ask,
+				onRecord: entry => {
+					if (entry.type !== 'progress') order.push(entry.type);
+				},
+			});
+
+			// The plan's question and answer, then the commit's: each is recorded before it is used.
+			expect(order).toEqual(['question', 'answer', 'question', 'answer', 'commit', 'completed']);
+		});
+
+		it('ends a committed run whose completed entry cannot be delivered as a committed run error', async () => {
+			const { committer, commit } = fakeCommitter();
+			const ask = vi.fn<Asker>().mockReturnValueOnce(['Approve']).mockReturnValueOnce(['Commit']);
+
+			const rejection = await orchestrator({
+				planner: scripted(planOf('parse')).agent,
+				executor: scripted(done('parsed')).agent,
+				reviewer: scripted(approved).agent,
+				committer,
+				committerAgent: scripted('Parse').agent,
+			})
+				.run('task', {
+					signal,
+					ask,
+					onRecord: entry => {
+						if (entry.type === 'completed') throw new Error('The sink closed');
+					},
+				})
+				.catch((error: unknown) => error);
+
+			expect(commit).toHaveBeenCalledOnce();
+			expect(rejection).toBeInstanceOf(UnrecoverableCommittedRunError);
+			expect(rejection).toMatchObject({
+				message: 'The run record could not be delivered',
+				cause: 'The sink closed',
+				commits: { outcome: 'committed', repositories: [committed] },
+				// The planner, the executor, the reviewer and the committer each answered once.
+				tokens: { ...tokens, inputTokens: 4, outputTokens: 4 },
+			});
+		});
+
+		it('keeps the phase-1 commit when a phase-2 entry is refused, and delivers nothing after the refusal', async () => {
+			const { committer, commit } = fakeCommitter();
+			let phaseOneCommitted = false;
+			commit.mockImplementationOnce(() => {
+				phaseOneCommitted = true;
+				return Promise.resolve([committed]);
+			});
+			const executor = scripted(done('parsed'), done('rendered'));
+			// Phase 2's executor narrates first, so its first entry is the one refused.
+			const narrating: Agent = {
+				run: (prompt, options) => {
+					if (phaseOneCommitted) options.onProgress?.({ type: 'reasoning', message: 'phase two' });
+					return executor.agent.run(prompt, options);
+				},
+			};
+			const delivered: RunRecordEntry[] = [];
+			let refusedAt: number | undefined;
+
+			const rejection = await orchestrator({
+				planner: scripted(planOf('parse', 'render')).agent,
+				executor: narrating,
+				reviewer: scripted(approved, approved).agent,
+				committer,
+				committerAgent: scripted('Change parse', 'Change render').agent,
+				autoCommit: true,
+				commitQuestion: 'phase',
+			})
+				.run('task', {
+					signal,
+					onRecord: entry => {
+						delivered.push(entry);
+						if (phaseOneCommitted && refusedAt === undefined && entry.type === 'progress') {
+							refusedAt = delivered.length;
+							throw new Error('disk full');
+						}
+					},
+				})
+				.catch((error: unknown) => error);
+
+			expect(refusedAt).toBeDefined();
+			expect(rejection).toBeInstanceOf(UnrecoverableCommittedRunError);
+			expect(rejection).toMatchObject({
+				message: 'The run record could not be delivered',
+				cause: 'disk full',
+				commits: { outcome: 'committed', repositories: [committed] },
+				tokens: { ...tokens, inputTokens: 4, outputTokens: 4 },
+			});
+			const { phases } = rejection as UnrecoverableCommittedRunError;
+			expect(phases[0]).toMatchObject({
+				goal: 'parse',
+				status: 'approved',
+				commits: { outcome: 'committed', repositories: [committed] },
+			});
+			expect(commit).toHaveBeenCalledOnce();
+			// Nothing reached the sink after the refused entry.
+			expect(delivered).toHaveLength(refusedAt ?? -1);
+		});
 	});
 });

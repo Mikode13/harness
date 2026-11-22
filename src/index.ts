@@ -56,6 +56,7 @@ export {
 	type StepContext,
 	type RunOptions,
 } from './agent/domain/agent.ts';
+export type { RecordCallback, RunRecordEntry } from './agent/domain/runRecord.ts';
 export type { CommitReport, MadeCommit, RepositoryCommit } from './agent/domain/commitReport.ts';
 export {
 	type CommittedRun,

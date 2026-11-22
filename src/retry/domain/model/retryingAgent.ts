@@ -1,5 +1,19 @@
 import type { Agent, AgentResponse, RunOptions } from '#src/agent/domain/agent';
-import { describeAnswered, rememberAnswers } from '#src/agent/domain/question';
+import {
+	recorderOf,
+	recordRun,
+	withRecorder,
+	type NestedRecordEntry,
+	type NonTerminalRecordEntry,
+	type RunRecorder,
+	type SubagentRecord,
+} from '#src/agent/domain/runRecord';
+import {
+	describeAnswered,
+	rememberAnswers,
+	type AnsweredQuestion,
+	type UserQuestion,
+} from '#src/agent/domain/question';
 import { RecoverableError, UnrecoverableError, withSpentTokens } from '#src/shared/domain/errors';
 import {
 	classifyHostFailure,
@@ -43,7 +57,15 @@ export class RetryingAgent implements Agent {
 		this.noteFailures = noteFailures;
 	}
 
-	async run(prompt: string, options: RunOptions): Promise<AgentResponse> {
+	/**
+	 * One record for the whole run, however many attempts it takes: the attempts' progress in
+	 * order, and the outcome of the run once. The retry itself is not recorded.
+	 */
+	run(prompt: string, options: RunOptions): Promise<AgentResponse> {
+		return recordRun(options, recorded => this.attempts(prompt, recorded));
+	}
+
+	private async attempts(prompt: string, options: RunOptions): Promise<AgentResponse> {
 		const start = Date.now();
 		let lastPrompt: string | null = null;
 		// Failed attempts were billed too, so they travel with whichever way the run ends.
@@ -52,7 +74,11 @@ export class RetryingAgent implements Agent {
 		let unreported = false;
 		// What the user answered stays answered: a retry neither asks it again nor forgets it.
 		const remembered = options.ask ? rememberAnswers(options.ask) : undefined;
-		const attemptOptions = remembered ? { ...options, ask: remembered.ask } : options;
+		const outer = recorderOf(options);
+		let attemptOptions: RunOptions = remembered ? { ...options, ask: remembered.ask } : options;
+		if (remembered && outer) {
+			attemptOptions = withRecorder(attemptOptions, onceRecorder(outer, remembered.answered));
+		}
 
 		for (let attempt = 1; ; attempt++) {
 			try {
@@ -118,4 +144,81 @@ export class RetryingAgent implements Agent {
 			}
 		}
 	}
+}
+
+/**
+ * Writes the record of a retried run to `outer`, without the questions the user answered in an
+ * earlier attempt: those were served from memory, not asked again, so neither they nor their
+ * answers are recorded again. Its state lives as long as the run, across its attempts.
+ */
+function onceRecorder(outer: RunRecorder, answered: AnsweredQuestion[]): RunRecorder {
+	// Per source (the run, or one subagent of it): which questions of its pending question entry
+	// were new, which decides what its answer keeps. `null` when none was, so the answer goes too.
+	const pending = new Map<string, boolean[] | null>();
+	const isNew = ({ question }: UserQuestion) =>
+		!answered.some(given => given.question === question);
+
+	const newQuestions = (questions: UserQuestion[], source: string): UserQuestion[] | undefined => {
+		const fresh = questions.map(isNew);
+		if (!fresh.some(Boolean)) {
+			pending.set(source, null);
+			return undefined;
+		}
+		pending.set(source, fresh);
+		return questions.filter((_, index) => fresh[index]);
+	};
+	const newAnswers = (answers: string[], source: string): string[] | undefined => {
+		const fresh = pending.get(source);
+		pending.delete(source);
+		if (fresh === null) return undefined;
+		return fresh === undefined ? answers : answers.filter((_, index) => fresh[index]);
+	};
+	const sourceOf = (entry: SubagentRecord, source: string) =>
+		`${source}/${entry.callId}#${String(entry.subagent)}`;
+
+	// A subagent's entry is kept as a whole or dropped: it only ever wraps what it carries.
+	const keepNested = (entry: NestedRecordEntry, source: string): NestedRecordEntry | undefined => {
+		switch (entry.type) {
+			case 'question': {
+				const questions = newQuestions(entry.questions, source);
+				return questions === undefined ? undefined : { type: 'question', questions };
+			}
+			case 'answer': {
+				const answers = newAnswers(entry.answers, source);
+				return answers === undefined ? undefined : { type: 'answer', answers };
+			}
+			case 'subagent': {
+				const nested = keepNested(entry.entry, sourceOf(entry, source));
+				return nested === undefined ? undefined : { ...entry, entry: nested };
+			}
+			default:
+				return entry;
+		}
+	};
+
+	const keepTop = (entry: NonTerminalRecordEntry): NonTerminalRecordEntry | undefined => {
+		switch (entry.type) {
+			case 'question': {
+				const questions = newQuestions(entry.questions, '');
+				return questions === undefined ? undefined : { type: 'question', questions };
+			}
+			case 'answer': {
+				const answers = newAnswers(entry.answers, '');
+				return answers === undefined ? undefined : { type: 'answer', answers };
+			}
+			case 'subagent': {
+				const nested = keepNested(entry.entry, sourceOf(entry, ''));
+				return nested === undefined ? undefined : { ...entry, entry: nested };
+			}
+			default:
+				return entry;
+		}
+	};
+
+	return {
+		record: entry => {
+			const kept = keepTop(entry);
+			if (kept !== undefined) outer.record(kept);
+		},
+	};
 }

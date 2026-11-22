@@ -20,6 +20,7 @@ import {
 	runContextOf,
 	withRunContext,
 } from '#src/agent/domain/runContext';
+import { recorderOf, recordRun, type RunRecorder } from '#src/agent/domain/runRecord';
 import {
 	InvalidAgentConfigError,
 	RecoverableError,
@@ -801,6 +802,7 @@ export class LLMAgent implements Agent {
 		prepared: PreparedCall | PreparedDelegation,
 		signal: AbortSignal,
 		approve: Approver | undefined,
+		recorder: RunRecorder | undefined,
 	): Promise<string | undefined> {
 		const { risk } = prepared;
 		if (this.autoApprove || risk !== 'destructive') return undefined;
@@ -826,6 +828,8 @@ export class LLMAgent implements Agent {
 				...(command ? { command: structuredClone(command) } : {}),
 				...(worktree ? { worktree: structuredClone(worktree) } : {}),
 			};
+			// Recorded before the approver sees it, so a request that cannot be recorded is never judged.
+			recorder?.record({ type: 'approvalRequest', request });
 			decision = readDecision(await approve(request, signal));
 		} catch (error) {
 			// An approver that gives up on a cancellation, whatever it throws, did not fail.
@@ -834,6 +838,8 @@ export class LLMAgent implements Agent {
 		}
 		// The user may cancel the run while they are being asked.
 		signal.throwIfAborted();
+		// A denial is a decision like any other, so it is recorded like one.
+		recorder?.record({ type: 'approvalDecision', decision });
 		if (decision.approved) return undefined;
 
 		const reason = decision.reason ? ` Their reason: ${decision.reason}` : '';
@@ -867,7 +873,7 @@ export class LLMAgent implements Agent {
 		const result = { type: 'toolResult' as const, callId: call.id, name: call.name };
 		signal.throwIfAborted();
 		if (call.name === askUserName && ask && !this.tools.has(askUserName)) {
-			return this.askUser(call, ask, signal, callback);
+			return this.askUser(call, ask, signal, callback, toolCall.recorder);
 		}
 		const tool = this.tools.get(call.name);
 		if (!tool) {
@@ -919,7 +925,7 @@ export class LLMAgent implements Agent {
 		// Preparing may have finished after a cancellation it did not notice; nobody is asked to
 		// approve a call in a run that has already stopped.
 		signal.throwIfAborted();
-		const denial = await this.denial(call, prepared, signal, approve);
+		const denial = await this.denial(call, prepared, signal, approve, toolCall.recorder);
 		if (denial !== undefined) {
 			return {
 				result: { ...result, output: denial, isError: true },
@@ -1005,6 +1011,7 @@ export class LLMAgent implements Agent {
 		ask: Asker,
 		signal: AbortSignal,
 		callback: Callback,
+		recorder: RunRecorder | undefined,
 	): Promise<{ result: ToolResultPart; denied: boolean; summary?: string }> {
 		const result = { type: 'toolResult' as const, callId: call.id, name: call.name };
 		const questions = readQuestions(call.input);
@@ -1016,6 +1023,8 @@ export class LLMAgent implements Agent {
 		emit({ type: 'tool', id: call.id, name: call.name, status: 'in_progress', summary }, callback);
 		signal.throwIfAborted();
 
+		// Recorded before the asker is asked, so a question that cannot be recorded is never asked.
+		recorder?.record({ type: 'question', questions });
 		let answers: unknown;
 		try {
 			answers = await ask(questions, signal);
@@ -1031,6 +1040,7 @@ export class LLMAgent implements Agent {
 				cause: `It must answer each of the ${String(questions.length)} questions with some text, in order.`,
 			});
 		}
+		recorder?.record({ type: 'answer', answers: read });
 		return {
 			result: { ...result, output: describeAnswers(questions, read), isError: false },
 			denied: false,
@@ -1173,14 +1183,17 @@ export class LLMAgent implements Agent {
 			note: (words?: string) => string;
 		},
 		extend: () => boolean,
-		{ ask, signal }: RunOptions,
+		options: RunOptions,
 	): Promise<string | UnrecoverableError> {
+		const { ask, signal } = options;
 		const stopped = (reason: string) =>
 			new UnrecoverableError(loop.failure, { cause: loop.stopped(reason) });
 		if (!ask) return stopped('No one could be asked whether to go on.');
 		if (!extend()) return stopped('The user had already let the run go on once.');
 
 		const questions = [loop.question];
+		// Recorded like any question the user is asked, and before the asker is asked.
+		recorderOf(options)?.record({ type: 'question', questions });
 		let answers: unknown;
 		try {
 			answers = await ask(questions, signal);
@@ -1196,6 +1209,7 @@ export class LLMAgent implements Agent {
 				cause: 'It must answer the question with some text.',
 			});
 		}
+		recorderOf(options)?.record({ type: 'answer', answers: [answer] });
 		if (answer === stop) return stopped('The user stopped it.');
 		return loop.note(answer === anotherAttempt ? undefined : answer);
 	}
@@ -1208,7 +1222,7 @@ export class LLMAgent implements Agent {
 	 * @throws {RunInProgressError} when another run on this agent is still working.
 	 */
 	run(prompt: string, options: RunOptions): Promise<AgentResponse> {
-		return this.runs.run(() => this.runAlone(prompt, options));
+		return recordRun(options, recorded => this.runs.run(() => this.runAlone(prompt, recorded)));
 	}
 
 	/**
@@ -1347,6 +1361,7 @@ export class LLMAgent implements Agent {
 		const { signal, onProgress: callback = ignoreProgress } = options;
 		const delegation = delegationOf(options);
 		const author = authorOf(options);
+		const recorder = recorderOf(options);
 		// A tool narrates through this without ever failing: a failing callback would reach
 		// only the tool, which turns any failure into a result for the model. The run ends on
 		// it once that tool returns.
@@ -1698,6 +1713,7 @@ export class LLMAgent implements Agent {
 							...(author === undefined ? {} : { author }),
 							...(options.approve ? { approve: options.approve } : {}),
 							...(options.ask ? { ask: options.ask } : {}),
+							...(recorder === undefined ? {} : { recorder }),
 						},
 						throwIfProgressFailed,
 						loops,

@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { z } from 'zod';
+import type { Asker } from '../../src/agent/domain/question.ts';
 import { InvalidAgentConfigError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
 import {
 	agentModels,
@@ -70,6 +71,7 @@ import { defineTool } from '../../src/tools/infrastructure/defineTool.ts';
 import type { FileTool, WorkspaceOptions } from '../../src/tools/infrastructure/fileTools.ts';
 import { RunContext, runContextOf } from '../../src/agent/domain/runContext.ts';
 import type { Agent } from '../../src/agent/domain/agent.ts';
+import type { RunRecordEntry } from '../../src/agent/domain/runRecord.ts';
 import { createWorkflow } from '../../src/factory/infrastructure/workflowFactory.ts';
 import { defineWorkflowStages } from '../../src/workflow/domain/workflow.ts';
 import type { PreparingTool } from '../../src/tools/domain/preparedCall.ts';
@@ -443,6 +445,48 @@ describe('createAgent', () => {
 
 		expect(warn).toHaveBeenCalledWith(unknownMessage, 'Unknown Claude message type');
 	});
+
+	it('records a run as one completed entry, last', async () => {
+		vi.mocked(query).mockReturnValue(claudeStream([claudeResult('hi')]));
+		const entries: RunRecordEntry[] = [];
+		const ask = vi.fn<Asker>(() => ['unused']);
+
+		const response = await createAgent('anthropic', { logger: createLogger() }).run('prompt', {
+			signal,
+			ask,
+			onRecord: entry => {
+				entries.push(entry);
+			},
+		});
+
+		expect(response.response).toBe('hi');
+		// An SDK agent never asks: no question, no answer, and the asker is never called.
+		expect(ask).not.toHaveBeenCalled();
+		expect(entries.some(entry => entry.type === 'question' || entry.type === 'answer')).toBe(false);
+		expect(entries.filter(entry => entry.type !== 'progress')).toEqual([
+			{ type: 'completed', response },
+		]);
+		expect(entries.at(-1)).toEqual({ type: 'completed', response });
+	});
+
+	it('records a failed run as one failed entry, the error it rejects with', async () => {
+		vi.mocked(query).mockImplementationOnce(() => {
+			throw new UnrecoverableError('Claude is down', { cause: 'no network' });
+		});
+		const entries: RunRecordEntry[] = [];
+
+		const rejection = await createAgent('anthropic', { logger: createLogger() })
+			.run('prompt', {
+				signal,
+				onRecord: entry => {
+					entries.push(entry);
+				},
+			})
+			.catch((error: unknown) => error);
+
+		expect(rejection).toBeInstanceOf(UnrecoverableError);
+		expect(entries).toEqual([{ type: 'failed', error: rejection }]);
+	});
 });
 
 describe('createLLMAgent', () => {
@@ -720,6 +764,24 @@ describe('createLLMAgent', () => {
 			UnrecoverableError,
 		);
 	});
+
+	it('records a run as progress, then one completed entry', async () => {
+		openAIReplying('hi');
+		const entries: RunRecordEntry[] = [];
+
+		const response = await createLLMAgent('openai', {
+			systemPrompt: 'Be brief.',
+			logger: createLogger(),
+		}).run('prompt', {
+			signal,
+			onRecord: entry => {
+				entries.push(entry);
+			},
+		});
+
+		expect(entries.slice(0, -1).every(entry => entry.type === 'progress')).toBe(true);
+		expect(entries.at(-1)).toEqual({ type: 'completed', response });
+	});
 });
 
 describe('createOrchestrator', () => {
@@ -811,6 +873,27 @@ describe('createOrchestrator', () => {
 			InvalidAgentConfigError,
 		);
 	});
+
+	it("attributes each role's progress to that role, and ends the record once", async () => {
+		codexReplying('done');
+		vi.mocked(query).mockReturnValue(claudeStream([claudeResult('{"decision":"approved"}')]));
+		const entries: RunRecordEntry[] = [];
+
+		await createOrchestrator({ logger: createLogger() }).run('ship it', {
+			signal,
+			onRecord: entry => {
+				entries.push(entry);
+			},
+		});
+
+		const agents = entries.flatMap(entry =>
+			entry.type === 'progress' && entry.event.agent !== undefined ? [entry.event.agent] : [],
+		);
+		expect(agents).toEqual(expect.arrayContaining(['planner', 'executor']));
+		expect(agents.every(agent => ['planner', 'executor', 'reviewer'].includes(agent))).toBe(true);
+		expect(entries.filter(entry => entry.type === 'completed')).toHaveLength(1);
+		expect(entries.at(-1)?.type).toBe('completed');
+	});
 });
 
 /** An OpenAI response whose one item creates `path` with `apply_patch`. */
@@ -891,6 +974,36 @@ describe('createLLMOrchestrator', () => {
 		);
 		expect(Codex).not.toHaveBeenCalled();
 		expect(query).not.toHaveBeenCalled();
+	});
+
+	it('records the plan question and its answer around the ask, and ends the record once', async () => {
+		openAIReplying(planAndReport);
+		claudeAPIReplying('{"decision":"approved"}');
+		const entries: RunRecordEntry[] = [];
+
+		await (
+			await createLLMOrchestrator({ workspace, logger: createLogger() })
+		).run('ship it', {
+			signal,
+			ask: () => ['Approve'],
+			onRecord: entry => {
+				entries.push(entry);
+			},
+		});
+
+		expect(entries.filter(entry => entry.type !== 'progress').map(entry => entry.type)).toEqual([
+			'question',
+			'answer',
+			'completed',
+		]);
+		expect(entries.find(entry => entry.type === 'answer')).toEqual({
+			type: 'answer',
+			answers: ['Approve'],
+		});
+		const agents = entries.flatMap(entry =>
+			entry.type === 'progress' && entry.event.agent !== undefined ? [entry.event.agent] : [],
+		);
+		expect(new Set(agents)).toEqual(new Set(['planner', 'executor', 'reviewer']));
 	});
 
 	it('gives the planner and reviewer the reading tools and explore, and the executor its file tools', async () => {

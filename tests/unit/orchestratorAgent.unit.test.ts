@@ -15,10 +15,12 @@ import type {
 } from '../../src/agent/domain/agent.ts';
 import { Inbox } from '../../src/agent/domain/inbox.ts';
 import { RunInProgressError } from '../../src/agent/domain/oneRunAtATime.ts';
+import type { RunRecordEntry } from '../../src/agent/domain/runRecord.ts';
 import { RunContext, runContextOf } from '../../src/agent/domain/runContext.ts';
 import type { Tokens } from '../../src/shared/domain/tokens.ts';
 import type { ILogger } from '../../src/shared/domain/logger.ts';
 import { RecoverableError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
+import { isAbortError } from '../../src/shared/domain/isAbortError.ts';
 import { ReviewerDecisionValidator } from '../../src/orchestration/infrastructure/model/reviewerDecisionValidator.ts';
 
 /** Token counts go in flat so the scripted responses stay one line each. */
@@ -107,6 +109,128 @@ describe('OrchestratorAgent', () => {
 		const [first, ...rest] = received.map(roleOptions => roleOptions && runContextOf(roleOptions));
 		expect(first).toBeInstanceOf(RunContext);
 		for (const context of rest) expect(context).toBe(first);
+	});
+
+	it("keeps one record for the run: each role's progress attributed to it, then one completed entry", async () => {
+		const planner: Agent = {
+			run: (_prompt, options) => {
+				options.onProgress?.({ type: 'turnStarted' });
+				return Promise.resolve(createResponse({ response: 'plan' }));
+			},
+		};
+		const executor: Agent = {
+			run: (_prompt, options) => {
+				options.onProgress?.({ type: 'turnStarted' });
+				return Promise.resolve(createResponse({ response: 'done' }));
+			},
+		};
+		const reviewer: Agent = {
+			run: () => Promise.resolve(createResponse({ response: '{"decision":"approved"}' })),
+		};
+		const entries: RunRecordEntry[] = [];
+		const orchestrator = new OrchestratorAgent({
+			plannerAgent: planner,
+			executorAgent: executor,
+			reviewerAgent: reviewer,
+			reviewerDecisionValidator: new ReviewerDecisionValidator(),
+			logger,
+		});
+
+		await orchestrator.run('ship feature', {
+			signal: new AbortController().signal,
+			onRecord: entry => {
+				entries.push(entry);
+			},
+		});
+
+		expect(entries).toEqual([
+			{ type: 'progress', event: { type: 'turnStarted', agent: 'planner' } },
+			{ type: 'progress', event: { type: 'turnStarted', agent: 'executor' } },
+			{
+				type: 'completed',
+				response: expect.objectContaining({ response: 'All job has finished' }) as unknown,
+			},
+		]);
+	});
+
+	it('records a run that fails as one failed entry, with the classified error it rejects with', async () => {
+		const entries: RunRecordEntry[] = [];
+		const orchestrator = new OrchestratorAgent({
+			plannerAgent: createFakeAgent(emptyResponse()).agent,
+			executorAgent: createFakeAgent().agent,
+			reviewerAgent: createFakeAgent().agent,
+			reviewerDecisionValidator: new ReviewerDecisionValidator(),
+			maxAttempts: 1,
+			logger,
+		});
+
+		const failure = await orchestrator
+			.run('ship feature', {
+				signal: new AbortController().signal,
+				onRecord: entry => {
+					entries.push(entry);
+				},
+			})
+			.catch((error: unknown) => error);
+
+		expect(failure).toBeInstanceOf(UnrecoverableError);
+		expect(entries).toEqual([{ type: 'failed', error: failure }]);
+	});
+
+	it('ends a successful run whose completed entry cannot be delivered as unrecoverable, with its tokens', async () => {
+		const orchestrator = new OrchestratorAgent({
+			plannerAgent: createFakeAgent(createResponse({ response: 'plan' })).agent,
+			executorAgent: createFakeAgent(createResponse({ response: 'done' })).agent,
+			reviewerAgent: createFakeAgent(createResponse({ response: '{"decision":"approved"}' })).agent,
+			reviewerDecisionValidator: new ReviewerDecisionValidator(),
+			logger,
+		});
+
+		const rejection = await orchestrator
+			.run('ship feature', {
+				signal: new AbortController().signal,
+				onRecord: entry => {
+					if (entry.type === 'completed') throw new Error('The sink closed');
+				},
+			})
+			.catch((error: unknown) => error);
+
+		expect(rejection).toBeInstanceOf(UnrecoverableError);
+		expect(rejection).toMatchObject({
+			message: 'The run record could not be delivered',
+			cause: 'The sink closed',
+			// The planner, the executor and the reviewer each answered once.
+			tokens: usage({ inputTokens: 3, outputTokens: 3 }),
+		});
+	});
+
+	it('rejects a cancelled run with the abort itself, even when its cancelled entry cannot be delivered', async () => {
+		const controller = new AbortController();
+		const abort = new DOMException('The task was aborted', 'AbortError');
+		const planner: Agent = {
+			run: () => {
+				controller.abort(abort);
+				return Promise.reject(abort);
+			},
+		};
+		const onRecord = vi.fn((entry: RunRecordEntry): void => {
+			if (entry.type === 'cancelled') throw new Error('The sink closed');
+		});
+		const orchestrator = new OrchestratorAgent({
+			plannerAgent: planner,
+			executorAgent: createFakeAgent().agent,
+			reviewerAgent: createFakeAgent().agent,
+			reviewerDecisionValidator: new ReviewerDecisionValidator(),
+			logger,
+		});
+
+		const rejection = await orchestrator
+			.run('ship feature', { signal: controller.signal, onRecord })
+			.catch((error: unknown) => error);
+
+		expect(rejection).toBe(abort);
+		expect(isAbortError(rejection)).toBe(true);
+		expect(onRecord).toHaveBeenCalledOnce();
 	});
 
 	it('rejects a run while another works, before any role starts', async () => {

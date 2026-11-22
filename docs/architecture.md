@@ -48,8 +48,10 @@ engine is infrastructure only and `src/retry/` is domain only. `LLMAgent` sits i
 
 ### `src/agent/`
 
-`Agent`, `RunOptions`, `AgentResponse`, `ProgressEvent`, `Inbox`, the messages a consumer
-sends to a run while it works, read internally through `readerOf`, `OneRunAtATime` and its
+`Agent`, `RunOptions`, `AgentResponse`, `ProgressEvent`, `RunRecordEntry`, `RecordCallback` and
+the record `recordRun` owns (with `recorderOf` and `withRecorder`, which hand it to the agents a
+run starts), `Inbox`, the messages a consumer sends to a run while it works, read internally
+through `readerOf`, `OneRunAtATime` and its
 `RunInProgressError`, which let an agent instance take one run at a time,
 `RecoverableCommittedRunError` and `UnrecoverableCommittedRunError`, a failure of the kind it
 had, with what a run that committed after each phase had committed, `newSession` and
@@ -423,9 +425,10 @@ why it is the only place that knows every provider.
 `PhaseResult`, `Verification`, `CheckResult` and `CheckStatus` types of `AgentResponse.phases`
 and `verification`, the `CommitQuestion`, `RequiredCheck` and `PhaseLimits` types of
 `createLLMOrchestrator`'s options, the `Transcript` and `TranscriptCallback` types of
-`onTranscript`, the `Asker`, `UserQuestion` and `QuestionOption` types of `RunOptions.ask`,
-`Inbox`, what `RunOptions.inbox` takes, `RunInProgressError`, the `UnrecoverableError` a run
-rejects with while another works on the same agent, `RecoverableCommittedRunError`,
+`onTranscript`, the `Asker`, `UserQuestion` and `QuestionOption` types of `RunOptions.ask`, the
+`RunRecordEntry` and `RecordCallback` types of `RunOptions.onRecord`, `Inbox`, what
+`RunOptions.inbox` takes, `RunInProgressError`, the `UnrecoverableError` a run rejects with while
+another works on the same agent, `RecoverableCommittedRunError`,
 `UnrecoverableCommittedRunError` and the `CommittedRun` type they carry, what a run of
 `createLLMOrchestrator` that fails after a commit had committed, the approval contract
 (`rememberApprovals` and the `Approver`, `ApprovalRequest`, `ApprovalDecision`,
@@ -458,7 +461,7 @@ the consumer's schemas and the harness share one copy. `RetryingAgent`, `Orchest
 apply retry and the role defaults so a consumer never composes them, and a class that is not
 exported can change shape without a major release.
 
-Four contracts have rules of their own:
+Five contracts have rules of their own:
 
 - **`Tokens` is split into the categories providers bill separately.** `inputTokens`,
   `readCacheTokens`, `writtenCacheTokens` and `outputTokens` never overlap. They are counts,
@@ -513,6 +516,20 @@ Four contracts have rules of their own:
   of the call that compacted, whose tokens it includes; the harness's comes once its summary is
   written, before the next call's `step`, and the summary call has no `step` of its own: its
   tokens are only in the run's total.
+- **The run record is the one ordered account of a run, and `ProgressEvent` is not it.**
+  `RunOptions.onRecord` receives each progress event, each question and answer, each approval
+  request and decision, and one terminal entry, `completed`, `failed` or `cancelled`, last.
+  `recordRun` owns the record of the outermost run that has `onRecord`; every agent the run starts
+  writes to it through `recorderOf`, so it is one synchronous sequence in the order things
+  happened. A question is recorded before `ask` is called and an approval request before the
+  approver is, so an entry that cannot be recorded stops the call it describes. A delivery failure
+  (a callback that throws or returns a promise) stops delivery at the first failure, the terminal
+  entry included, and the run rejects with an `UnrecoverableError`, which `RetryingAgent` does not
+  retry; a run that had committed keeps its commits, phases and `runId` in that error. A
+  cancellation is rethrown unchanged, even when its entry cannot be delivered. Delegated agents'
+  entries nest in a `subagent` entry attributed to their call, and their progress is the `subagent`
+  progress event, not repeated. Consumers forward or reject an unknown entry type, and never skip
+  it.
 - **`Tool` narration stays outside the provider definition.** A tool may provide
   `summarize(input)`, but `ToolDefinition` sent to an `LLMClient` contains only `name`,
   `description` and `inputSchema`. `defineTool` validates the model input and passes that
@@ -922,7 +939,8 @@ at a time, and reads what the user sends meanwhile" in [`decisions.md`](decision
   run's `approve` and `ask` at the same time, so a consumer with one person to ask, such as the
   CLI, queues them. Their changes and commands are made one at a time, so the history stays
   exact, but each agent can see the others' unfinished work, and a long command holds the
-  others' writes until it ends.
+  others' writes until it ends. Their entries in the run's record, nested in `subagent` entries,
+  arrive in the order they happen, interleaved with the caller's.
 - **The seam has no memory or routing model.** MCP, long-term memory, graph execution and
   file-based agent registries are deliberately absent; each waits for a real consumer.
   `LLMAgent`'s `Conversation` lives only as long as the agent: a consumer cannot save or

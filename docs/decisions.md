@@ -3230,3 +3230,26 @@ tags: #mikode-harness #architecture #persistence
 - The harness learns nothing about who stores a conversation, or why.
 - The retention of the history stays as it is, in the harness. Whether a consumer should set it is not decided.
 - #111 and #136 still say "Session Manager" for the owner of the storage; they keep their text until they are refined.
+
+## The run record is the complete, ordered contract, and `ProgressEvent` stays narration
+
+tags: #mikode-harness #api-surface #observability
+
+**Decision:** a run's record is `RunOptions.onRecord`. It receives every progress event, every question and answer, every approval request and decision, and exactly one terminal entry (`completed`, `failed` or `cancelled`), last. It is delivered synchronously and in the order things happened, and a delivery failure fails the run as an `UnrecoverableError`. `ProgressEvent` is not the record and stays narration only.
+
+**Context:** issue #177 proposed a durable, ordered observation contract. A consumer had to merge three channels: progress through `onProgress`, questions and approval through `ask` and the approver, and the outcome from resolving or rejecting `run()`. `onProgress` may be dropped or ignored, so a consumer that had to act on all of them could not know it had them all. The record gives them one place, in the order they happened.
+
+**Alternatives considered:**
+
+- **Making `ProgressEvent` the record.** Rejected: its consumers are told to ignore the types they do not know, so a question or an approval added to it would be lost silently by a consumer that had not been updated, and the record would depend on narration's rules.
+- **A callback that returns a promise, so a consumer can store entries asynchronously.** Rejected: awaiting an async callback would require changing the synchronous progress delivery and introducing backpressure in composed runs. A returned promise is refused as a failure instead.
+- **Storing the record in the harness.** Deferred: the harness owns the record's order and completeness; where it is stored is the consumer's, as for conversations (#111).
+- **Skipping the entry types a consumer does not know.** Rejected: a record that skips entries is incomplete while looking complete, so a consumer forwards or rejects them.
+
+**Consequences:**
+
+- A question is recorded before `ask` is called, and an approval request before the approver is, so a record that cannot take the entry stops the call it describes. A refused question is never asked.
+- A record that cannot be delivered is an `UnrecoverableError`, which `RetryingAgent` does not retry. A run that had committed keeps its commits, phases and `runId` in that error, because the commits stay in git either way.
+- A cancellation is rethrown unchanged, an `AbortError` or the `TimeoutError` of `AbortSignal.timeout`, even when its `cancelled` entry cannot be delivered: a stop stays a stop.
+- The Agent SDK engines never ask and never reach the approver, so their records hold progress and the terminal entry only.
+- New entry types can arrive in a minor release; a consumer that skips unknown entries no longer has a complete record.

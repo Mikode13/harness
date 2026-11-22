@@ -2,12 +2,18 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ProgressEvent, RunOptions } from '../../src/agent/domain/agent.ts';
 import { rememberAnswers, type UserQuestion } from '../../src/agent/domain/question.ts';
 import { readAnswers } from '../../src/agent/domain/question.ts';
+import type { RunRecordEntry } from '../../src/agent/domain/runRecord.ts';
 import { readQuestions } from '../../src/engines/domain/model/askUser.ts';
 import { RetryingAgent } from '../../src/retry/domain/model/retryingAgent.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import type { Tool } from '../../src/tools/domain/tool.ts';
 import { RecoverableError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
-import { assistantResponse, FakeLLMClient, textResponse } from '../support/fakeLlmClient.ts';
+import {
+	assistantResponse,
+	FakeLLMClient,
+	textResponse,
+	toolCall,
+} from '../support/fakeLlmClient.ts';
 
 const signal = new AbortController().signal;
 
@@ -249,5 +255,136 @@ describe('RetryingAgent with answered questions', () => {
 		expect(prompts[1]).toBe(
 			'prompt\n\nThe user already answered these questions in an earlier attempt; do not ask them again:\n1. Which shape should the API take?\n   Two functions',
 		);
+	});
+});
+
+describe('LLMAgent record of askUser', () => {
+	it('records each question before the asker is called, and its answer once validated', async () => {
+		const llmClient = new FakeLLMClient(
+			assistantResponse([askCall({ questions: [question] })]),
+			textResponse('done'),
+		);
+		const order: string[] = [];
+		const entries: RunRecordEntry[] = [];
+		const ask = vi.fn(() => {
+			order.push('asked');
+			return ['Two functions'];
+		});
+
+		await new LLMAgent({ llmClient }).run('prompt', {
+			signal,
+			ask,
+			onRecord: entry => {
+				if (entry.type !== 'progress') order.push(entry.type);
+				entries.push(entry);
+			},
+		});
+
+		expect(order).toEqual(['question', 'asked', 'answer', 'completed']);
+		expect(entries.filter(entry => entry.type !== 'progress')).toEqual([
+			{ type: 'question', questions: [question] },
+			{ type: 'answer', answers: ['Two functions'] },
+			{ type: 'completed', response: expect.objectContaining({ response: 'done' }) as unknown },
+		]);
+	});
+
+	it('does not ask when the question cannot be recorded, and ends the run', async () => {
+		const llmClient = new FakeLLMClient(assistantResponse([askCall({ questions: [question] })]));
+		const ask = vi.fn(() => ['Two functions']);
+
+		await expect(
+			new LLMAgent({ llmClient }).run('prompt', {
+				signal,
+				ask,
+				onRecord: entry => {
+					if (entry.type === 'question') throw new Error('disk full');
+				},
+			}),
+		).rejects.toBeInstanceOf(UnrecoverableError);
+
+		expect(ask).not.toHaveBeenCalled();
+	});
+
+	it('never gives the model an answer that could not be recorded', async () => {
+		const llmClient = new FakeLLMClient(
+			assistantResponse([askCall({ questions: [question] })]),
+			textResponse('never sent'),
+		);
+
+		await expect(
+			new LLMAgent({ llmClient }).run('prompt', {
+				signal,
+				ask: () => ['Two functions'],
+				onRecord: entry => {
+					if (entry.type === 'answer') throw new Error('disk full');
+				},
+			}),
+		).rejects.toBeInstanceOf(UnrecoverableError);
+
+		expect(llmClient.contexts).toHaveLength(1);
+	});
+
+	it('ends the run after a tool already ran when a later question cannot be recorded', async () => {
+		const execute = vi.fn(() => Promise.resolve('sunny'));
+		const weather: Tool = {
+			name: 'weather',
+			description: 'Weather',
+			inputSchema: { type: 'object' },
+			risk: () => 'safe',
+			execute,
+		};
+		const llmClient = new FakeLLMClient(
+			assistantResponse([toolCall('weather-1', 'weather', {})]),
+			assistantResponse([askCall({ questions: [question] })]),
+			textResponse('never sent'),
+		);
+		const ask = vi.fn(() => ['Two functions']);
+
+		await expect(
+			new LLMAgent({ llmClient, tools: [weather] }).run('prompt', {
+				signal,
+				ask,
+				onRecord: entry => {
+					if (entry.type === 'question') throw new Error('disk full');
+				},
+			}),
+		).rejects.toBeInstanceOf(UnrecoverableError);
+
+		expect(execute).toHaveBeenCalledOnce();
+		expect(ask).not.toHaveBeenCalled();
+		expect(llmClient.contexts).toHaveLength(2);
+	});
+});
+
+describe('RetryingAgent record of answered questions', () => {
+	it('records a question answered before a retry once, and never again', async () => {
+		const llmClient = new FakeLLMClient(
+			assistantResponse([askCall({ questions: [question] })]),
+			new RecoverableError('The LLM call failed', { cause: 'overloaded' }),
+			assistantResponse([askCall({ questions: [question] })]),
+			textResponse('done'),
+		);
+		const ask = vi.fn(() => ['Two functions']);
+		const entries: RunRecordEntry[] = [];
+		const retrying = new RetryingAgent({
+			inner: new LLMAgent({ llmClient }),
+			logger: { warn: vi.fn() },
+			noteFailures: false,
+		});
+
+		await retrying.run('prompt', {
+			signal,
+			ask,
+			onRecord: entry => {
+				entries.push(entry);
+			},
+		});
+
+		expect(ask).toHaveBeenCalledOnce();
+		expect(entries.filter(entry => entry.type !== 'progress')).toEqual([
+			{ type: 'question', questions: [question] },
+			{ type: 'answer', answers: ['Two functions'] },
+			{ type: 'completed', response: expect.objectContaining({ response: 'done' }) as unknown },
+		]);
 	});
 });

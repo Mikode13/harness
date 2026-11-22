@@ -2,6 +2,7 @@ import type { ProgressEvent } from '#src/agent/domain/agent';
 import type { Approver } from '#src/agent/domain/approval';
 import type { Asker } from '#src/agent/domain/question';
 import type { RunContext } from '#src/agent/domain/runContext';
+import type { RunRecorder } from '#src/agent/domain/runRecord';
 import type { Tokens } from '#src/shared/domain/tokens';
 
 /**
@@ -110,4 +111,9 @@ export interface ToolCallContext {
 	readonly agentWriteRoots?: readonly string[];
 	/** Who the changes the call makes are recorded as made by, as one of `JournalEntry.authors`. */
 	readonly author?: string;
+	/**
+	 * The record of the run the call belongs to, when a consumer asked for one: what a subagent
+	 * the call starts records goes into it, as the subagent's entries.
+	 */
+	readonly recorder?: RunRecorder;
 }

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Agent, AgentResponse, RunOptions } from '../../src/agent/domain/agent.ts';
+import type { RunRecordEntry } from '../../src/agent/domain/runRecord.ts';
 import { RecoverableError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
 import { MaxContextError } from '../../src/llm/domain/errors.ts';
 import { RetryingAgent } from '../../src/retry/domain/model/retryingAgent.ts';
@@ -439,5 +440,79 @@ describe('RetryingAgent', () => {
 			expect(failure).toBeInstanceOf(UnrecoverableError);
 			expect(failure).toMatchObject({ cause: 'callback exploded' });
 		});
+	});
+});
+
+describe('RetryingAgent record', () => {
+	it("keeps one record for the run: every attempt's progress, then one completed entry", async () => {
+		const entries: RunRecordEntry[] = [];
+		const run = vi
+			.fn<Agent['run']>()
+			.mockImplementationOnce((_prompt, options) => {
+				options.onProgress?.({ type: 'turnStarted' });
+				return Promise.reject(new RecoverableError('flaky', { cause: 'network blip' }));
+			})
+			.mockImplementationOnce((_prompt, options) => {
+				options.onProgress?.({ type: 'turnStarted' });
+				return Promise.resolve(okResponse);
+			});
+
+		await new RetryingAgent({ inner: { run }, logger }).run('hi', {
+			signal,
+			onRecord: entry => {
+				entries.push(entry);
+			},
+		});
+
+		expect(entries).toEqual([
+			{ type: 'progress', event: { type: 'turnStarted' } },
+			{ type: 'progress', event: { type: 'turnStarted' } },
+			{ type: 'completed', response: expect.objectContaining({ response: 'pong' }) as unknown },
+		]);
+	});
+
+	it('records only the final failure, once, when every attempt fails', async () => {
+		const entries: RunRecordEntry[] = [];
+		const { agent } = fakeAgent(
+			new RecoverableError('1', { cause: 'first failure' }),
+			new RecoverableError('2', { cause: 'second failure' }),
+		);
+
+		await expect(
+			new RetryingAgent({ inner: agent, maxAttempts: 2, logger }).run('hi', {
+				signal,
+				onRecord: entry => {
+					entries.push(entry);
+				},
+			}),
+		).rejects.toThrow('Max attempts exhausted');
+
+		expect(entries).toEqual([
+			{
+				type: 'failed',
+				error: expect.objectContaining({ message: 'Max attempts exhausted' }) as unknown,
+			},
+		]);
+	});
+
+	// A record that cannot take an entry is the host's failure: a retry would not undo it.
+	it('does not retry when an entry of a failed attempt cannot be recorded', async () => {
+		const run = vi
+			.fn<Agent['run']>()
+			.mockImplementationOnce((_prompt, options) => {
+				options.onProgress?.({ type: 'turnStarted' });
+				return Promise.reject(new RecoverableError('flaky', { cause: 'network blip' }));
+			})
+			.mockResolvedValue(okResponse);
+		const onRecord = vi.fn(() => {
+			throw new Error('disk full');
+		});
+
+		await expect(
+			new RetryingAgent({ inner: { run }, logger }).run('hi', { signal, onRecord }),
+		).rejects.toBeInstanceOf(UnrecoverableError);
+
+		expect(run).toHaveBeenCalledOnce();
+		expect(onRecord).toHaveBeenCalledOnce();
 	});
 });
