@@ -655,8 +655,8 @@ you sent, if the user should be able to send it again.
 **When it cannot be restored.** `createLLMOrchestrator` checks the snapshot before it opens the
 workspace or builds any agent: one of another `format` or `flow`, a boundary this release does not
 restore, roles other than those three, or a role's conversation that cannot be restored throws
-`InvalidSnapshotError`, and a version this release does not restore, of the session or of a role's
-conversation, `UnsupportedSnapshotVersionError`.
+`InvalidSnapshotError`, and a whole-number version this release does not restore, of the session or of a
+role's conversation, `UnsupportedSnapshotVersionError`; a missing version is malformed.
 
 A workflow of `createWorkflow` takes no snapshot: each of its stages creates its agent for one run,
 so once a run ended no conversation is left of it. An agent of yours that a stage gives every run

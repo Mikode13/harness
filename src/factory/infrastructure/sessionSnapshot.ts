@@ -41,6 +41,10 @@ export function readSessionSnapshot(value: unknown): RestoredSession {
 			`Its format is ${describe(format)}, not "${sessionFormat}": it is not a snapshot of a composed agent's session.`,
 		);
 	}
+	// A version that is no whole number is no version a release could have written.
+	if (typeof version !== 'number' || !Number.isInteger(version) || version < 1) {
+		throw invalid(`Its version is ${describe(version)}, not a version number.`);
+	}
 	if (!(sessionVersions as readonly unknown[]).includes(version)) {
 		throw new UnsupportedSnapshotVersionError(
 			'The session snapshot is of a version this release cannot restore',

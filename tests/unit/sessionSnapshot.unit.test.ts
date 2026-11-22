@@ -363,6 +363,15 @@ describe('restoring a session snapshot that cannot be restored', () => {
 		],
 		['has a key its format does not', snapshot => ({ ...snapshot, extra: 1 }), 'extra'],
 		['has a session without an id', snapshot => ({ ...snapshot, session: {} }), 'no id'],
+		['has no version', snapshot => ({ ...snapshot, version: undefined }), 'not a version number'],
+		[
+			'has a role whose version is not a number',
+			snapshot => ({
+				...snapshot,
+				roles: { ...snapshot.roles, planner: { ...snapshot.roles.planner, version: '1' } },
+			}),
+			"The planner's conversation",
+		],
 	];
 
 	it.each(broken)(
