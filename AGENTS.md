@@ -6,9 +6,9 @@
 the `Agent` contract and its factories — `createAgent` for one provider and
 `createOrchestrator` for the planner → executor → reviewer workflow on the Agent SDKs,
 `createLLMAgent` and `createLLMOrchestrator` on the model APIs — plus the tool contract,
-the error types and the `ILogger` port. The engines, `LLMAgent`, `RetryingAgent`, and
-`OrchestratorAgent` are internal: the factories apply retry and defaults so consumers never
-compose them.
+the error types and the `ILogger` port. The engines, `LLMAgent`, `RetryingAgent`,
+`RecordingAgent` and `OrchestratorAgent` are internal: the factories apply the record, retry and
+defaults so consumers never compose them, and `RecordingAgent` stays the outermost layer.
 
 `cli/` is a separate workspace project, not part of the published package. It is one
 interactive consumer of the seam, kept out of `src/` deliberately: a REST or WebSocket

@@ -565,7 +565,7 @@ function buildLLMAgent(
 
 /**
  * Builds an agent whose conversation MiKode owns, on a provider's model API, already wrapped in
- * the harness's retry policy. It needs the provider's API key and bills per token, where
+ * the harness's retry policy, and keeping the record of a run given `onRecord`. It needs the provider's API key and bills per token, where
  * `createAgent` uses the Agent SDK's login. Each tool judges the risk of each call; a
  * `destructive` one runs only when the run's `approve` allows it, or with `autoApprove`.
  *

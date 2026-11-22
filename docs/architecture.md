@@ -358,15 +358,15 @@ before a model-backed agent runs a `destructive` tool call, and its optional `as
 answers what a model-backed agent asks its user. A decorator and a whole multi-agent workflow
 are therefore substitutable for a bare engine anywhere, and a consumer's loop cannot tell which
 it is driving. A decorator such as `InstructedAgent` passes `options` on whole, never rebuilt,
-so a field added to it reaches every agent without each decorator learning about it. Two copy it
-instead, both with object spread, so a field must be an own enumerable one to survive them:
+so a field added to it reaches every agent without each decorator learning about it. Three copy
+it instead, all with object spread, so a field must be an own enumerable one to survive them:
 `RetryingAgent`, for a run with `ask`, replaces only `ask` with one that remembers the answers
 across attempts, and each orchestrator, `OrchestratorAgent` and `PhasedOrchestrator`, makes one
 shallow copy per role with object spread, carrying the own enumerable string- and symbol-keyed
 fields, including the internal `RunContext`, and replaces only `onProgress` with a wrapper that
 makes the role attribution authoritative; `PhasedOrchestrator` also wraps `ask` and `approve`,
-which still reach the same callbacks, so the record knows the role that asked. `RecordingAgent`,
-for a run with `onRecord`, replaces `onProgress`, `ask` and `approve` with ones that record
+which still reach the same callbacks, so the record knows the role that asked; and
+`RecordingAgent`, the outermost layer of every factory's agent, for a run with `onRecord`, replaces `onProgress`, `ask` and `approve` with ones that record
 before they hand on, and drops `onRecord`, so no agent inside keeps a second record. The same
 context therefore reaches every agent the run reaches, and no consumer can see or set it.
 
@@ -461,9 +461,10 @@ exports `createWorkflow`, `defineWorkflowStages`, the `Workflow`, `WorkflowStage
 `WorkflowStageBinder`, `WorkflowStageName`, `WorkflowTransition`, `WorkflowResult`,
 `WorkflowStageReport` and `CreateWorkflowOptions` types, and `Validator`. `defineTool` takes a
 Zod 4 schema, so Zod's major version is part of the contract, and `zod` is a peer dependency, so
-the consumer's schemas and the harness share one copy. `RetryingAgent`, `OrchestratorAgent`,
-`PhasedOrchestrator`, `WorkflowRunner`, `LLMAgent` and both engines are internal — the factories
-apply retry and the role defaults so a consumer never composes them, and a class that is not
+the consumer's schemas and the harness share one copy. `RecordingAgent`, `RetryingAgent`,
+`OrchestratorAgent`, `PhasedOrchestrator`, `WorkflowRunner`, `LLMAgent` and both engines are
+internal — the factories apply the record, retry and the role defaults so a consumer never
+composes them, and a class that is not
 exported can change shape without a major release.
 
 Five contracts have rules of their own:
@@ -601,7 +602,8 @@ OpenAI model API's catalog does not. Each path has its own catalogs and narrower
 
 ## Important flows
 
-**A single turn.** `createAgent` returns a `RetryingAgent` wrapping the engine. The engine
+**A single turn.** `createAgent` returns a `RecordingAgent` around a `RetryingAgent` wrapping
+the engine; the first only acts for a run given `onRecord` (see "A recorded run"). The engine
 calls its SDK inside `classifyProviderFailure`, then iterates the response stream through
 `classifiedProviderStream`, mapping each SDK event to a `ProgressEvent` and handing it to the
 consumer's `onProgress`. On a `RecoverableError` the decorator calls the engine again, with the

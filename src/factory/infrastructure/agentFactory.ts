@@ -81,7 +81,8 @@ const defaultModels = {
 
 /**
  * Builds the agent for a provider on its Agent SDK — Claude Code for Anthropic, Codex for
- * OpenAI — already wrapped in the harness's retry policy.
+ * OpenAI — already wrapped in the harness's retry policy, and keeping the record of a run given
+ * `onRecord`.
  *
  * @throws {InvalidAgentConfigError} for an unknown provider, or a model or reasoning effort
  * the provider does not support.
