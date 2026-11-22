@@ -466,6 +466,56 @@ describe('createAgent', () => {
 });
 
 describe('createLLMAgent', () => {
+	it('records a question once when a retry asks it again, and asks it once', async () => {
+		const create = openAIReplying('done');
+		const answer = await create();
+		create.mockClear();
+		const asking = {
+			...answer,
+			output: [
+				{
+					type: 'function_call',
+					id: 'fc-1',
+					call_id: 'call-1',
+					name: 'askUser',
+					arguments: JSON.stringify({
+						questions: [
+							{
+								question: 'Which name?',
+								options: [
+									{ label: 'a', description: 'a' },
+									{ label: 'b', description: 'b' },
+								],
+								multiSelect: false,
+							},
+						],
+					}),
+				},
+			],
+		} as unknown as Response;
+		create
+			.mockResolvedValueOnce(asking)
+			// The call after the answer fails in passing, so the run is tried again.
+			.mockRejectedValueOnce(new Error('socket hang up'))
+			.mockResolvedValueOnce(asking);
+		const ask = vi.fn(() => ['a']);
+		const entries: RunEntry[] = [];
+
+		const response = await createLLMAgent('openai', {
+			systemPrompt: '',
+			logger: createLogger(),
+		}).run('prompt', { signal, ask, onRecord: entry => void entries.push(entry) });
+
+		expect(response.response).toBe('done');
+		expect(create).toHaveBeenCalledTimes(4);
+		expect(ask).toHaveBeenCalledOnce();
+		expect(entries.filter(entry => entry.type !== 'progress').map(entry => entry.type)).toEqual([
+			'question',
+			'answer',
+			'end',
+		]);
+	});
+
 	it('keeps the record of a run given onRecord, ending with its response', async () => {
 		openAIReplying('hi');
 		const entries: RunEntry[] = [];
