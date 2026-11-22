@@ -585,7 +585,8 @@ entry so far before it asks, before it acts on the answer or the decision, and b
 a question is stored before anyone sees it, and `run()` settles once its end is taken. A
 cancellation stops every one of those waits: a cancelled run rejects at once, and one that
 completed resolves with its response, even while the callback still holds an entry, and the record gets its `cancelled` end once the entries before it
-are taken. A callback that
+are taken. A later run given the same callback hands it nothing until that record is taken whole, so
+two runs' entries never mix. A callback that
 throws or rejects ends the run with an `UnrecoverableError`, which nothing retries, so no tool
 that already had effects runs again: a question it did not take is never asked, an approval it did
 not take is never asked for and its call never runs, and an answer or a decision it did not take

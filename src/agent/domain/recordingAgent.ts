@@ -80,8 +80,18 @@ class RunRecorder {
 	private pushed = 0;
 	private taken = 0;
 
-	constructor(take: RunRecordCallback) {
+	/**
+	 * `after` is the earlier record of the same callback, still being taken after its run
+	 * settled: this record hands nothing on until that one is taken, or failed.
+	 */
+	constructor(take: RunRecordCallback, after?: Promise<void>) {
 		this.take = take;
+		if (after) {
+			this.delivering = after.then(() => {
+				this.delivering = undefined;
+				this.drain();
+			});
+		}
 	}
 
 	/** The number of the next question or approval request. */
@@ -138,8 +148,8 @@ class RunRecorder {
 	 * Lets every entry pushed so far be taken after the run settled, without the run waiting for
 	 * it, and logs a failure to take one.
 	 */
-	finishInBackground(log: (failure: unknown) => void): void {
-		void this.flush().catch(log);
+	finishInBackground(log: (failure: unknown) => void): Promise<void> {
+		return this.flush().catch(log);
 	}
 
 	/** Hands `entry` to the callback, and returns the failure when it threw at once. */
@@ -185,6 +195,12 @@ class RunRecorder {
 		return this.failure;
 	}
 }
+
+/**
+ * The records still being taken after their run settled, by their callback, so the next run given
+ * the same callback hands it nothing until the earlier record is taken.
+ */
+const unfinished = new WeakMap<RunRecordCallback, Promise<void>>();
 
 /** Whether `signal` is aborted now, read where an earlier check may have narrowed it. */
 function isCancelled(signal: AbortSignal): boolean {
@@ -344,12 +360,14 @@ export class RecordingAgent implements Agent {
 		const { onRecord } = options;
 		if (!onRecord) return this.inner.run(prompt, options);
 
-		const recorder = new RunRecorder(onRecord);
+		// A record the same callback still takes, from a run that settled before it was taken, comes
+		// whole before this run's first entry, so a consumer never gets two runs' entries mixed.
+		const recorder = new RunRecorder(onRecord, unfinished.get(onRecord));
 		let response: AgentResponse;
 		try {
 			response = await this.inner.run(prompt, recordedOptions(options, recorder));
 		} catch (error) {
-			await this.endFailed(recorder, error, options.signal);
+			await this.endFailed(onRecord, recorder, error, options.signal);
 			throw error;
 		}
 
@@ -361,9 +379,7 @@ export class RecordingAgent implements Agent {
 			// complete, as its record says, so it resolves with its response, at once, with what it
 			// committed, and the record goes on taking its entries meanwhile.
 			if (isCancelled(options.signal) && isAbortError(error)) {
-				recorder.finishInBackground(failure => {
-					this.warn(failure);
-				});
+				this.finishLater(onRecord, recorder);
 				return response;
 			}
 			// The run completed, but its record does not say so: the consumer must not take what it
@@ -393,6 +409,7 @@ export class RecordingAgent implements Agent {
 	 * end is only logged.
 	 */
 	private async endFailed(
+		onRecord: RunRecordCallback,
 		recorder: RunRecorder,
 		error: unknown,
 		signal: AbortSignal,
@@ -409,9 +426,7 @@ export class RecordingAgent implements Agent {
 		// and the end is handed on once those before it are taken. A run that failed waits for its
 		// end, unless it is cancelled while it does.
 		if (signal.aborted) {
-			recorder.finishInBackground(failure => {
-				this.warn(failure);
-			});
+			this.finishLater(onRecord, recorder);
 			return;
 		}
 		try {
@@ -419,13 +434,25 @@ export class RecordingAgent implements Agent {
 		} catch (failure) {
 			// Read again: the signal may have aborted while the record took the end.
 			if (isCancelled(signal)) {
-				recorder.finishInBackground(later => {
-					this.warn(later);
-				});
+				this.finishLater(onRecord, recorder);
 				return;
 			}
 			this.warn(failure);
 		}
+	}
+
+	/**
+	 * Lets `recorder` finish taking its entries after its run settled, and holds the next record of
+	 * the same callback until it has.
+	 */
+	private finishLater(onRecord: RunRecordCallback, recorder: RunRecorder): void {
+		const finished = recorder.finishInBackground(failure => {
+			this.warn(failure);
+		});
+		unfinished.set(onRecord, finished);
+		void finished.then(() => {
+			if (unfinished.get(onRecord) === finished) unfinished.delete(onRecord);
+		});
 	}
 
 	/** Logs that the record could not take the run's end; the run's own outcome is what counts. */

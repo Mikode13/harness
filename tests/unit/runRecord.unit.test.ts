@@ -491,6 +491,43 @@ describe('the run record', () => {
 		expect(taken).toEqual(['question', 'progress', 'answer', 'end']);
 	});
 
+	it("holds a new run's record until the same callback took a cancelled run's record whole", async () => {
+		const controller = new AbortController();
+		const entries: RunEntry[] = [];
+		let slow = true;
+		const onRecord = (entry: RunEntry) => {
+			entries.push(entry);
+			if (!slow || entry.type !== 'question') return undefined;
+			slow = false;
+			// A slow store: the user cancels while it takes the first run's question.
+			setTimeout(() => {
+				controller.abort();
+			}, 5);
+			return new Promise<void>(resolve => setTimeout(resolve, 40));
+		};
+		const agent = recorded(
+			new FakeLLMClient(assistantResponse([askCall()]), textResponse('second run')),
+		);
+
+		await agent
+			.run('first', { signal: controller.signal, ask: () => ['One function'], onRecord })
+			.catch(() => undefined);
+		await agent.run('second', { signal: new AbortController().signal, onRecord });
+
+		const ends = entries.flatMap((entry, index) =>
+			entry.type === 'end' ? [[index, entry.outcome]] : [],
+		);
+		const secondMessage = entries.findIndex(
+			entry => entry.type === 'progress' && entry.event.type === 'agentMessage',
+		);
+		// The first run's end comes before anything of the second run, whose end is the last entry.
+		expect(ends).toEqual([
+			[expect.any(Number), 'cancelled'],
+			[entries.length - 1, 'completed'],
+		]);
+		expect(ends[0]?.[0]).toBeLessThan(secondMessage);
+	});
+
 	it('hands the callback copies, so what it changes never reaches the asker or what run() returns', async () => {
 		const llmClient = new FakeLLMClient(assistantResponse([askCall()]), textResponse('done'));
 		const asked: unknown[] = [];
