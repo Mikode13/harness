@@ -397,6 +397,35 @@ describe('the run record', () => {
 		expect(taken).toEqual([1, 2, 3, 4]);
 	});
 
+	it('asks once the question is taken, without waiting for what was narrated after it', async () => {
+		const taken: string[] = [];
+		let takenWhenAsked: string[] = [];
+		const asking: Agent = {
+			run: async (_, options) => {
+				const asked = options.ask?.([question], options.signal);
+				// Such as an agent in the background narrating while the question waits to be taken.
+				options.onProgress?.({ type: 'agentMessage', message: 'later' });
+				await asked;
+				return { response: 'done', duration: 0 };
+			},
+		};
+
+		await new RecordingAgent({ inner: asking, logger: logger() }).run('go', {
+			signal: new AbortController().signal,
+			ask: () => {
+				takenWhenAsked = [...taken];
+				return ['One function'];
+			},
+			onRecord: async entry => {
+				await new Promise(resolve => setTimeout(resolve, entry.type === 'progress' ? 50 : 1));
+				taken.push(entry.type);
+			},
+		});
+
+		expect(takenWhenAsked).toEqual(['question']);
+		expect(taken).toEqual(['question', 'progress', 'answer', 'end']);
+	});
+
 	it('leaves a run without onRecord exactly as it was', async () => {
 		const inner = {
 			run: vi.fn<Agent['run']>(() => Promise.resolve({ response: 'hi', duration: 0 })),

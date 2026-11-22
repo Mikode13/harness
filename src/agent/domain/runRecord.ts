@@ -8,8 +8,9 @@ import type { UserQuestion } from './question.ts';
  * The version of the record's entries that this release of the harness writes, carried by every
  * entry as `version`. It changes, in a major release, whenever a reader of the previous version
  * would read the new entries wrongly: a new entry type, a field removed or changed, or a new
- * field a reader needs. A field no reader needs to be correct may be added in a minor release
- * without changing it.
+ * field a reader needs, including in a type an entry carries, such as `AgentResponse`,
+ * `ApprovalRequest` or `UserQuestion`. A field no reader needs to be correct may be added in a
+ * minor release without changing it.
  */
 export const runRecordVersion = 1;
 

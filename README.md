@@ -604,7 +604,8 @@ work to, keep none of their own. A workflow from `createWorkflow` keeps no recor
 passes `onRecord` on to each stage's agent, so a stage whose agent comes from a factory gives the
 record of its own run, one after the other in the same callback: each ends with its own `end`
 and numbers its questions and approvals from 1 again, so split the stream at each `end`. The
-workflow's own `workflowStage` and `workflowTransition` events reach only `onProgress`. The harness keeps no record: where it is
+workflow's own `workflowStage` and `workflowTransition` events reach only `onProgress`, and what a
+code stage asks through `ask` or `approve` is not recorded at all. The harness keeps no record: where it is
 stored, and for how long, is yours.
 
 ### Agents that change files

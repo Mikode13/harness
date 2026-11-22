@@ -55,7 +55,9 @@ order. What a consumer needs to be correct in order with the narration, such as 
 how a run ended, goes there, never into a new `ProgressEvent` type. Consumers may not ignore an
 entry type, so a new entry type, or a change an older reader would read wrongly, bumps
 `runRecordVersion` and is breaking; only a field no reader needs to be correct may be added in a
-minor release. Every entry is plain JSON. A consumer that fails to take an entry ends the run as
+minor release. That holds for the types an entry carries too, `AgentResponse`, `ApprovalRequest`
+and `UserQuestion`: a field a reader needs added to one of them bumps the version, and a review
+checks it, since no test can. Every entry is plain JSON. A consumer that fails to take an entry ends the run as
 a host failure, as a failing `onProgress` does, and the run never asks, acts on or runs anything
 the record did not take first. The record is kept only by the `RecordingAgent` the factories put
 outermost; anything inside a run, and every place that calls `ask` or `approve`, reaches it

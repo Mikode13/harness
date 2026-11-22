@@ -76,6 +76,9 @@ class RunRecorder {
 	private delivering: Promise<void> | undefined;
 	private failure: UnrecoverableError | undefined;
 	private nextId = 1;
+	// How many entries were pushed, and how many of them the callback has taken, in order.
+	private pushed = 0;
+	private taken = 0;
 
 	constructor(take: RunRecordCallback) {
 		this.take = take;
@@ -97,6 +100,7 @@ class RunRecorder {
 	 */
 	push(entry: RunEntry): void {
 		if (this.failure) throw this.failure;
+		this.pushed++;
 		if (this.delivering) {
 			this.waiting.push(entry);
 			return;
@@ -106,12 +110,14 @@ class RunRecorder {
 	}
 
 	/**
-	 * Waits until every entry so far is taken, and throws if one was not. Given the run's signal,
-	 * a cancellation stops the wait, with the signal's reason, so a slow record cannot hold a
-	 * cancelled run before it asks.
+	 * Waits until every entry pushed so far is taken, and not those pushed after, such as what
+	 * agents in the background narrate meanwhile, and throws if one was not. Given the run's
+	 * signal, a cancellation stops the wait, with the signal's reason, so a slow record cannot
+	 * hold a cancelled run before it asks.
 	 */
 	async flush(signal?: AbortSignal): Promise<void> {
-		while (this.delivering) {
+		const target = this.pushed;
+		while (this.taken < target && this.delivering) {
 			await (signal ? untilAborted(this.delivering, signal) : this.delivering);
 		}
 		if (this.failure) throw this.failure;
@@ -125,9 +131,13 @@ class RunRecorder {
 		} catch (error) {
 			return this.fail(error);
 		}
-		if (!isThenable(taken)) return undefined;
+		if (!isThenable(taken)) {
+			this.taken++;
+			return undefined;
+		}
 		this.delivering = Promise.resolve(taken).then(
 			() => {
+				this.taken++;
 				this.delivering = undefined;
 				this.drain();
 			},
