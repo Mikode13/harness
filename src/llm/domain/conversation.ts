@@ -38,12 +38,16 @@ export interface ConversationState {
 /**
  * Why `state` cannot be a conversation's, or `undefined` when it can: each turn follows an
  * earlier one, the current turn is one of them, every turn starts with the user's prompt, and
- * every tool call of an answer has its result in the message after it, and nothing else does.
+ * every tool call of an answer has its result in the message after it, and nothing else does,
+ * in the initial messages as in each turn.
  * The conversation only ever records a run whole, so a state that breaks one of these was not
  * recorded by it, and a provider would refuse the context it gives.
  */
 export function checkConversationState(state: ConversationState): string | undefined {
-	const { turns, current } = state;
+	const { initial, turns, current } = state;
+	// They head every context the agent sends, so a provider would refuse them as it would a turn.
+	const unpairedInitial = unpairedToolPart(initial);
+	if (unpairedInitial !== undefined) return `the initial messages: one ${unpairedInitial}`;
 	for (const [index, turn] of turns.entries()) {
 		if (
 			turn.parent !== undefined &&
