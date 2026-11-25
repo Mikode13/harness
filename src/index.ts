@@ -72,6 +72,14 @@ export type { CommitQuestion, PhaseLimits } from './orchestration/domain/model/p
 export type { RequiredCheck } from './orchestration/domain/model/verification.ts';
 export type { Transcript, TranscriptCallback } from './agent/domain/transcript.ts';
 export {
+	InvalidSnapshotError,
+	UnsupportedSnapshotVersionError,
+	type ConversationAgent,
+	type ConversationSnapshot,
+	type SessionAgent,
+	type SessionSnapshot,
+} from './agent/domain/snapshot.ts';
+export {
 	runRecordVersion,
 	type RecordedDelegation,
 	type RecordedFailure,

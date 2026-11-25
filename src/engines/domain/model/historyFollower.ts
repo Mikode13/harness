@@ -1,7 +1,15 @@
 import type { Conversation } from '#src/llm/domain/conversation';
 import type { Message } from '#src/llm/domain/message';
 import type { BranchMove, RecoveryStore, Revision } from '#src/recovery/domain/recoveryStore';
-import { HistoryExpiredError } from '#src/recovery/domain/runTree';
+import { HistoryExpiredError, UnknownRunError } from '#src/recovery/domain/runTree';
+
+/**
+ * What the history said of each run a turn names that it does not list: `expired` when retention
+ * removed it, `unknown` when it was never in this history or left it having changed nothing,
+ * such as a run whose process died before it changed anything. A run the history no longer lists
+ * is never listed again, so this is read once per run.
+ */
+export type UnlistedRuns = Map<string, 'expired' | 'unknown'>;
 
 /**
  * What an agent reads of its workspace's history, and which history it is, which a history opened
@@ -26,6 +34,8 @@ export interface Followed {
 	latestRevision: number;
 	/** Where the workspace is: `undefined` for the start of its history. */
 	head: string | undefined;
+	/** The runs turns name that the history does not know, taken as no run: they wrote nothing. */
+	unknown: ReadonlySet<string>;
 }
 
 // A prompt is named, not repeated: enough to recognise it.
@@ -36,12 +46,17 @@ const promptChars = 300;
  * to the run it wrote in; a turn that wrote nothing belongs to the run of the turn it followed.
  * Of the turns whose run is on the line from the start to the head, it picks the one nearest
  * the head, and of those the newest. A run retention chained into a later one counts as that
- * one, and a run retention removed is off every line.
+ * one, and a run retention removed is off every line. A run the history does not know, or that
+ * left it having changed nothing, as a run whose process died before it changed anything does,
+ * is taken as no run: its turns wrote nothing.
+ *
+ * @param unlisted what the history said of each run it no longer lists, which this fills in.
  */
 export async function followHistory(
 	conversation: Conversation,
 	history: HistoryReader,
 	seenRevision: number,
+	unlisted: UnlistedRuns = new Map(),
 ): Promise<Followed> {
 	const { head, runs } = await history.listRuns();
 	const revisions = await history.listRevisions();
@@ -51,6 +66,11 @@ export async function followHistory(
 		keeper.set(run.runId, run.runId);
 		for (const absorbed of run.absorbed ?? []) keeper.set(absorbed, run.runId);
 	}
+	for (const { runId } of conversation.describeTurns()) {
+		if (runId !== undefined && !keeper.has(runId) && !unlisted.has(runId)) {
+			unlisted.set(runId, await whyUnlisted(history, runId));
+		}
+	}
 	const parents = new Map(runs.map(run => [run.runId, run.parentRunId]));
 	const line: string[] = [];
 	for (let runId = head; runId !== undefined; runId = parents.get(runId)) line.unshift(runId);
@@ -59,7 +79,8 @@ export async function followHistory(
 	const depths: (number | undefined)[] = [];
 	const runsOf: (string | undefined)[] = [];
 	let best: number | undefined;
-	for (const { index, parent, runId } of conversation.describeTurns()) {
+	for (const { index, parent, runId: named } of conversation.describeTurns()) {
+		const runId = named !== undefined && unlisted.get(named) === 'unknown' ? undefined : named;
 		const run = runId ?? (parent === undefined ? undefined : runsOf[parent]);
 		runsOf.push(run);
 		const kept = run === undefined ? undefined : keeper.get(run);
@@ -83,7 +104,24 @@ export async function followHistory(
 		revisions: revisions.filter(revision => revision.revision > seenRevision),
 		latestRevision: revisions.at(-1)?.revision ?? seenRevision,
 		head,
+		unknown: new Set([...unlisted].flatMap(([runId, why]) => (why === 'unknown' ? [runId] : []))),
 	};
+}
+
+/**
+ * Why the history does not list `runId`: retention removed it, or it is not in the history at
+ * all, never having been or having left it as a run that changed nothing. A dead run that changed
+ * nothing is not listed even before its removal ends, which reading it still finds.
+ */
+async function whyUnlisted(history: HistoryReader, runId: string): Promise<'expired' | 'unknown'> {
+	try {
+		await history.readRun(runId);
+		return 'unknown';
+	} catch (error) {
+		if (error instanceof HistoryExpiredError) return 'expired';
+		if (error instanceof UnknownRunError) return 'unknown';
+		throw error;
+	}
 }
 
 /**
@@ -126,7 +164,7 @@ export async function undoNote({
 		conversation
 			.describeTurns()
 			.filter(turn => followed.undone.includes(turn.index))
-			.flatMap(turn => (turn.runId ? [turn.runId] : [])),
+			.flatMap(turn => (turn.runId && !followed.unknown.has(turn.runId) ? [turn.runId] : [])),
 	);
 	for (const runId of runs) {
 		const record = await changesOf(history, runId);
@@ -274,7 +312,8 @@ export function transcriptOf(
 /**
  * A run's record and changes. A run retention chained into a later one is read from the run that
  * holds its changes now, which names that run's own files too: they were undone with it, since a
- * run is only off the line when the run that holds it is. A run retention removed names nothing.
+ * run is only off the line when the run that holds it is. A run retention removed names nothing,
+ * and so does one the history does not know, which wrote nothing.
  */
 async function changesOf(
 	history: HistoryReader,
@@ -286,6 +325,7 @@ async function changesOf(
 		try {
 			return await history.readRun(id);
 		} catch (error) {
+			if (error instanceof UnknownRunError) return undefined;
 			if (!(error instanceof HistoryExpiredError)) throw error;
 			id = error.keptIn;
 		}

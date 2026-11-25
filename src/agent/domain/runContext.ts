@@ -19,6 +19,7 @@ export class RunContext {
 
 	// Each history's run, by `workspaceId`, in the order the run first reached each.
 	private readonly historyRuns = new Map<string, { runId?: string }>();
+	private ended = false;
 
 	constructor(session: Session) {
 		this.session = session;
@@ -54,17 +55,29 @@ export class RunContext {
 	}
 
 	/**
+	 * Whether the run has ended, once every finisher did: until then, a turn it recorded may
+	 * still learn the history run it belongs to, or lose it when that run changed nothing.
+	 */
+	get finished(): boolean {
+		return this.ended;
+	}
+
+	/**
 	 * Ends everything registered, all of it even when one fails, and then throws the first
 	 * failure.
 	 */
 	async finish(end: RunEnd): Promise<void> {
 		const failures: unknown[] = [];
-		for (const finisher of this.finishers.splice(0)) {
-			try {
-				await finisher(end);
-			} catch (error) {
-				failures.push(error);
+		try {
+			for (const finisher of this.finishers.splice(0)) {
+				try {
+					await finisher(end);
+				} catch (error) {
+					failures.push(error);
+				}
 			}
+		} finally {
+			this.ended = true;
 		}
 		if (failures.length > 0) throw failures[0];
 	}

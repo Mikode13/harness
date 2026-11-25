@@ -25,6 +25,11 @@ export class RunInProgressError extends UnrecoverableError {
 export class OneRunAtATime {
 	private running = false;
 
+	/** Whether a run is in progress. */
+	get busy(): boolean {
+		return this.running;
+	}
+
 	/** Runs `work`, unless a run is already in progress. */
 	async run<T>(work: () => Promise<T>): Promise<T> {
 		if (this.running) throw new RunInProgressError();

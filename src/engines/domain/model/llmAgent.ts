@@ -50,6 +50,8 @@ import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcrip
 import { type InboxReader, readerOf } from '#src/agent/domain/inbox';
 import { OneRunAtATime } from '#src/agent/domain/oneRunAtATime';
 import { newSession, sessionOf } from '#src/agent/domain/session';
+import type { ConversationSnapshot } from '#src/agent/domain/snapshot';
+import type { Session } from '#src/shared/domain/session';
 import {
 	type AgentTool,
 	type CommandEnding,
@@ -108,7 +110,14 @@ import {
 	type HistoryReader,
 	transcriptOf,
 	undoNote,
+	type UnlistedRuns,
 } from './historyFollower.ts';
+import {
+	conversationSnapshotOf,
+	EnclosingRuns,
+	type RestoredConversation,
+	snapshotInRun,
+} from './agentSnapshot.ts';
 
 function describePart(part: MessagePart): ProgressEvent | undefined {
 	switch (part.type) {
@@ -313,11 +322,18 @@ export class LLMAgent implements Agent {
 	private contextTokens: number | undefined;
 	// The latest move through the history this conversation has followed.
 	private seenRevision = 0;
+	// The history `seenRevision` counts in, once the conversation followed one.
+	private historyId: string | undefined;
+	// What the history said of each run a turn names that it no longer lists, which it never
+	// lists again.
+	private readonly unlisted: UnlistedRuns = new Map();
+	private readonly enclosing = new EnclosingRuns();
 	// What this conversation has seen of each file, so an edit starts from a version it read.
+	// A restored agent starts with none: the files may have changed since.
 	private readonly reads = new ReadRegistry();
 	private readonly runs = new OneRunAtATime();
 	// The session its runs belong to when their options name none.
-	private readonly session = newSession();
+	private readonly session: Session;
 
 	constructor({
 		llmClient,
@@ -331,6 +347,7 @@ export class LLMAgent implements Agent {
 		onTranscript,
 		writeRoots,
 		compactor = compactionOff,
+		restore,
 	}: {
 		llmClient: LLMClient;
 		messages?: Message[];
@@ -361,6 +378,11 @@ export class LLMAgent implements Agent {
 		writeRoots?: readonly string[];
 		/** How the context is compacted. Defaults to off: only a context that no longer fits is. */
 		compactor?: Compactor;
+		/**
+		 * What a snapshot of an agent held, to go on from in place of `messages`: its conversation,
+		 * its session, and how far it followed the history. Its reads are not restored.
+		 */
+		restore?: RestoredConversation;
 	}) {
 		if (!Number.isInteger(maxSteps) || maxSteps < 1) {
 			throw new InvalidAgentConfigError(
@@ -381,7 +403,16 @@ export class LLMAgent implements Agent {
 		}
 
 		this.llmClient = llmClient;
-		this.conversation = new Conversation(messages);
+		this.conversation = restore
+			? Conversation.fromState(restore.conversation)
+			: new Conversation(messages);
+		this.session = restore ? { ...restore.session } : newSession();
+		this.seenRevision = restore?.seenRevision ?? 0;
+		this.historyId = restore?.history;
+		// Another provider counts tokens its own way, and is sent another context: it measures anew.
+		if (restore?.context && restore.context.source === llmClient.providerDataSource) {
+			this.contextTokens = restore.context.tokens;
+		}
 		this.maxSteps = maxSteps;
 		this.autoApprove = autoApprove;
 		this.logger = logger;
@@ -414,9 +445,37 @@ export class LLMAgent implements Agent {
 		});
 	}
 
+	/**
+	 * A copy of everything the agent recorded, as plain JSON, for a fresh agent to go on from.
+	 *
+	 * @throws {RunInProgressError} while a run works on it, or one of its turns was recorded in a
+	 * run that has not ended.
+	 */
+	snapshot(): ConversationSnapshot {
+		if (this.runs.busy) throw snapshotInRun();
+		this.enclosing.assertEnded();
+		return conversationSnapshotOf({
+			conversation: this.conversation,
+			session: this.session,
+			seenRevision: this.seenRevision,
+			history: this.historyId,
+			contextTokens: this.contextTokens,
+			source: this.llmClient.providerDataSource,
+		});
+	}
+
 	private async followHistory(history: HistoryReader): Promise<Followed> {
 		try {
-			return await followHistory(this.conversation, history, this.seenRevision);
+			const id = await history.workspaceId;
+			if (this.historyId !== undefined) {
+				const latest = (await history.listRevisions()).at(-1)?.revision ?? 0;
+				// A conversation restored over another history never saw its moves: it starts after
+				// them. So does one over this history rebuilt where it was, whose id is the same and
+				// whose moves are numbered from 1 again: its latest is behind what was seen.
+				if (this.historyId !== id || latest < this.seenRevision) this.seenRevision = latest;
+			}
+			this.historyId = id;
+			return await followHistory(this.conversation, history, this.seenRevision, this.unlisted);
 		} catch (error) {
 			throw classifyLocalFailure(error, 'The workspace history could not be read');
 		}
@@ -1250,6 +1309,7 @@ export class LLMAgent implements Agent {
 			throw error;
 		} finally {
 			await this.finishContext(context, end);
+			this.enclosing.ended(context);
 		}
 		// Read once the run ended: a run that changed nothing left the history then.
 		const { runId } = await this.runIn(context);
@@ -1447,6 +1507,7 @@ export class LLMAgent implements Agent {
 			const remember = () => {
 				unkept.length = 0;
 				this.conversation.addRunAfter(after, runMessages, ownRun);
+				this.enclosing.recorded(context);
 				// With the turns that read them, and only then.
 				reads.commit();
 				if (followed) this.seenRevision = followed.latestRevision;

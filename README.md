@@ -100,10 +100,15 @@ was chosen.
 
 ## Current limitations
 
-Conversation continuity within an agent instance is not durable conversation storage.
-Saving and restoring conversation snapshots is still pending
-([#111](https://github.com/Mikode13/harness/issues/111)); consumers own their persistence.
-The file-change history already writes recovery data to disk, which is a separate capability.
+Conversation continuity within an agent instance is not durable conversation storage. An agent
+of `createLLMAgent` can take a snapshot of its conversation, which a fresh agent restores
+([saving and restoring a conversation](#saving-and-restoring-a-conversation)), and the
+orchestrator of `createLLMOrchestrator` can take one of its session once a run ended
+([a composed session](#saving-and-restoring-a-composed-session)); where a snapshot is stored is
+the consumer's. A checkpoint inside a run, between two of its stages, is not supported yet
+([#136](https://github.com/Mikode13/harness/issues/136)), and the Agent SDK engines take no
+snapshot: their providers keep their conversations. The file-change history already writes
+recovery data to disk, which is a separate capability.
 `ProgressEvent` is activity narration; a run's record (`onRecord`) is the complete, ordered
 observation of a run, but the harness stores neither: keeping the record is the consumer's.
 
@@ -539,6 +544,128 @@ one for each run that names none. A session without a `name`, or with a blank on
 its `id`. Each run that writes records its session in the workspace's history, as
 `HistoryRun.session`, so a host can say whose change an undo takes back. It is the harness's
 session, not a provider's, which stays inside its engine.
+
+### Saving and restoring a conversation
+
+An agent of `createLLMAgent` is a `ConversationAgent`: between runs, `snapshot()` gives
+everything it recorded as plain JSON, and `createLLMAgent`'s `restore` builds a fresh agent that
+goes on from it, as in a new process after a restart:
+
+```ts
+import { createLLMAgent, type ConversationSnapshot } from '@mikode13/harness';
+
+const agent = createLLMAgent('anthropic', { systemPrompt, tools, workspace });
+await agent.run('Add the export button', { signal });
+await db.save(chatId, JSON.stringify(agent.snapshot()));
+
+// Later, maybe in another process:
+const saved = JSON.parse(await db.load(chatId)) as ConversationSnapshot;
+const again = createLLMAgent('anthropic', { systemPrompt, tools, workspace, restore: saved });
+await again.run('Make it a dropdown too', { signal });
+```
+
+The harness owns the format, its checks and the restore; you own where a snapshot is stored,
+how it is named and listed, how long it is kept, and who may read it.
+
+**What a snapshot holds.** The conversation's whole tree of turns: each turn, with every prompt,
+answer, tool call and tool result in it, the turn it followed and the run of the workspace's
+history it wrote in, and the turn the next run follows. Runs the harness keeps although they
+failed are in it too: one cut by the output limit, and one stopped on a command or on calls that
+kept repeating, each with every tool call answered. It also holds the agent's own
+[session](#sessions), the latest move through the history the conversation followed, and the size
+of the context the model was last sent, which decides when the harness compacts it. It holds the
+providers' opaque data word for word, such as Claude's signed thinking and OpenAI's encrypted
+reasoning. A snapshot is versioned, and each release says which versions it restores.
+
+**It can hold secrets.** Tool results hold the contents of the files the agent read and the
+output of the commands it ran, which may include whatever those printed. Store a snapshot as you
+would the repository and its logs: with the same access, and deleted with them.
+
+**What it does not hold.** No system prompt, no tool, no model, no credential, no approver: the
+agent that restores it takes all of them from its own options, so a snapshot can never grant a
+tool or an approval the restoring configuration does not. An approval remembered with
+`rememberApprovals` lives in your approver, and a restored agent asks again. What the
+conversation had read of each file is not kept either: a restored agent reads a file again before
+it changes it, since the file may have changed meanwhile. Nor is what a run was doing: take a
+snapshot once `run()` settles. While a run works on the agent, including between two attempts
+of one retried run, `snapshot()` throws `RunInProgressError`; the run is recorded only when it
+ends, so a snapshot never holds half a run. An agent that works inside another agent's run, such
+as a stage of a workflow or an agent another agent's tool calls, throws it too until that outer
+run ends: the run may still write, which ties the agent's turn to it.
+
+**Another provider.** A snapshot one provider's agent took can be restored on the other's. Each
+provider's client sends back only its own opaque data, so the other provider reads the text,
+the tool calls and their results, and not the private reasoning, which stays in the conversation
+and goes back to the first provider if the conversation returns to it. The size of the context is
+measured again: providers count tokens their own way.
+
+**The workspace's history.** A restored agent given the same `workspace` follows the history from
+where the snapshot left it. A move made since, such as an undo in another process, is followed as
+the agent would have followed it: the undone turns leave the context and the model is told what
+was undone. A turn whose run retention chained into a later one counts as that run. A turn whose
+run retention removed whole was on a branch the workspace had left, since retention removes whole
+only runs off its current line, so it reads as undone, and the note names no file for it. A turn
+whose run the history does not know is taken as a turn that wrote nothing, belonging to the run
+of the turn before it: a run whose process died before it changed anything leaves the history so,
+and so does a snapshot restored over another folder's history, whose earlier moves the agent then
+takes as seen: the snapshot names the history it followed. A history deleted and made again in the
+same folders has the same name and numbers its moves from 1 again; the agent takes it as another
+history too, once its latest move is behind the last one the snapshot saw.
+
+**When it cannot be restored.** `createLLMAgent` checks a snapshot whole before it builds
+anything, so no model or tool runs. A snapshot whose version is a whole number of 1 or more this release does not restore throws
+`UnsupportedSnapshotVersionError`, an `InvalidSnapshotError` with the `version` it names; anything else, a missing version included, that is not a whole
+snapshot, such as a part of an unknown type, a turn that follows a later one or a tool call
+without its result, throws `InvalidSnapshotError`. Both are `UnrecoverableError`s.
+
+### Saving and restoring a composed session
+
+`createLLMOrchestrator` returns a `SessionAgent`: once a run ended, `snapshot()` gives a
+`SessionSnapshot`, which its `restore` goes on from in a fresh orchestrator, as
+`createLLMAgent`'s does for one agent:
+
+```ts
+const orchestrator = await createLLMOrchestrator({ workspace, commands });
+await orchestrator.run('Add the export button', { signal, ask });
+await db.save(chatId, JSON.stringify(orchestrator.snapshot()));
+
+// Later, maybe in another process:
+const saved = JSON.parse(await db.load(chatId)) as SessionSnapshot;
+const again = await createLLMOrchestrator({ workspace, commands, restore: saved });
+await again.run('Make it a dropdown too', { signal, ask });
+```
+
+It holds the orchestrator's session and the conversation of each role, the planner's, the
+executor's and the reviewer's, each a [conversation snapshot](#saving-and-restoring-a-conversation)
+with all that holds and leaves out: what one says of secrets, approvals, file reads, providers and
+the history holds for each role. Every other option, each role's prompt, model, tools and agents,
+comes from the call that restores it. The agents that live only inside a run keep nothing: an
+explorer, the committer, and an agent a role handed a task to with `agentAsTool`, whose answer is
+in the conversation of the role that called it, so restoring never starts it again.
+
+**The supported boundary is the end of a run.** A snapshot says where it was taken, `boundary:
+'completed'`: no run was working, so no stage is half done. `snapshot()` throws
+`RunInProgressError` while a run works, between two of its stages too. A checkpoint inside a run,
+which would go on at its next stage without running the stages before it again, is not supported
+yet.
+
+**A run cut short is interrupted, never resumed.** A run the process did not finish, such as one
+a crash or a closed process cut short, is in no snapshot. Restoring the last snapshot goes on from
+the run before it, and runs nothing of the cut run again: not its prompt, its commands nor its
+tools. The workspace's history lists the cut run as `interrupted`, with its session and its files,
+and what it changed stays on disk, for the user to keep or undo through `History`; a restored role
+reads a file before it changes it. Keep your own record of a run you started, such as the prompt
+you sent, if the user should be able to send it again.
+
+**When it cannot be restored.** `createLLMOrchestrator` checks the snapshot before it opens the
+workspace or builds any agent: one of another `format` or `flow`, a boundary this release does not
+restore, roles other than those three, or a role's conversation that cannot be restored throws
+`InvalidSnapshotError`, and a version of 1 or more, a whole number, this release does not restore, of the session or of a
+role's conversation, `UnsupportedSnapshotVersionError`; a missing version is malformed.
+
+A workflow of `createWorkflow` takes no snapshot: each of its stages creates its agent for one run,
+so once a run ended no conversation is left of it. An agent of yours that a stage gives every run
+is yours to snapshot, if it is a `ConversationAgent`.
 
 ### The record of a run
 
