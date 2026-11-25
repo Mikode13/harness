@@ -776,9 +776,8 @@ first commit, a71c7ef, before any review, and with the change as reviewed.
 
 The maintainer gave the harness the prompt the agent of #183 had been given, on top of its own
 run on #111. The run stopped when its workspace stopped working, so its output, kept on
-`feat/trial-issue-136` (ca58452), is unfinished. It is compared with the first commit of
-#183, de50144, which already kept only the three roles, the session and the `completed`
-boundary.
+`feat/trial-issue-136` (ca58452), is unfinished. It is compared with de50144, the first commit
+of #183, which already kept only the three roles, the session and the `completed` boundary.
 
 ### It kept every subagent, which the next run never uses
 
