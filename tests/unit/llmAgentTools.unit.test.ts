@@ -12,6 +12,7 @@ import {
 	UnrecoverableError,
 } from '../../src/shared/domain/errors.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
+import { parseConversationSnapshot } from '../../src/llm/domain/conversationSnapshot.ts';
 import type { CommandEnding, PreparingTool } from '../../src/tools/domain/preparedCall.ts';
 import type { Tool } from '../../src/tools/domain/tool.ts';
 import {
@@ -1336,6 +1337,57 @@ describe('LLMAgent tool approval', () => {
 
 		expect(approve).not.toHaveBeenCalled();
 		expect(tool.execute).toHaveBeenCalledOnce();
+	});
+
+	/** The conversation as a host keeps it: JSON on disk, read back before it is taken up. */
+	const storedAndReadBack = (agent: LLMAgent) =>
+		parseConversationSnapshot(JSON.parse(JSON.stringify(agent.snapshot())));
+
+	it('asks the current run again about a destructive call, though the saved conversation was allowed it', async () => {
+		const saved = new LLMAgent({ llmClient: answerAfterOneCall(), tools: [destructive()] });
+		await saved.run('prompt', { signal, approve: () => ({ approved: true }) });
+		const llmClient = answerAfterOneCall(toolCall('call-2', 'delete', { city: 'Madrid' }));
+		const tool = destructive();
+		const approve = vi.fn<Approver>(() => ({ approved: false, reason: 'not again' }));
+
+		await new LLMAgent({ llmClient, tools: [tool], snapshot: storedAndReadBack(saved) }).run(
+			'again',
+			{ signal, approve },
+		);
+
+		expect(approve).toHaveBeenCalledExactlyOnceWith(
+			{ tool: 'delete', input: { city: 'Madrid' }, risk: 'destructive' },
+			signal,
+		);
+		expect(tool.execute).not.toHaveBeenCalled();
+		expect(llmClient.contexts[1]?.at(-1)?.content[0]).toMatchObject({
+			callId: 'call-2',
+			isError: true,
+			output: expect.stringContaining('not again') as unknown,
+		});
+	});
+
+	it('denies a destructive call in a restored conversation with no approver, though the saved one ran it unasked', async () => {
+		const saved = new LLMAgent({
+			llmClient: answerAfterOneCall(),
+			tools: [destructive()],
+			autoApprove: true,
+		});
+		await saved.run('prompt', { signal });
+		const tool = destructive();
+		const llmClient = answerAfterOneCall(toolCall('call-2', 'delete', { city: 'Madrid' }));
+
+		await new LLMAgent({ llmClient, tools: [tool], snapshot: storedAndReadBack(saved) }).run(
+			'again',
+			{ signal },
+		);
+
+		expect(tool.execute).not.toHaveBeenCalled();
+		expect(llmClient.contexts[1]?.at(-1)?.content[0]).toMatchObject({
+			callId: 'call-2',
+			isError: true,
+			output: expect.stringContaining('denied') as unknown,
+		});
 	});
 
 	it('ends the run when the approver throws, without running the call', async () => {

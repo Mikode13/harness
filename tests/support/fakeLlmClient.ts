@@ -93,3 +93,13 @@ export function toolResult(
 export function toolMessage(...results: MessagePart[]): Message {
 	return { role: 'tool', content: results };
 }
+
+/** The ids of the calls in `context` that no later result answers: a provider would reject them. */
+export function unansweredCalls(context: Message[]): string[] {
+	const pending = new Set<string>();
+	for (const part of context.flatMap(message => message.content)) {
+		if (part.type === 'toolCall') pending.add(part.id);
+		if (part.type === 'toolResult') pending.delete(part.callId);
+	}
+	return [...pending];
+}

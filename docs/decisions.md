@@ -3230,3 +3230,92 @@ tags: #mikode-harness #architecture #persistence
 - The harness learns nothing about who stores a conversation, or why.
 - The retention of the history stays as it is, in the harness. Whether a consumer should set it is not decided.
 - #111 and #136 still say "Session Manager" for the owner of the storage; they keep their text until they are refined.
+
+## A snapshot taken during a run is rejected at once
+
+tags: #mikode-harness #llm #persistence #errors
+
+**Decision:** `snapshot()` on a model API agent throws `RunInProgressError` synchronously while the agent is not idle, that is while a run works on it or a retry is pending, and saves nothing. Its cause says to take the snapshot once the run has settled. It throws rather than returning a rejected promise, because `snapshot()` is not asynchronous.
+
+**Context:** a snapshot holds only the turns of runs that ended. A run in progress has a turn that is not finished, and a retry between two attempts is not a settled run either; saving either would write a conversation that is not the one the model answered from. The check is the one `run()` already makes for a second run on the agent, `RunInProgressError`, so a consumer handles both with one case.
+
+**Alternatives considered:**
+
+- **Saving the conversation as it stands, without the turn in progress.** It saves without an error, but the consumer would not know a turn was missing, and the next run would continue from a conversation that differs from what the user saw.
+- **Making `snapshot()` wait for the run.** It would hide the wait inside the consumer's own save path, and a run that never ends would hold that save forever.
+
+**Consequences:**
+
+- A consumer saves after `run()` has settled, not from a progress callback.
+- The retrying wrapper refuses between attempts too, because the agent is idle only when no attempt is pending.
+
+## A snapshot is plain data, version 1, checked before anything is built
+
+tags: #mikode-harness #llm #persistence #validation
+
+**Decision:** a snapshot is version 1: an object of JSON values with exactly the fields the format names. `parseConversationSnapshot` checks the version first, so a snapshot of another version is reported as such whatever else it holds. Then it checks the rest: unknown or missing fields, values that are not plain data or not JSON, each message part by its type, a parent that is an earlier turn, and `current` as a turn index, or `null` only when there are no turns. `createLLMAgent` runs it on the `snapshot` option before it builds the client, the history or the tools. A failure is an `InvalidAgentConfigError` whose message names the field or the version.
+
+**Context:** a consumer stores the snapshot across releases of the harness, so a release has to read back what an earlier one wrote, and a snapshot that is wrong has to fail when it is given. Inside a provider call the error would name no field. The version comes first because a later version may have other fields too, and a field error would hide what is really wrong.
+
+**Alternatives considered:**
+
+- **Trusting the parsed JSON as typed.** A corrupt snapshot would fail later, inside a provider call, with an error that names no field.
+- **Reading older versions by migrating them.** Not built: there is one version, and a change to the format would take a new version number.
+
+**Consequences:**
+
+- The format is the consumer's to keep. A snapshot written by a newer version of the harness is refused by an older one, so a rollout that stores snapshots has to deploy the reader first.
+- A field added to the format must be added to the parser too, or it is refused as unknown.
+
+## A restored agent takes its authority and its tools from its own options
+
+tags: #mikode-harness #llm #persistence #security
+
+**Decision:** a snapshot holds the conversation and nothing that grants authority or permission. A restored agent takes its system prompt, tools, model, compaction, workspace, `autoApprove`, logger, `onTranscript` and summarizer from the options given to `createLLMAgent` now. Not saved: the `approve` and `ask` callbacks of each run, what `rememberApprovals` remembered, credentials, the `Inbox`, the file read registry, and the session identity. A restored agent has a session of its own, and a consumer passes `RunOptions.session` to continue one.
+
+**Context:** a snapshot is stored data, so whatever is in it can be edited before it is restored. Approvals or an auto-approve setting in it would let an edited file grant a tool the user never approved. The file read registry records what the model read, and the files may have changed since, so a restored agent reads a file again before it edits it, as `READ_REQUIRED` requires.
+
+**Alternatives considered:**
+
+- **Saving the approvals and `autoApprove` with the conversation.** One call would restore everything, but a stored file could then grant what the user never approved.
+- **Saving the file read registry.** It would spare a re-read, but a file changed since the snapshot would be edited against a read that no longer describes it.
+
+**Consequences:**
+
+- A restored agent asks again for what the approver allowed before. A consumer that keeps approvals across a restore holds them in its own storage.
+- Its edit tools refuse, as `READ_REQUIRED`, a file it has not read since it was restored.
+
+## A restored conversation keeps each provider's parts for that provider
+
+tags: #mikode-harness #llm #persistence #providers
+
+**Decision:** a snapshot keeps every part as it was saved, `providerData` and `compaction` included, each with the `source` of the client that wrote it. Restored to the same provider, those parts go back to that provider as before. Restored to the other provider, the text, tool calls and results carry over, and the first provider's reasoning and compaction are not sent. This is the rule a live conversation already follows when it moves between providers.
+
+**Context:** a provider's reasoning is signed or encrypted for that provider, so the other provider cannot use it. The same provider needs its own parts to keep its continuity, so a snapshot cannot drop them on save.
+
+**Alternatives considered:**
+
+- **Refusing a restore onto the other provider.** It rejects a conversation the model can continue without the reasoning, and a consumer may want to switch provider mid-chat.
+- **Stripping the parts on save.** The same provider would lose the continuity it could have kept, even when it restores the snapshot itself.
+
+**Consequences:**
+
+- A snapshot holds provider data verbatim, so it is as sensitive as the conversation it holds, which the consumer protects.
+
+## A turn whose history run is gone is undone, or continues the turn it followed
+
+tags: #mikode-harness #history #llm
+
+**Decision:** when the history no longer lists a turn's run, the follower reads the two cases apart. A run retention removed (`HistoryExpiredError`) puts its turns off the workspace's line, and the model is told they were undone, because their changes are gone. A run the history no longer lists, and retention did not remove (`UnknownRunError`, or one still readable but unlisted), changed nothing the history keeps, so its turn belongs to the turn it followed, as a read-only turn. Any other failure to read the history still fails the run.
+
+**Context:** a run that died before it changed anything is discarded from the history, and nothing of it can be undone. Calling its turns undone would tell the model it reverted work that was never done. A retention-removed run did change files that are now gone from the history, so its turns cannot be placed on the line at all.
+
+**Alternatives considered:**
+
+- **Treating both as undone.** It would report a move that did not happen for the discarded run.
+- **Treating both as on the line.** The expired run's turns would then count as kept, though the history no longer has what they wrote.
+
+**Consequences:**
+
+- The turns that follow an expired turn are off the line too, since their parent is, and are reported as undone with it.
+- The history's retention stays as it is: 25 runs per workspace, with the chaining described in the README.

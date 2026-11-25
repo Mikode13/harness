@@ -1,11 +1,16 @@
 import { resolve } from 'node:path';
-import type { Agent } from '#src/agent/domain/agent';
+import type { Agent, AgentResponse, ModelAPIAgent, RunOptions } from '#src/agent/domain/agent';
+import { OneRunAtATime, snapshotDuringRun } from '#src/agent/domain/oneRunAtATime';
 import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcript';
 import type { HistoryReader } from '#src/engines/domain/model/historyFollower';
 import { type Compactor, recentKeptSteps } from '#src/engines/domain/model/compactor';
 import { LLMAgent } from '#src/engines/domain/model/llmAgent';
 import { JevContextTriage } from '#src/llm/infrastructure/jevContextTriage';
 import type { LLMClient } from '#src/llm/domain/llm';
+import {
+	type ConversationSnapshot,
+	parseConversationSnapshot,
+} from '#src/llm/domain/conversationSnapshot';
 import {
 	ClaudeLLMClient,
 	type ClaudeLLMModel,
@@ -180,6 +185,13 @@ export interface CreateLLMAgentOptions {
 	 * cancelled, for debugging. See `Transcript`. Without it, nothing is kept.
 	 */
 	onTranscript?: TranscriptCallback;
+	/**
+	 * A conversation a `ModelAPIAgent` returned from `snapshot()`, taken up in place of an empty
+	 * one: the agent's next run continues it. The other options still apply, so the system prompt
+	 * and tools are the ones given here, not the ones it was saved with. An invalid snapshot is
+	 * refused before anything is built.
+	 */
+	snapshot?: ConversationSnapshot;
 }
 
 /** Who compacts an agent's context; see `CreateLLMAgentOptions.compaction`. */
@@ -501,6 +513,30 @@ function withGuidance(systemPrompt: string, guidance: string): string {
 	return guidance === '' ? systemPrompt : `${systemPrompt}\n\n${guidance}`;
 }
 
+/**
+ * An `LLMAgent` in the harness's retry policy. One run at a time on it, across its retries: a
+ * snapshot taken between a failed attempt and its retry would miss the run.
+ */
+class RetryingModelAPIAgent extends RetryingAgent implements ModelAPIAgent {
+	private readonly llm: LLMAgent;
+	private readonly runs = new OneRunAtATime();
+
+	constructor(llm: LLMAgent, logger: ILogger) {
+		// LLMAgent records nothing from a failed call, so the original prompt is the whole story.
+		super({ inner: llm, logger, noteFailures: false });
+		this.llm = llm;
+	}
+
+	override run(prompt: string, options: RunOptions): Promise<AgentResponse> {
+		return this.runs.run(() => super.run(prompt, options));
+	}
+
+	snapshot(): ConversationSnapshot {
+		if (!this.runs.idle) throw snapshotDuringRun();
+		return this.llm.snapshot();
+	}
+}
+
 /** An `LLMAgent` on `provider`, wrapped in the harness's retry policy. */
 function buildLLMAgent(
 	provider: AgentProvider,
@@ -518,6 +554,7 @@ function buildLLMAgent(
 		logger,
 		onTranscript,
 		writeRoots,
+		snapshot,
 	}: {
 		model?: AgentModel;
 		reasoningEffort?: ReasoningEffort;
@@ -534,8 +571,10 @@ function buildLLMAgent(
 		onTranscript?: TranscriptCallback | undefined;
 		/** See `LLMAgent`: where an agent it delegates to may write. */
 		writeRoots?: readonly string[];
+		/** See `CreateLLMAgentOptions.snapshot`; already checked. */
+		snapshot?: ConversationSnapshot | undefined;
 	},
-): Agent {
+): ModelAPIAgent {
 	const chosen = model ?? defaultModelOf(provider);
 	const llmClient = llmClientFor(provider, {
 		model: chosen,
@@ -543,9 +582,8 @@ function buildLLMAgent(
 		systemPrompt,
 		logger,
 	});
-	// LLMAgent records nothing from a failed call, so the original prompt is the whole story.
-	return new RetryingAgent({
-		inner: new LLMAgent({
+	return new RetryingModelAPIAgent(
+		new LLMAgent({
 			llmClient,
 			tools,
 			autoApprove,
@@ -555,11 +593,11 @@ function buildLLMAgent(
 			...(maxSteps === undefined ? {} : { maxSteps }),
 			...(onTranscript ? { onTranscript } : {}),
 			...(writeRoots ? { writeRoots } : {}),
+			...(snapshot ? { snapshot } : {}),
 			compactor: compactorFor(chosen, compactAt, compaction),
 		}),
 		logger,
-		noteFailures: false,
-	});
+	);
 }
 
 /**
@@ -569,7 +607,8 @@ function buildLLMAgent(
  * `destructive` one runs only when the run's `approve` allows it, or with `autoApprove`.
  *
  * @throws {InvalidAgentConfigError} for an unknown provider, a model or reasoning effort its
- * client does not support, two tools that share a name, or a workspace given with no tools.
+ * client does not support, two tools that share a name, a workspace given with no tools, or a
+ * snapshot that is not one this harness reads.
  * @throws {UnrecoverableError} when the client cannot be set up, for example because
  * `OPENAI_API_KEY` is missing. The Anthropic SDK resolves credentials lazily, so a missing
  * `ANTHROPIC_API_KEY` fails the first run instead, with an `UnrecoverableError`.
@@ -589,8 +628,11 @@ export function createLLMAgent(
 		autoApprove,
 		logger = new Logger(),
 		onTranscript,
+		snapshot,
 	}: CreateLLMAgentOptions,
-): Agent {
+): ModelAPIAgent {
+	// Checked first, so a snapshot that is not one fails before any client or history is set up.
+	const restored = snapshot === undefined ? undefined : parseConversationSnapshot(snapshot);
 	// Told where to work with nothing to work with, the model would only pretend: it writes its
 	// tool calls as text, and the run returns them as its answer.
 	if (workspace && tools.length === 0) {
@@ -616,6 +658,7 @@ export function createLLMAgent(
 		onTranscript,
 		// An agent it delegates to writes only where its workspace lets it.
 		...(workspace ? { writeRoots: writeRootsOf(workspace.roots) } : {}),
+		snapshot: restored,
 	});
 }
 

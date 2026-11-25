@@ -14,6 +14,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
 import { withAuthor } from '../../src/agent/domain/runContext.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
+import {
+	type ConversationSnapshot,
+	parseConversationSnapshot,
+} from '../../src/llm/domain/conversationSnapshot.ts';
 import type { LLMClient, LLMResponse } from '../../src/llm/domain/llm.ts';
 import type { Message } from '../../src/llm/domain/message.ts';
 import type { RecoveryStore, RunJournal } from '../../src/recovery/domain/recoveryStore.ts';
@@ -125,6 +129,8 @@ async function agentOver(
 		runProcess?: typeof runCommandProcess;
 		/** The store its writes are recorded in. */
 		over?: RecoveryStore;
+		/** A saved conversation to carry on from. */
+		snapshot?: ConversationSnapshot;
 	} = {},
 ) {
 	const { readFile, edit } = await trackedToolsOver(root, over, {
@@ -703,6 +709,64 @@ describe('formatting what an edit wrote', () => {
 		).rejects.toThrow(
 			new InvalidAgentConfigError('The formatter needs a cwd inside a write root of the workspace'),
 		);
+	});
+});
+
+describe('a conversation restored from a snapshot', () => {
+	beforeEach(() => {
+		writeFileSync(join(root, 'a.txt'), 'one\ntwo\nthree\n');
+	});
+
+	/** The snapshot of a conversation that ran `calls`, read back from JSON as a host keeps it. */
+	async function savedAfter(...calls: Call[]): Promise<ConversationSnapshot> {
+		const first = await agentOver(new CallingModel().then(...calls));
+		await first.run('first', { signal });
+		return parseConversationSnapshot(JSON.parse(JSON.stringify(first.snapshot())));
+	}
+
+	it('refuses an edit to a file the saved conversation read, until the restored one reads it', async () => {
+		const snapshot = await savedAfter(read('a.txt'));
+		const model = new CallingModel().then(modify('a.txt', 'two', 'TWO'));
+
+		await (await agentOver(model, { snapshot })).run('change it', { signal });
+
+		expect(model.last).toEqual({
+			output: 'READ_REQUIRED: read "a.txt" before changing it',
+			isError: true,
+		});
+		expect(onDisk('a.txt')).toBe('one\ntwo\nthree\n');
+	});
+
+	it('refuses an edit to a file the saved conversation changed, until the restored one reads it', async () => {
+		const snapshot = await savedAfter(read('a.txt'), modify('a.txt', 'two', 'TWO'));
+		expect(onDisk('a.txt')).toBe('one\nTWO\nthree\n');
+		const model = new CallingModel().then(modify('a.txt', 'TWO', 'Two'));
+
+		await (await agentOver(model, { snapshot })).run('change it again', { signal });
+
+		expect(model.last).toEqual({
+			output: 'READ_REQUIRED: read "a.txt" before changing it',
+			isError: true,
+		});
+		expect(onDisk('a.txt')).toBe('one\nTWO\nthree\n');
+	});
+
+	it('changes a file the restored conversation reads itself', async () => {
+		const snapshot = await savedAfter(read('a.txt'));
+		const model = new CallingModel().then(read('a.txt'), modify('a.txt', 'two', 'TWO'));
+
+		await (await agentOver(model, { snapshot })).run('change it', { signal });
+
+		expect(model.last).toEqual({
+			output: [
+				'Changed a.txt. It now reads, around the change:',
+				'1: one',
+				'2: TWO',
+				'3: three',
+			].join('\n'),
+			isError: false,
+		});
+		expect(onDisk('a.txt')).toBe('one\nTWO\nthree\n');
 	});
 });
 

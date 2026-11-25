@@ -50,7 +50,8 @@ engine is infrastructure only and `src/retry/` is domain only. `LLMAgent` sits i
 
 `Agent`, `RunOptions`, `AgentResponse`, `ProgressEvent`, `Inbox`, the messages a consumer
 sends to a run while it works, read internally through `readerOf`, `OneRunAtATime` and its
-`RunInProgressError`, which let an agent instance take one run at a time,
+`RunInProgressError`, which let an agent instance take one run at a time, `ModelAPIAgent`, the
+`Agent` of the model APIs, whose `snapshot()` returns its conversation as a `ConversationSnapshot`,
 `RecoverableCommittedRunError` and `UnrecoverableCommittedRunError`, a failure of the kind it
 had, with what a run that committed after each phase had committed, `newSession` and
 `sessionOf`, which give each agent a `Session` of its own, with an id such as
@@ -61,7 +62,9 @@ top-level run shares with every agent and tool inside it, carried in `RunOptions
 private symbol, and `Delegation`, the call that started an agent another agent's tool runs,
 carried the same way (both internal). The approval types live here, not in `src/tools`,
 because `RunOptions` carries the approver and this module depends on nothing but
-`src/shared`.
+`src/shared`, with one exception: `ModelAPIAgent` names the `ConversationSnapshot` type of
+`src/llm/`, which the module imports as a type only. The exception is listed in the dependency
+rules below.
 
 ### `src/diff/`
 
@@ -77,13 +80,17 @@ workspace's history, it first follows the moves the user made through it, taking
 conversation back with the workspace and telling the model what was undone, with a summary
 from a cheap model when it has one; `Compactor`, how an `LLMAgent` keeps its context within
 the model, the provider's, the recent compactor of `recentCompaction.ts`, or the same
-compactor with Jev's triage of `triagedCompaction.ts` (internal).
+compactor with Jev's triage of `triagedCompaction.ts` (internal); and, for the model APIs, its
+`snapshot()`, which takes the conversation as a `ConversationSnapshot`, and the constructor that
+takes one back, checked by `parseConversationSnapshot` before anything is built from it.
 
 ### `src/llm/`
 
 `LLMClient`, the stateless model port; `Message` and its parts, including opaque
 `providerData`; `Conversation`, a tree of turns whose context is the path to one of them,
-each turn tied to the history run it belongs to; the `ToolDefinition` a client describes to
+each turn tied to the history run it belongs to, which `capture` and `restore` save as plain data
+and take back; `conversationSnapshot.ts`, the version 1 `ConversationSnapshot` and its
+`parseConversationSnapshot`; the `ToolDefinition` a client describes to
 the model, and the internal mark (`asNative`, `nativeOf`) that declares one as a provider's
 native tool, `applyPatch` or `textEditor`, which a client declares its provider's way when
 it `supportsNative` it: `OpenAILLMClient` maps OpenAI's `apply_patch` calls and outputs to
@@ -212,7 +219,9 @@ explorer is. `src/llm/` does not know it exists.
 ### `src/factory/`
 
 Provider selection, default model and reasoning effort per role, and composition with the
-retry decorator.
+retry decorator. For the model APIs, `createLLMAgent` parses a `snapshot` option before it builds
+the client, the history or the tools, and its `RetryingModelAPIAgent` answers `snapshot()` only
+while no run is working or retrying, through the same `OneRunAtATime` the engine uses.
 
 ### `src/orchestration/`
 
@@ -401,9 +410,10 @@ not a failure and every consumer checks for it before either error type.
 ## Dependencies and contracts
 
 Dependencies point inward. `src/engines/` and `src/factory/` depend on `src/agent/`;
-`src/agent/` depends on nothing but `src/shared/`. `src/llm/` depends only on `src/shared/`, for
-the failure contract and `Tokens`; only its `infrastructure` imports an SDK. `LLMAgent` depends
-on `src/llm/`, and `src/llm/` knows nothing about agents. `ClaudeAgent` imports `claudeModelIds`
+`src/agent/` depends on nothing but `src/shared/`, except that `ModelAPIAgent` imports the
+`ConversationSnapshot` type from `src/llm/` (type only, so nothing runs). `src/llm/` depends only
+on `src/shared/`, for the failure contract and `Tokens`; only its `infrastructure` imports an
+SDK. `LLMAgent` depends on `src/llm/`, and `src/llm/` knows nothing about agents. `ClaudeAgent` imports `claudeModelIds`
 from `src/llm/infrastructure/`, the one table of the model each Claude alias names, so both
 Claude paths run the same model for the same name, and `unrecoverableClaudeStatuses`, the HTTP
 statuses a retry cannot fix, so both classify the same rejection the same way. `LLMAgent` also reads the workspace's history
@@ -433,9 +443,11 @@ rejects with while another works on the same agent, `RecoverableCommittedRunErro
 failure types an agent rejects with, `isAbortError`, `isAgentProvider`, `agentProviders`, the
 provider-indexed `agentModels` and `agentReasoningEfforts` catalogs with their `isModelOf` and
 `isReasoningEffortOf` narrowers, and the model-API `llmModels` and `llmReasoningEfforts`
-catalogs with `isLLMModelOf` and `isLLMReasoningEffortOf`. It also exports the option and model
-types. For the model-backed agent's tools it also exports the `Tool`, `ToolSummarizer`,
-`ToolDefinition`, `JSONSchema`, `Workspace` and `TextMatch` types, `defineTool`,
+catalogs with `isLLMModelOf` and `isLLMReasoningEffortOf`. For saving a model API conversation it
+exports the `ModelAPIAgent` type, whose `snapshot()` returns a `ConversationSnapshot`, the plain
+data `createLLMAgent`'s `snapshot` option takes. It also exports the option and model types. For
+the model-backed agent's tools it also exports the `Tool`, `ToolSummarizer`, `ToolDefinition`,
+`JSONSchema`, `Workspace` and `TextMatch` types, `defineTool`,
 `createWorkspace` and `createWorkspaceTools`, and, for an agent offered to another as a tool,
 `agentAsTool` and the `AgentAsToolOptions` and `DelegationTool` types. For agents that change
 files it exports `createFileTools` and the `FileTool`, `WorkspaceOptions`, `WorkspaceRoot`,
@@ -578,6 +590,21 @@ needs `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` and bills per token. Both paths na
 its company, `'anthropic'` or `'openai'`, and take mostly the same model and effort names, but
 support is path-specific: for example, the Agent SDK's OpenAI catalog accepts `ultra` while the
 OpenAI model API's catalog does not. Each path has its own catalogs and narrowers.
+
+A model API conversation can be saved as data, and the harness stores none of it. `snapshot()`
+returns a `ConversationSnapshot`, version 1: JSON values only, an absent one `null`. It holds the
+initial messages, every turn of every run that ended (a kept failed run's included) with its
+parent turn and history run, the current turn, the history revision the agent last followed, and
+the tokens of context the last kept call sent, when known. Its messages hold what the conversation
+holds, prompts, file contents and command output included, so it is as sensitive as they are. The
+format is checked before use, version first, so another version is reported as one, then: unknown
+and missing fields; values that are not plain data or not JSON, such as `undefined`, a non-finite
+number, a class instance or a cycle; each message part by its type; a parent that is an earlier
+turn; and `current` as a turn index, or `null` only when there are no turns. A `providerData` or
+`compaction` part keeps the `source` of the client that wrote it, and a restored agent sends it back
+only to that provider, as a live conversation does. Not saved: the approval and `ask` callbacks,
+what `rememberApprovals` remembered, the `autoApprove` option, credentials, the `Inbox`, the file
+read registry, and the session identity, which a restored agent takes its own.
 
 ## Important flows
 
@@ -846,6 +873,27 @@ sends anything. The orchestrator checks before any role starts. A consumer queue
 meanwhile, or sends it to the run in progress through its `Inbox`. See "An agent takes one run
 at a time, and reads what the user sends meanwhile" in [`decisions.md`](decisions.md).
 
+**Saving and restoring a conversation.** `snapshot()` on a model API agent goes through
+`RetryingModelAPIAgent`, which throws what `snapshotDuringRun` returns unless `OneRunAtATime` is
+idle, across retries as well as runs. A run in progress makes it throw `RunInProgressError`
+synchronously, before anything is read, so a half-finished turn is never saved. Otherwise
+`LLMAgent.snapshot()` returns `Conversation.capture()`, a deep copy, with the history revision it
+last followed and the context tokens of its last kept call. Restoring starts in `createLLMAgent`:
+the `snapshot` option is parsed by `parseConversationSnapshot` before any client, history or tool
+is built, and a rejection is an `InvalidAgentConfigError` naming the field or the version. The
+parsed turns go to
+`Conversation.restore`, and the agent's next run follows the workspace's history from the revision
+saved, as any run does. A turn whose run the history no longer lists is then read one of two
+ways: a run retention removed (`HistoryExpiredError`) puts the turn off the workspace's line,
+reported to the model as undone; a run the history no longer lists, and retention did not remove
+(`UnknownRunError`, or a run that is still readable but unlisted), changed nothing the history
+keeps, so the turn belongs to the turn it followed. See "A
+snapshot taken during a run is rejected at once", "A snapshot is plain data, version 1, checked
+before anything is built", "A restored agent takes its authority and its tools from its own
+options", "A restored conversation keeps each provider's parts for that provider" and "A turn
+whose history run is gone is undone, or continues the turn it followed" in
+[`decisions.md`](decisions.md).
+
 ## Constraints and trade-offs
 
 - **Retry wraps an agent, not a workflow.** A transient failure in one role is absorbed where
@@ -925,12 +973,14 @@ at a time, and reads what the user sends meanwhile" in [`decisions.md`](decision
   others' writes until it ends.
 - **The seam has no memory or routing model.** MCP, long-term memory, graph execution and
   file-based agent registries are deliberately absent; each waits for a real consumer.
-  `LLMAgent`'s `Conversation` lives only as long as the agent: a consumer cannot save or
-  restore it yet (#111), and where it is stored is the consumer's.
+  `LLMAgent`'s `Conversation` lives as long as the agent unless it is saved: `snapshot()`
+  returns it as plain data, and where that is stored, for how long, and who may read it is the
+  consumer's.
 - **Reasoning is replayed only to the provider that produced it.** Each client keeps its
   signed or encrypted reasoning as a `providerData` part labelled with its own `source`, and
-  sends back only its own. A conversation handed to the other provider keeps its text, tool
-  calls and results, and loses the private reasoning.
+  sends back only its own; a `compaction` part from a provider follows the same rule. A
+  conversation handed to the other provider keeps its text, tool calls and results, and loses the
+  private reasoning and the other provider's compaction. A saved conversation follows the same rule.
 - **`LLMClient` does not stream.** A call returns the whole answer, so an `LLMAgent` narrates it
   only once it is complete. The Claude client streams its request inside the call, only so a
   long answer is not bound by the SDK's timeout. The CLI shows a spinner and then the message,

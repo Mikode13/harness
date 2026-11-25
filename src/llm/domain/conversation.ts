@@ -1,3 +1,4 @@
+import type { ConversationState } from './conversationSnapshot.ts';
 import type { Message } from './message.ts';
 
 /**
@@ -43,10 +44,12 @@ export class Conversation {
 	}
 
 	/**
-	 * Records a whole run at once, once it succeeded: the prompt, every step the model took and
-	 * every tool result. A failed run records nothing, so a retry cannot repeat its prompt, and
-	 * no tool call is ever kept without its result. The turn follows the current one and becomes
-	 * the current one.
+	 * Records a whole run at once, once it ended in a way the conversation keeps: the prompt,
+	 * every step the model took and every tool result. A run that failed without being kept
+	 * records nothing, so a retry cannot repeat its prompt. A kept failed run, one the model cut
+	 * short or a loop or a command stopped, is recorded whole, with every tool call given its
+	 * result, so no tool call is ever kept without its result. The turn follows the current one
+	 * and becomes the current one.
 	 */
 	addRun(messages: Message[]): void {
 		this.addRunAfter(this.current, messages, {});
@@ -81,6 +84,41 @@ export class Conversation {
 	/** The turn the next one follows by default: the last one recorded. */
 	get currentTurn(): number | undefined {
 		return this.current;
+	}
+
+	/**
+	 * The conversation's state as plain data, deep-copied, so nothing a caller does to it changes
+	 * this conversation. It holds every recorded turn, kept failed runs included, and each turn's
+	 * run is kept as its run id, which is `null` while it is unknown.
+	 */
+	capture(): ConversationState {
+		return {
+			initial: structuredClone(this.initial),
+			turns: this.turns.map(({ messages, parent, run }) => ({
+				messages: structuredClone(messages),
+				parent: parent ?? null,
+				runId: run.runId ?? null,
+			})),
+			current: this.current ?? null,
+		};
+	}
+
+	/**
+	 * A conversation in the state `capture` returned. `state` must be valid, as
+	 * `parseConversationSnapshot` makes it. Its messages are copied again, and each turn gets a run
+	 * of its own that carries the run id it had.
+	 */
+	static restore(state: ConversationState): Conversation {
+		const conversation = new Conversation([...state.initial]);
+		for (const turn of state.turns) {
+			conversation.turns.push({
+				messages: structuredClone([...turn.messages]),
+				parent: turn.parent ?? undefined,
+				run: turn.runId === null ? {} : { runId: turn.runId },
+			});
+		}
+		conversation.current = state.current ?? undefined;
+		return conversation;
 	}
 
 	/** Every turn recorded, oldest first. */

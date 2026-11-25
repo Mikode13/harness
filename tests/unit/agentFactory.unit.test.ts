@@ -70,6 +70,8 @@ import { defineTool } from '../../src/tools/infrastructure/defineTool.ts';
 import type { FileTool, WorkspaceOptions } from '../../src/tools/infrastructure/fileTools.ts';
 import { RunContext, runContextOf } from '../../src/agent/domain/runContext.ts';
 import type { Agent } from '../../src/agent/domain/agent.ts';
+import { RunInProgressError } from '../../src/agent/domain/oneRunAtATime.ts';
+import type { ConversationSnapshot } from '../../src/llm/domain/conversationSnapshot.ts';
 import { createWorkflow } from '../../src/factory/infrastructure/workflowFactory.ts';
 import { defineWorkflowStages } from '../../src/workflow/domain/workflow.ts';
 import type { PreparingTool } from '../../src/tools/domain/preparedCall.ts';
@@ -719,6 +721,113 @@ describe('createLLMAgent', () => {
 		expect(() => createLLMAgent('openai', { systemPrompt: '', logger: createLogger() })).toThrow(
 			UnrecoverableError,
 		);
+	});
+
+	it('takes up a conversation saved by snapshot, as the same agent would continue it', async () => {
+		const create = openAIReplying('answer');
+		const original = createLLMAgent('openai', {
+			systemPrompt: 'Be brief.',
+			logger: createLogger(),
+		});
+		await original.run('first', { signal });
+		const saved = original.snapshot();
+		await original.run('second', { signal });
+
+		await createLLMAgent('openai', {
+			systemPrompt: 'Be brief.',
+			snapshot: JSON.parse(JSON.stringify(saved)) as ConversationSnapshot,
+			logger: createLogger(),
+		}).run('second', { signal });
+
+		expect(requestsOf(create)[2]?.input).toEqual(requestsOf(create)[1]?.input);
+	});
+
+	it('gives a restored agent the system prompt and tools it is created with', async () => {
+		const create = openAIReplying('answer');
+		const first = createLLMAgent('openai', {
+			systemPrompt: 'Old instructions.',
+			logger: createLogger(),
+		});
+		await first.run('first', { signal });
+		const lookup = defineTool({
+			name: 'lookup',
+			description: 'Looks a thing up',
+			input: z.object({}),
+			risk: 'safe',
+			execute: vi.fn(() => Promise.resolve('found')),
+		});
+
+		await createLLMAgent('openai', {
+			systemPrompt: 'New instructions.',
+			tools: [lookup],
+			snapshot: first.snapshot(),
+			logger: createLogger(),
+		}).run('second', { signal });
+
+		expect(requestsOf(create)[1]).toMatchObject({
+			instructions: 'New instructions.',
+			tools: [expect.objectContaining({ name: 'lookup' })],
+		});
+	});
+
+	it.each<[string, unknown, string]>([
+		[
+			'of another version',
+			{ version: 2, initial: [], turns: [], current: null, seenRevision: 0, contextTokens: null },
+			'Unsupported conversation snapshot version: 2',
+		],
+		[
+			'missing a field',
+			{ version: 1, initial: [], turns: [], current: null, contextTokens: null },
+			'Invalid conversation snapshot: the snapshot is missing "seenRevision"',
+		],
+		['not an object', 'saved', 'Invalid conversation snapshot: the snapshot must be an object'],
+	])('refuses a snapshot %s before it builds the agent', (_, snapshot, message) => {
+		const create = openAIReplying('answer');
+
+		expect(() =>
+			createLLMAgent('openai', {
+				systemPrompt: '',
+				snapshot: snapshot as ConversationSnapshot,
+				logger: createLogger(),
+			}),
+		).toThrow(InvalidAgentConfigError);
+		expect(() =>
+			createLLMAgent('openai', {
+				systemPrompt: '',
+				snapshot: snapshot as ConversationSnapshot,
+				logger: createLogger(),
+			}),
+		).toThrow(message);
+		expect(OpenAI).not.toHaveBeenCalled();
+		expect(create).not.toHaveBeenCalled();
+	});
+
+	it('refuses a snapshot, and a second run, while a failed run waits for its retry', async () => {
+		const create = openAIReplying('recovered');
+		create.mockRejectedValueOnce(new Error('socket hang up'));
+		const logger = createLogger();
+		const agent = createLLMAgent('openai', { systemPrompt: '', logger });
+		const refused: unknown[] = [];
+		const second: unknown[] = [];
+		logger.warn.mockImplementation(() => {
+			try {
+				agent.snapshot();
+			} catch (error) {
+				refused.push(error);
+			}
+			agent.run('another', { signal }).catch((error: unknown) => second.push(error));
+		});
+
+		const response = await agent.run('prompt', { signal });
+
+		expect(response.response).toBe('recovered');
+		expect(refused).toHaveLength(1);
+		expect(refused[0]).toBeInstanceOf(RunInProgressError);
+		expect(second).toHaveLength(1);
+		expect(second[0]).toBeInstanceOf(RunInProgressError);
+		expect(create).toHaveBeenCalledTimes(2);
+		expect(agent.snapshot().turns).toHaveLength(1);
 	});
 });
 

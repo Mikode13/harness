@@ -1,7 +1,7 @@
 import type { Conversation } from '#src/llm/domain/conversation';
 import type { Message } from '#src/llm/domain/message';
 import type { BranchMove, RecoveryStore, Revision } from '#src/recovery/domain/recoveryStore';
-import { HistoryExpiredError } from '#src/recovery/domain/runTree';
+import { HistoryExpiredError, UnknownRunError } from '#src/recovery/domain/runTree';
 
 /**
  * What an agent reads of its workspace's history, and which history it is, which a history opened
@@ -34,9 +34,12 @@ const promptChars = 300;
 /**
  * Picks the turn a conversation goes on from, given where the workspace is now. A turn belongs
  * to the run it wrote in; a turn that wrote nothing belongs to the run of the turn it followed.
- * Of the turns whose run is on the line from the start to the head, it picks the one nearest
- * the head, and of those the newest. A run retention chained into a later one counts as that
- * one, and a run retention removed is off every line.
+ * A run the history no longer lists under its own id, and that retention did not remove, changed
+ * nothing the history keeps (a run that died before it changed anything, and was discarded
+ * since): its turn belongs to the run of the turn it followed too. Of the turns whose run is on
+ * the line from the start to the head, it picks the one nearest the head, and of those the
+ * newest. A run retention chained into a later one counts as that one, and a run retention
+ * removed is off every line.
  */
 export async function followHistory(
 	conversation: Conversation,
@@ -60,13 +63,20 @@ export async function followHistory(
 	const runsOf: (string | undefined)[] = [];
 	let best: number | undefined;
 	for (const { index, parent, runId } of conversation.describeTurns()) {
-		const run = runId ?? (parent === undefined ? undefined : runsOf[parent]);
+		const parentOn = parent === undefined || depths[parent] !== undefined;
+		const inherited = parent === undefined ? undefined : runsOf[parent];
+		const unlisted =
+			runId !== undefined &&
+			parentOn &&
+			!keeper.has(runId) &&
+			(await leftOf(history, runId)) === 'none';
+		const run = runId === undefined || unlisted ? inherited : runId;
 		runsOf.push(run);
 		const kept = run === undefined ? undefined : keeper.get(run);
 		const position = kept === undefined ? -1 : line.indexOf(kept);
 		// -1 for the start, -2 for a run off the line or no longer kept.
 		const own = run === undefined ? -1 : position === -1 ? -2 : position;
-		const onLine = own >= -1 && (parent === undefined || depths[parent] !== undefined);
+		const onLine = own >= -1 && parentOn;
 		depths.push(onLine ? own : undefined);
 		const bestDepth = best === undefined ? -2 : (depths[best] ?? -2);
 		if (onLine && own >= bestDepth) best = index;
@@ -272,9 +282,28 @@ export function transcriptOf(
 }
 
 /**
+ * Whether the history no longer keeps a run that a turn names and the history does not list
+ * under its own id. `'expired'`: retention removed it, so its changes are gone. `'none'`: nothing
+ * of it is kept, because it changed nothing and was discarded, or never was. Other failures to
+ * read it propagate.
+ */
+async function leftOf(history: HistoryReader, runId: string): Promise<'expired' | 'none'> {
+	try {
+		await history.readRun(runId);
+		// Still there, though the history does not list it: it changed nothing the history keeps.
+		return 'none';
+	} catch (error) {
+		if (error instanceof HistoryExpiredError) return 'expired';
+		if (error instanceof UnknownRunError) return 'none';
+		throw error;
+	}
+}
+
+/**
  * A run's record and changes. A run retention chained into a later one is read from the run that
  * holds its changes now, which names that run's own files too: they were undone with it, since a
- * run is only off the line when the run that holds it is. A run retention removed names nothing.
+ * run is only off the line when the run that holds it is. A run retention removed, or a run the
+ * history does not know, names nothing.
  */
 async function changesOf(
 	history: HistoryReader,
@@ -286,6 +315,7 @@ async function changesOf(
 		try {
 			return await history.readRun(id);
 		} catch (error) {
+			if (error instanceof UnknownRunError) return undefined;
 			if (!(error instanceof HistoryExpiredError)) throw error;
 			id = error.keptIn;
 		}

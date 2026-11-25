@@ -4,6 +4,7 @@ import type { CommitReport } from './commitReport.ts';
 import type { Inbox } from './inbox.ts';
 import type { PhaseResult, Verification } from './phaseResult.ts';
 import type { Asker } from './question.ts';
+import type { ConversationSnapshot } from '#src/llm/domain/conversationSnapshot';
 import type { Session } from '#src/shared/domain/session';
 
 /**
@@ -284,4 +285,22 @@ export type ProgressAgent = 'planner' | 'executor' | 'reviewer' | 'committer';
  */
 export interface Agent {
 	run(prompt: string, options: RunOptions): Promise<AgentResponse>;
+}
+
+/**
+ * An agent whose conversation the harness owns, so it can be saved and taken up again: what
+ * `createLLMAgent` returns. `snapshot` gives the conversation as plain data, which `createLLMAgent`
+ * takes back as its `snapshot` option.
+ */
+export interface ModelAPIAgent extends Agent {
+	/**
+	 * The conversation as plain data: every turn it recorded from runs that have ended, including
+	 * a failed run the conversation keeps, and nothing of a run still working or retrying. A
+	 * snapshot holds the prompts, file contents and command output of the conversation, so it is
+	 * as sensitive as they are.
+	 *
+	 * @throws {RunInProgressError} while a run on this agent has not ended.
+	 * @throws {UnrecoverableError} when the conversation cannot be saved as plain data.
+	 */
+	snapshot(): ConversationSnapshot;
 }

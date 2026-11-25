@@ -21,9 +21,25 @@ export class RunInProgressError extends UnrecoverableError {
 	}
 }
 
+/**
+ * The error for a snapshot taken while a run on the agent has not ended: that run is not in the
+ * snapshot yet, so the snapshot would lack it. Its text names no part of the run.
+ */
+export function snapshotDuringRun(): RunInProgressError {
+	return new RunInProgressError('The agent has a run in progress, so it cannot be saved yet', {
+		cause:
+			'A snapshot holds only the turns of runs that have ended: take it once the run has settled, not while it works or retries.',
+	});
+}
+
 /** Lets an agent instance work on one run at a time, and rejects a run that starts meanwhile. */
 export class OneRunAtATime {
 	private running = false;
+
+	/** Whether no run is in progress. */
+	get idle(): boolean {
+		return !this.running;
+	}
 
 	/** Runs `work`, unless a run is already in progress. */
 	async run<T>(work: () => Promise<T>): Promise<T> {

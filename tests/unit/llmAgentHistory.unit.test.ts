@@ -1,14 +1,26 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HistoryReader } from '../../src/engines/domain/model/historyFollower.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
+import {
+	type ConversationSnapshot,
+	parseConversationSnapshot,
+} from '../../src/llm/domain/conversationSnapshot.ts';
 import type { LLMClient, LLMResponse } from '../../src/llm/domain/llm.ts';
 import type { Message } from '../../src/llm/domain/message.ts';
-import { historyStart } from '../../src/recovery/domain/recoveryStore.ts';
-import { HistoryExpiredError } from '../../src/recovery/domain/runTree.ts';
+import { historyStart, type RunJournal } from '../../src/recovery/domain/recoveryStore.ts';
+import { HistoryExpiredError, UnknownRunError } from '../../src/recovery/domain/runTree.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
 import { UnrecoverableError } from '../../src/shared/domain/errors.ts';
 import type { ILogger } from '../../src/shared/domain/logger.ts';
@@ -92,12 +104,23 @@ class ScriptedModel implements LLMClient {
 
 async function agentOver(
 	model: ScriptedModel,
-	options: { summarizer?: LLMClient; logger?: ILogger; history?: HistoryReader } = {},
+	{
+		backing = store,
+		...options
+	}: {
+		/** The store the agent's history and writes go through. The test's own store by default. */
+		backing?: FileRecoveryStore;
+		summarizer?: LLMClient;
+		logger?: ILogger;
+		history?: HistoryReader;
+		/** The conversation a restored agent takes up. */
+		snapshot?: ConversationSnapshot;
+	} = {},
 ): Promise<LLMAgent> {
 	return new LLMAgent({
 		llmClient: model,
-		tools: [replaceTool(await writesOver(repo, store))],
-		history: store,
+		tools: [replaceTool(await writesOver(repo, backing))],
+		history: backing,
 		...options,
 	});
 }
@@ -116,6 +139,60 @@ function prompt(context: Message[] | undefined): string[] {
 
 function read(name: string): string {
 	return readFileSync(join(repo, name), 'utf8');
+}
+
+/** The pid of a process that has exited, so that no live process holds a lock naming it. */
+function deadPid(): number {
+	return Number(
+		execFileSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))']),
+	);
+}
+
+/** The folder the store keeps this workspace's history in: the only one under the state folder. */
+function workspaceFolder(): string {
+	const workspaces = join(parent, 'state', 'workspaces');
+	const [folder] = readdirSync(workspaces);
+	if (folder === undefined) throw new Error('The store has no workspace folder');
+	return join(workspaces, folder);
+}
+
+/**
+ * Starts a run, then leaves its lock naming a process that has exited: the run as a process that
+ * died during it leaves it, unfinished.
+ */
+async function startDeadRun(): Promise<RunJournal> {
+	const run = await store.startRun();
+	writeFileSync(
+		join(workspaceFolder(), 'lock'),
+		JSON.stringify({ runId: run.runId, pid: deadPid() }),
+	);
+	return run;
+}
+
+/**
+ * `saved` with one more turn, of a prompt and an answer, that belongs to `runId` and follows the
+ * current turn: the turn a run that died mid-conversation would have recorded.
+ */
+function withTurnIn(saved: ConversationSnapshot, runId: string): ConversationSnapshot {
+	return parseConversationSnapshot(
+		JSON.parse(
+			JSON.stringify({
+				...saved,
+				turns: [
+					...saved.turns,
+					{
+						messages: [
+							{ role: 'user', content: [{ type: 'text', text: 'second' }] },
+							{ role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+						],
+						parent: saved.current,
+						runId,
+					},
+				],
+				current: saved.turns.length,
+			}),
+		),
+	);
 }
 
 describe('LLMAgent following moves through the workspace history', () => {
@@ -460,5 +537,130 @@ describe('LLMAgent whose run also writes to another history', () => {
 
 		const note = texts(model.contexts[3]).find(text => text.startsWith('Note from the harness'));
 		expect(note).toContain('«write both»');
+	});
+});
+
+describe('LLMAgent restored from a snapshot, following moves through the workspace history', () => {
+	it('resumes with no note after a move was undone and redone since the snapshot', async () => {
+		const model = new ScriptedModel().writes('a.txt', 'one').writes('a.txt', 'two');
+		const agent = await agentOver(model);
+		await agent.run('first', { signal });
+		await agent.run('second', { signal });
+		const saved = parseConversationSnapshot(JSON.parse(JSON.stringify(agent.snapshot())));
+
+		await store.undo();
+		await store.redo();
+		const resumed = new ScriptedModel().answers('ok');
+		const restored = await agentOver(resumed, { snapshot: saved });
+		await restored.run('third', { signal });
+
+		expect(texts(resumed.firstContexts[0])).toEqual(['first', 'done', 'second', 'done', 'third']);
+	});
+
+	it('tells the model what an undo since the snapshot undid', async () => {
+		const model = new ScriptedModel().writes('a.txt', 'one').writes('a.txt', 'two');
+		const agent = await agentOver(model);
+		await agent.run('first', { signal });
+		await agent.run('second', { signal });
+		const saved = parseConversationSnapshot(JSON.parse(JSON.stringify(agent.snapshot())));
+
+		await store.undo();
+		const resumed = new ScriptedModel().answers('ok');
+		const restored = await agentOver(resumed, { snapshot: saved });
+		await restored.run('third', { signal });
+
+		const seen = texts(resumed.firstContexts[0]);
+		const note = seen.find(text => text.startsWith('Note from the harness'));
+		expect(note).toContain('«second»');
+		expect(note).toContain('Files those runs had changed: a.txt');
+		expect(seen.filter(text => !text.startsWith('Note from the harness'))).toEqual([
+			'first',
+			'done',
+			'third',
+		]);
+	});
+
+	it('resumes when retention removed a run the snapshot names, and names none of its files', async () => {
+		const pruning = await FileRecoveryStore.open({
+			root: repo,
+			directory: join(parent, 'state'),
+			keepRuns: 3,
+		});
+		const model = new ScriptedModel().writes('a.txt', 'one').writes('a.txt', 'two');
+		const agent = await agentOver(model, { backing: pruning });
+		await agent.run('first', { signal });
+		await agent.run('second', { signal });
+		const saved = parseConversationSnapshot(JSON.parse(JSON.stringify(agent.snapshot())));
+
+		// The undone run is left off the line, and the runs after it push it out of the history.
+		await pruning.undo();
+		await recordRun(pruning, repo, [['a.txt', 'three']]);
+		await recordRun(pruning, repo, [['a.txt', 'four']]);
+		const removed = saved.turns[1]?.runId;
+		if (typeof removed !== 'string') throw new Error('The second turn names no run');
+		await expect(pruning.readRun(removed)).rejects.toBeInstanceOf(HistoryExpiredError);
+		await expect(pruning.readRun(removed)).rejects.toMatchObject({
+			runId: removed,
+			keptIn: undefined,
+		});
+
+		const resumed = new ScriptedModel().answers('ok');
+		const restored = await agentOver(resumed, { backing: pruning, snapshot: saved });
+		await restored.run('third', { signal });
+
+		const seen = texts(resumed.firstContexts[0]);
+		const note = seen.find(text => text.startsWith('Note from the harness'));
+		expect(note).toContain('«second»');
+		expect(note).not.toContain('Files those runs had changed');
+		expect(seen.filter(text => !text.startsWith('Note from the harness'))).toEqual([
+			'first',
+			'done',
+			'third',
+		]);
+	});
+
+	it('resumes past a run that died having changed nothing, once a later write discarded it', async () => {
+		const agent = await agentOver(new ScriptedModel().writes('a.txt', 'one'));
+		await agent.run('first', { signal });
+
+		// The turn's run died before it changed anything. The next write settles it and discards it.
+		const dead = await startDeadRun();
+		try {
+			const snapshot = withTurnIn(agent.snapshot(), dead.runId);
+			await recordRun(store, repo, [['a.txt', 'two']]);
+			await expect(store.readRun(dead.runId)).rejects.toBeInstanceOf(UnknownRunError);
+			expect((await store.listRuns()).runs.map(run => run.runId)).not.toContain(dead.runId);
+
+			const resumed = new ScriptedModel().answers('ok');
+			const restored = await agentOver(resumed, { snapshot });
+			await restored.run('third', { signal });
+
+			expect(texts(resumed.firstContexts[0])).toEqual(['first', 'done', 'second', 'ok', 'third']);
+		} finally {
+			// A dead process's journal is never finished; this one's file is still open, so close it.
+			await dead.finish('failed').catch(() => undefined);
+		}
+	});
+
+	it('resumes past a run that died having changed nothing, while the store still holds it hidden', async () => {
+		const agent = await agentOver(new ScriptedModel().writes('a.txt', 'one'));
+		await agent.run('first', { signal });
+
+		// Until a later write discards it, the store keeps the dead run as interrupted, and lists
+		// it no more.
+		const dead = await startDeadRun();
+		try {
+			const snapshot = withTurnIn(agent.snapshot(), dead.runId);
+			expect((await store.listRuns()).runs.map(run => run.runId)).not.toContain(dead.runId);
+			expect((await store.readRun(dead.runId)).record.status).toBe('interrupted');
+
+			const resumed = new ScriptedModel().answers('ok');
+			const restored = await agentOver(resumed, { snapshot });
+			await restored.run('third', { signal });
+
+			expect(texts(resumed.firstContexts[0])).toEqual(['first', 'done', 'second', 'ok', 'third']);
+		} finally {
+			await dead.finish('failed').catch(() => undefined);
+		}
 	});
 });

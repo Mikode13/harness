@@ -5,9 +5,9 @@ import {
 	readDecision,
 } from '#src/agent/domain/approval';
 import {
-	type Agent,
 	type AgentResponse,
 	type Callback,
+	type ModelAPIAgent,
 	type ProgressEvent,
 	type RunOptions,
 	ignoreProgress,
@@ -34,6 +34,10 @@ import {
 	treatErrors,
 } from '#src/shared/domain/providerFailure';
 import { Conversation, type TurnRun } from '#src/llm/domain/conversation';
+import {
+	type ConversationSnapshot,
+	parseConversationSnapshot,
+} from '#src/llm/domain/conversationSnapshot';
 import { keptScore } from '#src/llm/domain/contextTriage';
 import { MaxContextError } from '#src/llm/domain/errors';
 import type { LLMClient, LLMResponse } from '#src/llm/domain/llm';
@@ -48,7 +52,7 @@ import { asNative, nativeOf, type ToolDefinition } from '#src/llm/domain/tool';
 import { type Asker, readAnswers, type UserQuestion } from '#src/agent/domain/question';
 import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcript';
 import { type InboxReader, readerOf } from '#src/agent/domain/inbox';
-import { OneRunAtATime } from '#src/agent/domain/oneRunAtATime';
+import { OneRunAtATime, snapshotDuringRun } from '#src/agent/domain/oneRunAtATime';
 import { newSession, sessionOf } from '#src/agent/domain/session';
 import {
 	type AgentTool,
@@ -291,7 +295,7 @@ function takeInbox(
  * are the consumer's to emit, as with the other engines; this agent only narrates what the
  * model produced and what its tools did.
  */
-export class LLMAgent implements Agent {
+export class LLMAgent implements ModelAPIAgent {
 	private readonly llmClient: LLMClient;
 	private readonly conversation: Conversation;
 	private readonly tools: Map<string, AgentTool>;
@@ -312,7 +316,7 @@ export class LLMAgent implements Agent {
 	// conversation's size, not a run's count.
 	private contextTokens: number | undefined;
 	// The latest move through the history this conversation has followed.
-	private seenRevision = 0;
+	private seenRevision: number;
 	// What this conversation has seen of each file, so an edit starts from a version it read.
 	private readonly reads = new ReadRegistry();
 	private readonly runs = new OneRunAtATime();
@@ -322,6 +326,7 @@ export class LLMAgent implements Agent {
 	constructor({
 		llmClient,
 		messages,
+		snapshot,
 		tools = [],
 		maxSteps = 65,
 		autoApprove = false,
@@ -334,6 +339,11 @@ export class LLMAgent implements Agent {
 	}: {
 		llmClient: LLMClient;
 		messages?: Message[];
+		/**
+		 * The conversation a `snapshot()` returned, which must be valid as `parseConversationSnapshot`
+		 * makes it. Taken up in place of `messages`, which it must not be given with.
+		 */
+		snapshot?: ConversationSnapshot;
 		tools?: AgentTool[];
 		/** How many calls to the model one run may make before it fails. Defaults to 65. */
 		maxSteps?: number;
@@ -367,6 +377,9 @@ export class LLMAgent implements Agent {
 				`maxSteps must be a positive integer; got ${String(maxSteps)}`,
 			);
 		}
+		if (snapshot !== undefined && messages !== undefined) {
+			throw new InvalidAgentConfigError('Give an agent a snapshot or its messages, not both');
+		}
 		if (compactor.by === 'harness') {
 			if (compactor.at !== undefined && !(Number.isInteger(compactor.at) && compactor.at > 0)) {
 				throw new InvalidAgentConfigError(
@@ -381,7 +394,9 @@ export class LLMAgent implements Agent {
 		}
 
 		this.llmClient = llmClient;
-		this.conversation = new Conversation(messages);
+		this.conversation = snapshot ? Conversation.restore(snapshot) : new Conversation(messages);
+		this.seenRevision = snapshot?.seenRevision ?? 0;
+		this.contextTokens = snapshot?.contextTokens ?? undefined;
 		this.maxSteps = maxSteps;
 		this.autoApprove = autoApprove;
 		this.logger = logger;
@@ -412,6 +427,30 @@ export class LLMAgent implements Agent {
 			}
 			return asNative(definition, native);
 		});
+	}
+
+	/**
+	 * The conversation as plain data: every turn it recorded from runs that have ended, including
+	 * a failed run the conversation keeps (one the model cut short, or one stopped on a loop or a
+	 * command), and nothing of a run still in progress or retrying.
+	 *
+	 * @throws {RunInProgressError} while a run on this agent has not ended.
+	 * @throws {UnrecoverableError} when the conversation cannot be saved as plain data.
+	 */
+	snapshot(): ConversationSnapshot {
+		if (!this.runs.idle) throw snapshotDuringRun();
+		try {
+			return parseConversationSnapshot({
+				version: 1,
+				...this.conversation.capture(),
+				seenRevision: this.seenRevision,
+				contextTokens: this.contextTokens ?? null,
+			});
+		} catch (error) {
+			throw new UnrecoverableError('The conversation could not be saved', {
+				cause: describeFailure(error),
+			});
+		}
 	}
 
 	private async followHistory(history: HistoryReader): Promise<Followed> {

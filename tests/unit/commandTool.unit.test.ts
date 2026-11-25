@@ -18,6 +18,7 @@ import type { ApprovalRequest, Approver } from '../../src/agent/domain/approval.
 import type { ProgressEvent } from '../../src/agent/domain/agent.ts';
 import { RunContext, withRunContext } from '../../src/agent/domain/runContext.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
+import { parseConversationSnapshot } from '../../src/llm/domain/conversationSnapshot.ts';
 import { historyStart } from '../../src/recovery/domain/recoveryStore.ts';
 import { showChanges } from '../../src/recovery/domain/runChanges.ts';
 import { InvalidAgentConfigError } from '../../src/shared/domain/errors.ts';
@@ -39,6 +40,7 @@ import {
 	FakeLLMClient,
 	textResponse,
 	toolCall,
+	unansweredCalls,
 } from '../support/fakeLlmClient.ts';
 
 const signal = new AbortController().signal;
@@ -378,6 +380,41 @@ describe('runCommand', { timeout: 20_000 }, () => {
 				'"sh -c echo "1 failed"; exit 1" exited with code 1 with the same output 5 times. No file the history covers changed between them. No one could be asked whether to go on. The run is kept in the conversation.',
 		});
 		expect(llmClient.contexts).toHaveLength(9);
+	});
+
+	it('restores a run a command loop stopped, answering every call in it, and the next call succeeds', async () => {
+		const opened = await open();
+		const tool = await commandToolFor(opened, {
+			test: shell('echo "1 failed"; exit 1'),
+			lint: shell('echo "1 problem"; exit 1'),
+		});
+		const run = (name: string, id: string) =>
+			assistantResponse([toolCall(id, 'runCommand', { command: { name } })]);
+		const agent = new LLMAgent({
+			llmClient: new FakeLLMClient(
+				...['1', '2', '3', '4', '5'].flatMap(id => [
+					run('test', `test-${id}`),
+					run('lint', `lint-${id}`),
+				]),
+			),
+			tools: [tool],
+			autoApprove: true,
+		});
+		await expect(agent.run('prompt', { signal })).rejects.toMatchObject({
+			message: 'The LLM kept getting the same result from a command',
+		});
+
+		const resumed = new FakeLLMClient(textResponse('next answer'));
+		await expect(
+			new LLMAgent({
+				llmClient: resumed,
+				tools: [tool],
+				autoApprove: true,
+				snapshot: parseConversationSnapshot(JSON.parse(JSON.stringify(agent.snapshot()))),
+			}).run('go on', { signal }),
+		).resolves.toMatchObject({ response: 'next answer' });
+
+		expect(unansweredCalls(resumed.contexts[0] ?? [])).toEqual([]);
 	});
 
 	// The executor of a #22 run was stopped so, with every check it ran green.

@@ -56,8 +56,9 @@ persistent conversation service.
   captured `session_id`, so the provider keeps the context.
 - **The model API path**: `LLMAgent` calls the OpenAI Responses API or the
   Anthropic Messages API and keeps the conversation itself, in a form that can move
-  between providers. It runs its own tool loop over the tools it is given. The
-  harness ships tools that read the repository (list, search, read), bounded by
+  between providers. `snapshot()` returns that conversation as plain JSON, which
+  `createLLMAgent` takes back to continue it. It runs its own tool loop over the tools it is
+  given. The harness ships tools that read the repository (list, search, read), bounded by
   `.gitignore`, and `createFileTools`, which also change files in each provider's
   native format, every change recorded so it can be undone, and run the commands you
   configure, such as the tests, recording what each one changed too. `agentAsTool` offers
@@ -97,9 +98,11 @@ was chosen.
 
 ## Current limitations
 
-Conversation continuity within an agent instance is not durable conversation storage.
-Saving and restoring conversation snapshots is still pending
-([#111](https://github.com/Mikode13/harness/issues/111)); consumers own their persistence.
+Conversation continuity within an agent instance is not durable conversation storage. A model
+API agent can save its conversation as plain data and restore it later, but the harness stores,
+encrypts, lists and deletes nothing: consumers own their persistence. See
+[Saving and restoring a conversation](#saving-and-restoring-a-conversation). The Agent SDK
+engines keep their sessions with the provider and have no snapshot.
 The file-change history already writes recovery data to disk, which is a separate capability.
 `ProgressEvent` is activity narration, not the durable, ordered observation contract proposed
 in [#177](https://github.com/Mikode13/harness/issues/177).
@@ -516,6 +519,56 @@ in the background, so the model can reconsider at once. The Agent SDK engines, t
 and the workflows never read it, so `close()` returns everything sent to them. Neither does a
 run's last step, which has no step left to answer it. A run that fails before it is kept gives
 back what it read: a retried attempt reads it again, or `close()` returns it.
+
+### Saving and restoring a conversation
+
+`snapshot()` on a model API agent returns its conversation as plain JSON: the turns of every
+run that ended, a failed run's included. Nothing of a run that is still working, or retrying,
+is in it, so take it once `run()` has settled. Taken during a run, it throws `RunInProgressError`
+at once and saves nothing.
+
+```ts
+import { createLLMAgent, type ConversationSnapshot } from '@mikode13/harness';
+
+const agent = createLLMAgent('openai', { systemPrompt, tools, workspace });
+await agent.run('Add the export button', { signal });
+await store.save(chatId, JSON.stringify(agent.snapshot())); // your storage, your encryption
+
+// Later, maybe in another process:
+const saved: ConversationSnapshot = JSON.parse(await store.load(chatId));
+const restored = createLLMAgent('openai', { systemPrompt, tools, workspace, snapshot: saved });
+await restored.run('Make it a dropdown too', { signal });
+```
+
+A snapshot holds the prompts, file contents and command output its conversation holds, so it can
+hold secrets. Treat it as the content itself. The harness does not encrypt it, control who reads
+it, choose where it is kept or how it is named, list or expire it, or delete it. Those, and a
+rollout of a new snapshot format, are the consumer's. Version 1 is the only format the harness
+reads. Every value in it is JSON, and an absent one is `null`, so `JSON.stringify` and
+`JSON.parse` give back what was saved.
+
+`createLLMAgent` checks a `snapshot` before it builds anything. A snapshot of another version
+is reported as such, and any other problem names the field it is in. Both are an
+`InvalidAgentConfigError`, thrown before a client, a history or a tool is set up.
+
+The restored agent continues the same turns, and follows the workspace's history from the
+revision the snapshot last saw. Everything the snapshot does not hold comes from the options given
+to `createLLMAgent` now: the system prompt, tools, model, compaction, workspace, `autoApprove`,
+`onTranscript`, and the rest. The snapshot holds no authority and no permission, so nothing that
+grants them is saved: the approver and `ask` callbacks of each run, what `rememberApprovals`
+remembered, credentials, the `Inbox`, and the files the agent read. The restored agent asks again
+for what it had remembered, and its edit tools refuse, as `READ_REQUIRED`, a file it has not read
+since it was restored. A restored agent is also a new session, so pass `RunOptions.session` to
+continue the one it had.
+
+The turns keep the provider's own parts: reasoning and compaction it can read back. Restored to
+the provider that wrote them, they continue as before. Restored to the other provider, the text,
+tool calls and results carry over, and the first provider's reasoning and compaction are not sent.
+
+A turn's run may no longer be in the workspace's history. A run retention removed (see
+`HistoryExpiredError` below) puts its turns off the workspace's line, and the model is told
+they were undone. A run the history no longer lists, and retention did not remove, changed
+nothing the history keeps, so its turns continue from the turn they followed instead.
 
 ### Sessions
 
