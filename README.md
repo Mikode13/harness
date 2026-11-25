@@ -102,13 +102,13 @@ was chosen.
 
 Conversation continuity within an agent instance is not durable conversation storage. An agent
 of `createLLMAgent` can take a snapshot of its conversation, which a fresh agent restores
-([saving and restoring a conversation](#saving-and-restoring-a-conversation)); where it is
-stored is the consumer's, and so can the orchestrator of `createLLMOrchestrator`, once a run
-ended ([a composed session](#saving-and-restoring-a-composed-session)). A checkpoint inside a run,
-between two of its stages, is not supported yet
+([saving and restoring a conversation](#saving-and-restoring-a-conversation)), and the
+orchestrator of `createLLMOrchestrator` can take one of its session once a run ended
+([a composed session](#saving-and-restoring-a-composed-session)); where a snapshot is stored is
+the consumer's. A checkpoint inside a run, between two of its stages, is not supported yet
 ([#136](https://github.com/Mikode13/harness/issues/136)), and the Agent SDK engines take no
-snapshot: their providers keep their conversations. The file-change history already writes recovery data
-to disk, which is a separate capability.
+snapshot: their providers keep their conversations. The file-change history already writes
+recovery data to disk, which is a separate capability.
 `ProgressEvent` is activity narration; a run's record (`onRecord`) is the complete, ordered
 observation of a run, but the harness stores neither: keeping the record is the consumer's.
 

@@ -852,6 +852,34 @@ describe('reading a conversation snapshot', () => {
 				],
 			}),
 		],
+		[
+			'has a summary that keeps a tool call without its result',
+			snapshot => ({
+				...snapshot,
+				turns: [
+					{
+						messages: [
+							{
+								role: 'user',
+								content: [
+									{
+										type: 'contextSummary',
+										summary: 'Earlier, the agent read a file.',
+										kept: [
+											{
+												role: 'assistant',
+												content: [{ type: 'toolCall', id: 'c', name: 'readFile', input: {} }],
+											},
+										],
+									},
+								],
+							},
+							...(snapshot.turns[0]?.messages ?? []),
+						],
+					},
+				],
+			}),
+		],
 		['has a negative revision', snapshot => ({ ...snapshot, seenRevision: -1 })],
 		['has no version', snapshot => ({ ...snapshot, version: undefined })],
 		['has turns and no current turn', snapshot => ({ ...snapshot, currentTurn: undefined })],

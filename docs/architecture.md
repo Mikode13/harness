@@ -893,7 +893,7 @@ number of 1 or more, is an `InvalidSnapshotError`, a version this release does n
 gone, and a value JSON cannot hold is an `InvalidSnapshotError`; and the rest is checked by a strict Zod
 schema of every message part, then by `checkConversationState`: each turn follows an earlier one
 and starts with a prompt, every tool call has its result in the next message and nothing else
-does, in the initial messages too, and a conversation with turns has a current turn, which exists. What restores is that JSON,
+does, in the initial messages and in what a summary keeps too, and a conversation with turns has a current turn, which exists. What restores is that JSON,
 not Zod's copy, so the providers' data keeps its keys in their order. The `LLMAgent` built from it starts its
 `Conversation` with `fromState`, keeps the session, `seenRevision`, and the context's size only
 when its client has the same `providerDataSource`, and starts its `ReadRegistry` empty. The system

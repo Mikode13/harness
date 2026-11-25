@@ -39,7 +39,7 @@ export interface ConversationState {
  * Why `state` cannot be a conversation's, or `undefined` when it can: each turn follows an
  * earlier one, the current turn is one of them, every turn starts with the user's prompt, and
  * every tool call of an answer has its result in the message after it, and nothing else does,
- * in the initial messages as in each turn.
+ * in the initial messages as in each turn, and in what a summary keeps.
  * The conversation only ever records a run whole, so a state that breaks one of these was not
  * recorded by it, and a provider would refuse the context it gives.
  */
@@ -77,6 +77,12 @@ export function checkConversationState(state: ConversationState): string | undef
 /** What breaks the pairing of tool calls and results in one turn's messages, if anything. */
 function unpairedToolPart(messages: readonly Message[]): string | undefined {
 	for (const [index, message] of messages.entries()) {
+		// A summary's kept messages are sent as they are, so they pair as any others.
+		for (const part of message.content) {
+			if (part.type !== 'contextSummary') continue;
+			const kept = unpairedToolPart(part.kept);
+			if (kept !== undefined) return `has a summary that keeps a message which ${kept}`;
+		}
 		const calls = message.content.flatMap(part => (part.type === 'toolCall' ? [part.id] : []));
 		const results = message.content.flatMap(part =>
 			part.type === 'toolResult' ? [part.callId] : [],
