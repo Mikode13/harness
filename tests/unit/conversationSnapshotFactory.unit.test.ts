@@ -217,4 +217,45 @@ describe('createLLMAgent restoring a snapshot', () => {
 		expect(between[0]).toBeInstanceOf(RunInProgressError);
 		expect(agent.snapshot().turns).toHaveLength(1);
 	});
+
+	it('takes the snapshot of an agent whose run kept a record, and refuses it until that run ends', async () => {
+		let answer!: (message: unknown) => void;
+		const create = claudeSdk(
+			vi
+				.fn<(params: unknown, options: unknown) => unknown>()
+				.mockImplementationOnce(
+					() =>
+						new Promise(resolve => {
+							answer = resolve;
+						}),
+				)
+				.mockResolvedValue(claudeAnswer('You are Miki.')),
+		);
+		const entries: string[] = [];
+		const agent = createLLMAgent('anthropic', options);
+		const running = agent.run('My name is Miki.', {
+			signal,
+			onRecord: entry => {
+				entries.push(entry.type);
+			},
+		});
+		await vi.waitFor(() => {
+			expect(answer).toBeDefined();
+		});
+
+		expect(() => agent.snapshot()).toThrow(RunInProgressError);
+		answer(claudeAnswer('Hello Miki.'));
+		await running;
+		const stored = JSON.stringify(agent.snapshot());
+		await agent.run('Who am I?', { signal });
+
+		const restored = createLLMAgent('anthropic', {
+			...options,
+			restore: JSON.parse(stored) as ConversationSnapshot,
+		});
+		await restored.run('Who am I?', { signal });
+
+		expect(entries.at(-1)).toBe('end');
+		expect(sentBody(create, 2)).toBe(sentBody(create, 1));
+	});
 });

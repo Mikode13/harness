@@ -77,6 +77,14 @@ export {
 	type ConversationAgent,
 	type ConversationSnapshot,
 } from './agent/domain/snapshot.ts';
+export {
+	runRecordVersion,
+	type RecordedDelegation,
+	type RecordedFailure,
+	type RecordedOrigin,
+	type RunEntry,
+	type RunRecordCallback,
+} from './agent/domain/runRecord.ts';
 export { Inbox } from './agent/domain/inbox.ts';
 export { RunInProgressError } from './agent/domain/oneRunAtATime.ts';
 export {

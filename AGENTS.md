@@ -6,9 +6,9 @@
 the `Agent` contract and its factories — `createAgent` for one provider and
 `createOrchestrator` for the planner → executor → reviewer workflow on the Agent SDKs,
 `createLLMAgent` and `createLLMOrchestrator` on the model APIs — plus the tool contract,
-the error types and the `ILogger` port. The engines, `LLMAgent`, `RetryingAgent`, and
-`OrchestratorAgent` are internal: the factories apply retry and defaults so consumers never
-compose them.
+the error types and the `ILogger` port. The engines, `LLMAgent`, `RetryingAgent`,
+`RecordingAgent` and `OrchestratorAgent` are internal: the factories apply the record, retry and
+defaults so consumers never compose them, and `RecordingAgent` stays the outermost layer.
 
 `cli/` is a separate workspace project, not part of the published package. It is one
 interactive consumer of the seam, kept out of `src/` deliberately: a REST or WebSocket
@@ -48,6 +48,21 @@ tokens again. Anything that accumulates per turn is created inside `run()` and p
 or changing an existing type's fields is breaking. Consumers are told to ignore types they
 do not know, so a new type must never carry information a consumer needs to be correct:
 the result of a run travels in `AgentResponse`, and progress stays optional narration.
+
+**A run's record is complete, and versioned.** `RunOptions.onRecord` receives every progress
+event, each question and approval request with its answer or decision, and the run's end, in
+order. What a consumer needs to be correct in order with the narration, such as a question or
+how a run ended, goes there, never into a new `ProgressEvent` type. Consumers may not ignore an
+entry type, so a new entry type, or a change an older reader would read wrongly, bumps
+`runRecordVersion` and is breaking; only a field no reader needs to be correct may be added in a
+minor release. That holds for the types an entry carries too, `AgentResponse`, `ApprovalRequest`
+and `UserQuestion`: a field a reader needs added to one of them bumps the version, and a review
+checks it, since no test can. Every entry is plain JSON. A consumer that fails to take an entry ends the run as
+a host failure, as a failing `onProgress` does. The run never asks a question or an approval,
+nor acts on an answer or a decision, that the record did not take first; a progress entry it
+failed to take ends the run at its next narration or wait. The record is kept only by the `RecordingAgent` the factories put
+outermost; anything inside a run, and every place that calls `ask` or `approve`, reaches it
+through the options and leaves `onRecord` alone.
 
 ## Architecture
 

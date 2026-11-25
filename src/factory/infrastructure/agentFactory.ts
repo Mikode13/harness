@@ -1,4 +1,5 @@
 import type { Agent } from '#src/agent/domain/agent';
+import { RecordingAgent } from '#src/agent/domain/recordingAgent';
 import { InvalidAgentConfigError } from '#src/shared/domain/errors';
 import {
 	ClaudeAgent,
@@ -80,7 +81,8 @@ const defaultModels = {
 
 /**
  * Builds the agent for a provider on its Agent SDK — Claude Code for Anthropic, Codex for
- * OpenAI — already wrapped in the harness's retry policy.
+ * OpenAI — already wrapped in the harness's retry policy, and keeping the record of a run given
+ * `onRecord`.
  *
  * @throws {InvalidAgentConfigError} for an unknown provider, or a model or reasoning effort
  * the provider does not support.
@@ -119,7 +121,7 @@ export function createAgent(
 		}
 	}
 
-	return new RetryingAgent({ inner: engine, logger });
+	return new RecordingAgent({ inner: new RetryingAgent({ inner: engine, logger }), logger });
 }
 
 export interface Role {
@@ -188,11 +190,12 @@ export function createOrchestrator({
 			instructions,
 		});
 
-	return new OrchestratorAgent({
+	const orchestrator = new OrchestratorAgent({
 		plannerAgent: agentFor(roles.planner, systemPrompts.planner ?? plannerInstructions),
 		executorAgent: agentFor(roles.executor, systemPrompts.executor ?? executorInstructions),
 		reviewerAgent: agentFor(roles.reviewer, systemPrompts.reviewer ?? reviewerInstructions),
 		reviewerDecisionValidator: new ReviewerDecisionValidator(),
 		logger,
 	});
+	return new RecordingAgent({ inner: orchestrator, logger });
 }

@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 import type { Agent, AgentResponse, RunOptions } from '#src/agent/domain/agent';
+import { RecordingAgent } from '#src/agent/domain/recordingAgent';
 import type { ConversationAgent, ConversationSnapshot } from '#src/agent/domain/snapshot';
 import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcript';
 import type { HistoryReader } from '#src/engines/domain/model/historyFollower';
@@ -606,7 +607,7 @@ class SnapshotAgent implements ConversationAgent {
 
 /**
  * Builds an agent whose conversation MiKode owns, on a provider's model API, already wrapped in
- * the harness's retry policy. It needs the provider's API key and bills per token, where
+ * the harness's retry policy, and keeping the record of a run given `onRecord`. It needs the provider's API key and bills per token, where
  * `createAgent` uses the Agent SDK's login. Each tool judges the risk of each call; a
  * `destructive` one runs only when the run's `approve` allows it, or with `autoApprove`.
  *
@@ -648,7 +649,7 @@ export function createLLMAgent(
 			'An agent given a workspace needs tools to work on it: pass those of createFileTools in `tools`',
 		);
 	}
-	return buildLLMAgent(provider, {
+	const agent = buildLLMAgent(provider, {
 		model,
 		reasoningEffort,
 		systemPrompt: workspace
@@ -668,6 +669,24 @@ export function createLLMAgent(
 		...(workspace ? { writeRoots: writeRootsOf(workspace.roots) } : {}),
 		...(restored ? { restore: restored } : {}),
 	});
+	return new RecordingConversationAgent(agent, logger);
+}
+
+/**
+ * The agent that keeps a run's record, around one that takes snapshots: the snapshot is still
+ * the conversation's, and is refused while a run works on it, as the agent inside refuses it.
+ */
+class RecordingConversationAgent extends RecordingAgent implements ConversationAgent {
+	private readonly conversation: ConversationAgent;
+
+	constructor(conversation: ConversationAgent, logger: ILogger) {
+		super({ inner: conversation, logger });
+		this.conversation = conversation;
+	}
+
+	snapshot(): ConversationSnapshot {
+		return this.conversation.snapshot();
+	}
 }
 
 function writeRootsOf(roots: readonly WorkspaceRoot[]): string[] {
@@ -1009,7 +1028,7 @@ export async function createLLMOrchestrator({
 	const executorRuns = executorToolset.some(tool => tool.name === 'runCommand');
 	const verifier = await verifierOf(requiredChecks, commands, opened);
 
-	return new PhasedOrchestrator({
+	const orchestrator = new PhasedOrchestrator({
 		planner: await reader(
 			roles.planner,
 			'planner',
@@ -1074,6 +1093,7 @@ export async function createLLMOrchestrator({
 				}
 			: {}),
 	});
+	return new RecordingAgent({ inner: orchestrator, logger });
 }
 
 /**
