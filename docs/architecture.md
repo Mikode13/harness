@@ -868,9 +868,10 @@ cancellation stops every wait, so a cancelled run rejects at once, and one that 
 resolves with its response, while the recorder goes on
 handing on the entries it holds, the end last, and logs a failure to take them. The recorder
 hands the callback a `structuredClone` of each entry, taken when it is pushed, so the callback
-and the run never share a value, and an entry that cannot be copied is a failure to take it. A record still being taken after its run settled holds the next
-record of the same callback, keyed by the callback in a `WeakMap`, until it is taken or failed, so
-one callback never receives two runs' entries at once or mixed. The recorder hands entries to the callback one at a time: a
+and the run never share a value, and an entry that cannot be copied is a failure to take it. Each `RecordingAgent` keeps a promise of its latest run's record, and a new run's recorder hands
+nothing on until it settles, so the records of one agent's runs are taken one after another,
+whole, whatever callback each run gives. A run refused because another of the agent is working
+records its end behind that run's, in the background, without waiting for it. The recorder hands entries to the callback one at a time: a
 promise holds the entries after it until it settles. A callback that fails, at once or later,
 stops the record; every later entry, and every wait, throws an `UnrecoverableError`, which the
 callers classify as a host failure, so the run ends without being retried, and a question,

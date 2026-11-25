@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { RecoverableError, UnrecoverableError, withSpentTokens } from '#src/shared/domain/errors';
 import { isAbortError } from '#src/shared/domain/isAbortError';
+import { RunInProgressError } from './oneRunAtATime.ts';
 import type { ILogger } from '#src/shared/domain/logger';
 import { describeFailure } from '#src/shared/domain/providerFailure';
 import type { Agent, AgentResponse, ProgressAgent, ProgressEvent, RunOptions } from './agent.ts';
@@ -81,8 +82,8 @@ class RunRecorder {
 	private taken = 0;
 
 	/**
-	 * `after` is the earlier record of the same callback, still being taken after its run
-	 * settled: this record hands nothing on until that one is taken, or failed.
+	 * `after` settles once the record of the agent's run before this one is taken whole, or
+	 * failed: this record hands nothing on until it has.
 	 */
 	constructor(take: RunRecordCallback, after?: Promise<void>) {
 		this.take = take;
@@ -195,12 +196,6 @@ class RunRecorder {
 		return this.failure;
 	}
 }
-
-/**
- * The records still being taken after their run settled, by their callback, so the next run given
- * the same callback hands it nothing until the earlier record is taken.
- */
-const unfinished = new WeakMap<RunRecordCallback, Promise<void>>();
 
 /** Whether `signal` is aborted now, read where an earlier check may have narrowed it. */
 function isCancelled(signal: AbortSignal): boolean {
@@ -350,6 +345,13 @@ function endOf(error: unknown, signal: AbortSignal): RunEntry {
 export class RecordingAgent implements Agent {
 	private readonly inner: Agent;
 	private readonly logger: ILogger;
+	/**
+	 * Settles once the record of this agent's latest run is taken whole, or failed. Each run's
+	 * record waits for it, so the records of one agent's runs are taken one after another, whole,
+	 * whatever callback each run gives: a consumer storing them in one place never gets two runs'
+	 * entries mixed, even when a run settled before its record was taken.
+	 */
+	private latestRecord: Promise<void> | undefined;
 
 	constructor({ inner, logger }: { inner: Agent; logger: ILogger }) {
 		this.inner = inner;
@@ -360,14 +362,36 @@ export class RecordingAgent implements Agent {
 		const { onRecord } = options;
 		if (!onRecord) return this.inner.run(prompt, options);
 
-		// A record the same callback still takes, from a run that settled before it was taken, comes
-		// whole before this run's first entry, so a consumer never gets two runs' entries mixed.
-		const recorder = new RunRecorder(onRecord, unfinished.get(onRecord));
+		const recorder = new RunRecorder(onRecord, this.latestRecord);
+		let release = (): void => undefined;
+		this.latestRecord = new Promise<void>(resolve => {
+			release = resolve;
+		});
+		let finishing: Promise<void> | undefined;
+		const finishLater = (): void => {
+			finishing = recorder.finishInBackground(failure => {
+				this.warn(failure);
+			});
+		};
+		try {
+			return await this.recorded(prompt, options, recorder, finishLater);
+		} finally {
+			if (finishing) void finishing.then(release);
+			else release();
+		}
+	}
+
+	private async recorded(
+		prompt: string,
+		options: RunOptions,
+		recorder: RunRecorder,
+		finishLater: () => void,
+	): Promise<AgentResponse> {
 		let response: AgentResponse;
 		try {
 			response = await this.inner.run(prompt, recordedOptions(options, recorder));
 		} catch (error) {
-			await this.endFailed(onRecord, recorder, error, options.signal);
+			await this.endFailed(recorder, error, options.signal, finishLater);
 			throw error;
 		}
 
@@ -379,7 +403,7 @@ export class RecordingAgent implements Agent {
 			// complete, as its record says, so it resolves with its response, at once, with what it
 			// committed, and the record goes on taking its entries meanwhile.
 			if (isCancelled(options.signal) && isAbortError(error)) {
-				this.finishLater(onRecord, recorder);
+				finishLater();
 				return response;
 			}
 			// The run completed, but its record does not say so: the consumer must not take what it
@@ -409,10 +433,10 @@ export class RecordingAgent implements Agent {
 	 * end is only logged.
 	 */
 	private async endFailed(
-		onRecord: RunRecordCallback,
 		recorder: RunRecorder,
 		error: unknown,
 		signal: AbortSignal,
+		finishLater: () => void,
 	): Promise<void> {
 		// A record with a gap gets no end: the run's failure is that gap, or came after it.
 		if (recorder.broken) return;
@@ -423,10 +447,12 @@ export class RecordingAgent implements Agent {
 			return;
 		}
 		// A cancelled run rejects at once: it never waits for an entry the record is still taking,
-		// and the end is handed on once those before it are taken. A run that failed waits for its
-		// end, unless it is cancelled while it does.
-		if (signal.aborted) {
-			this.finishLater(onRecord, recorder);
+		// and the end is handed on once those before it are taken. Nor does a run refused because
+		// another run of the agent is working: its record comes after that run's, so it would wait
+		// for that whole run. Any other run that failed waits for its end, unless it is cancelled
+		// while it does.
+		if (signal.aborted || error instanceof RunInProgressError) {
+			finishLater();
 			return;
 		}
 		try {
@@ -434,25 +460,11 @@ export class RecordingAgent implements Agent {
 		} catch (failure) {
 			// Read again: the signal may have aborted while the record took the end.
 			if (isCancelled(signal)) {
-				this.finishLater(onRecord, recorder);
+				finishLater();
 				return;
 			}
 			this.warn(failure);
 		}
-	}
-
-	/**
-	 * Lets `recorder` finish taking its entries after its run settled, and holds the next record of
-	 * the same callback until it has.
-	 */
-	private finishLater(onRecord: RunRecordCallback, recorder: RunRecorder): void {
-		const finished = recorder.finishInBackground(failure => {
-			this.warn(failure);
-		});
-		unfinished.set(onRecord, finished);
-		void finished.then(() => {
-			if (unfinished.get(onRecord) === finished) unfinished.delete(onRecord);
-		});
 	}
 
 	/** Logs that the record could not take the run's end; the run's own outcome is what counts. */

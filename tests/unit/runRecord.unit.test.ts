@@ -10,6 +10,7 @@ import { runRecordVersion, type RunEntry } from '../../src/agent/domain/runRecor
 import { UnrecoverableCommittedRunError } from '../../src/agent/domain/committedRunError.ts';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import { RetryingAgent } from '../../src/retry/domain/model/retryingAgent.ts';
+import { RunInProgressError } from '../../src/agent/domain/oneRunAtATime.ts';
 import { RecoverableError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
 import type { Tool } from '../../src/tools/domain/tool.ts';
 import { agentAsTool } from '../../src/tools/infrastructure/agentAsTool.ts';
@@ -491,14 +492,13 @@ describe('the run record', () => {
 		expect(taken).toEqual(['question', 'progress', 'answer', 'end']);
 	});
 
-	it("holds a new run's record until the same callback took a cancelled run's record whole", async () => {
+	it("holds a new run's record until a cancelled run's record is taken whole, whatever callback each gives", async () => {
 		const controller = new AbortController();
-		const entries: RunEntry[] = [];
-		let slow = true;
-		const onRecord = (entry: RunEntry) => {
-			entries.push(entry);
-			if (!slow || entry.type !== 'question') return undefined;
-			slow = false;
+		// One store, as a consumer keeps for a conversation, written by a callback each run makes.
+		const store: RunEntry[] = [];
+		const firstRecord = (entry: RunEntry) => {
+			store.push(entry);
+			if (entry.type !== 'question') return undefined;
 			// A slow store: the user cancels while it takes the first run's question.
 			setTimeout(() => {
 				controller.abort();
@@ -510,22 +510,63 @@ describe('the run record', () => {
 		);
 
 		await agent
-			.run('first', { signal: controller.signal, ask: () => ['One function'], onRecord })
+			.run('first', {
+				signal: controller.signal,
+				ask: () => ['One function'],
+				onRecord: firstRecord,
+			})
 			.catch(() => undefined);
-		await agent.run('second', { signal: new AbortController().signal, onRecord });
+		await agent.run('second', {
+			signal: new AbortController().signal,
+			onRecord: entry => void store.push(entry),
+		});
 
-		const ends = entries.flatMap((entry, index) =>
+		const ends = store.flatMap((entry, index) =>
 			entry.type === 'end' ? [[index, entry.outcome]] : [],
 		);
-		const secondMessage = entries.findIndex(
+		const secondMessage = store.findIndex(
 			entry => entry.type === 'progress' && entry.event.type === 'agentMessage',
 		);
 		// The first run's end comes before anything of the second run, whose end is the last entry.
 		expect(ends).toEqual([
 			[expect.any(Number), 'cancelled'],
-			[entries.length - 1, 'completed'],
+			[store.length - 1, 'completed'],
 		]);
 		expect(ends[0]?.[0]).toBeLessThan(secondMessage);
+	});
+
+	it("refuses a run while another works at once, and records its end after the working run's", async () => {
+		const store: RunEntry[] = [];
+		let answer: (answers: string[]) => void = () => undefined;
+		const agent = recorded(
+			new FakeLLMClient(assistantResponse([askCall()]), textResponse('first run')),
+		);
+
+		const first = agent.run('first', {
+			signal: new AbortController().signal,
+			ask: () => new Promise<string[]>(resolve => (answer = resolve)),
+			onRecord: entry => void store.push(entry),
+		});
+		await vi.waitFor(() => {
+			expect(store.some(entry => entry.type === 'question')).toBe(true);
+		});
+		const second = agent.run('second', {
+			signal: new AbortController().signal,
+			onRecord: entry => void store.push(entry),
+		});
+
+		await expect(second).rejects.toBeInstanceOf(RunInProgressError);
+		// The refused run's end waits for the working run's record, without holding the refusal.
+		expect(store.some(entry => entry.type === 'end')).toBe(false);
+		answer(['One function']);
+		await first;
+		await vi.waitFor(() => {
+			expect(store.filter(entry => entry.type === 'end')).toHaveLength(2);
+		});
+		expect(store.flatMap(entry => (entry.type === 'end' ? [entry.outcome] : []))).toEqual([
+			'completed',
+			'failed',
+		]);
 	});
 
 	it('hands the callback copies, so what it changes never reaches the asker or what run() returns', async () => {
