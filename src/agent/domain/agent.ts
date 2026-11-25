@@ -128,6 +128,9 @@ export interface RunOptions {
 	 * when it did; a run that failed or was cancelled rejects with its own error, and the failure
 	 * to take its end is logged.
 	 *
+	 * The records of one agent instance's runs are taken one after another, whole; across
+	 * instances, such as a new agent for each run, the consumer orders them itself.
+	 *
 	 * Only the agents the factories return keep a record; an agent another agent started, or a
 	 * role of an orchestrator, is part of the record of the run it works in.
 	 */
