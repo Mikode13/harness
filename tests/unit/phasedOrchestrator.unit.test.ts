@@ -8,7 +8,9 @@ import type {
 import type { RepositoryCommit } from '../../src/agent/domain/commitReport.ts';
 import { Inbox } from '../../src/agent/domain/inbox.ts';
 import type { Asker } from '../../src/agent/domain/question.ts';
+import { RecordingAgent } from '../../src/agent/domain/recordingAgent.ts';
 import { authorOf, RunContext, withRunContext } from '../../src/agent/domain/runContext.ts';
+import type { RunEntry } from '../../src/agent/domain/runRecord.ts';
 import type { ChangeLog } from '../../src/orchestration/domain/model/changeLog.ts';
 import type { Committer, FrozenChanges } from '../../src/orchestration/domain/model/committer.ts';
 import { PhasedOrchestrator } from '../../src/orchestration/domain/model/phasedOrchestrator.ts';
@@ -373,6 +375,51 @@ describe('the phased orchestrator', () => {
 			expect(ask.mock.calls[0]?.[0][0]?.question).toContain('Carry out this plan?');
 			expect(ask.mock.calls[0]?.[0][0]?.question).toContain('1. parse');
 			expect(result.response).toContain('1. parse: parsed');
+		});
+
+		it("records the plan's question as its own, and a role's as that role's", async () => {
+			const executor = scripted(done('parsed'));
+			const asking: Agent = {
+				run: async (prompt, options) => {
+					await options.ask?.(
+						[
+							{
+								question: 'Which name?',
+								options: [
+									{ label: 'a', description: 'a' },
+									{ label: 'b', description: 'b' },
+								],
+								multiSelect: false,
+							},
+						],
+						options.signal,
+					);
+					return executor.agent.run(prompt, options);
+				},
+			};
+			const entries: RunEntry[] = [];
+
+			await new RecordingAgent({
+				inner: orchestrator({
+					planner: scripted(planOf('parse')).agent,
+					executor: asking,
+					reviewer: scripted(approved).agent,
+				}),
+				logger: { warn: vi.fn() },
+			}).run('task', {
+				signal,
+				ask: questions => questions.map(() => 'Approve'),
+				onRecord: entry => void entries.push(entry),
+			});
+
+			expect(
+				entries.flatMap(entry => (entry.type === 'question' ? [[entry.id, entry.origin]] : [])),
+			).toEqual([
+				[1, {}],
+				[2, { agent: 'executor' }],
+			]);
+			expect(entries.filter(entry => entry.type === 'answer')).toHaveLength(2);
+			expect(entries.at(-1)).toMatchObject({ type: 'end', outcome: 'completed' });
 		});
 
 		it('plans again with what the user said, and asks again', async () => {

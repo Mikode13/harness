@@ -71,6 +71,14 @@ export type {
 export type { CommitQuestion, PhaseLimits } from './orchestration/domain/model/phases.ts';
 export type { RequiredCheck } from './orchestration/domain/model/verification.ts';
 export type { Transcript, TranscriptCallback } from './agent/domain/transcript.ts';
+export {
+	runRecordVersion,
+	type RecordedDelegation,
+	type RecordedFailure,
+	type RecordedOrigin,
+	type RunEntry,
+	type RunRecordCallback,
+} from './agent/domain/runRecord.ts';
 export { Inbox } from './agent/domain/inbox.ts';
 export { RunInProgressError } from './agent/domain/oneRunAtATime.ts';
 export {
