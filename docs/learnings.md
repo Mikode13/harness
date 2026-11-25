@@ -735,3 +735,39 @@ as an ordinary user. Nothing ran against a real provider.
 - **What changed:** the tests skip what root cannot fail, follow the file's mode, skip without
   `ssh-keygen`, set the signing format they fake, and count a zombie as gone on Linux. No
   production code changed for them.
+
+## The harness on #111, from the prompt of this change (2026-11-25)
+
+The maintainer gave the harness the prompt the agent that wrote this change had been given,
+and its output is on `feat/trial-issue-111` (412f8d6). It is compared here with this change's
+first commit, a71c7ef, before any review, and with the change as reviewed.
+
+### Its code matched the first version of this change
+
+- **What happened:** the run met most of #111's acceptance criteria, with documentation, and
+  missed two things the first version of this change had.
+- **Evidence:**
+  - `check` passed, and so did the suite: 1,809 tests, 25 skipped.
+  - It round-trips the turn tree, refuses a snapshot while a run works, keeps a run the output
+    limit or a loop stopped, has a restored agent read a file again before it edits it, and
+    takes a turn whose dead run left nothing as following the turn before it.
+  - It tests each provider's opaque data both ways: OpenAI's reasoning items and compaction
+    for OpenAI, and what reaches Claude from an OpenAI conversation. This change tests Claude's
+    signed thinking and the way from Claude to OpenAI.
+  - It gives a restored agent a new session, so the workspace's history records the runs after
+    the restore under another session.
+  - It reports a version it does not read with the same error as a malformed snapshot, while a
+    stored snapshot can outlive the release that took it.
+- **What changed:** nothing in the harness. The quality of the code is no longer what limits
+  it; what it costs, and the context it is given, are what the next runs work on.
+
+### The review rounds found what both first versions missed
+
+- **What happened:** two gaps of the trial were in a71c7ef too, and the AI review found them in
+  this change.
+- **Evidence:** refusing a snapshot while a run that encloses the agent, such as a workflow's,
+  is open came in 1f7080b, and naming the history `seenRevision` counts in came in a0e7845.
+  Without the second, an agent restored over a rebuilt workspace compares its revision with a
+  history that starts again, and is not told of that history's first moves.
+- **What changed:** nothing. A trial is compared with a change's first commit, or put through
+  the same review first; compared with a reviewed change, it looks worse than it is.
