@@ -3307,7 +3307,7 @@ tags: #mikode-harness #persistence #llm #api-design
 - A snapshot can hold file contents and command output; the README says so, and what its storage owes.
 - The narration of a step after a restore names a large result by its tool's name only: the summaries of earlier calls are narration, not context, and are not kept.
 - A turn restored over another folder's history keeps its context and writes nothing there; the workspace is not checked to be the snapshot's, and that history's earlier moves are taken as seen.
-- `createLLMOrchestrator` and workflows take no snapshot yet (#136); the Agent SDK engines take none.
+- This entry covers one agent. `createLLMOrchestrator`'s session is saved at the end of a run by the next entry (#136); workflows and the Agent SDK engines take no snapshot.
 - The agent `createLLMAgent` returns keeps a run's record too (#177): `RecordingConversationAgent`, the `RecordingAgent` outside it, still offers its `snapshot()`.
 
 ## A composed session is saved at the end of a run, and a run cut short stays interrupted
