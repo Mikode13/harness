@@ -3309,3 +3309,31 @@ tags: #mikode-harness #persistence #llm #api-design
 - A turn restored over another folder's history keeps its context and writes nothing there; the workspace is not checked to be the snapshot's, and that history's earlier moves are taken as seen.
 - `createLLMOrchestrator` and workflows take no snapshot yet (#136); the Agent SDK engines take none.
 - The agent `createLLMAgent` returns keeps a run's record too (#177): `RecordingConversationAgent`, the `RecordingAgent` outside it, still offers its `snapshot()`.
+
+## A composed session is saved at the end of a run, and a run cut short stays interrupted
+
+tags: #mikode-harness #persistence #orchestration #api-design
+
+**Decision:**
+
+- **`createLLMOrchestrator` returns a `SessionAgent`,** whose `snapshot()` gives a `SessionSnapshot`: `format` `mikode-harness/session`, `version` 1, `flow` `llm-orchestrator`, `boundary` `completed`, the orchestrator's session, and the `ConversationSnapshot` of each role by its name, `planner`, `executor` and `reviewer`. It builds on the single-agent snapshot instead of a format of its own, so a role's conversation follows every rule that one does: provider data, file reads, approvals and history references.
+- **The only supported boundary is the end of a run.** `snapshot()` throws `RunInProgressError` while a run works, between two stages too. A checkpoint between stages is not supported: a snapshot with another `boundary` is refused, so a later release can add one beside it.
+- **A run cut short is interrupted, never resumed.** It is in no snapshot. Restoring the last snapshot replays none of it; the history lists it as `interrupted`, with its session and files, and what it changed stays on disk.
+- **The flow's identity is checked before anything is opened:** the format, the version, the flow, the boundary and exactly the three roles. A role's conversation that cannot be restored keeps its error's class and names the role. Every other option is the restoring call's; no function, client or credential is in a snapshot.
+- **Only what outlives a run is kept.** Explorers, the committer and agents a role hands a task to with `agentAsTool` are created inside a run and keep nothing; what they handed over is in the calling role's conversation, so restoring never starts them again. A workflow of `createWorkflow` takes no snapshot: its stages' agents live for one run.
+
+**Context:** #136. The comment of 2026-11-21 on it says the MiKode MVP runs the planner, executor and reviewer, needs the completed session snapshot taken when a run ends, accepts that a run cut short is interrupted, and leaves checkpoints at stage boundaries for a later step. `PhasedOrchestrator` keeps each role's agent, and its conversation, across runs; that is all a next run needs. The rest of these choices were left to this change, and its pull request lists them for the maintainer to check.
+
+**Alternatives considered:**
+
+- **Checkpoints at stage boundaries now.** They would need the workflow's position, each stage's validated output and the phase course, the commit flow's state and the verifier's, all versioned, and a way to go on at the next stage. The product does not need them yet.
+- **A snapshot during a run that reports itself as interrupted.** It would hold the roles' conversations from different points of one run, and nothing can go on from that state. Refusing keeps one rule for both kinds of snapshot.
+- **A note to the roles about a run cut short since the snapshot.** It would tell the model that files changed under it, but a failed run already leaves its changes without a note, and a restored role reads a file before it changes it. Left to the consumer, which knows which prompt it sent.
+- **A snapshot for `createWorkflow`.** Its stages keep nothing between runs, so it would hold only a session; a consumer's own agents are its to snapshot.
+
+**Consequences:**
+
+- `createLLMOrchestrator` returns `Promise<SessionAgent>`; `SessionAgent` and `SessionSnapshot` are public, a `feat`.
+- A consumer that wants to offer a cut-short prompt again keeps its own record of it, as the durable task record of the consumer (Mikode13/engineering#53) would.
+- Checkpoints inside a run remain open under #136.
+- The agent `createLLMOrchestrator` returns keeps a run's record too (#177): `RecordingSessionAgent`, the `RecordingAgent` outside it, still offers its `snapshot()`.

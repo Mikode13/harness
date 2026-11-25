@@ -65,6 +65,55 @@ export interface ConversationAgent extends Agent {
 	snapshot(): ConversationSnapshot;
 }
 
+/** The `format` of a `SessionSnapshot`. */
+export const sessionFormat = 'mikode-harness/session';
+
+/** The versions of `SessionSnapshot` this release restores. */
+export const sessionVersions = [1] as const;
+
+/** The roles of `createLLMOrchestrator`, each a conversation a `SessionSnapshot` keeps. */
+export const orchestratorRoles = ['planner', 'executor', 'reviewer'] as const;
+
+/**
+ * What a composed agent needs to go on, as plain JSON, taken when its run ended with
+ * `SessionAgent.snapshot()`: `JSON.stringify` it to store it, and give it back, parsed, to the
+ * same factory's `restore`. Today that is `createLLMOrchestrator`'s.
+ *
+ * It holds the conversation of each agent the composition keeps from one run to the next, the
+ * planner's, the executor's and the reviewer's, each a `ConversationSnapshot` with what that
+ * holds: file contents and command output among them. Agents that live only inside a run, the
+ * explorers, the committer and the agents a `DelegationTool` starts, keep nothing: what they
+ * handed over is in the conversation of the role that called them.
+ *
+ * `boundary` says where it was taken. `completed` is the one boundary this release supports: no
+ * run was working, so nothing of a run is half kept. A checkpoint inside a run, between two
+ * stages, is not supported yet; a run cut short, by a crash or a closed process, is not in any
+ * snapshot, and restoring the last one never runs it again.
+ */
+export interface SessionSnapshot {
+	format: typeof sessionFormat;
+	version: 1;
+	/** The composition it was taken of, which the agent restoring it must be. */
+	flow: 'llm-orchestrator';
+	/** Where it was taken: once every run had ended. */
+	boundary: 'completed';
+	/** The session the composition's runs belonged to when their options named none. */
+	session: Session;
+	/** Each kept agent's conversation, by its role. */
+	roles: Record<(typeof orchestratorRoles)[number], ConversationSnapshot>;
+}
+
+/** A composed agent whose agents' conversations can be taken as a snapshot between runs. */
+export interface SessionAgent extends Agent {
+	/**
+	 * A copy of what its agents recorded, as plain JSON, at the `completed` boundary.
+	 *
+	 * @throws {RunInProgressError} while a run works on it, between two of its stages included:
+	 * take it once `run()` settles.
+	 */
+	snapshot(): SessionSnapshot;
+}
+
 type Options = ConstructorParameters<typeof UnrecoverableError>[1];
 
 /**

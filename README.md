@@ -103,9 +103,11 @@ was chosen.
 Conversation continuity within an agent instance is not durable conversation storage. An agent
 of `createLLMAgent` can take a snapshot of its conversation, which a fresh agent restores
 ([saving and restoring a conversation](#saving-and-restoring-a-conversation)); where it is
-stored is the consumer's. Snapshots of `createLLMOrchestrator` and of workflows are still pending
-([#136](https://github.com/Mikode13/harness/issues/136)), and so are the Agent SDK engines',
-whose conversations their providers keep. The file-change history already writes recovery data
+stored is the consumer's, and so can the orchestrator of `createLLMOrchestrator`, once a run
+ended ([a composed session](#saving-and-restoring-a-composed-session)). A checkpoint inside a run,
+between two of its stages, is not supported yet
+([#136](https://github.com/Mikode13/harness/issues/136)), and the Agent SDK engines take no
+snapshot: their providers keep their conversations. The file-change history already writes recovery data
 to disk, which is a separate capability.
 `ProgressEvent` is activity narration; a run's record (`onRecord`) is the complete, ordered
 observation of a run, but the harness stores neither: keeping the record is the consumer's.
@@ -613,6 +615,55 @@ anything, so no model or tool runs. A snapshot whose version is a whole number t
 `UnsupportedSnapshotVersionError`, an `InvalidSnapshotError` with the `version` it names; anything else, a missing version included, that is not a whole
 snapshot, such as a part of an unknown type, a turn that follows a later one or a tool call
 without its result, throws `InvalidSnapshotError`. Both are `UnrecoverableError`s.
+
+### Saving and restoring a composed session
+
+`createLLMOrchestrator` returns a `SessionAgent`: once a run ended, `snapshot()` gives a
+`SessionSnapshot`, which its `restore` goes on from in a fresh orchestrator, as
+`createLLMAgent`'s does for one agent:
+
+```ts
+const orchestrator = await createLLMOrchestrator({ workspace, commands });
+await orchestrator.run('Add the export button', { signal, ask });
+await db.save(chatId, JSON.stringify(orchestrator.snapshot()));
+
+// Later, maybe in another process:
+const saved = JSON.parse(await db.load(chatId)) as SessionSnapshot;
+const again = await createLLMOrchestrator({ workspace, commands, restore: saved });
+await again.run('Make it a dropdown too', { signal, ask });
+```
+
+It holds the orchestrator's session and the conversation of each role, the planner's, the
+executor's and the reviewer's, each a [conversation snapshot](#saving-and-restoring-a-conversation)
+with all that holds and leaves out: what one says of secrets, approvals, file reads, providers and
+the history holds for each role. Every other option, each role's prompt, model, tools and agents,
+comes from the call that restores it. The agents that live only inside a run keep nothing: an
+explorer, the committer, and an agent a role handed a task to with `agentAsTool`, whose answer is
+in the conversation of the role that called it, so restoring never starts it again.
+
+**The supported boundary is the end of a run.** A snapshot says where it was taken, `boundary:
+'completed'`: no run was working, so no stage is half done. `snapshot()` throws
+`RunInProgressError` while a run works, between two of its stages too. A checkpoint inside a run,
+which would go on at its next stage without running the stages before it again, is not supported
+yet.
+
+**A run cut short is interrupted, never resumed.** A run the process did not finish, such as one
+a crash or a closed process cut short, is in no snapshot. Restoring the last snapshot goes on from
+the run before it, and runs nothing of the cut run again: not its prompt, its commands nor its
+tools. The workspace's history lists the cut run as `interrupted`, with its session and its files,
+and what it changed stays on disk, for the user to keep or undo through `History`; a restored role
+reads a file before it changes it. Keep your own record of a run you started, such as the prompt
+you sent, if the user should be able to send it again.
+
+**When it cannot be restored.** `createLLMOrchestrator` checks the snapshot before it opens the
+workspace or builds any agent: one of another `format` or `flow`, a boundary this release does not
+restore, roles other than those three, or a role's conversation that cannot be restored throws
+`InvalidSnapshotError`, and a whole-number version this release does not restore, of the session or of a
+role's conversation, `UnsupportedSnapshotVersionError`; a missing version is malformed.
+
+A workflow of `createWorkflow` takes no snapshot: each of its stages creates its agent for one run,
+so once a run ended no conversation is left of it. An agent of yours that a stage gives every run
+is yours to snapshot, if it is a `ConversationAgent`.
 
 ### The record of a run
 

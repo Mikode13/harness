@@ -76,6 +76,8 @@ export {
 	UnsupportedSnapshotVersionError,
 	type ConversationAgent,
 	type ConversationSnapshot,
+	type SessionAgent,
+	type SessionSnapshot,
 } from './agent/domain/snapshot.ts';
 export {
 	runRecordVersion,
