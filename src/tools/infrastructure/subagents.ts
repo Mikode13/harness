@@ -1,4 +1,5 @@
 import type { ProgressEvent, RunOptions } from '#src/agent/domain/agent';
+import { delegatedAsking } from '#src/agent/domain/recordingAgent';
 import { withAuthor, withDelegation, withRunContext } from '#src/agent/domain/runContext';
 import type { RecoverableError, UnrecoverableError } from '#src/shared/domain/errors';
 import type { ToolCallContext } from '../domain/readRegistry.ts';
@@ -44,7 +45,9 @@ export function subagentOptions(
 	const onProgress = (event: ProgressEvent) => {
 		call.onProgress({ type: 'subagent', callId: call.callId, subagent, name, task, event });
 	};
-	const delegated = withRunContext({ ...options, onProgress }, call.run);
+	// What it asks is recorded as its own, inside the agents that led to it.
+	const asking = delegatedAsking(options, { name, callId: call.callId, subagent });
+	const delegated = withRunContext({ ...options, ...asking, onProgress }, call.run);
 	// What it changes is its caller's, made through it.
 	const authored =
 		call.author === undefined ? delegated : withAuthor(delegated, `${call.author} › ${name}`);

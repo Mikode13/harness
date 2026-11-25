@@ -735,3 +735,66 @@ as an ordinary user. Nothing ran against a real provider.
 - **What changed:** the tests skip what root cannot fail, follow the file's mode, skip without
   `ssh-keygen`, set the signing format they fake, and count a zombie as gone on Linux. No
   production code changed for them.
+
+## The harness on #111, from the prompt of this change (2026-11-25)
+
+The maintainer gave the harness the prompt the agent that wrote this change had been given,
+and its output is on `feat/trial-issue-111` (412f8d6). It is compared here with this change's
+first commit, a71c7ef, before any review, and with the change as reviewed.
+
+### Its code matched the first version of this change
+
+- **What happened:** the run met most of #111's acceptance criteria, with documentation, and
+  missed two things the first version of this change had.
+- **Evidence:**
+  - `check` passed, and so did the suite: 1,809 tests, 25 skipped.
+  - It round-trips the turn tree, refuses a snapshot while a run works, keeps a run the output
+    limit or a loop stopped, has a restored agent read a file again before it edits it, and
+    takes a turn whose dead run left nothing as following the turn before it.
+  - It tests each provider's opaque data both ways: OpenAI's reasoning items and compaction
+    for OpenAI, and what reaches Claude from an OpenAI conversation. This change tests Claude's
+    signed thinking and the way from Claude to OpenAI.
+  - It gives a restored agent a new session, so the workspace's history records the runs after
+    the restore under another session.
+  - It reports a version it does not read with the same error as a malformed snapshot, while a
+    stored snapshot can outlive the release that took it.
+- **What changed:** nothing in the harness. The quality of the code is no longer what limits
+  it; what it costs, and the context it is given, are what the next runs work on.
+
+### The review rounds found what both first versions missed
+
+- **What happened:** two gaps of the trial were in a71c7ef too, and the AI review found them in
+  this change.
+- **Evidence:** refusing a snapshot while a run that encloses the agent, such as a workflow's,
+  is open came in 1f7080b, and naming the history `seenRevision` counts in came in a0e7845.
+  Without the second, an agent restored over a rebuilt workspace compares its revision with a
+  history that starts again, and is not told of that history's first moves.
+- **What changed:** nothing. A trial is compared with a change's first commit, or put through
+  the same review first; compared with a reviewed change, it looks worse than it is.
+
+## The harness on #136, from the prompt of #183 (2026-11-25)
+
+The maintainer gave the harness the prompt the agent of #183 had been given, on top of its own
+run on #111. The run stopped when its workspace stopped working, so its output, kept on
+`feat/trial-issue-136` (ca58452), is unfinished. It is compared with de50144, the first commit
+of #183, which already kept only the three roles, the session and the `completed` boundary.
+
+### It kept every subagent, which the next run never uses
+
+- **What happened:** the run saves, with each role's conversation, every subagent it started
+  and every committer that ran, each with its whole conversation. They accumulate over the
+  session, and a restored session keeps them and never runs them again.
+- **Evidence:**
+  - The suite passed: 1,862 tests, 25 skipped. `check` failed only on the formatting of two
+    files, which the maintainer fixed by hand in d12823d. README, architecture and decisions
+    were not changed.
+  - A snapshot grows with each explorer, which carries the files it read, and a live agent
+    holds every subagent it started for as long as the session lasts.
+  - To record them, it changed exploration, delegation and the commit flow, outside what a
+    snapshot needs.
+  - It keeps the two gaps of its run on #111: a new session after a restore, and no history
+    named for `seenRevision`.
+- **What changed:** nothing in the harness. The issue asks to keep the conversations of
+  delegated specialists, and the run read that literally; #183 followed the product's comment
+  on #136, that the MVP needs only the snapshot of a completed run. A requirement that
+  is in a comment or in the product's documents reaches the run only through its prompt.

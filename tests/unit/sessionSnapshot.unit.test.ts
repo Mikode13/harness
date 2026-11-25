@@ -172,6 +172,25 @@ describe('a snapshot of createLLMOrchestrator', () => {
 		await expect(restored.run('again', { signal })).resolves.toMatchObject({ session });
 	});
 
+	it('takes the snapshot of a run that kept a record, and restores it', async () => {
+		openAIAnswering();
+		const agent = await orchestrator();
+		const entries: string[] = [];
+		const { session } = await agent.run('ship it', {
+			signal,
+			onRecord: entry => {
+				entries.push(entry.type);
+			},
+		});
+		const snapshot = agent.snapshot();
+
+		const restored = await orchestrator({ restore: stored(snapshot) });
+
+		expect(entries.at(-1)).toBe('end');
+		expect(restored.snapshot()).toEqual(snapshot);
+		await expect(restored.run('again', { signal })).resolves.toMatchObject({ session });
+	});
+
 	it('sends every role what an orchestrator that never stopped sends', async () => {
 		const create = openAIAnswering();
 		const uninterrupted = await orchestrator();
