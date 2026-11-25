@@ -771,3 +771,31 @@ first commit, a71c7ef, before any review, and with the change as reviewed.
   history that starts again, and is not told of that history's first moves.
 - **What changed:** nothing. A trial is compared with a change's first commit, or put through
   the same review first; compared with a reviewed change, it looks worse than it is.
+
+## The harness on #136, from the prompt of #183 (2026-11-25)
+
+The maintainer gave the harness the prompt the agent of #183 had been given, on top of its own
+run on #111. The run stopped when its workspace stopped working, so its output, kept on
+`feat/trial-issue-136` (ca58452), is unfinished. It is compared with the first commit of
+#183, de50144, which already kept only the three roles, the session and the `completed`
+boundary.
+
+### It kept every subagent, which the next run never uses
+
+- **What happened:** the run saves, with each role's conversation, every subagent it started
+  and every committer that ran, each with its whole conversation. They accumulate over the
+  session, and a restored session keeps them and never runs them again.
+- **Evidence:**
+  - The suite passed: 1,862 tests, 25 skipped. `check` failed only on the formatting of two
+    files, which the maintainer fixed by hand in d12823d. README, architecture and decisions
+    were not changed.
+  - A snapshot grows with each explorer, which carries the files it read, and a live agent
+    holds every subagent it started for as long as the session lasts.
+  - To record them, it changed exploration, delegation and the commit flow, outside what a
+    snapshot needs.
+  - It keeps the two gaps of its run on #111: a new session after a restore, and no history
+    named for `seenRevision`.
+- **What changed:** nothing in the harness. The issue asks to keep the conversations of
+  delegated specialists, and the run read that literally; #183 followed the product's comment
+  on #136, that the MVP needs only the snapshot of a completed run. A requirement that
+  is in a comment or in the product's documents reaches the run only through its prompt.
