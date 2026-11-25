@@ -1,3 +1,4 @@
+import { ChildLedger } from '../../src/agent/domain/composedCapture.ts';
 import Anthropic from '@anthropic-ai/sdk';
 import type { Message as AnthropicMessage } from '@anthropic-ai/sdk/resources/messages';
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -1746,6 +1747,7 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 				onProgress: () => undefined,
 				spend: () => undefined,
 				depth: 0,
+				children: new ChildLedger(),
 			},
 		);
 		await prepared.run(signal);
@@ -1803,6 +1805,7 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 								onProgress: () => undefined,
 								spend: () => undefined,
 								depth: 0,
+								children: new ChildLedger(),
 							},
 						);
 						results.push(await prepared.run(signal));
@@ -1877,6 +1880,7 @@ describe('createFileTools, and createLLMAgent over a workspace', () => {
 					onProgress: () => undefined,
 					spend: () => undefined,
 					depth: 0,
+					children: new ChildLedger(),
 				},
 			);
 

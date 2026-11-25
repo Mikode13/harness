@@ -1,3 +1,4 @@
+import { ChildLedger } from '../../src/agent/domain/composedCapture.ts';
 import { execFileSync } from 'node:child_process';
 import {
 	chmodSync,
@@ -491,6 +492,7 @@ describe('a move through a history', () => {
 				onProgress: () => undefined,
 				spend: () => undefined,
 				depth: 0,
+				children: new ChildLedger(),
 			},
 		);
 		await prepared.run(signal);

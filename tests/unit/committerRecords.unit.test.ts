@@ -11,9 +11,7 @@ import {
 	type ComposedSessionSnapshot,
 	parseComposedSessionSnapshot,
 } from '../../src/orchestration/domain/model/composedSessionSnapshot.ts';
-import {
-	ModelAPIPhasedOrchestrator,
-} from '../../src/orchestration/domain/model/phasedOrchestrator.ts';
+import { ModelAPIPhasedOrchestrator } from '../../src/orchestration/domain/model/phasedOrchestrator.ts';
 import {
 	phaseReportValidator,
 	phaseReviewValidator,
@@ -140,7 +138,7 @@ describe('the committer records of a model-API session', () => {
 			...saved.auxiliary,
 			{
 				origin: { role: 'committer', attempt: 3, repository: '/repo' },
-				agent: expect.objectContaining({ children: [] }),
+				agent: expect.objectContaining({ children: [] }) as unknown,
 			},
 		]);
 	});

@@ -168,15 +168,13 @@ export class CommitFlow {
 	 * @throws {UnrecoverableError} naming the first committer whose agent cannot be saved.
 	 */
 	auxiliaryRecords(): AuxiliaryRecord[] {
-		return this.runs.map(
-			({ attempt, repository, ended }): AuxiliaryRecord => ({
-				origin: { role: 'committer', attempt, repository },
-				agent: recordOf(
-					'committer',
-					capturedOfEnded(`The committer of attempt ${String(attempt)} in ${repository}`, ended),
-				),
-			}),
-		);
+		return this.runs.map(({ attempt, repository, ended }): AuxiliaryRecord => ({
+			origin: { role: 'committer', attempt, repository },
+			agent: recordOf(
+				'committer',
+				capturedOfEnded(`The committer of attempt ${String(attempt)} in ${repository}`, ended),
+			),
+		}));
 	}
 
 	/** Whether an approved run may be committed: by the user's word, or without asking. */

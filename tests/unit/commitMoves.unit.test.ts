@@ -1,3 +1,4 @@
+import { ChildLedger } from '../../src/agent/domain/composedCapture.ts';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
 	existsSync,
@@ -112,6 +113,7 @@ async function run(tool: PreparingTool, name: string) {
 		onProgress: () => undefined,
 		spend: () => undefined,
 		depth: 0,
+		children: new ChildLedger(),
 	});
 	const output = await call.run(signal);
 	await context.finish('completed');
@@ -261,6 +263,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			onProgress: () => undefined,
 			spend: () => undefined,
 			depth: 0,
+			children: new ChildLedger(),
 		});
 		await expect(call.run(signal)).rejects.toBeInstanceOf(EditUnconfirmedError);
 		await context.finish('failed');
@@ -342,6 +345,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			onProgress: () => undefined,
 			spend: () => undefined,
 			depth: 0,
+			children: new ChildLedger(),
 		});
 		await expect(call.run(signal)).rejects.toBeInstanceOf(RunEndingToolError);
 		// Its evidence too: the files it changed are recorded, only its commits went unread.

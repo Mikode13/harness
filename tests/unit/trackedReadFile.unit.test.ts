@@ -1,3 +1,4 @@
+import { ChildLedger } from '../../src/agent/domain/composedCapture.ts';
 import { execFileSync } from 'node:child_process';
 import {
 	chmodSync,
@@ -58,6 +59,7 @@ async function readFile(
 			onProgress: () => undefined,
 			spend: () => undefined,
 			depth: 0,
+			children: new ChildLedger(),
 		});
 		return await prepared.run(signal);
 	} catch (error) {

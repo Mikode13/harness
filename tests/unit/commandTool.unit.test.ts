@@ -1,3 +1,4 @@
+import { ChildLedger } from '../../src/agent/domain/composedCapture.ts';
 import { execFileSync } from 'node:child_process';
 import {
 	chmodSync,
@@ -108,6 +109,7 @@ async function call(
 			onProgress: () => undefined,
 			spend: () => undefined,
 			depth: 0,
+			children: new ChildLedger(),
 			...(author === undefined ? {} : { author }),
 		});
 		const output = await prepared.run(runSignal);
@@ -135,6 +137,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			onProgress: () => undefined,
 			spend: () => undefined,
 			depth: 0,
+			children: new ChildLedger(),
 		});
 		// Another agent of the run, with tools of its own over the same history.
 		const editor = (await open()).writes.editorFor(context);
@@ -235,6 +238,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			onProgress: () => undefined,
 			spend: () => undefined,
 			depth: 0,
+			children: new ChildLedger(),
 		});
 		expect(prepared.ending?.()).toBeUndefined();
 		const report = await prepared.run(signal).catch((error: unknown) => (error as Error).message);
@@ -661,6 +665,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 				onProgress: () => undefined,
 				spend: () => undefined,
 				depth: 0,
+				children: new ChildLedger(),
 			}),
 		).rejects.toThrow(message);
 	});
@@ -734,6 +739,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			onProgress: () => undefined,
 			spend: () => undefined,
 			depth: 0,
+			children: new ChildLedger(),
 		});
 
 		const running = prepared.run(controller.signal);
@@ -927,6 +933,7 @@ describe('runCommand', { timeout: 20_000 }, () => {
 			onProgress: () => undefined,
 			spend: () => undefined,
 			depth: 0,
+			children: new ChildLedger(),
 		});
 		const stopped = prepared.run(signal);
 

@@ -127,9 +127,9 @@ function stalledModel(started: () => void): LLMClient {
 		send: (_request, signal) =>
 			new Promise<LLMResponse>((_resolve, reject) => {
 				started();
-				signal.addEventListener('abort', () =>
-					reject(new DOMException('The operation was aborted', 'AbortError')),
-				);
+				signal.addEventListener('abort', () => {
+					reject(new DOMException('The operation was aborted', 'AbortError'));
+				});
 			}),
 	};
 }
@@ -1074,6 +1074,7 @@ describe('agentAsTool', () => {
 			onProgress: () => undefined,
 			spend: () => undefined,
 			depth: 0,
+			children: new ChildLedger(),
 		};
 		const createAgent = vi.fn();
 
@@ -1364,7 +1365,7 @@ describe('agentAsTool over a workspace', () => {
 			childStarted = resolve;
 		});
 		const tool = delegation({
-			createAgent: () => new LLMAgent({ llmClient: stalledModel(() => childStarted()) }),
+			createAgent: () => new LLMAgent({ llmClient: stalledModel(childStarted) }),
 		});
 		const { agent } = delegatingParent(tool, 'stall');
 		const controller = new AbortController();
@@ -1413,7 +1414,8 @@ describe('agentAsTool over a workspace', () => {
 				return new Proxy(plain, {
 					get: (target, key, receiver) => {
 						if (key === composedCaptureKey) throw new Error('the probe broke');
-						return Reflect.get(target, key, receiver);
+						const value: unknown = Reflect.get(target, key, receiver);
+						return value;
 					},
 				});
 			},
@@ -1482,7 +1484,7 @@ describe('agentAsTool over a workspace', () => {
 					callId: 'call-2',
 					task: 'second task',
 					outcome: 'answered',
-				}),
+				}) as unknown,
 			}),
 		]);
 	});

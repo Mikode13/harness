@@ -1,3 +1,4 @@
+import { ChildLedger } from '../../src/agent/domain/composedCapture.ts';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -158,6 +159,7 @@ describe('showChanges for the planner and the reviewer', () => {
 			onProgress: () => undefined,
 			spend: () => undefined,
 			depth: 0,
+			children: new ChildLedger(),
 		});
 		return prepared.run(signal);
 	}

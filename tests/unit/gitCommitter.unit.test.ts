@@ -1,3 +1,4 @@
+import { ChildLedger } from '../../src/agent/domain/composedCapture.ts';
 import { execFileSync } from 'node:child_process';
 import {
 	chmodSync,
@@ -86,6 +87,7 @@ async function workingRun(commands: Record<string, string>) {
 			onProgress: () => undefined,
 			spend: () => undefined,
 			depth: 0,
+			children: new ChildLedger(),
 		});
 		await call.run(signal);
 	};
@@ -217,6 +219,7 @@ describe('the git committer', { timeout: 20_000 }, () => {
 			onProgress: () => undefined,
 			spend: () => undefined,
 			depth: 0,
+			children: new ChildLedger(),
 		});
 		await call.run(signal);
 

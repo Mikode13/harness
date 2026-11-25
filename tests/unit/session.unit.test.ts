@@ -1,3 +1,4 @@
+import { ChildLedger } from '../../src/agent/domain/composedCapture.ts';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -178,6 +179,7 @@ describe('the history', () => {
 					onProgress: () => undefined,
 					spend: () => undefined,
 					depth: 0,
+					children: new ChildLedger(),
 				},
 			);
 			await prepared.run(signal);

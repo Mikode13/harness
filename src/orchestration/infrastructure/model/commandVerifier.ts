@@ -1,5 +1,6 @@
 import type { RunOptions } from '#src/agent/domain/agent';
 import type { CommandLine } from '#src/agent/domain/approval';
+import { ChildLedger } from '#src/agent/domain/composedCapture';
 import {
 	delegationOf,
 	harnessAuthor,
@@ -281,5 +282,6 @@ function callContext(run: RunContext, command: string, depth: number) {
 		spend: () => undefined,
 		depth,
 		author: harnessAuthor,
+		children: new ChildLedger(),
 	};
 }
