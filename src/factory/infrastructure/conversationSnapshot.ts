@@ -146,6 +146,14 @@ function invalid(cause: string): InvalidSnapshotError {
 	return new InvalidSnapshotError('The conversation snapshot cannot be restored', { cause });
 }
 
-function describe(value: unknown): string {
-	return value === undefined ? 'missing' : JSON.stringify(value);
+/** `value` as an error names it. One JSON cannot hold, such as a BigInt or a cycle, by its type. */
+export function describe(value: unknown): string {
+	if (value === undefined) return 'missing';
+	// A function or a symbol gives no JSON, without throwing.
+	if (typeof value === 'function' || typeof value === 'symbol') return `a ${typeof value}`;
+	try {
+		return JSON.stringify(value);
+	} catch {
+		return `a ${typeof value} JSON cannot hold`;
+	}
 }

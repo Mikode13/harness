@@ -865,6 +865,15 @@ describe('reading a conversation snapshot', () => {
 		],
 		['has a version that is not a number', snapshot => ({ ...snapshot, version: '1' })],
 		['has a version that is not a whole number', snapshot => ({ ...snapshot, version: 1.5 })],
+		['has a version JSON cannot hold', snapshot => ({ ...snapshot, version: 1n })],
+		[
+			'has a format JSON cannot hold',
+			snapshot => {
+				const format: Record<string, unknown> = {};
+				format.self = format;
+				return { ...snapshot, format };
+			},
+		],
 	];
 
 	it.each(broken)('refuses one that %s, classified', async (_, breakIt) => {

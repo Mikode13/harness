@@ -383,6 +383,7 @@ describe('restoring a session snapshot that cannot be restored', () => {
 		['has a key its format does not', snapshot => ({ ...snapshot, extra: 1 }), 'extra'],
 		['has a session without an id', snapshot => ({ ...snapshot, session: {} }), 'no id'],
 		['has no version', snapshot => ({ ...snapshot, version: undefined }), 'not a version number'],
+		['has a flow JSON cannot hold', snapshot => ({ ...snapshot, flow: 1n }), 'a bigint'],
 		[
 			'has a role whose version is not a number',
 			snapshot => ({

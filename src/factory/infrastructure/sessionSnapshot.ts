@@ -7,7 +7,7 @@ import {
 } from '#src/agent/domain/snapshot';
 import type { RestoredConversation } from '#src/engines/domain/model/agentSnapshot';
 import type { Session } from '#src/shared/domain/session';
-import { readConversationSnapshot } from './conversationSnapshot.ts';
+import { describe, readConversationSnapshot } from './conversationSnapshot.ts';
 
 type OrchestratorRole = (typeof orchestratorRoles)[number];
 
@@ -113,8 +113,4 @@ function readSession(value: unknown): Session {
 
 function invalid(cause: string): InvalidSnapshotError {
 	return new InvalidSnapshotError('The session snapshot cannot be restored', { cause });
-}
-
-function describe(value: unknown): string {
-	return value === undefined ? 'missing' : JSON.stringify(value);
 }
