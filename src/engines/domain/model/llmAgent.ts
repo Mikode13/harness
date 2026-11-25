@@ -13,6 +13,13 @@ import {
 	ignoreProgress,
 } from '#src/agent/domain/agent';
 import {
+	type CapturedAgent,
+	type CapturedChild,
+	ChildLedger,
+	type ComposedCapable,
+	composedCaptureKey,
+} from '#src/agent/domain/composedCapture';
+import {
 	authorOf,
 	delegationOf,
 	type RunEnd,
@@ -295,7 +302,7 @@ function takeInbox(
  * are the consumer's to emit, as with the other engines; this agent only narrates what the
  * model produced and what its tools did.
  */
-export class LLMAgent implements ModelAPIAgent {
+export class LLMAgent implements ModelAPIAgent, ComposedCapable {
 	private readonly llmClient: LLMClient;
 	private readonly conversation: Conversation;
 	private readonly tools: Map<string, AgentTool>;
@@ -322,11 +329,14 @@ export class LLMAgent implements ModelAPIAgent {
 	private readonly runs = new OneRunAtATime();
 	// The session its runs belong to when their options name none.
 	private readonly session = newSession();
+	// The subagents its calls started, each kept once it ended, for the state of a composed session.
+	private readonly children: ChildLedger;
 
 	constructor({
 		llmClient,
 		messages,
 		snapshot,
+		children,
 		tools = [],
 		maxSteps = 65,
 		autoApprove = false,
@@ -344,6 +354,11 @@ export class LLMAgent implements ModelAPIAgent {
 		 * makes it. Taken up in place of `messages`, which it must not be given with.
 		 */
 		snapshot?: ConversationSnapshot;
+		/**
+		 * The subagents a saved session completed, which the agent keeps as they were and never runs
+		 * again: new ones are kept after them.
+		 */
+		children?: readonly CapturedChild[];
 		tools?: AgentTool[];
 		/** How many calls to the model one run may make before it fails. Defaults to 65. */
 		maxSteps?: number;
@@ -395,6 +410,7 @@ export class LLMAgent implements ModelAPIAgent {
 
 		this.llmClient = llmClient;
 		this.conversation = snapshot ? Conversation.restore(snapshot) : new Conversation(messages);
+		this.children = new ChildLedger(children);
 		this.seenRevision = snapshot?.seenRevision ?? 0;
 		this.contextTokens = snapshot?.contextTokens ?? undefined;
 		this.maxSteps = maxSteps;
@@ -451,6 +467,18 @@ export class LLMAgent implements ModelAPIAgent {
 				cause: describeFailure(error),
 			});
 		}
+	}
+
+	/**
+	 * The conversation and the subagents completed so far, for the state of a composed session.
+	 * Only a run that has ended is captured, with every subagent it started.
+	 *
+	 * @throws {RunInProgressError} while a run on this agent, or a subagent of it, has not ended.
+	 * @throws {UnrecoverableError} when a subagent or the conversation cannot be saved.
+	 */
+	[composedCaptureKey](): CapturedAgent {
+		if (!this.runs.idle) throw snapshotDuringRun();
+		return { conversation: this.snapshot(), children: this.children.capture() };
 	}
 
 	private async followHistory(history: HistoryReader): Promise<Followed> {
@@ -1737,6 +1765,7 @@ export class LLMAgent implements ModelAPIAgent {
 							...(author === undefined ? {} : { author }),
 							...(options.approve ? { approve: options.approve } : {}),
 							...(options.ask ? { ask: options.ask } : {}),
+							children: this.children,
 						},
 						throwIfProgressFailed,
 						loops,

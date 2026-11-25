@@ -1,9 +1,23 @@
 import type { Agent, AgentResponse, RunOptions } from '#src/agent/domain/agent';
 import type { CommitReport, RepositoryCommit } from '#src/agent/domain/commitReport';
+import {
+	capturedOf,
+	capturedOfEnded,
+	type EndedAgent,
+	recordOf,
+} from '#src/agent/domain/composedCapture';
 import { readAnswers, type UserQuestion } from '#src/agent/domain/question';
 import { UnrecoverableError } from '#src/shared/domain/errors';
 import { classifyHostFailure, classifyLocalFailure } from '#src/shared/domain/providerFailure';
 import type { Committer, FrozenChanges, FrozenRepository } from './committer.ts';
+import type { AuxiliaryRecord } from './composedSessionSnapshot.ts';
+
+/** A committer agent that ran for one repository of one commit attempt. */
+interface CommitterRun {
+	readonly attempt: number;
+	readonly repository: string;
+	readonly ended: EndedAgent;
+}
 
 export const committerInstructions =
 	"You are the committer agent. Write the git commit message for the change you are given, which the reviewer approved. Follow the style of the repository's recent commit subjects when they show one, such as a type prefix. Answer with the message only: a subject line in the imperative mood, at most 72 characters, then, when the change needs it, a blank line and a short body that says what changed and why. No code fences, no quotes around it, no trailers.";
@@ -113,12 +127,16 @@ export class CommitFlow {
 	private readonly createCommitter: (() => Agent) | undefined;
 	private readonly autoCommit: boolean;
 	private readonly warn: (message: string) => void;
+	private readonly runs: CommitterRun[];
+	/** The attempt the last commit made, counted over the session: a restored session continues it. */
+	private attempts: number;
 
 	constructor({
 		committer,
 		createCommitter,
 		autoCommit = false,
 		warn,
+		auxiliary = [],
 	}: {
 		/** Commits what an approved run changed; with `createCommitter`, whose agent writes the message. */
 		committer?: Committer | undefined;
@@ -128,11 +146,37 @@ export class CommitFlow {
 		autoCommit?: boolean | undefined;
 		/** Logs what the run absorbs, such as a repository left uncommitted. */
 		warn: (message: string) => void;
+		/** The committer agents a saved session ran, which a restored session keeps. */
+		auxiliary?: readonly AuxiliaryRecord[] | undefined;
 	}) {
 		this.committer = committer;
 		this.createCommitter = createCommitter;
 		this.autoCommit = autoCommit;
 		this.warn = warn;
+		this.runs = auxiliary.map(({ origin, agent }) => ({
+			attempt: origin.attempt,
+			repository: origin.repository,
+			ended: { restored: capturedOf(agent) },
+		}));
+		this.attempts = Math.max(0, ...auxiliary.map(({ origin }) => origin.attempt));
+	}
+
+	/**
+	 * The committer agents the session ran, each with the attempt and repository it wrote for, in
+	 * the order they ran.
+	 *
+	 * @throws {UnrecoverableError} naming the first committer whose agent cannot be saved.
+	 */
+	auxiliaryRecords(): AuxiliaryRecord[] {
+		return this.runs.map(
+			({ attempt, repository, ended }): AuxiliaryRecord => ({
+				origin: { role: 'committer', attempt, repository },
+				agent: recordOf(
+					'committer',
+					capturedOfEnded(`The committer of attempt ${String(attempt)} in ${repository}`, ended),
+				),
+			}),
+		);
 	}
 
 	/** Whether an approved run may be committed: by the user's word, or without asking. */
@@ -186,8 +230,16 @@ export class CommitFlow {
 		}
 
 		const messages = new Map<string, string>();
+		const attempt = ++this.attempts;
 		for (const each of ready) {
-			const message = await this.messageFor(prompt, plan, each, committerOptions, onResponse);
+			const message = await this.messageFor(
+				attempt,
+				prompt,
+				plan,
+				each,
+				committerOptions,
+				onResponse,
+			);
 			if (message !== undefined) messages.set(each.repository, message);
 		}
 		let committed: RepositoryCommit[];
@@ -243,8 +295,12 @@ export class CommitFlow {
 		return read[0] === commitLabel;
 	}
 
-	/** The committer's message for one repository, or `undefined` when it wrote none. */
+	/**
+	 * The committer's message for one repository, or `undefined` when it wrote none. The agent is
+	 * kept once its run has ended, whether or not the run succeeded.
+	 */
 	private async messageFor(
+		attempt: number,
 		prompt: string,
 		plan: string,
 		frozen: FrozenRepository,
@@ -253,12 +309,22 @@ export class CommitFlow {
 	): Promise<string | undefined> {
 		const { createCommitter } = this;
 		if (!createCommitter) return undefined;
-		const response = await createCommitter().run(getCommitterPrompt(prompt, plan, frozen), {
-			...options,
-			// It only writes a message: nothing to ask, nothing to approve.
-			ask: undefined,
-			approve: undefined,
-		});
+		const committer = createCommitter();
+		let response: AgentResponse;
+		try {
+			response = await committer.run(getCommitterPrompt(prompt, plan, frozen), {
+				...options,
+				// It only writes a message: nothing to ask, nothing to approve.
+				ask: undefined,
+				approve: undefined,
+			});
+		} finally {
+			this.runs.push({
+				attempt,
+				repository: frozen.repository,
+				ended: { live: committer },
+			});
+		}
 		onResponse(response);
 		const message = stripCodeFence(response.response).trim();
 		return message === '' ? undefined : message;

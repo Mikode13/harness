@@ -1,14 +1,22 @@
 import type {
 	Agent,
 	AgentResponse,
+	ModelAPIAgent,
+	ModelAPIOrchestrator,
 	ProgressAgent,
 	ProgressEvent,
 	RunOptions,
 } from '#src/agent/domain/agent';
 import type { CommitReport } from '#src/agent/domain/commitReport';
 import { type CommittedRun, withCommittedRun } from '#src/agent/domain/committedRunError';
+import {
+	type CapturedAgent,
+	composedCaptureKey,
+	isComposedCapable,
+	recordOf,
+} from '#src/agent/domain/composedCapture';
 import type { PhaseResult, Verification } from '#src/agent/domain/phaseResult';
-import { OneRunAtATime } from '#src/agent/domain/oneRunAtATime';
+import { OneRunAtATime, snapshotDuringRun } from '#src/agent/domain/oneRunAtATime';
 import { readAnswers, type UserQuestion } from '#src/agent/domain/question';
 import { runContextOf, withAuthor } from '#src/agent/domain/runContext';
 import { newSession, sessionOf } from '#src/agent/domain/session';
@@ -21,6 +29,7 @@ import type { ILogger } from '#src/shared/domain/logger';
 import {
 	classifyHostFailure,
 	classifyLocalFailure,
+	describeFailure,
 	treatErrors,
 } from '#src/shared/domain/providerFailure';
 import { addTokens, type Tokens } from '#src/shared/domain/tokens';
@@ -30,6 +39,12 @@ import { type RunnableStage, WorkflowRunner } from '#src/workflow/domain/workflo
 import type { ChangeLog } from './changeLog.ts';
 import { CommitFlow } from './commitFlow.ts';
 import type { Committer, FrozenChanges } from './committer.ts';
+import {
+	type AuxiliaryRecord,
+	type ComposedSessionSnapshot,
+	parseComposedSessionSnapshot,
+	type RootRole,
+} from './composedSessionSnapshot.ts';
 import {
 	type CommitQuestion,
 	commitQuestions,
@@ -313,6 +328,16 @@ export class PhasedOrchestrator implements Agent {
 	// The session its runs belong to when their options name none.
 	private readonly session = newSession();
 
+	/** Whether no run is in progress, so that a snapshot of the session holds all of it. */
+	protected get idle(): boolean {
+		return this.runs.idle;
+	}
+
+	/** The committer agents the session ran, for a snapshot of it. */
+	protected committerRecords(): AuxiliaryRecord[] {
+		return this.commits.auxiliaryRecords();
+	}
+
 	/**
 	 * @throws {InvalidAgentConfigError} for a limit that is not a positive integer, or names no
 	 * limit, a `commitQuestion` that is not one, or `plan` with `autoCommit`.
@@ -330,6 +355,7 @@ export class PhasedOrchestrator implements Agent {
 		commitQuestion = 'end',
 		limits = {},
 		logger,
+		auxiliary,
 	}: {
 		/** Each role's agent, kept for every run, so it goes on with its conversation. */
 		planner: Agent;
@@ -357,6 +383,8 @@ export class PhasedOrchestrator implements Agent {
 		commitQuestion?: CommitQuestion;
 		limits?: Partial<PhaseLimits>;
 		logger: ILogger;
+		/** The committer agents a saved session ran, which a restored session keeps. */
+		auxiliary?: readonly AuxiliaryRecord[];
 	}) {
 		const chosen = phaseLimits(limits);
 		if (!commitQuestions.includes(commitQuestion)) {
@@ -391,6 +419,7 @@ export class PhasedOrchestrator implements Agent {
 			warn: message => {
 				this.warn(message);
 			},
+			auxiliary,
 		});
 	}
 
@@ -817,6 +846,77 @@ export class PhasedOrchestrator implements Agent {
 			classifyHostFailure,
 			'Orchestrator logger failed while reporting a commit or an unfinished task',
 		);
+	}
+}
+
+/**
+ * A `PhasedOrchestrator` whose roles are model-API agents, so that its session can be saved: what
+ * `createLLMOrchestrator` builds. Its snapshot holds each role's conversation and the subagents it
+ * completed, and the committer agents that ran, which the roles and the commits take up again from
+ * the `snapshot` and `auxiliary` options; the phases a run was in are not part of it.
+ */
+export class ModelAPIPhasedOrchestrator extends PhasedOrchestrator implements ModelAPIOrchestrator {
+	private readonly modelRoles: Readonly<Record<RootRole, ModelAPIAgent>>;
+
+	constructor(
+		options: ConstructorParameters<typeof PhasedOrchestrator>[0] &
+			Readonly<Record<RootRole, ModelAPIAgent>>,
+	) {
+		super(options);
+		this.modelRoles = {
+			planner: options.planner,
+			executor: options.executor,
+			reviewer: options.reviewer,
+		};
+	}
+
+	/**
+	 * @throws {RunInProgressError} while a run on this orchestrator has not ended, or a subagent's
+	 * run has not, from `snapshotDuringRun`.
+	 * @throws {UnrecoverableError} when a role, a subagent or a committer agent cannot be saved, or
+	 * the session cannot be saved as plain data.
+	 */
+	snapshot(): ComposedSessionSnapshot {
+		if (!this.idle) throw snapshotDuringRun();
+		const planner = captureRole('planner', this.modelRoles.planner);
+		const executor = captureRole('executor', this.modelRoles.executor);
+		const reviewer = captureRole('reviewer', this.modelRoles.reviewer);
+		const snapshot = {
+			version: 1,
+			kind: 'llmOrchestrator',
+			roles: {
+				planner: recordOf('planner', planner),
+				executor: recordOf('executor', executor),
+				reviewer: recordOf('reviewer', reviewer),
+			},
+			auxiliary: this.committerRecords(),
+		};
+		try {
+			return parseComposedSessionSnapshot(snapshot);
+		} catch (error) {
+			throw new UnrecoverableError('The session could not be saved', {
+				cause: describeFailure(error),
+			});
+		}
+	}
+}
+
+/**
+ * What a root role's agent captured: its conversation, and the subagents it completed.
+ *
+ * @throws {UnrecoverableError} when the agent is not an agent on the model APIs.
+ */
+function captureRole(role: RootRole, agent: ModelAPIAgent): CapturedAgent {
+	if (!isComposedCapable(agent)) {
+		throw new UnrecoverableError(`The ${role} cannot be saved`, {
+			cause: 'it is not an agent on the model APIs',
+		});
+	}
+	try {
+		return agent[composedCaptureKey]();
+	} catch (error) {
+		// A run still going keeps its own error; anything else is a role that cannot be saved.
+		throw classifyLocalFailure(error, `The ${role} cannot be saved`);
 	}
 }
 

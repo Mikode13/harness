@@ -1,10 +1,25 @@
-import type { ProgressEvent, RunOptions } from '#src/agent/domain/agent';
+import type { Agent, ProgressEvent, RunOptions } from '#src/agent/domain/agent';
+import type { ChildSlot } from '#src/agent/domain/composedCapture';
 import { withAuthor, withDelegation, withRunContext } from '#src/agent/domain/runContext';
 import type { RecoverableError, UnrecoverableError } from '#src/shared/domain/errors';
+import type { ChildOutcome } from '#src/orchestration/domain/model/composedSessionSnapshot';
 import type { ToolCallContext } from '../domain/readRegistry.ts';
 
 // An answer is read whole, like a read, which returns at most 16 KB.
 const maxAnswerCharacters = 16_000;
+
+/**
+ * Ends the slot of a subagent whose run ended as `outcome`: it keeps the agent's state, or, when
+ * `agent` was never made, forgets the subagent, since none of its work ran.
+ */
+export function endSubagent(
+	slot: ChildSlot,
+	agent: Agent | undefined,
+	outcome: ChildOutcome,
+): void {
+	if (agent === undefined) slot.drop();
+	else slot.settle(outcome, agent);
+}
 
 /** A subagent's answer as the agent that called it reads it, cut where a read would be. */
 export function cutAnswer(answer: string): string {

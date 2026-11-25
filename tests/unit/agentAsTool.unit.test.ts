@@ -9,6 +9,8 @@ import type {
 	ProgressEvent,
 	RunOptions,
 } from '../../src/agent/domain/agent.ts';
+import { ChildLedger, composedCaptureKey } from '../../src/agent/domain/composedCapture.ts';
+import { RunInProgressError } from '../../src/agent/domain/oneRunAtATime.ts';
 import {
 	authorOf,
 	delegationOf,
@@ -22,6 +24,7 @@ import type { Message, MessagePart } from '../../src/llm/domain/message.ts';
 import { createHistory } from '../../src/recovery/infrastructure/createHistory.ts';
 import { FileRecoveryStore } from '../../src/recovery/infrastructure/fileRecoveryStore.ts';
 import { InvalidAgentConfigError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
+import { isAbortError } from '../../src/shared/domain/isAbortError.ts';
 import type {
 	AgentTool,
 	CommandEnding,
@@ -116,6 +119,29 @@ function resultsOf(llmClient: { contexts: Message[][] }): MessagePart[] | undefi
 /** Every answer of an agent the model read by its last step. */
 function answersOf(llmClient: { contexts: Message[][] }): string[] {
 	return answersIn(llmClient.contexts.at(-1));
+}
+
+/** A model that never answers, and gives up only when its run is stopped; `started` hears it wait. */
+function stalledModel(started: () => void): LLMClient {
+	return {
+		send: (_request, signal) =>
+			new Promise<LLMResponse>((_resolve, reject) => {
+				started();
+				signal.addEventListener('abort', () =>
+					reject(new DOMException('The operation was aborted', 'AbortError')),
+				);
+			}),
+	};
+}
+
+/** What `action` throws, for a test that expects it to throw. */
+function thrownBy(action: () => unknown): unknown {
+	try {
+		action();
+	} catch (error) {
+		return error;
+	}
+	throw new Error('Expected the action to throw');
 }
 
 /** The call's result: the agents it sent work in the background. */
@@ -1222,5 +1248,242 @@ describe('agentAsTool over a workspace', () => {
 		await top([repo], middle).run('nested', { signal });
 
 		expect(seen).toEqual([undefined, [repo], [join(repo, 'src')]]);
+	});
+
+	it('keeps each child that completed, in the order its call started it, whatever order they finish in', async () => {
+		let release!: () => void;
+		const gate = new Promise<void>(resolve => {
+			release = resolve;
+		});
+		const tool = delegation({
+			createAgent: () => {
+				const child = new LLMAgent({ llmClient: new FakeLLMClient(textResponse('done')) });
+				const run = child.run.bind(child);
+				child.run = async (task, options) => {
+					if (task === 'slow') await gate;
+					return run(task, options);
+				};
+				return child;
+			},
+		});
+		const { llmClient, agent } = delegatingParent(tool, 'slow', 'fast');
+
+		const running = agent.run('work', { signal });
+		// The fast one answers while the slow one still works.
+		await vi.waitFor(() => {
+			expect(answersOf(llmClient)).toEqual([expect.stringContaining('with the task: fast')]);
+		});
+		expect(() => agent[composedCaptureKey]()).toThrow(RunInProgressError);
+
+		release();
+		await running;
+		expect(agent[composedCaptureKey]().children.map(({ origin }) => origin)).toEqual([
+			{
+				tool: 'commit',
+				name: 'commit',
+				callId: 'call-1',
+				subagent: 1,
+				task: 'slow',
+				outcome: 'answered',
+			},
+			{
+				tool: 'commit',
+				name: 'commit',
+				callId: 'call-2',
+				subagent: 1,
+				task: 'fast',
+				outcome: 'answered',
+			},
+		]);
+	});
+
+	it('keeps the children a child completed under it, in its own record', async () => {
+		const grand = delegation({
+			name: 'grand',
+			description: 'Goes deeper',
+			createAgent: () => new LLMAgent({ llmClient: new FakeLLMClient(textResponse('deepest')) }),
+		});
+		const tool = delegation({
+			createAgent: () =>
+				new LLMAgent({
+					llmClient: new WaitingModel(
+						[assistantResponse([toolCall('grand-1', 'grand', { task: 'go deeper' })])],
+						1,
+						'child done',
+					),
+					tools: [grand],
+				}),
+		});
+		const { agent } = delegatingParent(tool, 'nest');
+
+		await agent.run('work', { signal });
+
+		const [child] = agent[composedCaptureKey]().children;
+		expect(child?.origin).toMatchObject({ callId: 'call-1', task: 'nest', outcome: 'answered' });
+		expect(child?.agent.children.map(({ origin }) => origin)).toEqual([
+			{
+				tool: 'grand',
+				name: 'grand',
+				callId: 'grand-1',
+				subagent: 1,
+				task: 'go deeper',
+				outcome: 'answered',
+			},
+		]);
+	});
+
+	it('keeps a child that failed, with the outcome it failed with', async () => {
+		const tool = delegation({
+			createAgent: () =>
+				new LLMAgent({
+					llmClient: new FakeLLMClient(
+						new UnrecoverableError('The model refused', { cause: 'no quota' }),
+					),
+				}),
+		});
+		const { llmClient, agent } = delegatingParent(tool, 'fail');
+
+		await agent.run('work', { signal });
+
+		expect(answersOf(llmClient)).toEqual([expect.stringContaining('The agent failed')]);
+		expect(agent[composedCaptureKey]().children.map(({ origin }) => origin)).toEqual([
+			{
+				tool: 'commit',
+				name: 'commit',
+				callId: 'call-1',
+				subagent: 1,
+				task: 'fail',
+				outcome: 'failed',
+			},
+		]);
+	});
+
+	it('keeps a child that was stopped with its parent, and ends the parent with the stop', async () => {
+		let childStarted!: () => void;
+		const started = new Promise<void>(resolve => {
+			childStarted = resolve;
+		});
+		const tool = delegation({
+			createAgent: () => new LLMAgent({ llmClient: stalledModel(() => childStarted()) }),
+		});
+		const { agent } = delegatingParent(tool, 'stall');
+		const controller = new AbortController();
+		const running = agent.run('work', { signal: controller.signal });
+		await started;
+
+		controller.abort();
+
+		expect(isAbortError(await running.catch((error: unknown) => error))).toBe(true);
+		expect(agent[composedCaptureKey]().children.map(({ origin }) => origin)).toEqual([
+			{
+				tool: 'commit',
+				name: 'commit',
+				callId: 'call-1',
+				subagent: 1,
+				task: 'stall',
+				outcome: 'stopped',
+			},
+		]);
+	});
+
+	it('refuses to save a child that is not an agent on the model APIs, and names it', async () => {
+		const tool = delegation({
+			createAgent: () => ({
+				run: () => Promise.resolve({ response: 'committed', duration: 1 }),
+			}),
+		});
+		const { agent } = delegatingParent(tool, 'Commit a.txt');
+		await agent.run('work', { signal });
+
+		const failure = thrownBy(() => agent[composedCaptureKey]());
+		expect(failure).toBeInstanceOf(UnrecoverableError);
+		expect(failure).toMatchObject({
+			message: 'Subagent commit 1 of commit call call-1 cannot be saved',
+			cause: 'it is not an agent on the model APIs',
+		});
+	});
+
+	it('refuses to save a child whose agent fails the capability probe, and names it', async () => {
+		const tool = delegation({
+			createAgent: () => {
+				const plain: Agent = {
+					run: () => Promise.resolve({ response: 'committed', duration: 1 }),
+				};
+				// A consumer's agent may fail the probe itself, which must not escape as it is.
+				return new Proxy(plain, {
+					get: (target, key, receiver) => {
+						if (key === composedCaptureKey) throw new Error('the probe broke');
+						return Reflect.get(target, key, receiver);
+					},
+				});
+			},
+		});
+		const { agent } = delegatingParent(tool, 'Commit a.txt');
+		await agent.run('work', { signal });
+
+		const failure = thrownBy(() => agent[composedCaptureKey]());
+		expect(failure).toBeInstanceOf(UnrecoverableError);
+		expect(failure).toMatchObject({
+			message: 'Subagent commit 1 of commit call call-1 cannot be saved',
+			cause: 'it is not an agent on the model APIs',
+		});
+	});
+
+	it('will not save while a child it started has not ended, and names none that cannot be saved first', () => {
+		const origin = { tool: 'commit', name: 'commit', callId: 'call-1', subagent: 1, task: 'a' };
+		const plain: Agent = { run: () => Promise.resolve({ response: 'committed', duration: 1 }) };
+		const ledger = new ChildLedger();
+		ledger.start(origin).settle('answered', plain);
+		const running = ledger.start({ ...origin, callId: 'call-2' });
+
+		expect(() => ledger.capture()).toThrow(RunInProgressError);
+
+		running.drop();
+		expect(() => ledger.capture()).toThrow(UnrecoverableError);
+	});
+
+	it('forgets a child that never ran an agent, so it has no record', () => {
+		const ledger = new ChildLedger();
+		ledger
+			.start({ tool: 'explore', name: 'explorer', callId: 'call-1', subagent: 1, task: 'a' })
+			.drop();
+
+		expect(ledger.capture()).toEqual([]);
+	});
+
+	it('takes up a restored child as it was kept, and keeps it beside the children it runs after', async () => {
+		const created: string[] = [];
+		const childNamed = (name: string) => () => {
+			created.push(name);
+			return new LLMAgent({ llmClient: new FakeLLMClient(textResponse(`${name} answer`)) });
+		};
+		const first = delegatingParent(delegation({ createAgent: childNamed('first') }), 'first task');
+		await first.agent.run('work', { signal });
+		const saved = first.agent[composedCaptureKey]();
+
+		const llmClient = new WaitingModel(
+			[assistantResponse([toolCall('call-2', 'commit', { task: 'second task' })])],
+			2,
+		);
+		const restored = new LLMAgent({
+			llmClient,
+			tools: [delegation({ createAgent: childNamed('second') })],
+			snapshot: saved.conversation,
+			children: saved.children,
+		});
+		await restored.run('more work', { signal });
+
+		// The restored child is not run again: only the new one is.
+		expect(created).toEqual(['first', 'second']);
+		expect(restored[composedCaptureKey]().children).toEqual([
+			...saved.children,
+			expect.objectContaining({
+				origin: expect.objectContaining({
+					callId: 'call-2',
+					task: 'second task',
+					outcome: 'answered',
+				}),
+			}),
+		]);
 	});
 });

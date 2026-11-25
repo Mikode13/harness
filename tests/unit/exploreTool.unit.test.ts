@@ -5,11 +5,14 @@ import type {
 	ProgressEvent,
 	RunOptions,
 } from '../../src/agent/domain/agent.ts';
+import { ChildLedger } from '../../src/agent/domain/composedCapture.ts';
 import { RunContext, runContextOf } from '../../src/agent/domain/runContext.ts';
+import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import { RecoverableError, UnrecoverableError } from '../../src/shared/domain/errors.ts';
 import type { Tokens } from '../../src/shared/domain/tokens.ts';
 import { ReadRegistry, type ToolCallContext } from '../../src/tools/domain/readRegistry.ts';
 import { createExploreTool, maxExplorers } from '../../src/tools/infrastructure/exploreTool.ts';
+import { FakeLLMClient, textResponse } from '../support/fakeLlmClient.ts';
 
 const signal = new AbortController().signal;
 
@@ -27,6 +30,7 @@ function callContext() {
 		onProgress: event => events.push(event),
 		spend: (used, unreported) => spent.push([used, unreported]),
 		depth: 0,
+		children: new ChildLedger(),
 	};
 	return { call, events, spent };
 }
@@ -194,6 +198,39 @@ describe('explore', () => {
 		expect(answers).toEqual([
 			{ text: 'It found nothing to report.' },
 			{ text: `${'x'.repeat(16_000)}\n[The answer was cut at 16000 characters.]` },
+		]);
+	});
+
+	it('keeps each explorer in the order of its question, with how it ended', async () => {
+		const replies = [
+			new FakeLLMClient(textResponse('In math.ts.')),
+			new FakeLLMClient(new UnrecoverableError('The model refused', { cause: 'no quota' })),
+		];
+		const explorer = () => {
+			const llmClient = replies.shift() ?? new FakeLLMClient(textResponse('unused'));
+			return new LLMAgent({ llmClient });
+		};
+		const { call } = callContext();
+
+		await explore(explorer, ['Where is add?', 'Who calls it?'], call);
+
+		expect(call.children.capture().map(({ origin }) => origin)).toEqual([
+			{
+				tool: 'explore',
+				name: 'explorer',
+				callId: 'call-7',
+				subagent: 1,
+				task: 'Where is add?',
+				outcome: 'answered',
+			},
+			{
+				tool: 'explore',
+				name: 'explorer',
+				callId: 'call-7',
+				subagent: 2,
+				task: 'Who calls it?',
+				outcome: 'failed',
+			},
 		]);
 	});
 

@@ -72,6 +72,11 @@ import { RunContext, runContextOf } from '../../src/agent/domain/runContext.ts';
 import type { Agent } from '../../src/agent/domain/agent.ts';
 import { RunInProgressError } from '../../src/agent/domain/oneRunAtATime.ts';
 import type { ConversationSnapshot } from '../../src/llm/domain/conversationSnapshot.ts';
+import type {
+	AuxiliaryRecord,
+	ChildRecord,
+	ComposedSessionSnapshot,
+} from '../../src/orchestration/domain/model/composedSessionSnapshot.ts';
 import { createWorkflow } from '../../src/factory/infrastructure/workflowFactory.ts';
 import { defineWorkflowStages } from '../../src/workflow/domain/workflow.ts';
 import type { PreparingTool } from '../../src/tools/domain/preparedCall.ts';
@@ -1090,6 +1095,101 @@ describe('createLLMOrchestrator', () => {
 		} finally {
 			if (platform) Object.defineProperty(process, 'platform', platform);
 		}
+	});
+
+	it.each<[string, unknown, string]>([
+		[
+			'of another version',
+			{ version: 2, kind: 'llmOrchestrator', roles: {}, auxiliary: [] },
+			'Unsupported composed session snapshot version: 2',
+		],
+		[
+			'that is not an object',
+			'saved',
+			'Invalid composed session snapshot: the snapshot must be an object',
+		],
+		[
+			'with no roles',
+			{ version: 1, kind: 'llmOrchestrator', auxiliary: [] },
+			'Invalid composed session snapshot: the snapshot is missing "roles"',
+		],
+	])(
+		'refuses a snapshot %s before it opens the workspace or builds a role',
+		async (_, snapshot, message) => {
+			await expect(
+				createLLMOrchestrator({
+					workspace,
+					snapshot: snapshot as ComposedSessionSnapshot,
+					logger: createLogger(),
+				}),
+			).rejects.toThrow(message);
+			expect(OpenAI).not.toHaveBeenCalled();
+			expect(Anthropic).not.toHaveBeenCalled();
+			expect(existsSync(join(parent, 'state'))).toBe(false);
+		},
+	);
+
+	it('takes up a snapshot that holds subagent and committer records, and keeps them', async () => {
+		const saved = (await createLLMOrchestrator({ workspace, logger: createLogger() })).snapshot();
+		const { conversation } = saved.roles.planner;
+		const child: ChildRecord = {
+			origin: {
+				role: 'planner',
+				tool: 'explore',
+				name: 'explorer',
+				callId: 'call-1',
+				subagent: 1,
+				task: 'find the entry point',
+				outcome: 'answered',
+			},
+			agent: { conversation, children: [] },
+		};
+		const committer: AuxiliaryRecord = {
+			origin: { role: 'committer', attempt: 1, repository: 'repo' },
+			agent: { conversation, children: [] },
+		};
+
+		const restored = await createLLMOrchestrator({
+			workspace,
+			snapshot: {
+				...saved,
+				roles: { ...saved.roles, planner: { conversation, children: [child] } },
+				auxiliary: [committer],
+			},
+			logger: createLogger(),
+		});
+
+		const resaved = restored.snapshot();
+		expect(resaved.roles.planner.children).toEqual([child]);
+		expect(resaved.auxiliary).toEqual([committer]);
+	});
+
+	it('refuses a snapshot whose subagent record sits under a role it does not name', async () => {
+		const saved = (await createLLMOrchestrator({ workspace, logger: createLogger() })).snapshot();
+		const { conversation } = saved.roles.planner;
+		const misplaced: ChildRecord = {
+			origin: {
+				role: 'executor',
+				tool: 'explore',
+				name: 'explorer',
+				callId: 'call-1',
+				subagent: 1,
+				task: 'find the entry point',
+				outcome: 'answered',
+			},
+			agent: { conversation, children: [] },
+		};
+
+		await expect(
+			createLLMOrchestrator({
+				workspace,
+				snapshot: {
+					...saved,
+					roles: { ...saved.roles, planner: { conversation, children: [misplaced] } },
+				},
+				logger: createLogger(),
+			}),
+		).rejects.toThrow(InvalidAgentConfigError);
 	});
 
 	it('gives only the executor the configured commands', async () => {

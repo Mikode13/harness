@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { ChildLedger } from '../../src/agent/domain/composedCapture.ts';
 import { RunContext } from '../../src/agent/domain/runContext.ts';
 import { createFileTools } from '../../src/factory/infrastructure/agentLLMFactory.ts';
 import { EditRefusedError } from '../../src/tools/domain/fileEdits.ts';
@@ -38,6 +39,7 @@ function callUnder(writeCeiling: readonly string[] | undefined): ToolCallContext
 		onProgress: () => undefined,
 		spend: () => undefined,
 		depth: 1,
+		children: new ChildLedger(),
 		...(writeCeiling ? { writeCeiling } : {}),
 	};
 }

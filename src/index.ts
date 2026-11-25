@@ -52,6 +52,7 @@ export {
 	type AgentResponse,
 	type Callback,
 	type ModelAPIAgent,
+	type ModelAPIOrchestrator,
 	type ProgressAgent,
 	type ProgressEvent,
 	type StepContext,
@@ -94,6 +95,18 @@ export {
 } from './agent/domain/approval.ts';
 export type { Asker, QuestionOption, UserQuestion } from './agent/domain/question.ts';
 export type { ConversationSnapshot } from './llm/domain/conversationSnapshot.ts';
+export type {
+	AgentRole,
+	AuxiliaryOrigin,
+	AuxiliaryRecord,
+	ChildOrigin,
+	ChildOutcome,
+	ChildRecord,
+	ComposedRoles,
+	ComposedSessionSnapshot,
+	ModelAgentRecord,
+	RootRole,
+} from './orchestration/domain/model/composedSessionSnapshot.ts';
 export type { JSONSchema, ToolDefinition } from './llm/domain/tool.ts';
 export type { Tool, ToolSummarizer } from './tools/domain/tool.ts';
 export type { TextMatch, Workspace } from './tools/domain/workspace.ts';

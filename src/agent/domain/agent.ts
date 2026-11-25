@@ -5,6 +5,7 @@ import type { Inbox } from './inbox.ts';
 import type { PhaseResult, Verification } from './phaseResult.ts';
 import type { Asker } from './question.ts';
 import type { ConversationSnapshot } from '#src/llm/domain/conversationSnapshot';
+import type { ComposedSessionSnapshot } from '#src/orchestration/domain/model/composedSessionSnapshot';
 import type { Session } from '#src/shared/domain/session';
 
 /**
@@ -303,4 +304,23 @@ export interface ModelAPIAgent extends Agent {
 	 * @throws {UnrecoverableError} when the conversation cannot be saved as plain data.
 	 */
 	snapshot(): ConversationSnapshot;
+}
+
+/**
+ * An orchestrator whose roles' conversations the harness owns, so the session can be saved and
+ * taken up again: what `createLLMOrchestrator` returns. `snapshot` gives the session as plain data,
+ * which `createLLMOrchestrator` takes back as its `snapshot` option.
+ */
+export interface ModelAPIOrchestrator extends Agent {
+	/**
+	 * The session as plain data: the conversation of each role, from the turns of runs that have
+	 * ended, including a failed run the conversation keeps. Nothing of a run still working is in
+	 * it, such as the phase in progress: a run that continues from a snapshot plans afresh. A
+	 * snapshot holds the prompts, file contents and command output of the conversations, so it is
+	 * as sensitive as they are.
+	 *
+	 * @throws {RunInProgressError} while a run on this orchestrator has not ended.
+	 * @throws {UnrecoverableError} when a conversation cannot be saved as plain data.
+	 */
+	snapshot(): ComposedSessionSnapshot;
 }

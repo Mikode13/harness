@@ -1,5 +1,6 @@
 import type { ProgressEvent } from '#src/agent/domain/agent';
 import type { Approver } from '#src/agent/domain/approval';
+import type { ChildLedger } from '#src/agent/domain/composedCapture';
 import type { Asker } from '#src/agent/domain/question';
 import type { RunContext } from '#src/agent/domain/runContext';
 import type { Tokens } from '#src/shared/domain/tokens';
@@ -110,4 +111,9 @@ export interface ToolCallContext {
 	readonly agentWriteRoots?: readonly string[];
 	/** Who the changes the call makes are recorded as made by, as one of `JournalEntry.authors`. */
 	readonly author?: string;
+	/**
+	 * The agent that made the call keeps the subagents the call starts, so its state can be saved
+	 * once they have ended.
+	 */
+	readonly children: ChildLedger;
 }

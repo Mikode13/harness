@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import type { Agent, RunOptions } from '#src/agent/domain/agent';
 import { type Approver, readDecision, type ToolRisk } from '#src/agent/domain/approval';
+import type { ChildSlot } from '#src/agent/domain/composedCapture';
 import { type Asker, readAnswers } from '#src/agent/domain/question';
+import type { ChildOutcome } from '#src/orchestration/domain/model/composedSessionSnapshot';
 import {
 	InvalidAgentConfigError,
 	RecoverableError,
@@ -14,7 +16,7 @@ import type { ToolDefinition } from '#src/llm/domain/tool';
 import { type DelegatedAnswer, RunEndingToolError } from '../domain/preparedCall.ts';
 import type { ToolCallContext } from '../domain/readRegistry.ts';
 import { defineDelegatingTool } from './defineTool.ts';
-import { cutAnswer, failureOf, subagentOptions } from './subagents.ts';
+import { cutAnswer, endSubagent, failureOf, subagentOptions } from './subagents.ts';
 import { delegateCeiling } from './writeCeiling.ts';
 
 declare const delegationToolBrand: unique symbol;
@@ -121,7 +123,18 @@ export function agentAsTool({
 				// What the agent changes is in the history, but it may run tools of the consumer's
 				// that change what the history never sees.
 				unrecorded: true,
-				start: signal => [{ name, subagent: 1, task: asked, answer: hand(asked, signal, call) }],
+				// The subagent takes its place in the call's ledger as it starts, so the order of
+				// the calls is kept whatever order they finish in.
+				start: signal => {
+					const slot = call.children.start({
+						tool: name,
+						name,
+						callId: call.callId,
+						subagent: 1,
+						task: asked,
+					});
+					return [{ name, subagent: 1, task: asked, answer: hand(asked, signal, call, slot) }];
+				},
 			});
 		},
 	});
@@ -130,54 +143,66 @@ export function agentAsTool({
 		task: string,
 		signal: AbortSignal,
 		call: ToolCallContext,
+		slot: ChildSlot,
 	): Promise<DelegatedAnswer> {
 		// The run's approver and asker are host code: one that fails inside the agent ends the
 		// run, not just the agent's task.
 		const failed = { host: false };
-		const writeCeiling = await delegateCeiling(call);
-		const options = subagentOptions(call, {
-			tool: name,
-			name,
-			subagent: 1,
-			task,
-			options: {
-				signal,
-				...(call.approve ? { approve: watchedApprover(call.approve, failed) } : {}),
-				...(call.ask ? { ask: watchedAsker(call.ask, failed) } : {}),
-			} satisfies RunOptions,
-			writeCeiling,
-		});
-
-		let agent: Agent;
+		let agent: Agent | undefined;
+		// How the run ends: a run that fails, or ends before it answers, is failed.
+		let outcome: ChildOutcome = 'failed';
 		try {
-			agent = createAgent();
-		} catch (error) {
-			throw new RunEndingToolError(
-				classifyHostFailure(error, `The agent for "${name}" could not be created`),
-			);
-		}
+			const writeCeiling = await delegateCeiling(call);
+			const options = subagentOptions(call, {
+				tool: name,
+				name,
+				subagent: 1,
+				task,
+				options: {
+					signal,
+					...(call.approve ? { approve: watchedApprover(call.approve, failed) } : {}),
+					...(call.ask ? { ask: watchedAsker(call.ask, failed) } : {}),
+				} satisfies RunOptions,
+				writeCeiling,
+			});
 
-		try {
-			const { response, tokens } = await agent.run(task, options);
-			call.spend(tokens, tokens === undefined);
-			return { text: cutAnswer(response || 'It finished without an answer.') };
-		} catch (error) {
-			if (isAbortError(error)) throw error;
-			const classified = error instanceof RecoverableError || error instanceof UnrecoverableError;
-			// Its failure carries what it spent, which the run's failure keeps.
-			if (classified && failed.host) throw new RunEndingToolError(error);
-			if (!classified) {
-				// It broke the contract of `Agent`, so what it spent is unknown, not nothing.
+			try {
+				agent = createAgent();
+			} catch (error) {
 				throw new RunEndingToolError(
-					withSpentTokens(
-						classifyHostFailure(error, `The agent for "${name}" failed`),
-						undefined,
-						true,
-					),
+					classifyHostFailure(error, `The agent for "${name}" could not be created`),
 				);
 			}
-			call.spend(error.tokens, error.usageUnreported);
-			return { text: `The agent failed: ${failureOf(error)}`, failed: true };
+
+			try {
+				const { response, tokens } = await agent.run(task, options);
+				call.spend(tokens, tokens === undefined);
+				outcome = 'answered';
+				return { text: cutAnswer(response || 'It finished without an answer.') };
+			} catch (error) {
+				if (isAbortError(error)) {
+					outcome = 'stopped';
+					throw error;
+				}
+				const classified = error instanceof RecoverableError || error instanceof UnrecoverableError;
+				// Its failure carries what it spent, which the run's failure keeps.
+				if (classified && failed.host) throw new RunEndingToolError(error);
+				if (!classified) {
+					// It broke the contract of `Agent`, so what it spent is unknown, not nothing.
+					throw new RunEndingToolError(
+						withSpentTokens(
+							classifyHostFailure(error, `The agent for "${name}" failed`),
+							undefined,
+							true,
+						),
+					);
+				}
+				call.spend(error.tokens, error.usageUnreported);
+				return { text: `The agent failed: ${failureOf(error)}`, failed: true };
+			}
+		} finally {
+			// Once its run has ended, the subagent keeps its agent's state, whatever the outcome.
+			endSubagent(slot, agent, outcome);
 		}
 	}
 

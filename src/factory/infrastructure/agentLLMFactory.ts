@@ -1,5 +1,18 @@
 import { resolve } from 'node:path';
-import type { Agent, AgentResponse, ModelAPIAgent, RunOptions } from '#src/agent/domain/agent';
+import type {
+	Agent,
+	AgentResponse,
+	ModelAPIAgent,
+	ModelAPIOrchestrator,
+	RunOptions,
+} from '#src/agent/domain/agent';
+import {
+	type CapturedAgent,
+	type CapturedChild,
+	type ComposedCapable,
+	capturedOf,
+	composedCaptureKey,
+} from '#src/agent/domain/composedCapture';
 import { OneRunAtATime, snapshotDuringRun } from '#src/agent/domain/oneRunAtATime';
 import type { Transcript, TranscriptCallback } from '#src/agent/domain/transcript';
 import type { HistoryReader } from '#src/engines/domain/model/historyFollower';
@@ -25,7 +38,12 @@ import {
 } from '#src/llm/infrastructure/openAILLMClient';
 import { committerInstructions } from '#src/orchestration/domain/model/commitFlow';
 import {
-	PhasedOrchestrator,
+	type ComposedSessionSnapshot,
+	parseComposedSessionSnapshot,
+	type RootRole,
+} from '#src/orchestration/domain/model/composedSessionSnapshot';
+import {
+	ModelAPIPhasedOrchestrator,
 	phasedExecutorInstructions,
 	phasedExecutorInstructionsWithoutCommands,
 	phasedPlannerInstructions,
@@ -345,6 +363,14 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	 * a plan may hold (50), and the user's corrections of the plan (3).
 	 */
 	limits?: Partial<PhaseLimits>;
+	/**
+	 * A session `ModelAPIOrchestrator.snapshot()` returned: each role takes up its conversation from
+	 * it in place of an empty one, so the next run continues where the saved session stopped. The
+	 * other options still apply, so the prompts, tools, providers and workspace are the ones given
+	 * here, not the ones it was saved with. An invalid snapshot is refused before anything is built,
+	 * and so is one holding subagent or committer records, which cannot be taken up yet.
+	 */
+	snapshot?: ComposedSessionSnapshot;
 }
 
 const defaultLLMAgentModels = {
@@ -517,7 +543,7 @@ function withGuidance(systemPrompt: string, guidance: string): string {
  * An `LLMAgent` in the harness's retry policy. One run at a time on it, across its retries: a
  * snapshot taken between a failed attempt and its retry would miss the run.
  */
-class RetryingModelAPIAgent extends RetryingAgent implements ModelAPIAgent {
+class RetryingModelAPIAgent extends RetryingAgent implements ModelAPIAgent, ComposedCapable {
 	private readonly llm: LLMAgent;
 	private readonly runs = new OneRunAtATime();
 
@@ -534,6 +560,11 @@ class RetryingModelAPIAgent extends RetryingAgent implements ModelAPIAgent {
 	snapshot(): ConversationSnapshot {
 		if (!this.runs.idle) throw snapshotDuringRun();
 		return this.llm.snapshot();
+	}
+
+	[composedCaptureKey](): CapturedAgent {
+		if (!this.runs.idle) throw snapshotDuringRun();
+		return this.llm[composedCaptureKey]();
 	}
 }
 
@@ -555,6 +586,7 @@ function buildLLMAgent(
 		onTranscript,
 		writeRoots,
 		snapshot,
+		children,
 	}: {
 		model?: AgentModel;
 		reasoningEffort?: ReasoningEffort;
@@ -573,6 +605,8 @@ function buildLLMAgent(
 		writeRoots?: readonly string[];
 		/** See `CreateLLMAgentOptions.snapshot`; already checked. */
 		snapshot?: ConversationSnapshot | undefined;
+		/** The subagents a restored session's agent completed, which it keeps. */
+		children?: readonly CapturedChild[] | undefined;
 	},
 ): ModelAPIAgent {
 	const chosen = model ?? defaultModelOf(provider);
@@ -594,6 +628,7 @@ function buildLLMAgent(
 			...(onTranscript ? { onTranscript } : {}),
 			...(writeRoots ? { writeRoots } : {}),
 			...(snapshot ? { snapshot } : {}),
+			...(children ? { children } : {}),
 			compactor: compactorFor(chosen, compactAt, compaction),
 		}),
 		logger,
@@ -850,6 +885,16 @@ const repositoryGuidance: Record<CommandRole, string> = {
 };
 
 /**
+ * The session a snapshot holds, as `createLLMOrchestrator` takes it up: each role's conversation
+ * and subagents, and the committer agents that ran, all kept as they were.
+ *
+ * @throws {InvalidAgentConfigError} for a snapshot that is not one this harness reads.
+ */
+function restoredSessionOf(snapshot: unknown): ComposedSessionSnapshot {
+	return parseComposedSessionSnapshot(snapshot);
+}
+
+/**
  * Builds the planner → executor → reviewer workflow in phases, with every role on the model
  * APIs, each holding its role's instructions, or `systemPrompts`, as its system prompt, followed
  * by the workspace's roots.
@@ -890,11 +935,15 @@ const repositoryGuidance: Record<CommandRole, string> = {
  * One run of the orchestrator is one run of the workspace's history, every phase and retry
  * included, and its `AgentResponse` names it. Each role keeps its agent, and its conversation,
  * across the orchestrator's runs. Every role follows what the user undoes.
+ * `snapshot()` saves each role's conversation, with the subagents it completed, and the committer
+ * agents that ran, once the orchestrator is not running, and the `snapshot` option resumes it: the
+ * conversations continue and the saved records are kept, while the options given here, such as
+ * the prompts, tools, providers and limits, apply as given.
  * Asynchronous because opening the workspace is.
  *
  * @throws {InvalidAgentConfigError} for an unknown provider, a workspace with no root, an
- * invalid `limits` or `commitQuestion`, `commitQuestion: 'plan'` with `autoCommit`, or
- * `requiredChecks` with no `commands`.
+ * invalid `limits` or `commitQuestion`, `commitQuestion: 'plan'` with `autoCommit`,
+ * `requiredChecks` with no `commands`, or a `snapshot` that is not one this harness reads.
  * @throws {UnrecoverableError} when a role cannot be set up, for example because
  * `OPENAI_API_KEY` is missing, or when no program can read the repository.
  */
@@ -917,7 +966,10 @@ export async function createLLMOrchestrator({
 	commitQuestion,
 	requiredChecks,
 	limits,
-}: CreateLLMOrchestratorOptions = {}): Promise<Agent> {
+	snapshot,
+}: CreateLLMOrchestratorOptions = {}): Promise<ModelAPIOrchestrator> {
+	// Checked first, so a snapshot that is not one fails before anything is opened or built.
+	const restored = snapshot === undefined ? undefined : restoredSessionOf(snapshot);
 	// Its commit stops the hooks it runs as a command is stopped, which Windows cannot do.
 	const canCommit = process.platform !== 'win32';
 	if (autoCommit && !canCommit) {
@@ -969,10 +1021,14 @@ export async function createLLMOrchestrator({
 			logger,
 			onTranscript: transcriptsOf('explorer'),
 		});
+	// What a role held in the restored session, which it takes up again.
+	const restoredRole = (role: RootRole): CapturedAgent | undefined =>
+		restored === undefined ? undefined : capturedOf(restored.roles[role]);
 	const reader = async (
 		{ provider, model, reasoningEffort }: Role,
 		role: CommandRole,
 		systemPrompt: string,
+		restoredAgent: CapturedAgent | undefined,
 	) =>
 		buildLLMAgent(provider, {
 			model,
@@ -987,9 +1043,12 @@ export async function createLLMOrchestrator({
 			onTranscript: transcriptsOf(role),
 			// It only reads, so the agents it calls only read too.
 			writeRoots: [],
+			snapshot: restoredAgent?.conversation,
+			children: restoredAgent?.children,
 			...shared,
 		});
 	const { executor } = roles;
+	const restoredExecutor = restoredRole('executor');
 	const executorToolset = await executorTools(
 		executor.provider,
 		opened,
@@ -1001,11 +1060,12 @@ export async function createLLMOrchestrator({
 	const executorRuns = executorToolset.some(tool => tool.name === 'runCommand');
 	const verifier = await verifierOf(requiredChecks, commands, opened);
 
-	return new PhasedOrchestrator({
+	return new ModelAPIPhasedOrchestrator({
 		planner: await reader(
 			roles.planner,
 			'planner',
 			prompt('planner', systemPrompts.planner, phasedPlannerInstructions),
+			restoredRole('planner'),
 		),
 		executor: buildLLMAgent(executor.provider, {
 			model: executor.model,
@@ -1021,6 +1081,8 @@ export async function createLLMOrchestrator({
 			autoApprove,
 			onTranscript: transcriptsOf('executor'),
 			writeRoots: writeRootsOf(workspace.roots),
+			snapshot: restoredExecutor?.conversation,
+			children: restoredExecutor?.children,
 			...shared,
 		}),
 		reviewer: await reader(
@@ -1031,6 +1093,7 @@ export async function createLLMOrchestrator({
 				systemPrompts.reviewer,
 				executorRuns ? phasedReviewerInstructions : phasedReviewerInstructionsWithoutCommands,
 			),
+			restoredRole('reviewer'),
 		),
 		validators: {
 			plan: planValidator,
@@ -1043,6 +1106,7 @@ export async function createLLMOrchestrator({
 		...(commitQuestion === undefined ? {} : { commitQuestion }),
 		...(limits === undefined ? {} : { limits }),
 		logger,
+		...(restored === undefined ? {} : { auxiliary: restored.auxiliary }),
 		// Only a workspace it may write can hold a run's changes to commit.
 		...(opened.writable && canCommit
 			? {
