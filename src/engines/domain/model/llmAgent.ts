@@ -467,9 +467,12 @@ export class LLMAgent implements Agent {
 	private async followHistory(history: HistoryReader): Promise<Followed> {
 		try {
 			const id = await history.workspaceId;
-			// A conversation restored over another history never saw its moves: it starts after them.
-			if (this.historyId !== undefined && this.historyId !== id) {
-				this.seenRevision = (await history.listRevisions()).at(-1)?.revision ?? 0;
+			if (this.historyId !== undefined) {
+				const latest = (await history.listRevisions()).at(-1)?.revision ?? 0;
+				// A conversation restored over another history never saw its moves: it starts after
+				// them. So does one over this history rebuilt where it was, whose id is the same and
+				// whose moves are numbered from 1 again: its latest is behind what was seen.
+				if (this.historyId !== id || latest < this.seenRevision) this.seenRevision = latest;
 			}
 			this.historyId = id;
 			return await followHistory(this.conversation, history, this.seenRevision, this.unlisted);

@@ -357,6 +357,37 @@ describe('a snapshot restored over another history', () => {
 	});
 });
 
+describe('a snapshot restored over a history rebuilt where it was', () => {
+	it('starts again with its moves, and tells the model why an undo there was made', async () => {
+		const model = new ScriptedModel().writes('a.txt', 'one').writes('a.txt', 'two').answers('ok');
+		const agent = await agentOver(model);
+		await agent.run('first', { signal });
+		await agent.run('second', { signal });
+		await store.undo();
+		await store.redo();
+		await agent.run('third', { signal });
+		const snapshot = agent.snapshot();
+		expect(snapshot.seenRevision).toBe(2);
+
+		// The same folders, so the same workspace id, and a history that starts again.
+		rmSync(join(parent, 'state'), { recursive: true, force: true });
+		const rebuilt = await FileRecoveryStore.open({ root: repo, directory: join(parent, 'state') });
+		expect(rebuilt.workspaceId).toBe(snapshot.history);
+		const resumed = new ScriptedModel().writes('a.txt', 'four').answers('ok');
+		const restored = await agentOver(resumed, { restore: snapshot, history: rebuilt });
+		await restored.run('fourth', { signal });
+		await rebuilt.undo({ reason: 'not four' });
+		await restored.run('fifth', { signal });
+
+		const note = texts(resumed.contexts.at(-1)).find(text =>
+			text.startsWith('Note from the harness'),
+		);
+		expect(note).toContain('«fourth»');
+		expect(note).toContain('«not four»');
+		expect(restored.snapshot().seenRevision).toBe(1);
+	});
+});
+
 describe('the runs an agent ran inside', () => {
 	it('forgets one that ended, even before it finished', () => {
 		const runs = new EnclosingRuns();

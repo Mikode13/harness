@@ -888,7 +888,7 @@ history's `workspaceId` (`history`), and the tokens
 of context its model was last sent, labelled with its client's `providerDataSource`. It is a deep
 copy, plain JSON. `createLLMAgent` with `restore` calls `readConversationSnapshot` before it
 builds anything: a value that is not an object of the format, or whose version is not a whole
-number, is an `InvalidSnapshotError`, a version this release does not restore an
+number of 1 or more, is an `InvalidSnapshotError`, a version this release does not restore an
 `UnsupportedSnapshotVersionError`; it is read as JSON gives it back, so a key left `undefined` is
 gone, and a value JSON cannot hold is an `InvalidSnapshotError`; and the rest is checked by a strict Zod
 schema of every message part, then by `checkConversationState`: each turn follows an earlier one
@@ -900,7 +900,8 @@ when its client has the same `providerDataSource`, and starts its `ReadRegistry`
 prompt, the tools and every other option are the new agent's.
 
 An agent restored over another history than the snapshot's takes every move of that one as seen,
-on its first look. Following the history then resolves the run each turn names. A run the history lists, or one that
+on its first look, and so does one whose history's latest revision is behind `seenRevision`: the
+same folders' history, rebuilt, which numbers its revisions from 1 again. Following the history then resolves the run each turn names. A run the history lists, or one that
 retention chained into a run it lists (`absorbed`), is that run. For any other, `followHistory`
 asks `readRun` once per agent (`UnlistedRuns`): `HistoryExpiredError`, retention removed it, so it
 is off every line as before; `UnknownRunError`, or a record the list hides, such as a dead run that

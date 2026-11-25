@@ -608,10 +608,12 @@ only runs off its current line, so it reads as undone, and the note names no fil
 whose run the history does not know is taken as a turn that wrote nothing, belonging to the run
 of the turn before it: a run whose process died before it changed anything leaves the history so,
 and so does a snapshot restored over another folder's history, whose earlier moves the agent then
-takes as seen: the snapshot names the history it followed.
+takes as seen: the snapshot names the history it followed. A history deleted and made again in the
+same folders has the same name and numbers its moves from 1 again; the agent takes it as another
+history too, once its latest move is behind the last one the snapshot saw.
 
 **When it cannot be restored.** `createLLMAgent` checks a snapshot whole before it builds
-anything, so no model or tool runs. A snapshot whose version is a whole number this release does not restore throws
+anything, so no model or tool runs. A snapshot whose version is a whole number of 1 or more this release does not restore throws
 `UnsupportedSnapshotVersionError`, an `InvalidSnapshotError` with the `version` it names; anything else, a missing version included, that is not a whole
 snapshot, such as a part of an unknown type, a turn that follows a later one or a tool call
 without its result, throws `InvalidSnapshotError`. Both are `UnrecoverableError`s.
@@ -658,7 +660,7 @@ you sent, if the user should be able to send it again.
 **When it cannot be restored.** `createLLMOrchestrator` checks the snapshot before it opens the
 workspace or builds any agent: one of another `format` or `flow`, a boundary this release does not
 restore, roles other than those three, or a role's conversation that cannot be restored throws
-`InvalidSnapshotError`, and a whole-number version this release does not restore, of the session or of a
+`InvalidSnapshotError`, and a version of 1 or more, a whole number, this release does not restore, of the session or of a
 role's conversation, `UnsupportedSnapshotVersionError`; a missing version is malformed.
 
 A workflow of `createWorkflow` takes no snapshot: each of its stages creates its agent for one run,
