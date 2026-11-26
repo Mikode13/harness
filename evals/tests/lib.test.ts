@@ -3,11 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { ProgressEvent, RunEntry } from '../../src/index.ts';
-import { compare, moveOf } from '../lib/compare.ts';
+import { acceptanceOf, compare, describeAcceptance, moveOf } from '../lib/compare.ts';
 import { itemsOf, planCoverage, rubricScore } from '../lib/judge.ts';
 import { metricsOf } from '../lib/metrics.ts';
 import { costOf } from '../lib/prices.ts';
-import { runHidden, runMutants, type TaskResult } from '../lib/runners.ts';
+import { rolesFromArguments, runHidden, runMutants, type TaskResult } from '../lib/runners.ts';
 import { loadTask } from '../lib/tasks.ts';
 import { prepareWorkspace, removeWorkspace, restoreConfiguration } from '../lib/workspace.ts';
 import { type RunSummary, summaryOf } from '../lib/summary.ts';
@@ -367,5 +367,71 @@ describe('restoreConfiguration', () => {
 		} finally {
 			removeWorkspace(workspace);
 		}
+	});
+});
+
+describe('rolesFromArguments', () => {
+	it('puts every role on --model, then each --role on its own', () => {
+		expect(
+			rolesFromArguments('anthropic:sonnet:high', ['reviewer=openai:gpt-6-astra:medium']),
+		).toEqual({
+			planner: { provider: 'anthropic', model: 'sonnet', reasoningEffort: 'high' },
+			executor: { provider: 'anthropic', model: 'sonnet', reasoningEffort: 'high' },
+			reviewer: { provider: 'openai', model: 'gpt-6-astra', reasoningEffort: 'medium' },
+		});
+		expect(rolesFromArguments(undefined, [])).toBeUndefined();
+	});
+
+	it.each([
+		['a model without an effort', 'anthropic:opus', []],
+		['an unknown provider', 'acme:x:high', []],
+		['a role that does not exist', undefined, ['critic=anthropic:opus:high']],
+		['a role without its model', undefined, ['reviewer']],
+	])('refuses %s', (_, model, roles) => {
+		expect(() => rolesFromArguments(model, roles)).toThrow();
+	});
+});
+
+describe('acceptanceOf', () => {
+	const summary = (passed: boolean, cost: number): RunSummary => ({
+		cost,
+		tokensByModel: {
+			opus: {
+				inputTokens: cost * 250_000,
+				readCacheTokens: 0,
+				writtenCacheTokens: 0,
+				outputTokens: 0,
+			},
+		},
+		unreported: false,
+		passed,
+		seconds: 100,
+	});
+
+	it('spreads every run, the failed ones included, over the accepted ones', () => {
+		const acceptance = acceptanceOf([summary(true, 1), summary(false, 1), summary(true, 1)]);
+
+		expect(acceptance).toEqual({
+			passed: 2,
+			total: 3,
+			costPerAccepted: 1.5,
+			secondsPerAccepted: 150,
+		});
+		expect(describeAcceptance(acceptance)).toBe(
+			'2 of 3 accepted, $1.500 and 150 s per accepted solution',
+		);
+	});
+
+	it('says 0 of 3 when none was accepted', () => {
+		const acceptance = acceptanceOf([summary(false, 1), summary(false, 1), summary(false, 1)]);
+
+		expect(acceptance).toMatchObject({ passed: 0, total: 3, costPerAccepted: undefined });
+		expect(describeAcceptance(acceptance)).toBe('0 of 3 accepted');
+	});
+
+	it('leaves the cost per solution unknown when a run went unpriced', () => {
+		const unpriced = { ...summary(true, 1), unreported: true };
+
+		expect(acceptanceOf([summary(true, 1), unpriced])?.costPerAccepted).toBeUndefined();
 	});
 });

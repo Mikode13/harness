@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { compare, minimumRuns } from './lib/compare.ts';
+import { compare, describeAcceptance, minimumRuns } from './lib/compare.ts';
 import type { RunSummary } from './lib/summary.ts';
 
 // pnpm passes a `--` before the arguments through as one of them.
@@ -21,6 +21,9 @@ const usd = (value: number | undefined): string =>
 for (const task of result.tasks) {
 	process.stdout.write(
 		`${task.task}: cost ${usd(task.cost.before)} → ${usd(task.cost.after)} (${task.cost.move})\n`,
+	);
+	process.stdout.write(
+		`  accepted: ${describeAcceptance(task.accepted.before)} → ${describeAcceptance(task.accepted.after)}\n`,
 	);
 	for (const [name, measure] of Object.entries(task.measures)) {
 		process.stdout.write(

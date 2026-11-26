@@ -9,9 +9,15 @@ import {
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
+	type Agent,
 	type AgentResponse,
 	type Asker,
+	type ConversationSnapshot,
+	createFileTools,
+	createLLMAgent,
 	createLLMOrchestrator,
+	type RoleModel,
+	type RoleModels,
 	type RunEntry,
 	type SessionSnapshot,
 	type Verification,
@@ -53,9 +59,20 @@ import {
 export const profiles = ['default', 'anthropic', 'openai'] as const;
 export type Profile = (typeof profiles)[number];
 
+/**
+ * How a task is carried out: by `createLLMOrchestrator`'s workflow, or by one agent of
+ * `createLLMAgent` on the executor's model, with the executor's tools and commands, so the two can
+ * be compared on the same task.
+ */
+export const paths = ['workflow', 'agent'] as const;
+export type Path = (typeof paths)[number];
+
 /** How one eval run is set up. */
 export interface RunSettings {
 	profile: Profile;
+	/** The roles' providers, models and efforts over the profile's, as `createLLMOrchestrator` takes them. */
+	roles?: RoleModels;
+	path: Path;
 	/** Where this run's files go: its result, its records and the workspace it left. */
 	folder: string;
 	/** The judges that grade quality; none to skip grading. */
@@ -67,16 +84,95 @@ export interface RunSettings {
 // The explorers the roles send, on their provider's cheap model, as `createLLMOrchestrator` builds them.
 const explorerModels = { anthropic: 'haiku', openai: 'gpt-5.6-luna' } as const;
 
-/** The model of each agent a run of `profile` may call, to price its steps. */
-export function modelsOf(profile: Profile): AgentModels {
-	const roles = orchestratorRolesFor(profile === 'default' ? undefined : profile);
+type RoleName = 'planner' | 'executor' | 'reviewer';
+const roleNames: readonly RoleName[] = ['planner', 'executor', 'reviewer'];
+
+/**
+ * The roles a command line asks for: `model`, as `provider:model:effort`, for every role, then each
+ * of `roles`, as `role=provider:model:effort`, for that role. Each model and effort is checked by
+ * its provider's client when the role is built.
+ *
+ * @throws {Error} naming what is malformed.
+ */
+export function rolesFromArguments(
+	model: string | undefined,
+	roles: readonly string[] = [],
+): RoleModels | undefined {
+	const parse = (text: string): RoleModel => {
+		const [provider, name, effort, ...rest] = text.split(':');
+		if (
+			(provider !== 'anthropic' && provider !== 'openai') ||
+			!name ||
+			!effort ||
+			rest.length > 0
+		) {
+			throw new Error(`"${text}" is not provider:model:effort, such as anthropic:opus:high`);
+		}
+		return {
+			provider,
+			model: name as RoleModel['model'],
+			reasoningEffort: effort as RoleModel['reasoningEffort'],
+		};
+	};
+	const chosen: RoleModels = {};
+	if (model !== undefined) {
+		const every = parse(model);
+		for (const role of roleNames) chosen[role] = every;
+	}
+	for (const each of roles) {
+		const [role, text] = each.split('=');
+		const name = roleNames.find(known => known === role);
+		if (name === undefined || text === undefined) {
+			throw new Error(
+				`"${each}" is not role=provider:model:effort, the role planner, executor or reviewer`,
+			);
+		}
+		chosen[name] = parse(text);
+	}
+	return Object.keys(chosen).length === 0 ? undefined : chosen;
+}
+
+/** Each role's provider, model and effort: the profile's, with the run's `roles` over them. */
+export function rolesOf(
+	settings: Pick<RunSettings, 'profile' | 'roles'>,
+): Record<RoleName, RoleModel> {
+	return {
+		...orchestratorRolesFor(settings.profile === 'default' ? undefined : settings.profile),
+		...settings.roles,
+	};
+}
+
+/** What `createLLMOrchestrator` is given to build the run's roles. */
+function roleOptions(settings: Pick<RunSettings, 'profile' | 'roles'>): {
+	provider?: Exclude<Profile, 'default'>;
+	roles?: RoleModels;
+} {
+	return {
+		...(settings.profile === 'default' ? {} : { provider: settings.profile }),
+		...(settings.roles ? { roles: settings.roles } : {}),
+	};
+}
+
+/**
+ * The model of each agent a run may call, to price its steps: each role and the explorers it
+ * sends, and `agent`, the one agent of the `agent` path or the reviewer run alone.
+ */
+export function modelsOf(settings: Pick<RunSettings, 'profile' | 'roles'>): AgentModels {
+	const roles = rolesOf(settings);
 	const models: AgentModels = {};
 	for (const [role, { provider, model }] of Object.entries(roles)) {
 		models[role] = model;
 		models[`${role}/explorer`] = explorerModels[provider];
 	}
+	models.agent = roles.executor.model;
 	return models;
 }
+
+/**
+ * What the agent of the `agent` path is told: the executor's job, for a whole request, with the
+ * checks a workflow would require. The workspace's roots and conventions are added by the harness.
+ */
+export const directAgentInstructions = `You are a coding agent. Carry out the user's request in the repository: read the relevant code first, change it, and add or update meaningful tests for what you change, failure paths included. Keep to the repository's conventions, such as those in AGENTS.md. Run the project's checks with runCommand, test, typecheck and lint, and finish only when they all pass, or say which one fails and why. Then answer with a short summary of what you changed.`;
 
 /** Collects a run's record in memory and in a file, one JSON line per entry. */
 class Recorder {
@@ -242,12 +338,21 @@ export interface TaskResult {
 	workspace: string;
 }
 
-/** Runs a task's prompts through `createLLMOrchestrator`, then checks and grades the result. */
-export async function runTask(task: Task, settings: RunSettings): Promise<TaskResult> {
-	const workspace = prepareWorkspace(task);
-	const models = modelsOf(settings.profile);
+/** One task's agent across its prompts, and how a server would restart it between two. */
+interface TaskAgent {
+	readonly agent: Agent;
+	/** Saves its conversations through JSON and builds it afresh from them. */
+	restart(): Promise<TaskAgent>;
+}
+
+/** The workflow of `createLLMOrchestrator`, with the task's commands and required checks. */
+async function workflowOf(
+	task: Task,
+	settings: RunSettings,
+	workspace: string,
+): Promise<TaskAgent> {
 	const options = {
-		...(settings.profile === 'default' ? {} : { provider: settings.profile }),
+		...roleOptions(settings),
 		workspace: {
 			roots: [{ path: workspace, access: 'write' as const }],
 			stateDirectory: stateDirectoryOf(workspace),
@@ -257,18 +362,71 @@ export async function runTask(task: Task, settings: RunSettings): Promise<TaskRe
 		requiredChecks: task.checks.map(command => ({ command })),
 		autoApprove: true,
 	};
+	const wrap = (agent: Awaited<ReturnType<typeof createLLMOrchestrator>>): TaskAgent => ({
+		agent,
+		restart: async () => {
+			const restore = JSON.parse(JSON.stringify(agent.snapshot())) as SessionSnapshot;
+			return wrap(await createLLMOrchestrator({ ...options, restore }));
+		},
+	});
+	return wrap(await createLLMOrchestrator(options));
+}
+
+/**
+ * One agent of `createLLMAgent` on the executor's provider, model and effort, with the executor's
+ * file tools, the task's commands and its formatter. Nothing requires its checks: it is told to
+ * run them, which is what a workflow's required checks and review add.
+ */
+async function directAgentOf(settings: RunSettings, workspace: string): Promise<TaskAgent> {
+	const { provider, model, reasoningEffort } = rolesOf(settings).executor;
+	const workspaceOptions = {
+		roots: [{ path: workspace, access: 'write' as const }],
+		stateDirectory: stateDirectoryOf(workspace),
+	};
+	const tools = await createFileTools(provider, workspaceOptions, {
+		commands: taskCommands(),
+		formatter: taskFormatter,
+	});
+	const build = (restore?: ConversationSnapshot) =>
+		createLLMAgent(provider, {
+			model,
+			reasoningEffort,
+			systemPrompt: directAgentInstructions,
+			workspace: workspaceOptions,
+			tools,
+			autoApprove: true,
+			...(restore ? { restore } : {}),
+		});
+	const wrap = (agent: ReturnType<typeof build>): TaskAgent => ({
+		agent,
+		restart: () =>
+			Promise.resolve(
+				wrap(build(JSON.parse(JSON.stringify(agent.snapshot())) as ConversationSnapshot)),
+			),
+	});
+	return wrap(build());
+}
+
+/**
+ * Runs a task's prompts through the workflow of `createLLMOrchestrator`, or one agent on the
+ * `agent` path, then checks and grades the result.
+ */
+export async function runTask(task: Task, settings: RunSettings): Promise<TaskResult> {
+	const workspace = prepareWorkspace(task);
+	const models = modelsOf(settings);
 	const pause = settings.pauseMinutes ?? task.pauseMinutes;
 	const prompts: TaskResult['prompts'] = [];
-	let agent = await createLLMOrchestrator(options);
+	let current =
+		settings.path === 'agent'
+			? await directAgentOf(settings, workspace)
+			: await workflowOf(task, settings, workspace);
 	for (const [index, file] of task.prompts.entries()) {
 		if (index > 0) {
 			if (pause > 0) await sleep(pause * 60_000);
-			if (task.restoreBetween) {
-				// As a server would: the session through JSON, into an orchestrator built afresh.
-				const restore = JSON.parse(JSON.stringify(agent.snapshot())) as SessionSnapshot;
-				agent = await createLLMOrchestrator({ ...options, restore });
-			}
+			// As a server would: the session through JSON, into an agent built afresh.
+			if (task.restoreBetween) current = await current.restart();
 		}
+		const agent = current.agent;
 		const recorder = new Recorder(join(settings.folder, `record-${String(index + 1)}.jsonl`));
 		const started = Date.now();
 		let response: AgentResponse | undefined;
@@ -369,7 +527,7 @@ export async function runPlan(task: Task, settings: RunSettings): Promise<PlanRe
 			return 'Stop';
 		});
 	const agent = await createLLMOrchestrator({
-		...(settings.profile === 'default' ? {} : { provider: settings.profile }),
+		...roleOptions(settings),
 		workspace: {
 			roots: [{ path: workspace, access: 'write' }],
 			stateDirectory: stateDirectoryOf(workspace),
@@ -390,7 +548,7 @@ export async function runPlan(task: Task, settings: RunSettings): Promise<PlanRe
 		// The record's end says how the run failed.
 	}
 	const seconds = (Date.now() - started) / 1000;
-	const metrics = metricsOf(recorder.entries, modelsOf(settings.profile));
+	const metrics = metricsOf(recorder.entries, modelsOf(settings));
 	const checklist = itemsOf(taskFile(task, task.checklist ?? ''));
 	const judged =
 		plan === undefined || settings.judges.length === 0
@@ -488,9 +646,7 @@ const decisionOf = (
 export async function runReview(task: Task, settings: RunSettings): Promise<ReviewResult> {
 	const review = task.review;
 	if (review === undefined) throw new Error(`${task.name} is not a review task`);
-	const { provider, model } = orchestratorRolesFor(
-		settings.profile === 'default' ? undefined : settings.profile,
-	).reviewer;
+	const { provider, model } = rolesOf(settings).reviewer;
 	// Run alone, the reviewer's events name no role: its own steps, and its explorers'.
 	const models: AgentModels = { agent: model, 'agent/explorer': explorerModels[provider] };
 	const request = taskFile(task, task.prompts[0] ?? '');
@@ -501,7 +657,7 @@ export async function runReview(task: Task, settings: RunSettings): Promise<Revi
 		const diff = changesSinceStart(workspace);
 		const verification = verificationOf(workspace, task.checks);
 		const orchestrator = await createLLMOrchestrator({
-			...(settings.profile === 'default' ? {} : { provider: settings.profile }),
+			...roleOptions(settings),
 			workspace: {
 				roots: [{ path: workspace, access: 'write' }],
 				stateDirectory: stateDirectoryOf(workspace),

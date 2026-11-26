@@ -4,23 +4,31 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { type JudgeName, judges } from './lib/judge.ts';
 import {
+	paths,
 	type Profile,
 	profiles,
+	rolesFromArguments,
 	runFolder,
 	runPlan,
 	runReview,
 	runTask,
 	type RunSettings,
 } from './lib/runners.ts';
-import { type EvalResult, summaryOf } from './lib/summary.ts';
+import { acceptanceOf, describeAcceptance } from './lib/compare.ts';
+import { type EvalResult, type RunSummary, summaryOf } from './lib/summary.ts';
 import { loadTask, taskNames } from './lib/tasks.ts';
 import { removeWorkspace } from './lib/workspace.ts';
 
 const usage = `pnpm run evals -- [--task <name>]... [--runs 3] [--profile default|anthropic|openai]
-                  [--judges opus,astra|none] [--pause-minutes <n>] [--keep-workspaces]
+                  [--path workflow|agent] [--model provider:model:effort]
+                  [--role role=provider:model:effort]... [--judges opus,astra|none]
+                  [--pause-minutes <n>] [--keep-workspaces]
 
 Runs each task --runs times against the harness in this checkout, and writes every result to
-evals/results/<time>-<profile>/. Needs ANTHROPIC_API_KEY and OPENAI_API_KEY. Tasks: ${taskNames().join(', ')}.`;
+evals/results/<time>-<profile>-<path>/. --path agent carries a whole task out with one agent on
+the executor's model instead of the workflow, and skips the plan and review tasks. --model puts
+every role, and that agent, on one model; --role puts one role on its own, after --model.
+Needs ANTHROPIC_API_KEY and OPENAI_API_KEY. Tasks: ${taskNames().join(', ')}.`;
 
 // pnpm passes a `--` before the arguments through as one of them.
 const given = process.argv.slice(2);
@@ -30,6 +38,9 @@ const { values } = parseArgs({
 		task: { type: 'string', multiple: true },
 		runs: { type: 'string', default: '3' },
 		profile: { type: 'string', default: 'default' },
+		path: { type: 'string', default: 'workflow' },
+		model: { type: 'string' },
+		role: { type: 'string', multiple: true },
 		judges: { type: 'string', default: 'opus,astra' },
 		'pause-minutes': { type: 'string' },
 		'keep-workspaces': { type: 'boolean', default: false },
@@ -59,12 +70,24 @@ const chosenJudges: JudgeName[] =
 const pauseMinutes =
 	values['pause-minutes'] === undefined ? undefined : Number(values['pause-minutes']);
 if (pauseMinutes !== undefined && !(pauseMinutes >= 0)) fail('--pause-minutes must be 0 or more');
-const tasks = (values.task ?? taskNames()).map(name =>
+const path = paths.find(each => each === values.path) ?? fail(`Unknown path ${values.path}`);
+let roles: ReturnType<typeof rolesFromArguments>;
+try {
+	roles = rolesFromArguments(values.model, values.role);
+} catch (error) {
+	fail(error instanceof Error ? error.message : String(error));
+}
+const chosenTasks = (values.task ?? taskNames()).map(name =>
 	taskNames().includes(name) ? loadTask(name) : fail(`Unknown task ${name}`),
 );
+// One agent carries out a whole task; planning and reviewing alone are the workflow's roles.
+const tasks = path === 'agent' ? chosenTasks.filter(task => task.kind === 'task') : chosenTasks;
+for (const task of chosenTasks.filter(each => !tasks.includes(each))) {
+	process.stdout.write(`Skipping ${task.name}: --path agent runs whole tasks only\n`);
+}
 
 const stamp = new Date().toISOString().replace(/[:.]/gu, '-');
-const root = join(import.meta.dirname, 'results', `${stamp}-${profile}`);
+const root = join(import.meta.dirname, 'results', `${stamp}-${profile}-${path}`);
 mkdirSync(root, { recursive: true });
 const commit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 const dirty =
@@ -76,6 +99,8 @@ writeFileSync(
 			commit,
 			dirty,
 			profile,
+			path,
+			...(roles ? { roles } : {}),
 			runs,
 			judges: chosenJudges,
 			tasks: tasks.map(task => task.name),
@@ -89,12 +114,14 @@ process.stdout.write(
 	`Results in ${root}\nHarness at ${commit}${dirty ? ' with changes in src/' : ''}\n`,
 );
 
-const summaries: Record<string, unknown[]> = {};
+const summaries: Record<string, RunSummary[]> = {};
 for (const task of tasks) {
 	for (let run = 1; run <= runs; run++) {
 		const folder = runFolder(root, task.name, run);
 		const settings: RunSettings = {
 			profile: profile satisfies Profile,
+			path,
+			...(roles ? { roles } : {}),
 			folder,
 			judges: chosenJudges,
 			...(pauseMinutes === undefined ? {} : { pauseMinutes }),
@@ -114,4 +141,9 @@ for (const task of tasks) {
 			removeWorkspace(result.workspace);
 		}
 	}
+}
+
+process.stdout.write('\n');
+for (const [task, summary] of Object.entries(summaries)) {
+	process.stdout.write(`${task}: ${describeAcceptance(acceptanceOf(summary))}\n`);
 }

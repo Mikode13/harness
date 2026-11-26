@@ -13,6 +13,49 @@ export interface TaskComparison {
 	measures: Record<string, { before: number; after: number; move: Move }>;
 	/** A side has fewer than `minimumRuns` runs, so nothing of the task moved past noise. */
 	tooFewRuns: boolean;
+	/** How often each side's runs were accepted, and what an accepted solution cost. */
+	accepted: { before: Acceptance | undefined; after: Acceptance | undefined };
+}
+
+/**
+ * How often a task's runs were accepted, and what each accepted solution cost: every run's cost
+ * and time, the failed ones included, over the runs accepted. `undefined` per-solution figures
+ * when none was accepted, which `0 of 3` already says, or a run's cost is unknown.
+ */
+export interface Acceptance {
+	passed: number;
+	total: number;
+	costPerAccepted: number | undefined;
+	secondsPerAccepted: number | undefined;
+}
+
+/** An acceptance in words: `2 of 3 accepted, $0.412 and 310 s per accepted solution`. */
+export function describeAcceptance(acceptance: Acceptance | undefined): string {
+	if (acceptance === undefined) return 'no runs with a verdict';
+	const { passed, total, costPerAccepted, secondsPerAccepted } = acceptance;
+	const head = `${String(passed)} of ${String(total)} accepted`;
+	if (passed === 0) return head;
+	const cost = costPerAccepted === undefined ? 'an unknown cost' : `$${costPerAccepted.toFixed(3)}`;
+	return `${head}, ${cost} and ${String(Math.round(secondsPerAccepted ?? 0))} s per accepted solution`;
+}
+
+/** The acceptance of a task's runs, priced with today's table; none for runs with no verdict. */
+export function acceptanceOf(runs: readonly RunSummary[]): Acceptance | undefined {
+	const judged = runs.filter(run => run.passed !== undefined);
+	if (judged.length === 0) return undefined;
+	const passed = judged.filter(run => run.passed).length;
+	const costs = judged.map(pricedNow);
+	const known = costs.flatMap(cost => (cost === undefined ? [] : [cost]));
+	return {
+		passed,
+		total: judged.length,
+		costPerAccepted:
+			passed === 0 || known.length < costs.length
+				? undefined
+				: known.reduce((sum, cost) => sum + cost, 0) / passed,
+		secondsPerAccepted:
+			passed === 0 ? undefined : judged.reduce((sum, run) => sum + run.seconds, 0) / passed,
+	};
 }
 
 /** The runs a side needs before a move counts: with fewer, its spread says nothing of the noise. */
@@ -151,6 +194,7 @@ export function compare(
 			},
 			measures: compared,
 			tooFewRuns,
+			accepted: { before: acceptanceOf(was), after: acceptanceOf(is) },
 		});
 	}
 	const cheaper = tasks.filter(each => each.cost.move === 'better').map(each => each.task);

@@ -1,7 +1,8 @@
 # Evals
 
 Real tasks the harness carries out, measured, so that a change to it — a prompt, the cache, a
-model, the router — can be compared with what it replaced on numbers rather than impressions.
+role's model, the workflow itself — can be compared with what it replaced on numbers rather than
+impressions.
 
 Each task brings its own small repository, so it never depends on the harness's history and stays
 valid as the harness changes: what varies between two measurements is the harness alone.
@@ -9,6 +10,8 @@ valid as the harness changes: what varies between two measurements is the harnes
 ```sh
 pnpm run evals -- --runs 3                     # every task, 3 runs each, the default roles
 pnpm run evals -- --task complex --profile anthropic
+pnpm run evals -- --task bugfix --path agent --model anthropic:sonnet:high
+pnpm run evals -- --task review-seeded --role reviewer=anthropic:sonnet:high
 pnpm run evals:compare -- evals/results/<before> evals/results/<after>
 pnpm run test:evals                            # the tasks' own checks, offline, free
 ```
@@ -32,7 +35,10 @@ The kinds:
 
 - **task:** `createLLMOrchestrator` carries out the prompts, unattended, with the repository's
   `test`, `typecheck` and `lint` as commands and required checks. Then the result is checked and
-  graded.
+  graded. With `--path agent`, one agent of `createLLMAgent` carries them out instead, on the
+  executor's provider, model and effort, with the executor's file tools and the same commands:
+  told to run the checks, which nothing requires of it, and reviewed by no one. What a task costs
+  and passes on each path is what the workflow buys.
 - **plan:** the orchestrator plans and is stopped at "Carry out this plan?", so only the planner,
   and the explorers it sends, work.
 - **review:** the reviewer `createLLMOrchestrator` builds, its model, instructions, tools and
@@ -40,8 +46,13 @@ The kinds:
   own check results. Its `showChanges` finds nothing, since the change was not made through the
   harness; the prompt carries the diff, as a run's review does.
 
-`plan` and `review-seeded` isolate one role each, so a cheaper model in that role — what the
-router will choose — shows its effect there without paying for a whole task.
+`plan` and `review-seeded` isolate one role each, so a cheaper model in that role shows its effect
+there without paying for a whole task.
+
+The roles run on the models of `--profile`, the three profiles `createLLMOrchestrator` offers.
+`--model provider:model:effort` puts every role, and the agent of `--path agent`, on one model;
+`--role role=provider:model:effort` puts one role on its own, after `--model`. Both go to
+`createLLMOrchestrator`'s `roles`, and each run is priced at the models it ran on.
 
 ## What a run gives
 
@@ -53,7 +64,13 @@ compares, so a price change never reads as a change of the harness.
 
 **Whether it passed**, for a task: the hidden tests, which the agents never see and which are
 copied in only at the end, all pass; `test`, `typecheck` and `lint` pass on what the agents left;
-and no forbidden pattern, such as `eslint-disable`, is in `src/` or `tests/`.
+and no forbidden pattern, such as `eslint-disable`, is in `src/` or `tests/`. The checks judge by
+the task's own configuration: a run that changed or added a `package.json`, a TypeScript, ESLint,
+Prettier or Vitest configuration gets it put back first, and does not pass.
+
+**What an accepted solution costs**, over a task's runs: how many were accepted, as `2 of 3`, or
+`0 of 3`, and every run's cost and time, the failed ones included, over the accepted ones. A
+cheaper path that fails more often can cost more per solution.
 
 **Quality**, graded by two judges, Claude Opus 5.5 and GPT-6 Astra, each called through its
 provider's SDK and never through the harness, so no change to the harness can change a grade.
@@ -93,8 +110,13 @@ spread of the runs before it.
 - **The change works** when it is cheaper in at least two tasks and worse in none. Worse in any
   is a regression, whatever it saves.
 
+It prints each side's acceptance too, as `2 of 3 accepted, $0.412 and 310 s per accepted
+solution`, which the rule does not weigh: read it beside the verdict, above all when comparing two
+paths or a cheaper model, which can save per run and lose per solution.
+
 Measure the baseline first, three runs at least, to see the spread. `evals:compare` leaves a
-task out of the verdict when either side has fewer than three runs, or none, and says so.
+task out of the verdict when either side has fewer than three runs, or none, and says so; a
+measure, such as quality when the judges failed, moves only with three values a side.
 
 ## A task's files
 

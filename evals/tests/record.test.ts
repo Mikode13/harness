@@ -76,7 +76,7 @@ it("counts each role's rounds and steps from a real orchestrator's record", asyn
 			entries.push(entry);
 		},
 	});
-	const metrics = metricsOf(entries, modelsOf('openai'));
+	const metrics = metricsOf(entries, modelsOf({ profile: 'openai' }));
 
 	expect(metrics.stages).toMatchObject({ plan: 1, execute: 1, review: 1 });
 	expect(Object.keys(metrics.byAgent).sort()).toEqual(['executor', 'planner', 'reviewer']);

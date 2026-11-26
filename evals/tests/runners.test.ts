@@ -62,7 +62,7 @@ const workspaces: string[] = [];
 const settings = (): RunSettings => {
 	const folder = mkdtempSync(join(tmpdir(), 'eval-runner-'));
 	folders.push(folder);
-	return { profile: 'openai', folder, judges: [] };
+	return { profile: 'openai', path: 'workflow', folder, judges: [] };
 };
 
 afterEach(() => {
@@ -96,6 +96,41 @@ describe('runTask', () => {
 		// The history the harness kept is beside the workspace, and goes with it.
 		expect(existsSync(stateDirectoryOf(result.workspace))).toBe(true);
 		expect(summaryOf(result)).toMatchObject({ passed: false, falseApproval: true });
+	});
+});
+
+describe('runTask on the agent path', () => {
+	it('carries the task out with one agent on the chosen model, and restarts it between prompts', async () => {
+		const create = vi.fn<(request: { model?: string }) => Promise<unknown>>(() =>
+			Promise.resolve(says('Nothing to change.')),
+		);
+		vi.mocked(OpenAI).mockImplementation(function () {
+			return { responses: { create } } as unknown as OpenAI;
+		});
+		const run = {
+			...settings(),
+			path: 'agent' as const,
+			roles: {
+				executor: { provider: 'openai', model: 'gpt-6-astra', reasoningEffort: 'high' },
+			} as const,
+		};
+		const task = loadTask('session');
+		const result = await runTask(task, { ...run, pauseMinutes: 0 });
+		workspaces.push(result.workspace);
+
+		expect(result.prompts).toHaveLength(task.prompts.length);
+		for (const prompt of result.prompts) {
+			expect(Object.keys(prompt.metrics.byAgent)).toEqual(['agent']);
+			expect(prompt.metrics.stages).toEqual({});
+		}
+		expect(create.mock.calls.map(([request]) => request.model)).toEqual(
+			task.prompts.map(() => 'gpt-6-astra'),
+		);
+		// Priced at the model it ran on, not the profile's executor.
+		expect(result.cost).toBeCloseTo(
+			task.prompts.length * ((400 * 10 + 600 * 1 + 50 * 50) / 1_000_000),
+		);
+		expect(result.falseApproval).toBe(false);
 	});
 });
 
