@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runPlan, runReview, runTask, type RunSettings } from '../lib/runners.ts';
 import { summaryOf } from '../lib/summary.ts';
 import { loadTask } from '../lib/tasks.ts';
+import { removeWorkspace, stateDirectoryOf } from '../lib/workspace.ts';
 
 // The runners end to end, offline: every role on OpenAI's model API, through a fake of its SDK
 // that answers each call at once, so the record, the metrics and the checks are what is tested.
@@ -57,6 +58,7 @@ const doneAndApproved = JSON.stringify({
 });
 
 const folders: string[] = [];
+const workspaces: string[] = [];
 const settings = (): RunSettings => {
 	const folder = mkdtempSync(join(tmpdir(), 'eval-runner-'));
 	folders.push(folder);
@@ -65,6 +67,7 @@ const settings = (): RunSettings => {
 
 afterEach(() => {
 	for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true });
+	for (const workspace of workspaces.splice(0)) removeWorkspace(workspace);
 	vi.clearAllMocks();
 });
 
@@ -73,7 +76,7 @@ describe('runTask', () => {
 		everyRoleSays(doneAndApproved);
 		const run = settings();
 		const result = await runTask(loadTask('bugfix'), run);
-		folders.push(result.workspace);
+		workspaces.push(result.workspace);
 		const [prompt] = result.prompts;
 
 		expect(prompt?.metrics.outcome).toBe('completed');
@@ -90,6 +93,8 @@ describe('runTask', () => {
 		expect(result.passed).toBe(false);
 		expect(result.falseApproval).toBe(true);
 		expect(readFileSync(join(run.folder, 'record-1.jsonl'), 'utf8')).toContain('"type":"end"');
+		// The history the harness kept is beside the workspace, and goes with it.
+		expect(existsSync(stateDirectoryOf(result.workspace))).toBe(true);
 		expect(summaryOf(result)).toMatchObject({ passed: false, falseApproval: true });
 	});
 });
@@ -99,7 +104,7 @@ describe('runPlan', () => {
 		everyRoleSays(doneAndApproved);
 		const run = settings();
 		const result = await runPlan(loadTask('plan'), run);
-		folders.push(result.workspace);
+		workspaces.push(result.workspace);
 
 		expect(result.plan).toContain('Fix it');
 		expect(Object.keys(result.metrics.byAgent)).toEqual(['planner']);

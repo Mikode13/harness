@@ -1,5 +1,13 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, symlinkSync } from 'node:fs';
+import {
+	cpSync,
+	existsSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import type { Commands, Formatter } from '../../src/index.ts';
@@ -38,6 +46,20 @@ export function prepareWorkspace(task: Task, overlays: readonly string[] = []): 
 	git(root, ['add', '--all']);
 	git(root, ['commit', '--quiet', '--no-verify', '--message', 'The task as it starts']);
 	return root;
+}
+
+/**
+ * Where the harness keeps the history of `workspace`: beside it, not in the user's state folder,
+ * so it goes with it.
+ */
+export function stateDirectoryOf(workspace: string): string {
+	return `${workspace}-state`;
+}
+
+/** Removes a workspace and the history the harness kept of it. */
+export function removeWorkspace(workspace: string): void {
+	rmSync(workspace, { recursive: true, force: true });
+	rmSync(stateDirectoryOf(workspace), { recursive: true, force: true });
 }
 
 /** Lays a folder of the task over the workspace, uncommitted, as an agent's change would be. */

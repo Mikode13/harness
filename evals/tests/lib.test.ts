@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { ProgressEvent, RunEntry } from '../../src/index.ts';
 import { compare, moveOf } from '../lib/compare.ts';
-import { itemsOf } from '../lib/judge.ts';
+import { itemsOf, planCoverage, rubricScore } from '../lib/judge.ts';
 import { metricsOf } from '../lib/metrics.ts';
 import { costOf } from '../lib/prices.ts';
-import type { RunSummary } from '../lib/summary.ts';
+import type { TaskResult } from '../lib/runners.ts';
+import { type RunSummary, summaryOf } from '../lib/summary.ts';
 
 const tokens = { inputTokens: 100, readCacheTokens: 900, writtenCacheTokens: 0, outputTokens: 10 };
 const progress = (event: ProgressEvent): RunEntry => ({ version: 1, type: 'progress', event });
@@ -93,6 +94,43 @@ describe('itemsOf', () => {
 	});
 });
 
+describe("the judges' scores", () => {
+	const items = itemsOf('a: First.\nb: Second.\nc: Third.');
+
+	it('count each known item once, an unknown one not at all, and a missing one as 0', () => {
+		const reason = 'because';
+		expect(
+			rubricScore(
+				{
+					items: [
+						{ id: 'a', score: 2, reason },
+						{ id: 'a', score: 0, reason },
+						{ id: 'invented', score: 2, reason },
+					],
+				},
+				items,
+			),
+		).toBeCloseTo(2 / 6);
+	});
+
+	it('never cover more than the whole checklist', () => {
+		const reason = 'because';
+		expect(
+			planCoverage(
+				{
+					items: [
+						{ id: 'a', covered: true, reason },
+						{ id: 'a', covered: true, reason },
+						{ id: 'x', covered: true, reason },
+						{ id: 'b', covered: false, reason },
+					],
+				},
+				items,
+			),
+		).toBeCloseTo(1 / 3);
+	});
+});
+
 describe('compare', () => {
 	const runs = (costs: number[], passed = true, quality = 0.8): RunSummary[] =>
 		costs.map(cost => ({ cost, passed, quality, seconds: 1 }));
@@ -122,5 +160,23 @@ describe('compare', () => {
 		};
 
 		expect(compare(before, after)).toMatchObject({ worse: ['b'], verdict: 'regression' });
+	});
+});
+
+describe('summaryOf', () => {
+	it("gives no mutant a kill when the agents' tests fail without one", () => {
+		const result = {
+			kind: 'task',
+			prompts: [],
+			cost: 1,
+			checks: { test: false, typecheck: true, lint: true },
+			forbidden: [],
+			mutants: { killed: [], survived: ['a.ts', 'b.ts'], baselinePassed: false },
+			falseApproval: false,
+			passed: false,
+			workspace: '/tmp/none',
+		} satisfies TaskResult;
+
+		expect(summaryOf(result).mutantsKilled).toBe(0);
 	});
 });

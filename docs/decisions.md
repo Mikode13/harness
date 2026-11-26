@@ -3386,8 +3386,13 @@ models. He chose Opus 5.5 and GPT-6 Astra as judges, called through the SDKs.
 
 **Consequences:**
 
-- `reviewerPrompt` in `phasedOrchestrator.ts` is exported, inside the package and not from
-  `src/index.ts`, for the reviewer eval.
+- Inside the package and not from `src/index.ts`, `reviewerPrompt` in `phasedOrchestrator.ts`
+  is exported, and `orchestratorRolesOf` gives the roles an orchestrator built, so the reviewer
+  eval runs the orchestrator's own reviewer, its tools and explorers included, on the prompt a
+  run's review sends. The evals also read `orchestratorRolesFor`, to price each role's steps.
+- A judge's score counts the rubric's or checklist's own items, each once, and an item it left
+  out as missed, so a judge that skips or repeats items cannot raise a score. The agents' tests
+  kill no mutant unless they pass without one.
 - `createLLMOrchestrator` takes a provider, not a model per role, so the evals compare its three
   role profiles. The router adds configurations to compare, not a new eval.
 - A run of every task costs a few dollars, most of it `complex`, and `session` waits twelve

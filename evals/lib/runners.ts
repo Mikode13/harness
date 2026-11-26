@@ -1,37 +1,29 @@
-import {
-	appendFileSync,
-	mkdirSync,
-	readdirSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from 'node:fs';
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
 	type AgentResponse,
 	type Asker,
-	createFileTools,
-	createLLMAgent,
 	createLLMOrchestrator,
 	type RunEntry,
 	type SessionSnapshot,
 	type Verification,
 } from '../../src/index.ts';
 import { orchestratorRolesFor } from '../../src/factory/infrastructure/agentFactory.ts';
-import {
-	phasedReviewerInstructions,
-	reviewerPrompt,
-} from '../../src/orchestration/domain/model/phasedOrchestrator.ts';
+import { orchestratorRolesOf } from '../../src/factory/infrastructure/agentLLMFactory.ts';
+import { reviewerPrompt } from '../../src/orchestration/domain/model/phasedOrchestrator.ts';
 import {
 	gradeFeedback,
 	gradePlan,
 	gradeRubric,
+	type Item,
 	itemsOf,
 	type FeedbackVerdict,
 	type Judged,
 	type JudgeName,
+	planCoverage,
 	type PlanVerdict,
+	rubricScore,
 	type RubricVerdict,
 } from './judge.ts';
 import { type AgentModels, metricsOf, type RunMetrics } from './metrics.ts';
@@ -41,7 +33,9 @@ import {
 	changesSinceStart,
 	forbiddenMatches,
 	prepareWorkspace,
+	removeWorkspace,
 	runCheck,
+	stateDirectoryOf,
 	taskCommands,
 	taskFormatter,
 	testFiles,
@@ -129,6 +123,11 @@ export function runHidden(task: Task, workspace: string, folder: string): Hidden
 export interface Mutants {
 	killed: string[];
 	survived: string[];
+	/**
+	 * The tests passed on the file as the agents left it. Without that, a failing run says nothing
+	 * about a mutant, so none counts as killed.
+	 */
+	baselinePassed: boolean;
 }
 
 /**
@@ -142,10 +141,12 @@ export function runMutants(
 ): Mutants | undefined {
 	if (task.mutants === undefined) return undefined;
 	const { target, directory } = task.mutants;
+	const names = readdirSync(join(task.directory, directory)).sort();
+	const baselinePassed = tests.length > 0 && runCheck(workspace, 'test', [...tests]).passed;
+	if (!baselinePassed) return { killed: [], survived: names, baselinePassed };
 	const original = readFileSync(join(workspace, target), 'utf8');
 	const killed: string[] = [];
 	const survived: string[] = [];
-	const names = readdirSync(join(task.directory, directory)).sort();
 	try {
 		for (const name of names) {
 			writeFileSync(join(workspace, target), readFileSync(join(task.directory, directory, name)));
@@ -155,19 +156,17 @@ export function runMutants(
 	} finally {
 		writeFileSync(join(workspace, target), original);
 	}
-	return { killed, survived };
+	return { killed, survived, baselinePassed };
 }
 
 /** The average of the judges' scores, from 0 to 1, over the judges that answered. */
-export function meanScore(judged: readonly Judged<RubricVerdict>[]): number | undefined {
+export function meanScore(
+	judged: readonly Judged<RubricVerdict>[],
+	rubric: readonly Item[],
+): number | undefined {
 	const answered = judged.flatMap(each => ('verdict' in each ? [each.verdict] : []));
 	if (answered.length === 0) return undefined;
-	const each = answered.map(verdict =>
-		verdict.items.length === 0
-			? 0
-			: verdict.items.reduce((sum, item) => sum + item.score, 0) / (2 * verdict.items.length),
-	);
-	return each.reduce((sum, score) => sum + score, 0) / each.length;
+	return answered.reduce((sum, verdict) => sum + rubricScore(verdict, rubric), 0) / answered.length;
 }
 
 /** The result of one run of a `task` task. */
@@ -195,7 +194,10 @@ export async function runTask(task: Task, settings: RunSettings): Promise<TaskRe
 	const models = modelsOf(settings.profile);
 	const options = {
 		...(settings.profile === 'default' ? {} : { provider: settings.profile }),
-		workspace: { roots: [{ path: workspace, access: 'write' as const }] },
+		workspace: {
+			roots: [{ path: workspace, access: 'write' as const }],
+			stateDirectory: stateDirectoryOf(workspace),
+		},
 		commands: taskCommands(),
 		formatter: taskFormatter,
 		requiredChecks: task.checks.map(command => ({ command })),
@@ -253,13 +255,9 @@ export async function runTask(task: Task, settings: RunSettings): Promise<TaskRe
 	let quality: TaskResult['quality'];
 	if (task.rubric !== undefined && settings.judges.length > 0) {
 		const request = task.prompts.map(file => taskFile(task, file)).join('\n\nThen:\n\n');
-		const judged = await gradeRubric(
-			request,
-			itemsOf(taskFile(task, task.rubric)),
-			diff,
-			settings.judges,
-		);
-		quality = { score: meanScore(judged), judges: judged };
+		const rubric = itemsOf(taskFile(task, task.rubric));
+		const judged = await gradeRubric(request, rubric, diff, settings.judges);
+		quality = { score: meanScore(judged, rubric), judges: judged };
 	}
 
 	return {
@@ -314,7 +312,10 @@ export async function runPlan(task: Task, settings: RunSettings): Promise<PlanRe
 		});
 	const agent = await createLLMOrchestrator({
 		...(settings.profile === 'default' ? {} : { provider: settings.profile }),
-		workspace: { roots: [{ path: workspace, access: 'write' }] },
+		workspace: {
+			roots: [{ path: workspace, access: 'write' }],
+			stateDirectory: stateDirectoryOf(workspace),
+		},
 		commands: taskCommands(),
 		autoApprove: true,
 	});
@@ -339,11 +340,10 @@ export async function runPlan(task: Task, settings: RunSettings): Promise<PlanRe
 			: await gradePlan(request, checklist, plan, settings.judges);
 	const answered = judged.flatMap(each => ('verdict' in each ? [each.verdict] : []));
 	const coverage =
-		answered.length === 0 || checklist.length === 0
+		answered.length === 0
 			? undefined
-			: answered
-					.map(verdict => verdict.items.filter(item => item.covered).length / checklist.length)
-					.reduce((sum, share) => sum + share, 0) / answered.length;
+			: answered.reduce((sum, verdict) => sum + planCoverage(verdict, checklist), 0) /
+				answered.length;
 	if (plan !== undefined) writeFileSync(join(settings.folder, 'plan.md'), plan);
 	return {
 		kind: 'plan',
@@ -422,17 +422,19 @@ const decisionOf = (
 };
 
 /**
- * Has the reviewer role of `profile` review each known change, as the orchestrator would: its
- * instructions, its model, read-only file tools, and the prompt a phase's review sends, with the
- * harness's own checks. It has no explorers, which the orchestrator's reviewer also has.
+ * Has the reviewer of `profile` review each known change: the reviewer `createLLMOrchestrator`
+ * builds, its model, instructions, tools and explorers included, sent the prompt a phase's review
+ * sends, with the harness's own checks. Its `showChanges` finds nothing, since the change was not
+ * made through the harness; the prompt carries its diff, as a run's review does.
  */
 export async function runReview(task: Task, settings: RunSettings): Promise<ReviewResult> {
 	const review = task.review;
 	if (review === undefined) throw new Error(`${task.name} is not a review task`);
-	const role = orchestratorRolesFor(
+	const { provider, model } = orchestratorRolesFor(
 		settings.profile === 'default' ? undefined : settings.profile,
 	).reviewer;
-	const models: AgentModels = { agent: role.model };
+	// Run alone, the reviewer's events name no role: its own steps, and its explorers'.
+	const models: AgentModels = { agent: model, 'agent/explorer': explorerModels[provider] };
 	const request = taskFile(task, task.prompts[0] ?? '');
 	const cases: ReviewCaseResult[] = [];
 	for (const [name, known] of Object.entries(review.cases)) {
@@ -440,14 +442,16 @@ export async function runReview(task: Task, settings: RunSettings): Promise<Revi
 		applyOverlay(task, workspace, known.change);
 		const diff = changesSinceStart(workspace);
 		const verification = verificationOf(workspace, task.checks);
-		const roots = [{ path: workspace, access: 'read' as const }];
-		const reviewer = createLLMAgent(role.provider, {
-			model: role.model,
-			reasoningEffort: role.reasoningEffort,
-			systemPrompt: phasedReviewerInstructions,
-			workspace: { roots },
-			tools: await createFileTools(role.provider, { roots }),
+		const orchestrator = await createLLMOrchestrator({
+			...(settings.profile === 'default' ? {} : { provider: settings.profile }),
+			workspace: {
+				roots: [{ path: workspace, access: 'write' }],
+				stateDirectory: stateDirectoryOf(workspace),
+			},
+			commands: taskCommands(),
 		});
+		const reviewer = orchestratorRolesOf(orchestrator).reviewer;
+		// A role inside the orchestrator keeps no record of its own: its narration is the record.
 		const recorder = new Recorder(join(settings.folder, `record-${name}.jsonl`));
 		const started = Date.now();
 		let answer = '';
@@ -461,11 +465,26 @@ export async function runReview(task: Task, settings: RunSettings): Promise<Revi
 					verification,
 					diff,
 				}),
-				{ signal: AbortSignal.timeout(20 * 60_000), onRecord: recorder.take },
+				{
+					signal: AbortSignal.timeout(20 * 60_000),
+					onProgress: event => {
+						recorder.take({ version: 1, type: 'progress', event });
+					},
+				},
 			);
 			answer = response.response;
-		} catch {
-			// The record's end says how the run failed, and no decision is read.
+		} catch (error) {
+			recorder.take({
+				version: 1,
+				type: 'end',
+				outcome: 'failed',
+				failure: {
+					recoverable: false,
+					message: error instanceof Error ? error.message : String(error),
+					cause: '',
+					usageUnreported: false,
+				},
+			});
 		}
 		const { decision, feedback } = decisionOf(answer);
 		let found: ReviewCaseResult['found'];
@@ -493,7 +512,7 @@ export async function runReview(task: Task, settings: RunSettings): Promise<Revi
 			metrics: metricsOf(recorder.entries, models),
 			seconds: (Date.now() - started) / 1000,
 		});
-		rmSync(workspace, { recursive: true, force: true });
+		removeWorkspace(workspace);
 	}
 	const bugs = cases.filter(result => result.expected === 'rejected');
 	const clean = cases.filter(result => result.expected === 'approved');

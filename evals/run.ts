@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { type JudgeName, judges } from './lib/judge.ts';
@@ -14,6 +14,7 @@ import {
 } from './lib/runners.ts';
 import { type EvalResult, summaryOf } from './lib/summary.ts';
 import { loadTask, taskNames } from './lib/tasks.ts';
+import { removeWorkspace } from './lib/workspace.ts';
 
 const usage = `pnpm run evals -- [--task <name>]... [--runs 3] [--profile default|anthropic|openai]
                   [--judges opus,astra|none] [--pause-minutes <n>] [--keep-workspaces]
@@ -110,7 +111,7 @@ for (const task of tasks) {
 		writeFileSync(join(root, 'summary.json'), JSON.stringify(summaries, null, '\t'));
 		process.stdout.write(`${task.name} #${String(run)}: ${JSON.stringify(summary)}\n`);
 		if (!values['keep-workspaces'] && 'workspace' in result) {
-			rmSync(result.workspace, { recursive: true, force: true });
+			removeWorkspace(result.workspace);
 		}
 	}
 }

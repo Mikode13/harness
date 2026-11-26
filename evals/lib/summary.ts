@@ -32,7 +32,10 @@ export function summaryOf(result: EvalResult): RunSummary {
 				cost: result.cost,
 				passed: result.passed,
 				...(result.quality?.score === undefined ? {} : { quality: result.quality.score }),
-				...(mutants && total > 0 ? { mutantsKilled: mutants.killed.length / total } : {}),
+				// Tests that fail without a mutant catch none: they score 0, not every mutant killed.
+				...(mutants && total > 0
+					? { mutantsKilled: mutants.baselinePassed ? mutants.killed.length / total : 0 }
+					: {}),
 				falseApproval: result.falseApproval,
 				seconds: result.prompts.reduce((sum, prompt) => sum + prompt.seconds, 0),
 			};

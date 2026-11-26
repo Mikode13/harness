@@ -35,9 +35,10 @@ The kinds:
   graded.
 - **plan:** the orchestrator plans and is stopped at "Carry out this plan?", so only the planner,
   and the explorers it sends, work.
-- **review:** the reviewer role, with its instructions, model and read-only file tools, gets each
-  change in the prompt a phase's review sends, with the harness's own check results. It has no
-  explorers, which the orchestrator's reviewer also has.
+- **review:** the reviewer `createLLMOrchestrator` builds, its model, instructions, tools and
+  explorers included, gets each change in the prompt a phase's review sends, with the harness's
+  own check results. Its `showChanges` finds nothing, since the change was not made through the
+  harness; the prompt carries the diff, as a run's review does.
 
 `plan` and `review-seeded` isolate one role each, so a cheaper model in that role — what the
 router will choose — shows its effect there without paying for a whole task.
@@ -58,15 +59,17 @@ Two families, so a result one favors because it writes like it shows as a disagr
 judge sees the request, the rubric and the diff, never which configuration made it.
 
 - A task's rubric scores each item 0, 1 or 2; the run's quality is the mean over items and
-  judges, from 0 to 1.
-- A plan's coverage is the share of its checklist the judges find covered.
+  judges, from 0 to 1. Only the rubric's own items count, each once, and one a judge left out
+  scores 0.
+- A plan's coverage is the share of its checklist the judges find covered, counted the same
+  way.
 - A review is correct when it approves the clean change, and rejects each seeded bug with
   feedback the judges agree names it. Recall is the bugs found; false alarms, the clean change
   rejected.
 
 **The agents' own tests**, for `complex`: its mutants are the reference with one bug each,
 swapped in for `src/eventLog.ts` one at a time and run against the tests the agents wrote. The
-share they fail is how well those tests catch bugs.
+share they fail is how well those tests catch bugs. Tests that fail without a mutant score 0.
 
 **How the agents worked together**, from the record: each role's rounds, questions, tool calls
 and errors, command runs and failures, files read again after another agent read them, and a

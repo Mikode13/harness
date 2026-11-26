@@ -118,6 +118,25 @@ export function gradePlan(
 	return askAll(prompt, coverage, only);
 }
 
+/**
+ * A rubric verdict's score from 0 to 1, over the rubric's own items: each counted once, by its
+ * id, and an item the judge left out as 0, so a judge that skips or repeats items cannot raise it.
+ */
+export function rubricScore(verdict: RubricVerdict, rubric: readonly Item[]): number {
+	if (rubric.length === 0) return 0;
+	const scores = new Map<string, number>();
+	for (const item of verdict.items) if (!scores.has(item.id)) scores.set(item.id, item.score);
+	return rubric.reduce((sum, item) => sum + (scores.get(item.id) ?? 0), 0) / (2 * rubric.length);
+}
+
+/** A plan verdict's share of the checklist covered, its items counted as `rubricScore` counts them. */
+export function planCoverage(verdict: PlanVerdict, checklist: readonly Item[]): number {
+	if (checklist.length === 0) return 0;
+	const covered = new Map<string, boolean>();
+	for (const item of verdict.items) if (!covered.has(item.id)) covered.set(item.id, item.covered);
+	return checklist.filter(item => covered.get(item.id) === true).length / checklist.length;
+}
+
 const finding = z.strictObject({ found: z.boolean(), reason: z.string() });
 export type FeedbackVerdict = z.infer<typeof finding>;
 

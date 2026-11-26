@@ -711,9 +711,9 @@ class RecordingConversationAgent extends RecordingAgent implements ConversationA
  * the snapshot is still the session's, and is refused while a run works on it.
  */
 class RecordingSessionAgent extends RecordingAgent implements SessionAgent {
-	private readonly sessionAgent: SessionAgent;
+	private readonly sessionAgent: SessionSnapshotAgent;
 
-	constructor(sessionAgent: SessionAgent, logger: ILogger) {
+	constructor(sessionAgent: SessionSnapshotAgent, logger: ILogger) {
 		super({ inner: sessionAgent, logger });
 		this.sessionAgent = sessionAgent;
 	}
@@ -721,6 +721,29 @@ class RecordingSessionAgent extends RecordingAgent implements SessionAgent {
 	snapshot(): SessionSnapshot {
 		return this.sessionAgent.snapshot();
 	}
+
+	/** The roles, as the factory built them. */
+	get roles(): Readonly<Record<OrchestratorRole, Agent>> {
+		return this.sessionAgent.roles;
+	}
+}
+
+/**
+ * The planner, executor and reviewer of an orchestrator `createLLMOrchestrator` built, each as it
+ * built it: its model, its instructions and its tools. Not public API: `evals/` runs one role
+ * alone with it, exactly as a run would.
+ *
+ * @throws {InvalidAgentConfigError} for an agent `createLLMOrchestrator` did not build.
+ */
+export function orchestratorRolesOf(
+	orchestrator: SessionAgent,
+): Readonly<Record<OrchestratorRole, Agent>> {
+	if (!(orchestrator instanceof RecordingSessionAgent)) {
+		throw new InvalidAgentConfigError(
+			'Only an orchestrator of createLLMOrchestrator has its roles',
+		);
+	}
+	return orchestrator.roles;
 }
 
 function writeRootsOf(roots: readonly WorkspaceRoot[]): string[] {
@@ -1147,7 +1170,8 @@ export async function createLLMOrchestrator({
 class SessionSnapshotAgent implements SessionAgent {
 	private readonly orchestrator: Agent;
 	private readonly session: Session;
-	private readonly roles: SessionSnapshotRoles;
+	/** Its roles' agents, which keep their conversations across runs. */
+	readonly roles: SessionSnapshotRoles;
 	private running = 0;
 
 	constructor(orchestrator: Agent, session: Session, roles: SessionSnapshotRoles) {
