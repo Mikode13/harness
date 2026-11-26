@@ -92,12 +92,12 @@ Measure the baseline first, three runs at least, to see the spread.
 tasks/<name>/
   task.json      what it is: kind, prompts, checks, and the files below
   repo/          the repository it starts from, over tasks/_base
-  prompt*.md     what the agents are asked
+  prompt*.txt    what the agents are asked
   hidden/        tests the agents never see, copied in at the end
   reference/     a solution, laid over repo: only the offline checks use it
   mutants/       versions of one file with one bug each
-  rubric.md      what the judges grade, one `id: item` per line
-  checklist.md   for a plan: what it must cover
+  rubric.txt     what the judges grade, one `id: item` per line
+  checklist.txt  for a plan: what it must cover
   cases/         for a review: each change under review
 ```
 

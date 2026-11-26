@@ -1,10 +1,10 @@
 {
 	"kind": "task",
 	"description": "An event log over an asynchronous storage: numbering without gaps, idempotent appends, failed writes, restart and following. A few dollars.",
-	"prompts": ["prompt.md"],
+	"prompts": ["prompt.txt"],
 	"hidden": "hidden",
 	"forbidden": ["eslint-disable", "@ts-ignore", "@ts-expect-error", "\\bas any\\b"],
 	"mutants": { "target": "src/eventLog.ts", "directory": "mutants" },
-	"rubric": "rubric.md",
+	"rubric": "rubric.txt",
 	"reference": "reference"
 }

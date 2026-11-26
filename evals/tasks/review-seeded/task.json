@@ -3,7 +3,7 @@
 	"description": "The reviewer alone on four known versions of one change: one correct, three with a seeded bug that the visible tests miss. Measures bugs found and correct changes rejected. Cents.",
 	"repo": "../complex/repo",
 	"overlays": ["../complex/reference"],
-	"prompts": ["prompt.md"],
+	"prompts": ["prompt.txt"],
 	"hidden": "hidden",
 	"review": {
 		"plan": {

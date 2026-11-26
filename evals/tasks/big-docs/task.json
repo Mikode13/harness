@@ -1,9 +1,9 @@
 {
 	"kind": "task",
 	"description": "A list endpoint whose rules are in one section of a 50 KB handbook, beside a deprecated look-alike: whether the agents search for what they need or carry the whole handbook in every call. Cents to a dollar.",
-	"prompts": ["prompt.md"],
+	"prompts": ["prompt.txt"],
 	"hidden": "hidden",
 	"forbidden": ["eslint-disable", "@ts-ignore", "@ts-expect-error", "\\bas any\\b"],
-	"rubric": "rubric.md",
+	"rubric": "rubric.txt",
 	"reference": "reference"
 }

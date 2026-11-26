@@ -2,6 +2,6 @@
 	"kind": "plan",
 	"description": "The planner alone on the event log of complex: the orchestrator stops when it asks to carry out the plan, and the judges check the plan against what it must cover. Cents.",
 	"repo": "../complex/repo",
-	"prompts": ["../complex/prompt.md"],
-	"checklist": "checklist.md"
+	"prompts": ["../complex/prompt.txt"],
+	"checklist": "checklist.txt"
 }
