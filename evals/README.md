@@ -118,6 +118,37 @@ Measure the baseline first, three runs at least, to see the spread. `evals:compa
 task out of the verdict when either side has fewer than three runs, or none, and says so; a
 measure, such as quality when the judges failed, moves only with three values a side.
 
+## Which eval proves which change
+
+| Change                                   | How to measure it                                                                                                                                                                                                                          |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| What the workflow buys over one agent    | `bugfix` and `complex` on both paths, every role and the agent on one model first, as `--path workflow --model …` against `--path agent --model …`, so a difference is the coordination's. Then vary one role's model alone with `--role`. |
+| A role on a cheaper model                | The reviewer: `review-seeded` with `--role reviewer=…`. The planner: `plan`, then `complex`, since a plan can cover the checklist and still leave the executor more to do.                                                                 |
+| The cache across a person's pause (#185) | `session` as it is, six minutes between prompts, against `session --pause-minutes 0`, the same session without pauses: what a pause costs, and what a new policy saves the user who comes back later and costs a quick session.            |
+| The router (#17)                         | Its golden cases, in `router/`: selection alone first, one call a case; then `bugfix` and `complex` end to end through the route it chose, against a fixed route and a route chosen by hand, its own cost and latency counted.             |
+
+The provider reports cache writes of every lifetime in one count, and so does the harness's
+`Tokens`: until it tells them apart, `session` shows what the writes cost, not which lifetime
+paid. Still to add: one held-out task from a real MiKode issue, started from the commit before
+its fix, as #180 planned, to check that what improves on these small repositories improves real
+work.
+
+## The router's cases
+
+`router/cases.json` holds what choosing among a consumer's agents and workflows must get right,
+written before the router exists, in Spanish as the product's users write. Each case gives the
+routes on offer, the conversation before the request, and which decisions are right: a route
+among several acceptable ones, a question that tells two open jobs apart and then one run, or
+`not_applicable` with nothing run after it. A case marked `writes: none` may only take routes that
+leave the repository as it was.
+
+Most cases come in pairs that differ in one detail, such as "explain why it fails" against "fix
+it", or "review" against "review and apply": a router that tells them apart reads the intent, not
+words such as "error" or "review". A few are held out, kept from tuning the router's prompt and
+run once at the end. Where one agent and the workflow are both right, both are accepted: which
+one costs less per accepted solution is for the evals to say, not the case. `pnpm test` checks
+that the cases hold together; no runner reads them until the router of #17 exists.
+
 ## A task's files
 
 ```text

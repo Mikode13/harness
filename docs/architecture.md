@@ -1006,7 +1006,10 @@ at a time, and reads what the user sends meanwhile" in [`decisions.md`](decision
   so that eval sends a known change exactly as a run's review would. It stays out of the tarball,
   as `cli/` does, and its tasks' repositories stay out of the repository's lint and formatting,
   since one breaks the rules on purpose. Each run keeps the workspace's history beside its
-  temporary workspace, and removes both.
+  temporary workspace, and removes both. A run on its `agent` path builds one agent with
+  `createLLMAgent` and `createFileTools`, the public API, and its `--model` and `--role` reach
+  the roles through `createLLMOrchestrator`'s `roles`. `evals/router/` holds the router's golden
+  cases as data, checked offline, with no runner until the router of #17 exists.
 - **Only the executor edits files, and only a destructive call is held back.**
   `createLLMOrchestrator` gives its planner and reviewer reading tools only, so they edit nothing
   through a file tool; the executor changes files only in a `write` root, each change recorded

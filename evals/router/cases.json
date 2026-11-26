@@ -1,0 +1,199 @@
+{
+	"catalogs": {
+		"coding": [
+			{
+				"name": "explain",
+				"kind": "agent",
+				"description": "Investigates the repository and explains code, a failure or a design. Reads only.",
+				"writes": false
+			},
+			{
+				"name": "fix",
+				"kind": "agent",
+				"description": "One coding agent: changes the code, adds tests and runs the checks.",
+				"writes": true
+			},
+			{
+				"name": "code-workflow",
+				"kind": "workflow",
+				"description": "Planner, executor and reviewer: plans a change in phases, carries each out and reviews it before the next.",
+				"writes": true
+			},
+			{
+				"name": "review",
+				"kind": "agent",
+				"description": "Reviews a change and reports findings by severity. Reads only.",
+				"writes": false
+			}
+		]
+	},
+	"cases": [
+		{
+			"id": "explain-failing-test",
+			"pair": "failing-test",
+			"why": "Asks only to understand: a route that reads, and nothing written, though the words are those of a bug report.",
+			"catalog": "coding",
+			"request": "Explícame por qué falla el test de parseDuration con '250ms'. Solo quiero entenderlo.",
+			"expected": { "decision": "route", "routes": ["explain"] },
+			"writes": "none"
+		},
+		{
+			"id": "fix-failing-test",
+			"pair": "failing-test",
+			"why": "The same failure, to be fixed with a regression test: a route that writes and checks. One agent and the workflow are both right; which costs less per solution is for the evals to say.",
+			"catalog": "coding",
+			"request": "Corrige el fallo de parseDuration con '250ms' y añade una prueba de regresión.",
+			"expected": { "decision": "route", "routes": ["fix", "code-workflow"] },
+			"writes": "allowed"
+		},
+		{
+			"id": "review-only",
+			"pair": "review",
+			"why": "A review ends in findings: nothing is changed.",
+			"catalog": "coding",
+			"request": "Revisa este cambio del registro de eventos.",
+			"expected": { "decision": "route", "routes": ["review"] },
+			"writes": "none"
+		},
+		{
+			"id": "review-and-apply",
+			"pair": "review",
+			"why": "One more clause turns a review into a change: a route that may write.",
+			"catalog": "coding",
+			"request": "Revisa este cambio del registro de eventos y aplica la corrección.",
+			"expected": { "decision": "route", "routes": ["fix", "code-workflow"] },
+			"writes": "allowed"
+		},
+		{
+			"id": "explain-type-error",
+			"pair": "type-error",
+			"why": "The word error does not mean a fix: the user asks what it means.",
+			"catalog": "coding",
+			"request": "¿Qué significa este error de TypeScript? Type 'string | undefined' is not assignable to type 'string'.",
+			"expected": { "decision": "route", "routes": ["explain"] },
+			"writes": "none"
+		},
+		{
+			"id": "fix-type-error",
+			"pair": "type-error",
+			"why": "The same error, to be made to go away: a change.",
+			"catalog": "coding",
+			"request": "Haz que desaparezca este error de TypeScript en src/eventLog.ts: Type 'string | undefined' is not assignable to type 'string'.",
+			"expected": { "decision": "route", "routes": ["fix", "code-workflow"] },
+			"writes": "allowed"
+		},
+		{
+			"id": "continue-two-jobs",
+			"pair": "continue",
+			"why": "Two jobs are open and the request names neither: a question that tells them apart, then one run.",
+			"catalog": "coding",
+			"context": [
+				{
+					"from": "user",
+					"text": "Quiero refactorizar el parser de duraciones para que acepte horas."
+				},
+				{ "from": "assistant", "text": "Hecho el plan del parser; queda implementarlo." },
+				{ "from": "user", "text": "Aparte, hay que traducir el README al inglés." },
+				{ "from": "assistant", "text": "Traducida la mitad del README." }
+			],
+			"request": "Seguimos con lo de antes.",
+			"expected": {
+				"decision": "ask",
+				"jobs": [
+					{ "job": "the duration parser", "routes": ["fix", "code-workflow"] },
+					{ "job": "the README translation", "routes": ["fix"] }
+				]
+			},
+			"writes": "allowed"
+		},
+		{
+			"id": "continue-one-job",
+			"pair": "continue",
+			"why": "The same words with one job open: no question, the job goes on.",
+			"catalog": "coding",
+			"context": [
+				{
+					"from": "user",
+					"text": "Quiero refactorizar el parser de duraciones para que acepte horas."
+				},
+				{ "from": "assistant", "text": "Hecho el plan del parser; queda implementarlo." }
+			],
+			"request": "Seguimos con lo de antes.",
+			"expected": { "decision": "route", "routes": ["fix", "code-workflow"] },
+			"writes": "allowed"
+		},
+		{
+			"id": "deploy",
+			"pair": "deploy",
+			"why": "No route on offer deploys: not_applicable, and nothing runs after it.",
+			"catalog": "coding",
+			"request": "Despliega la rama a producción.",
+			"expected": { "decision": "not_applicable" },
+			"writes": "none"
+		},
+		{
+			"id": "prepare-deploy",
+			"pair": "deploy",
+			"why": "Near the same words, a change the catalog can make.",
+			"catalog": "coding",
+			"request": "Prepara la rama para el despliegue: añade la versión nueva al CHANGELOG.",
+			"expected": { "decision": "route", "routes": ["fix", "code-workflow"] },
+			"writes": "allowed"
+		},
+		{
+			"id": "flight",
+			"why": "Nothing to do with the repository: not_applicable.",
+			"catalog": "coding",
+			"request": "Resérvame un vuelo a Lisboa para el viernes.",
+			"expected": { "decision": "not_applicable" },
+			"writes": "none"
+		},
+		{
+			"id": "large-feature",
+			"why": "A feature across several files with its design: a route that writes; whether the workflow is worth it here is what the evals measure on complex.",
+			"catalog": "coding",
+			"request": "Implementa el registro de eventos sobre el Storage de src/storage.ts: numeración sin huecos, altas idempotentes, escrituras que fallan, reinicio y suscripción, con sus tests.",
+			"expected": { "decision": "route", "routes": ["fix", "code-workflow"] },
+			"writes": "allowed"
+		},
+		{
+			"id": "held-out-slow-test",
+			"why": "Held out. Explain without changing, said in other words.",
+			"catalog": "coding",
+			"request": "¿Por qué tarda tanto el test de integración? No cambies nada todavía.",
+			"expected": { "decision": "route", "routes": ["explain"] },
+			"writes": "none",
+			"heldOut": true
+		},
+		{
+			"id": "held-out-rename",
+			"why": "Held out. A mechanical change across the project.",
+			"catalog": "coding",
+			"request": "Renombra getUser a findUser en todo el proyecto.",
+			"expected": { "decision": "route", "routes": ["fix", "code-workflow"] },
+			"writes": "allowed",
+			"heldOut": true
+		},
+		{
+			"id": "held-out-continue-tests",
+			"why": "Held out. Two jobs open, and a request that narrows the part but not the job.",
+			"catalog": "coding",
+			"context": [
+				{ "from": "user", "text": "Añade paginación a la lista de proyectos." },
+				{ "from": "assistant", "text": "Paginación hecha, faltan sus tests." },
+				{ "from": "user", "text": "Y corrige el cálculo de duraciones con milisegundos." },
+				{ "from": "assistant", "text": "Corregido; faltan sus tests." }
+			],
+			"request": "Lo de antes, pero solo la parte de los tests.",
+			"expected": {
+				"decision": "ask",
+				"jobs": [
+					{ "job": "the pagination tests", "routes": ["fix", "code-workflow"] },
+					{ "job": "the duration tests", "routes": ["fix", "code-workflow"] }
+				]
+			},
+			"writes": "allowed",
+			"heldOut": true
+		}
+	]
+}

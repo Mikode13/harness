@@ -6,6 +6,7 @@ import type { ProgressEvent, RunEntry } from '../../src/index.ts';
 import { acceptanceOf, compare, describeAcceptance, moveOf } from '../lib/compare.ts';
 import { itemsOf, planCoverage, rubricScore } from '../lib/judge.ts';
 import { metricsOf } from '../lib/metrics.ts';
+import { loadRouterCases, problemsOf, type RouterCases } from '../lib/router.ts';
 import { costOf } from '../lib/prices.ts';
 import { rolesFromArguments, runHidden, runMutants, type TaskResult } from '../lib/runners.ts';
 import { loadTask } from '../lib/tasks.ts';
@@ -433,5 +434,61 @@ describe('acceptanceOf', () => {
 		const unpriced = { ...summary(true, 1), unreported: true };
 
 		expect(acceptanceOf([summary(true, 1), unpriced])?.costPerAccepted).toBeUndefined();
+	});
+});
+
+describe("the router's cases", () => {
+	it('hold together', () => {
+		expect(problemsOf(loadRouterCases())).toEqual([]);
+	});
+
+	it('catch a case that may not write yet accepts a route that does, and a broken pair', () => {
+		const cases: RouterCases = {
+			catalogs: {
+				c: [
+					{ name: 'read', kind: 'agent', description: 'reads', writes: false },
+					{ name: 'write', kind: 'agent', description: 'writes', writes: true },
+				],
+			},
+			cases: [
+				{
+					id: 'a',
+					pair: 'p',
+					why: 'x',
+					catalog: 'c',
+					context: [],
+					request: 'r',
+					expected: { decision: 'route', routes: ['write', 'missing'] },
+					writes: 'none',
+					heldOut: true,
+				},
+				{
+					id: 'b',
+					why: 'x',
+					catalog: 'c',
+					context: [],
+					request: 'r',
+					expected: { decision: 'not_applicable' },
+					writes: 'none',
+					heldOut: false,
+				},
+				{
+					id: 'c',
+					why: 'x',
+					catalog: 'c',
+					context: [],
+					request: 'r',
+					expected: { decision: 'not_applicable' },
+					writes: 'none',
+					heldOut: false,
+				},
+			],
+		};
+
+		expect(problemsOf(cases)).toEqual([
+			'a may not write, yet accepts write, which writes',
+			'a names a route not in its catalog: missing',
+			'the pair p has 1 cases, not 2',
+		]);
 	});
 });
