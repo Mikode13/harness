@@ -38,8 +38,12 @@ export interface RunMetrics {
 	repeatedReads: number;
 	/** Files that more than one agent read. */
 	sharedReads: number;
-	/** How many times each agent was given work: a role's rounds. */
-	turns: Record<string, number>;
+	/**
+	 * How many times the orchestrator ran each stage of its workflow, from its `workflowStage`
+	 * events: `plan`, `execute` and `review` are the roles' rounds, a retry of an answer that did
+	 * not validate included. Empty for an agent outside an orchestrator.
+	 */
+	stages: Record<string, number>;
 	questions: number;
 	outcome: 'completed' | 'failed' | 'cancelled' | 'none';
 	/** The failure's message, for a run that failed. */
@@ -96,7 +100,7 @@ export function metricsOf(entries: readonly RunEntry[], models: AgentModels): Ru
 	const toolCalls: Record<string, number> = {};
 	const toolErrors: Record<string, number> = {};
 	const commands: Record<string, { runs: number; failed: number }> = {};
-	const turns: Record<string, number> = {};
+	const stages: Record<string, number> = {};
 	const readers = new Map<string, Set<string>>();
 	const byModel: Record<string, Tokens> = {};
 	let unreportedSteps = 0;
@@ -146,8 +150,8 @@ export function metricsOf(entries: readonly RunEntry[], models: AgentModels): Ru
 				}
 				return;
 			}
-			case 'turnStarted':
-				plus(turns, agent);
+			case 'workflowStage':
+				plus(stages, event.stage);
 				return;
 			case 'subagent':
 				visit(event.event, `${agent}/${event.name}`);
@@ -193,7 +197,7 @@ export function metricsOf(entries: readonly RunEntry[], models: AgentModels): Ru
 		commands,
 		repeatedReads,
 		sharedReads: [...readers.values()].filter(seen => seen.size > 1).length,
-		turns,
+		stages,
 		questions,
 		outcome,
 		...(failure === undefined ? {} : { failure }),

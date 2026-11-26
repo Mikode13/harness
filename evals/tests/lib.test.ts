@@ -7,7 +7,7 @@ import { compare, moveOf } from '../lib/compare.ts';
 import { itemsOf, planCoverage, rubricScore } from '../lib/judge.ts';
 import { metricsOf } from '../lib/metrics.ts';
 import { costOf } from '../lib/prices.ts';
-import { runHidden, type TaskResult } from '../lib/runners.ts';
+import { runHidden, runMutants, type TaskResult } from '../lib/runners.ts';
 import { loadTask } from '../lib/tasks.ts';
 import { prepareWorkspace, removeWorkspace } from '../lib/workspace.ts';
 import { type RunSummary, summaryOf } from '../lib/summary.ts';
@@ -55,7 +55,7 @@ describe('metricsOf', () => {
 				progress(read('src/a.ts:1-200', 'planner')),
 				progress(read('src/a.ts:1-200', 'executor')),
 				progress(read('src/a.ts:201-400', 'executor')),
-				progress({ type: 'turnStarted', agent: 'executor' }),
+				progress({ type: 'workflowStage', stage: 'review', attempt: 1 }),
 				{ version: 1, type: 'end', outcome: 'cancelled', by: 'abort' },
 			],
 			{ planner: 'opus', 'planner/explorer': 'haiku' },
@@ -66,7 +66,7 @@ describe('metricsOf', () => {
 		expect(metrics.cacheShare).toBeCloseTo(0.9);
 		expect(metrics.repeatedReads).toBe(2);
 		expect(metrics.sharedReads).toBe(1);
-		expect(metrics.turns).toEqual({ executor: 1 });
+		expect(metrics.stages).toEqual({ review: 1 });
 		expect(metrics.outcome).toBe('cancelled');
 		expect(metrics.byModel).toEqual({ opus: tokens, haiku: tokens });
 	});
@@ -240,6 +240,19 @@ describe('compare', () => {
 		expect(compare(before, after).tasks[0]?.measures.passRate?.move).toBe('unknown');
 	});
 
+	it('moves no measure with fewer than three values on a side, though the runs are enough', () => {
+		const unscored = (cost: number): RunSummary => {
+			const summary = run(cost);
+			delete summary.quality;
+			return summary;
+		};
+		const before = { a: [run(1, true, 0.9), unscored(1.1), unscored(1.2)] };
+		const after = { a: runs([1, 1.1, 1.2], true, 0.1) };
+
+		expect(compare(before, after).tasks[0]?.measures.quality?.move).toBe('unknown');
+		expect(compare(before, after).verdict).toBe('inconclusive');
+	});
+
 	it('names a task one side never ran among those left out', () => {
 		const before = { a: runs([1, 1.1, 1.2]), b: runs([2, 2.2, 2.4]), c: runs([3, 3.1, 3.2]) };
 		const after = { a: runs([0.5, 0.6, 0.7]), b: runs([1, 1.1, 1.2]) };
@@ -310,5 +323,21 @@ describe('runHidden', () => {
 
 		expect(hidden?.passed).toBe(0);
 		expect(hidden?.failed.length).toBeGreaterThan(0);
+	});
+});
+
+describe('runMutants', () => {
+	it('lets every mutant survive, without failing, when the agents never wrote their target', () => {
+		const task = loadTask('complex');
+		const workspace = prepareWorkspace(task);
+		try {
+			const mutants = runMutants(task, workspace);
+
+			expect(mutants?.baselinePassed).toBe(false);
+			expect(mutants?.killed).toEqual([]);
+			expect(mutants?.survived.length).toBeGreaterThan(0);
+		} finally {
+			removeWorkspace(workspace);
+		}
 	});
 });

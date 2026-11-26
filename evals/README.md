@@ -75,7 +75,8 @@ share they fail is how well those tests catch bugs. They must pass both on the a
 and on the reference's, which every mutant copies: tests that do not, which may only expect the
 agents' own implementation, score 0.
 
-**How the agents worked together**, from the record: each role's rounds, questions, tool calls
+**How the agents worked together**, from the record: each role's rounds, counted from the
+orchestrator's `workflowStage` events, questions, tool calls
 and errors, command runs and failures, files read again after another agent read them (with the
 read tools or Claude's text editor), and a
 **false approval**: the reviewer approved every phase, yet a hidden test or a check fails.

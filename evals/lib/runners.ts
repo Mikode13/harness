@@ -1,4 +1,11 @@
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+	appendFileSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
@@ -168,6 +175,8 @@ export function runMutants(
 	const { target, directory } = task.mutants;
 	const names = readdirSync(join(task.directory, directory)).sort();
 	const file = join(workspace, target);
+	// The agents may never have written it: then no test of theirs can kill a mutant of it.
+	if (!existsSync(file)) return { killed: [], survived: names, baselinePassed: false };
 	const original = readFileSync(file);
 	const passWith = (content: Buffer): boolean => {
 		writeFileSync(file, content);

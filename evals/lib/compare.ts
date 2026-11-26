@@ -131,10 +131,12 @@ export function compare(
 						? 'better'
 						: 'worse'
 				: moveOf(a, b, higherIsBetter);
+			// A measure needs its own values on enough runs: a judge that failed leaves a run unscored.
+			const enough = a.length >= minimumRuns && b.length >= minimumRuns;
 			compared[name] = {
 				before: beforeValue,
 				after: afterValue,
-				move: tooFewRuns ? 'unknown' : move,
+				move: tooFewRuns || !enough ? 'unknown' : move,
 			};
 		}
 		tasks.push({
@@ -142,7 +144,10 @@ export function compare(
 			cost: {
 				before: median(costBefore),
 				after: median(costAfter),
-				move: tooFewRuns ? 'unknown' : moveOf(costBefore, costAfter, false),
+				move:
+					tooFewRuns || costBefore.length < minimumRuns || costAfter.length < minimumRuns
+						? 'unknown'
+						: moveOf(costBefore, costAfter, false),
 			},
 			measures: compared,
 			tooFewRuns,
