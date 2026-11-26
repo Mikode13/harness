@@ -467,7 +467,8 @@ types. For the model-backed agent's tools it also exports the `Tool`, `ToolSumma
 `createWorkspace` and `createWorkspaceTools`, and, for an agent offered to another as a tool,
 `agentAsTool` and the `AgentAsToolOptions` and `DelegationTool` types. For agents that change
 files it exports `createFileTools` and the `FileTool`, `WorkspaceOptions`, `WorkspaceRoot`,
-`SecretRules`, `CreateLLMOrchestratorOptions`, `RoleSteps`, `RoleTokens`, `RoleAgents` and
+`SecretRules`, `CreateLLMOrchestratorOptions`, `RoleSteps`, `RoleTokens`, `RoleAgents`,
+`RoleModels`, `RoleModel` and
 `CompactionMode` types, and for the commands they run the `Commands`, `CommandDefinition`,
 `CommandArgument`, `CommandParameter` and `CommandRole` types, and `Formatter` for the formatter
 their edits run. For the history of what those runs wrote it exports `createHistory`, the

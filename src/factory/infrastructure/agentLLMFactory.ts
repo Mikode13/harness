@@ -95,6 +95,7 @@ import {
 	type AgentProvider,
 	type CreateOrchestratorOptions,
 	type ReasoningEffort,
+	type RoleModel,
 } from './types.ts';
 
 /** The models each provider's model API accepts. */
@@ -215,6 +216,12 @@ export type RoleSteps = Partial<Record<OrchestratorRole, number>>;
 /** A number of tokens per role of `createLLMOrchestrator`; a role left out keeps its default. */
 export type RoleTokens = Partial<Record<OrchestratorRole, number>>;
 
+/**
+ * The provider, model and reasoning effort of each role of `createLLMOrchestrator` that `roles`
+ * names; a role left out keeps the one its `provider` chooses.
+ */
+export type RoleModels = Partial<Record<OrchestratorRole, RoleModel>>;
+
 /** The consumer's agents, from `agentAsTool`, that each role of `createLLMOrchestrator` may call. */
 export type RoleAgents = Partial<Record<OrchestratorRole, DelegationTool[]>>;
 
@@ -269,6 +276,55 @@ function perRole<T extends number | undefined>(
 	return { ...defaults, ...Object.fromEntries(given) };
 }
 
+/**
+ * `base` with each role `given` names in its place. The model and the effort are checked by the
+ * role's client, which refuses one its provider does not support.
+ *
+ * @throws {InvalidAgentConfigError} for a value that is not an object of roles, a role that does
+ * not exist, or one without a known provider, a model and an effort.
+ */
+function withRoleModels(
+	base: Record<OrchestratorRole, Role>,
+	given: unknown,
+): Record<OrchestratorRole, Role> {
+	if (given === undefined) return base;
+	const example =
+		'{ "reviewer": { "provider": "anthropic", "model": "sonnet", "reasoningEffort": "high" } }';
+	// Untyped input, such as a configuration file, can hold anything here.
+	if (typeof given !== 'object' || given === null || Array.isArray(given)) {
+		throw new InvalidAgentConfigError(`roles must be an object of roles, such as ${example}`);
+	}
+	const chosen = { ...base };
+	for (const [role, value] of Object.entries(given as Record<string, unknown>)) {
+		if (!(role in base)) {
+			throw new InvalidAgentConfigError(
+				`roles names a role that does not exist: ${role}; expected planner, executor or reviewer`,
+			);
+		}
+		// A role given as `undefined`, which untyped input can do, keeps its own.
+		if (value === undefined) continue;
+		const { provider, model, reasoningEffort } = (
+			typeof value === 'object' && value !== null ? value : {}
+		) as Record<string, unknown>;
+		if (
+			typeof provider !== 'string' ||
+			!isAgentProvider(provider) ||
+			typeof model !== 'string' ||
+			typeof reasoningEffort !== 'string'
+		) {
+			throw new InvalidAgentConfigError(
+				`roles.${role} needs a provider, anthropic or openai, a model and a reasoningEffort, such as ${example}`,
+			);
+		}
+		chosen[role as OrchestratorRole] = {
+			provider,
+			model: model as AgentModel,
+			reasoningEffort: reasoningEffort as ReasoningEffort,
+		};
+	}
+	return chosen;
+}
+
 export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions {
 	/**
 	 * The folders the agents work on. The executor changes files only in a `write` root, every
@@ -276,6 +332,15 @@ export interface CreateLLMOrchestratorOptions extends CreateOrchestratorOptions 
 	 * read only.
 	 */
 	workspace?: WorkspaceOptions;
+	/**
+	 * The provider, model and reasoning effort of each role it names, over the ones `provider`
+	 * chooses: `{ reviewer: { provider: 'anthropic', model: 'opus', reasoningEffort: 'high' } }`
+	 * keeps the planner and the executor of `provider` and reviews on Opus. The explorers a role
+	 * sends, the committer and the summary of what the user undid follow their role's provider, on
+	 * its cheaper model, as they do by default. A model or effort the provider does not support is
+	 * refused when the role is built.
+	 */
+	roles?: RoleModels;
 	/**
 	 * How many calls to the model one run of each role may make: one number for every role, or a
 	 * number per role. Defaults to 80 for the executor and 65 for the planner and the reviewer,
@@ -1002,6 +1067,7 @@ export async function createLLMOrchestrator({
 	requiredChecks,
 	limits,
 	restore,
+	roles: roleModels,
 }: CreateLLMOrchestratorOptions = {}): Promise<SessionAgent> {
 	// First, so a snapshot that cannot be restored fails before anything is opened or built.
 	const restored = restore === undefined ? undefined : readSessionSnapshot(restore);
@@ -1010,7 +1076,7 @@ export async function createLLMOrchestrator({
 	if (autoCommit && !canCommit) {
 		throw new InvalidAgentConfigError('autoCommit is not supported on Windows yet');
 	}
-	const roles = orchestratorRolesFor(provider);
+	const roles = withRoleModels(orchestratorRolesFor(provider), roleModels);
 	const agentsOf = roleAgents(agents);
 	const steps = perRole('maxSteps', maxSteps, defaultRoleSteps, {
 		unit: 'steps',

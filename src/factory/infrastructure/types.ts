@@ -17,6 +17,13 @@ export type AgentModel = ClaudeModel | CodexModel;
 /** Any provider's reasoning effort. The agent the provider selects rejects one it does not support. */
 export type ReasoningEffort = ClaudeReasoningEffort | CodexReasoningEffort;
 
+/** Where a role of an orchestrator runs: its provider, its model and its reasoning effort. */
+export interface RoleModel {
+	provider: AgentProvider;
+	model: AgentModel;
+	reasoningEffort: ReasoningEffort;
+}
+
 export interface CreateOrchestratorOptions {
 	/**
 	 * Runs every role on one provider, for example when the other one is out of quota. By

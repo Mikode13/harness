@@ -809,7 +809,7 @@ has no stable shape; read it, but do not build on it. A callback that fails is l
 run stays as it ended.
 
 `createLLMOrchestrator()` takes the options of `createOrchestrator()` plus `workspace`,
-`maxSteps`, `compactAt`, `commands`, `formatter`, `summarizeUndone`, `onTranscript`,
+`roles`, `maxSteps`, `compactAt`, `commands`, `formatter`, `summarizeUndone`, `onTranscript`,
 `removeWorktree`, `agents`, `autoCommit`, `commitQuestion`, `requiredChecks` and `limits`, and
 returns a promise. Every role runs on the
 model APIs:
@@ -841,6 +841,19 @@ or per role, with no upper bound:
 
 ```ts
 createLLMOrchestrator({ workspace, maxSteps: { executor: 120 } });
+```
+
+`roles` chooses the provider, the model and the reasoning effort of each role it names, over
+those of `provider`; a role left out keeps its own. The explorers a role sends, the committer and
+the summary of what the user undid follow their role's provider, on its cheaper model. A model or
+effort the provider does not support is refused with `InvalidAgentConfigError`:
+
+```ts
+createLLMOrchestrator({
+	workspace,
+	provider: 'openai',
+	roles: { reviewer: { provider: 'anthropic', model: 'opus', reasoningEffort: 'high' } },
+});
 ```
 
 `createLLMAgent` takes one number, 65 by default.

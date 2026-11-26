@@ -3399,8 +3399,44 @@ models. He chose Opus 5.5 and GPT-6 Astra as judges, called through the SDKs.
   kill no mutant unless they pass both on their own file and on the reference's, which every
   mutant copies, and a rejection of a seeded bug counts only when the judges that answered agree
   it names the bug.
-- `createLLMOrchestrator` takes a provider, not a model per role, so the evals compare its three
-  role profiles. The router adds configurations to compare, not a new eval.
+- `createLLMOrchestrator` takes a model per role, through `roles` (see the next entry), so an
+  eval can run every role, or the agent alone, on one model, and change one role's model at a
+  time. Choosing a route among agents and workflows (#17) is another decision, measured by its
+  own cases; see `evals/router/`.
 - A run of every task costs a few dollars, most of it `complex`, and `session` waits twelve
   minutes. The results stay out of git, in `evals/results/`; what a measurement teaches goes to
   `learnings.md`.
+
+## Each role of `createLLMOrchestrator` can run on a model of its own
+
+tags: #mikode-harness #orchestration #api-design #cost
+
+**Decision:** `createLLMOrchestrator` takes `roles`, the provider, model and reasoning effort of
+each role it names, over the ones `provider` chooses. A role left out keeps its own. The explorers
+a role sends, the committer and the summary of what the user undid follow their role's provider, on
+its cheaper model, as before. The option is checked when the orchestrator is built: an unknown
+role, a provider that does not exist or a role without a model and an effort is an
+`InvalidAgentConfigError`, and a model or effort its provider does not support is refused by that
+role's client, as `createLLMAgent` refuses it. `RoleModel` and `RoleModels` are public.
+
+**Context:** the evals of #186 need to change one role's model at a time, such as the reviewer's
+on `review-seeded`, and to run the workflow and a single agent on the same model, so that a
+difference is the coordination's and not the models'. With three fixed profiles neither was
+possible. Choosing a cheaper model per role is also what #185 measures.
+
+**Alternatives considered:**
+
+- **A model per role without a provider,** read from the profile. Not chosen: a model belongs to
+  one provider, so a role moved to another model would silently keep a provider that cannot run
+  it.
+- **Partial roles, only a model or only an effort.** Not chosen: an effort valid for one
+  provider's model is not for another's, and a whole triple is checked as one.
+- **Leaving it to the router.** The router of #17 chooses which agent or workflow handles a
+  request; it does not configure the roles inside one.
+
+**Consequences:**
+
+- A `feat`: `CreateLLMOrchestratorOptions.roles`, `RoleModel` and `RoleModels` are new, and an
+  orchestrator without `roles` is built as before.
+- A snapshot restored with other `roles` goes on with them, as one restored with another
+  `provider` does: the conversations carry no model.
