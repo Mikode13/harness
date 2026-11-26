@@ -10,8 +10,8 @@ import type { Tokens } from '../../src/index.ts';
  * - OpenAI: https://developers.openai.com/api/docs/pricing. `write` is the 30-minute cache write.
  *   GPT-5.6 Sol's price is promotional until 2026-11-30.
  *
- * Check them before comparing costs across a price change: a comparison is only fair at the same
- * prices, so `compare.ts` prices both sides with this table, never with what a run recorded.
+ * A comparison is only fair at the same prices, so each result keeps its tokens by model, and
+ * `compare.ts` prices both sides with this table as it is when it compares.
  */
 export interface Price {
 	input: number;
@@ -39,6 +39,44 @@ export const prices: Record<string, Price> = {
 	'gpt-5.6-terra': { input: 2, cachedInput: 0.2, write: 2.5, output: 12 },
 	'gpt-5.6-luna': { input: 0.2, cachedInput: 0.02, write: 0.25, output: 1.2 },
 };
+
+const longSuffix = '@long';
+
+/**
+ * The key one call's tokens are kept under: its model, or `model@long` for a call priced at the
+ * model's long-prompt rates, so tokens summed over many calls can still be priced.
+ */
+export function priceKey(model: string, tokens: Tokens): string {
+	const long = prices[model]?.long;
+	const prompt = tokens.inputTokens + tokens.readCacheTokens + tokens.writtenCacheTokens;
+	return long && prompt > long.above ? `${model}${longSuffix}` : model;
+}
+
+/** What `tokens` kept under `key` cost, or `undefined` for a model the table lacks. */
+export function costOfKey(key: string, tokens: Tokens): number | undefined {
+	const long = key.endsWith(longSuffix);
+	const price = prices[long ? key.slice(0, -longSuffix.length) : key];
+	if (price === undefined) return undefined;
+	const rate = long ? (price.long ?? price) : price;
+	return (
+		(tokens.inputTokens * rate.input +
+			tokens.readCacheTokens * rate.cachedInput +
+			tokens.writtenCacheTokens * rate.write +
+			tokens.outputTokens * rate.output) /
+		1_000_000
+	);
+}
+
+/** What tokens kept by key cost in all, or `undefined` when one key's model has no price. */
+export function costOfKeys(byKey: Readonly<Record<string, Tokens>>): number | undefined {
+	let total = 0;
+	for (const [key, tokens] of Object.entries(byKey)) {
+		const cost = costOfKey(key, tokens);
+		if (cost === undefined) return undefined;
+		total += cost;
+	}
+	return total;
+}
 
 /** What `tokens` of one call to `model` cost, or `undefined` for a model the table lacks. */
 export function costOf(model: string, tokens: Tokens): number | undefined {

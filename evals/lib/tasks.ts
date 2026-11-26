@@ -104,6 +104,9 @@ export function loadTask(name: string): Task {
 	if (task.kind === 'review' && task.review === undefined) {
 		throw new Error(`evals/tasks/${name}/task.json: a review task needs "review"`);
 	}
+	if (task.mutants !== undefined && task.reference === undefined) {
+		throw new Error(`evals/tasks/${name}/task.json: mutants need a "reference" they are copies of`);
+	}
 	if (task.kind === 'plan' && task.checklist === undefined) {
 		throw new Error(`evals/tasks/${name}/task.json: a plan task needs "checklist"`);
 	}

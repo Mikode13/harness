@@ -1,5 +1,5 @@
 import type { ProgressEvent, RunEntry, Tokens } from '../../src/index.ts';
-import { costOf } from './prices.ts';
+import { costOf, priceKey } from './prices.ts';
 
 /** The model each agent of a run calls: its role, or `role/explorer` for an explorer it sent. */
 export type AgentModels = Record<string, string>;
@@ -17,7 +17,14 @@ export interface RunMetrics {
 	/** By agent: `planner`, `executor`, `reviewer`, and `planner/explorer` for those it sent. */
 	byAgent: Record<string, Usage>;
 	tokens: Tokens;
-	/** In USD at list prices, or `undefined` when a model's price is unknown. */
+	/**
+	 * Tokens by the key `priceKey` gives each call: its model, apart from calls at a long-prompt
+	 * rate. An agent with no model known is kept under `?agent`.
+	 */
+	byModel: Record<string, Tokens>;
+	/** Calls whose usage the provider did not report: they make the cost unknown, not free. */
+	unreportedSteps: number;
+	/** In USD at list prices, or `undefined` when a model's price or a call's usage is unknown. */
 	cost: number | undefined;
 	/** Of the prompt tokens, the share read from the cache. */
 	cacheShare: number;
@@ -57,12 +64,25 @@ const plus = (counts: Record<string, number>, key: string): void => {
 	counts[key] = (counts[key] ?? 0) + 1;
 };
 
-/** The paths a read tool's summary names: `path:1-200`, or several joined by `, `. */
+// Claude's text editor reads with its `view` command, which its summary starts with.
+const editorView = 'view ';
+
+/** Whether a tool call read files: the read tools, and the text editor's `view`. */
+function isRead(name: string, summary: string | undefined): boolean {
+	if (name === 'readFile' || name === 'readFiles') return true;
+	return name === 'str_replace_based_edit_tool' && summary?.startsWith(editorView) === true;
+}
+
+/**
+ * The paths a read's summary names: `path:1-200`, several joined by `, `, or the text editor's
+ * `view path:1-end`.
+ */
 function readPaths(summary: string | undefined): string[] {
 	if (summary === undefined) return [];
-	return summary
+	const listed = summary.startsWith(editorView) ? summary.slice(editorView.length) : summary;
+	return listed
 		.split(', ')
-		.map(part => part.replace(/:\d+-\d+$/u, ''))
+		.map(part => part.replace(/:\d+-(?:\d+|end)$/u, ''))
 		.filter(path => path !== '');
 }
 
@@ -78,6 +98,8 @@ export function metricsOf(entries: readonly RunEntry[], models: AgentModels): Ru
 	const commands: Record<string, { runs: number; failed: number }> = {};
 	const turns: Record<string, number> = {};
 	const readers = new Map<string, Set<string>>();
+	const byModel: Record<string, Tokens> = {};
+	let unreportedSteps = 0;
 	let repeatedReads = 0;
 	let questions = 0;
 	let outcome: RunMetrics['outcome'] = 'none';
@@ -88,13 +110,18 @@ export function metricsOf(entries: readonly RunEntry[], models: AgentModels): Ru
 			case 'step': {
 				const usage = (byAgent[agent] ??= { steps: 0, tokens: zero(), cost: 0 });
 				usage.steps++;
-				if (event.tokens) {
-					usage.tokens = add(usage.tokens, event.tokens);
-					const model = models[agent];
-					const cost = model === undefined ? undefined : costOf(model, event.tokens);
-					usage.cost =
-						usage.cost === undefined || cost === undefined ? undefined : usage.cost + cost;
+				if (!event.tokens) {
+					// Billed, but not reported: what it cost is unknown, not nothing.
+					unreportedSteps++;
+					usage.cost = undefined;
+					return;
 				}
+				usage.tokens = add(usage.tokens, event.tokens);
+				const model = models[agent];
+				const key = model === undefined ? `?${agent}` : priceKey(model, event.tokens);
+				byModel[key] = add(byModel[key] ?? zero(), event.tokens);
+				const cost = model === undefined ? undefined : costOf(model, event.tokens);
+				usage.cost = usage.cost === undefined || cost === undefined ? undefined : usage.cost + cost;
 				return;
 			}
 			case 'tool': {
@@ -109,7 +136,7 @@ export function metricsOf(entries: readonly RunEntry[], models: AgentModels): Ru
 					runs.runs++;
 					if (event.status === 'error' || event.exitCode !== undefined) runs.failed++;
 				}
-				if (event.name === 'readFile' || event.name === 'readFiles') {
+				if (isRead(event.name, event.summary)) {
 					for (const path of readPaths(event.summary)) {
 						const seen = readers.get(path) ?? new Set<string>();
 						if (seen.size > 0) repeatedReads++;
@@ -153,6 +180,8 @@ export function metricsOf(entries: readonly RunEntry[], models: AgentModels): Ru
 	return {
 		byAgent,
 		tokens,
+		byModel,
+		unreportedSteps,
 		cost: usages.reduce<number | undefined>(
 			(sum, usage) =>
 				sum === undefined || usage.cost === undefined ? undefined : sum + usage.cost,

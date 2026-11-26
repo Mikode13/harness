@@ -63,6 +63,42 @@ describe('metricsOf', () => {
 		expect(metrics.sharedReads).toBe(1);
 		expect(metrics.turns).toEqual({ executor: 1 });
 		expect(metrics.outcome).toBe('cancelled');
+		expect(metrics.byModel).toEqual({ opus: tokens, haiku: tokens });
+	});
+
+	it('counts a read with the text editor, and prices a call without usage as unknown', () => {
+		const metrics = metricsOf(
+			[
+				progress(read('src/a.ts:1-200', 'planner')),
+				progress({
+					type: 'tool',
+					id: 'v',
+					name: 'str_replace_based_edit_tool',
+					summary: 'view src/a.ts:1-end',
+					status: 'completed',
+					agent: 'executor',
+				}),
+				progress({
+					type: 'step',
+					step: 2,
+					context: {
+						instructions: 0,
+						tools: 0,
+						messages: 0,
+						reasoning: 0,
+						toolCalls: 0,
+						toolResults: [],
+						largestResults: [],
+					},
+					agent: 'executor',
+				}),
+			],
+			{ executor: 'haiku' },
+		);
+
+		expect(metrics.repeatedReads).toBe(1);
+		expect(metrics.unreportedSteps).toBe(1);
+		expect(metrics.cost).toBeUndefined();
 	});
 
 	it('leaves the cost unknown for a model without a price', () => {
@@ -132,8 +168,24 @@ describe("the judges' scores", () => {
 });
 
 describe('compare', () => {
+	// Opus input costs $4 a million tokens, so a cost of `cost` dollars is `cost * 250,000` tokens.
+	const run = (cost: number, passed = true, quality = 0.8): RunSummary => ({
+		cost,
+		tokensByModel: {
+			opus: {
+				inputTokens: cost * 250_000,
+				readCacheTokens: 0,
+				writtenCacheTokens: 0,
+				outputTokens: 0,
+			},
+		},
+		unreported: false,
+		passed,
+		quality,
+		seconds: 1,
+	});
 	const runs = (costs: number[], passed = true, quality = 0.8): RunSummary[] =>
-		costs.map(cost => ({ cost, passed, quality, seconds: 1 }));
+		costs.map(cost => run(cost, passed, quality));
 
 	it('counts only a move past the spread of the runs before', () => {
 		expect(moveOf([1, 1.2, 1.4], [0.8, 0.9, 0.95], false)).toBe('better');
@@ -156,10 +208,26 @@ describe('compare', () => {
 		const before = { a: runs([1, 1.1, 1.2]), b: runs([2, 2.2, 2.4]) };
 		const after = {
 			a: runs([0.5, 0.6, 0.7]),
-			b: [...runs([1, 1.1]), { cost: 1.2, passed: false, quality: 0.8, seconds: 1 }],
+			b: [...runs([1, 1.1]), run(1.2, false)],
 		};
 
 		expect(compare(before, after)).toMatchObject({ worse: ['b'], verdict: 'regression' });
+	});
+
+	it('prices both sides with the table as it is, not with what each run recorded', () => {
+		// The cost each side recorded says the change doubled it; their tokens say it did not.
+		const recordedHigher = (cost: number): RunSummary => ({ ...run(cost), cost: cost * 2 });
+		const before = { a: runs([1, 1.1, 1.2]) };
+		const after = { a: [1, 1.1, 1.2].map(recordedHigher) };
+
+		expect(compare(before, after).tasks[0]?.cost.move).toBe('same');
+	});
+
+	it('leaves the cost of a run with unreported usage unknown', () => {
+		const before = { a: runs([1]) };
+		const after = { a: [{ ...run(0.1), unreported: true }] };
+
+		expect(compare(before, after).tasks[0]?.cost.move).toBe('unknown');
 	});
 });
 

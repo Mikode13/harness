@@ -1,3 +1,4 @@
+import { costOfKeys } from './prices.ts';
 import type { RunSummary } from './summary.ts';
 
 /** How one number moved from the runs before a change to the runs after it. */
@@ -77,6 +78,15 @@ const measures: Record<
 	},
 };
 
+/**
+ * A run's cost at the prices of the table as it is now, so both sides of a comparison are priced
+ * alike: unknown when a call's usage went unreported.
+ */
+function pricedNow(run: RunSummary): number | undefined {
+	if (run.unreported) return undefined;
+	return costOfKeys(run.tokensByModel);
+}
+
 /** A pass rate is compared as a rate, not past a spread: one run fewer passing is worse. */
 const rate = (values: readonly number[]): number | undefined =>
 	values.length === 0 ? undefined : values.reduce((sum, value) => sum + value, 0) / values.length;
@@ -96,8 +106,8 @@ export function compare(
 		.sort()) {
 		const was = before[task] ?? [];
 		const is = after[task] ?? [];
-		const costBefore = numbers(was, run => run.cost);
-		const costAfter = numbers(is, run => run.cost);
+		const costBefore = numbers(was, pricedNow);
+		const costAfter = numbers(is, pricedNow);
 		const compared: TaskComparison['measures'] = {};
 		for (const [name, { pick, higherIsBetter }] of Object.entries(measures)) {
 			const a = numbers(was, pick);

@@ -47,7 +47,9 @@ router will choose — shows its effect there without paying for a whole task.
 
 **Cost**, from the run's record (`onRecord`): every call's tokens by agent, a role or the
 explorers it sent, priced at list prices from `lib/prices.ts`; and the share of the prompt read
-from the cache. Prices change: check the table before comparing across a price change.
+from the cache. A call whose usage went unreported makes the cost unknown, not free. Each result
+keeps its tokens by model, and `evals:compare` prices both sides with the table as it is when it
+compares, so a price change never reads as a change of the harness.
 
 **Whether it passed**, for a task: the hidden tests, which the agents never see and which are
 copied in only at the end, all pass; `test`, `typecheck` and `lint` pass on what the agents left;
@@ -64,15 +66,18 @@ judge sees the request, the rubric and the diff, never which configuration made 
 - A plan's coverage is the share of its checklist the judges find covered, counted the same
   way.
 - A review is correct when it approves the clean change, and rejects each seeded bug with
-  feedback the judges agree names it. Recall is the bugs found; false alarms, the clean change
+  feedback the judges agree names it; with no judge answering, it does not count as found. Recall is the bugs found; false alarms, the clean change
   rejected.
 
 **The agents' own tests**, for `complex`: its mutants are the reference with one bug each,
 swapped in for `src/eventLog.ts` one at a time and run against the tests the agents wrote. The
-share they fail is how well those tests catch bugs. Tests that fail without a mutant score 0.
+share they fail is how well those tests catch bugs. They must pass both on the agents' own file
+and on the reference's, which every mutant copies: tests that do not, which may only expect the
+agents' own implementation, score 0.
 
 **How the agents worked together**, from the record: each role's rounds, questions, tool calls
-and errors, command runs and failures, files read again after another agent read them, and a
+and errors, command runs and failures, files read again after another agent read them (with the
+read tools or Claude's text editor), and a
 **false approval**: the reviewer approved every phase, yet a hidden test or a check fails.
 
 ## Comparing two measurements

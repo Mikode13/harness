@@ -3350,8 +3350,11 @@ tags: #mikode-harness #evals #cost #quality
 - **Three kinds:** a whole task through `createLLMOrchestrator`; the planner alone, stopped at
   "Carry out this plan?"; and the reviewer alone on known changes, sent exactly as a run's review
   sends them. The last two isolate a role, so a cheaper model in it shows its effect there.
-- **Cost comes from the run's record,** each step's tokens by agent, priced at list prices kept
-  in `evals/lib/prices.ts`, with the date and source of each.
+- **Cost comes from the run's record,** each step's tokens by agent and by model, priced at list
+  prices kept in `evals/lib/prices.ts`, with the date and source of each. A result keeps its
+  tokens by model, and a comparison prices both sides with the table as it is then, so a price
+  change never reads as a change of the harness. A step whose usage went unreported makes the
+  cost unknown.
 - **Quality is graded by two judges, Claude Opus 5.5 and GPT-6 Astra, through their providers'
   SDKs,** never through the harness, so no change to the harness can change a grade, and two
   families show a judge that favors its own kind of answer as a disagreement. Each sees the
@@ -3392,7 +3395,9 @@ models. He chose Opus 5.5 and GPT-6 Astra as judges, called through the SDKs.
   run's review sends. The evals also read `orchestratorRolesFor`, to price each role's steps.
 - A judge's score counts the rubric's or checklist's own items, each once, and an item it left
   out as missed, so a judge that skips or repeats items cannot raise a score. The agents' tests
-  kill no mutant unless they pass without one.
+  kill no mutant unless they pass both on their own file and on the reference's, which every
+  mutant copies, and a rejection of a seeded bug counts only when the judges that answered agree
+  it names the bug.
 - `createLLMOrchestrator` takes a provider, not a model per role, so the evals compare its three
   role profiles. The router adds configurations to compare, not a new eval.
 - A run of every task costs a few dollars, most of it `complex`, and `session` waits twelve

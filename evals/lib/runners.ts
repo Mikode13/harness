@@ -124,8 +124,9 @@ export interface Mutants {
 	killed: string[];
 	survived: string[];
 	/**
-	 * The tests passed on the file as the agents left it. Without that, a failing run says nothing
-	 * about a mutant, so none counts as killed.
+	 * The tests passed on the file as the agents left it, and on the reference's, which every mutant
+	 * is a copy of with one bug. Without both, a failing run may only say the tests expect the
+	 * agents' own implementation, so no mutant counts as killed.
 	 */
 	baselinePassed: boolean;
 }
@@ -142,19 +143,29 @@ export function runMutants(
 	if (task.mutants === undefined) return undefined;
 	const { target, directory } = task.mutants;
 	const names = readdirSync(join(task.directory, directory)).sort();
-	const baselinePassed = tests.length > 0 && runCheck(workspace, 'test', [...tests]).passed;
-	if (!baselinePassed) return { killed: [], survived: names, baselinePassed };
-	const original = readFileSync(join(workspace, target), 'utf8');
+	const file = join(workspace, target);
+	const original = readFileSync(file);
+	const passWith = (content: Buffer): boolean => {
+		writeFileSync(file, content);
+		return tests.length > 0 && runCheck(workspace, 'test', [...tests]).passed;
+	};
 	const killed: string[] = [];
 	const survived: string[] = [];
+	let baselinePassed: boolean;
 	try {
+		baselinePassed =
+			passWith(original) &&
+			passWith(readFileSync(join(task.directory, task.reference ?? '', target)));
 		for (const name of names) {
-			writeFileSync(join(workspace, target), readFileSync(join(task.directory, directory, name)));
-			const caught = tests.length > 0 && !runCheck(workspace, 'test', [...tests]).passed;
+			if (!baselinePassed) {
+				survived.push(name);
+				continue;
+			}
+			const caught = !passWith(readFileSync(join(task.directory, directory, name)));
 			(caught ? killed : survived).push(name);
 		}
 	} finally {
-		writeFileSync(join(workspace, target), original);
+		writeFileSync(file, original);
 	}
 	return { killed, survived, baselinePassed };
 }
@@ -498,10 +509,11 @@ export async function runReview(task: Task, settings: RunSettings): Promise<Revi
 			const votes = judged.flatMap(each => ('verdict' in each ? [each.verdict.found] : []));
 			found = { judges: judged, agreed: votes.length === 0 ? undefined : votes.every(Boolean) };
 		}
+		// Without judges, a rejection counts; with them, only one every answering judge says names
+		// the bug, and none when no judge answered.
+		const named = settings.judges.length === 0 || found?.agreed === true;
 		const correct =
-			known.expected === 'approved'
-				? decision === 'approved'
-				: decision === 'rejected' && found?.agreed !== false;
+			known.expected === 'approved' ? decision === 'approved' : decision === 'rejected' && named;
 		cases.push({
 			name,
 			expected: known.expected,
