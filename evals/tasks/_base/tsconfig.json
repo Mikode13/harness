@@ -1,0 +1,9 @@
+{
+	"extends": "@mikode13/tsconfig/node",
+	"compilerOptions": {
+		"types": ["node"],
+		"noEmit": true,
+		"allowImportingTsExtensions": true
+	},
+	"include": ["src", "tests"]
+}

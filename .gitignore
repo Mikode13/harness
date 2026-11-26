@@ -15,3 +15,6 @@ examples/
 
 # Local secrets such as OPENAI_API_KEY
 .env
+
+# What the evals wrote: each run's record, result and changes
+evals/results/

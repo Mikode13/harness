@@ -29,6 +29,15 @@ export default defineConfig({
 					include: ['cli/tests/unit/**/*.unit.test.ts'],
 				},
 			},
+			{
+				resolve,
+				test: {
+					name: 'evals',
+					include: ['evals/tests/**/*.test.ts'],
+					// Each task's checks run its own tests and lint in a fresh repository.
+					testTimeout: 180_000,
+				},
+			},
 		],
 		coverage: {
 			provider: 'v8',

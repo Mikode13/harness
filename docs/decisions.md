@@ -3337,3 +3337,59 @@ tags: #mikode-harness #persistence #orchestration #api-design
 - A consumer that wants to offer a cut-short prompt again keeps its own record of it, as the durable task record of the consumer (Mikode13/engineering#53) would.
 - Checkpoints inside a run remain open under #136.
 - The agent `createLLMOrchestrator` returns keeps a run's record too (#177): `RecordingSessionAgent`, the `RecordingAgent` outside it, still offers its `snapshot()`.
+
+## The harness is measured on tasks of its own, graded from outside it
+
+tags: #mikode-harness #evals #cost #quality
+
+**Decision:**
+
+- **Each task brings its own repository,** under `evals/tasks/`, over a shared base, with its
+  prompts, hidden tests and a reference solution. A task never depends on the harness's history,
+  so it stays valid as the harness changes, and two measurements differ only in the harness.
+- **Three kinds:** a whole task through `createLLMOrchestrator`; the planner alone, stopped at
+  "Carry out this plan?"; and the reviewer alone on known changes, sent exactly as a run's review
+  sends them. The last two isolate a role, so a cheaper model in it shows its effect there.
+- **Cost comes from the run's record,** each step's tokens by agent, priced at list prices kept
+  in `evals/lib/prices.ts`, with the date and source of each.
+- **Quality is graded by two judges, Claude Opus 5.5 and GPT-6 Astra, through their providers'
+  SDKs,** never through the harness, so no change to the harness can change a grade, and two
+  families show a judge that favors its own kind of answer as a disagreement. Each sees the
+  request, a rubric and the diff, never the configuration.
+- **A task passes** when its hidden tests, its `test`, `typecheck` and `lint`, and its forbidden
+  patterns all pass. The agents' own tests are graded by the mutants they kill, and a review by
+  the seeded bugs it names and the clean change it approves.
+- **A change works** when, over at least three runs a side, its median cost is below every run
+  before it in at least two tasks, and no task passes less, approves falsely more, or scores
+  below the spread of its runs before. `evals:compare` applies that rule.
+- **Every task is checked offline** by `pnpm run test:evals`: it cannot be passed as it starts,
+  its reference passes everything, each mutant is a real bug the hidden tests and the reference's
+  tests catch, and each seeded bug fails a hidden test.
+
+**Context:** #180 planned an evaluation, and #185 asks to lower what model-API runs cost. The
+maintainer asked on 2026-11-25 for measurements before any optimization, on independent tasks
+rather than #22 again, with one medium-sized task that grades the quality of the code and how
+the agents work together, since the router comes next and must not lose quality with cheaper
+models. He chose Opus 5.5 and GPT-6 Astra as judges, called through the SDKs.
+
+**Alternatives considered:**
+
+- **Tasks from the harness's own history,** as #20 and #22 were run in October. Not chosen: the
+  harness had to go back to an old commit, the run of #20 could read its own solution, and a task
+  ages with the code it was cut from.
+- **One judge.** Cheaper, but a judge of the same family as a role may favor its answers, and
+  one judge's noise could not be told apart from a real change.
+- **Judges through `createLLMAgent`.** Less code, but the harness under test would then grade
+  itself: a change to its prompts or its client could move every score.
+- **Stryker for the agents' tests.** It mutates whatever the agents wrote, so two runs would be
+  graded on different mutants. Fixed mutants of a fixed public API compare across runs.
+
+**Consequences:**
+
+- `reviewerPrompt` in `phasedOrchestrator.ts` is exported, inside the package and not from
+  `src/index.ts`, for the reviewer eval.
+- `createLLMOrchestrator` takes a provider, not a model per role, so the evals compare its three
+  role profiles. The router adds configurations to compare, not a new eval.
+- A run of every task costs a few dollars, most of it `complex`, and `session` waits twelve
+  minutes. The results stay out of git, in `evals/results/`; what a measurement teaches goes to
+  `learnings.md`.

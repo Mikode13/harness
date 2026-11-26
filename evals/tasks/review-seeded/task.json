@@ -1,0 +1,39 @@
+{
+	"kind": "review",
+	"description": "The reviewer alone on four known versions of one change: one correct, three with a seeded bug that the visible tests miss. Measures bugs found and correct changes rejected. Cents.",
+	"repo": "../complex/repo",
+	"overlays": ["../complex/reference"],
+	"prompts": ["prompt.md"],
+	"hidden": "hidden",
+	"review": {
+		"plan": {
+			"summary": "Add EventLog.appendAll, a batch append, with its tests.",
+			"phases": [
+				{
+					"goal": "Add appendAll and BatchItem to EventLog, export BatchItem, and test them",
+					"files": ["src/eventLog.ts", "src/index.ts", "tests/appendAll.test.ts"],
+					"done": "appendAll does what each numbered point of the request says, with tests, and tsc, ESLint and the tests pass."
+				}
+			]
+		},
+		"summary": "Added EventLog.appendAll(stream, items), which appends a batch in order through append and returns each item's result, and the BatchItem type, exported from src/index.ts. Added tests/appendAll.test.ts. tsc, ESLint and the tests pass.",
+		"cases": {
+			"correct": { "change": "cases/correct", "expected": "approved" },
+			"partial-batch": {
+				"change": "cases/partial-batch",
+				"expected": "rejected",
+				"key": "Payloads are checked one by one as each item is appended, so the items before a payload with no JSON form are written although the batch rejects; the request says every payload is checked before anything is written."
+			},
+			"duplicate-dropped": {
+				"change": "cases/duplicate-dropped",
+				"expected": "rejected",
+				"key": "An id repeated within the batch is skipped instead of answered as a duplicate, so there are fewer results than items and they no longer line up with them."
+			},
+			"failure-swallowed": {
+				"change": "cases/failure-swallowed",
+				"expected": "rejected",
+				"key": "A failed append is caught and the batch goes on with the later items and resolves, so the caller never learns an item was not kept; the request says the batch rejects with that error and appends nothing after it."
+			}
+		}
+	}
+}

@@ -194,7 +194,7 @@ function renderPlan(plan: Plan, at?: number, done: readonly PhaseResult[] = []):
 	return `${plan.summary}\n\n${phases.join('\n')}`;
 }
 
-function phaseOf({ plan, at }: Course): string {
+function phaseOf({ plan, at }: Pick<Course, 'plan' | 'at'>): string {
 	const phase = plan.phases[at];
 	return phase
 		? `Phase ${String(at + 1)} of ${String(plan.phases.length)}: ${phase.goal}\nFiles: ${phase.files.join(', ') || 'none named'}\nDone when: ${phase.done}`
@@ -239,7 +239,14 @@ const plannerPrompt = (request: string, planning: Planning, maxPhases: number): 
 const executorPrompt = (course: Course): string =>
 	`The plan:\n---\n${renderPlan(course.plan, course.at, course.done)}\n---\n\nYour phase now:\n---\n${phaseOf(course)}\n---${course.feedback === undefined ? '' : `\n\nFix this first:\n---\n${course.feedback}\n---`}\n\n${reportFormat}`;
 
-const reviewerPrompt = (request: string, input: Reviewing): string =>
+/**
+ * What the reviewer is sent for a phase. Exported for `evals/`, whose reviewer eval sends a known
+ * change exactly as a run would.
+ */
+export const reviewerPrompt = (
+	request: string,
+	input: Pick<Reviewing, 'plan' | 'at' | 'done' | 'summary' | 'verification' | 'diff'>,
+): string =>
 	[
 		`Original user request:\n---\n${request}\n---`,
 		`The plan:\n---\n${renderPlan(input.plan, input.at, input.done)}\n---`,
