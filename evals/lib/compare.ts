@@ -109,9 +109,8 @@ export function compare(
 	after: Record<string, readonly RunSummary[]>,
 ): Comparison {
 	const tasks: TaskComparison[] = [];
-	for (const task of Object.keys(before)
-		.filter(name => name in after)
-		.sort()) {
+	// A task one side never ran is listed too, as one with too few runs, never dropped unseen.
+	for (const task of [...new Set([...Object.keys(before), ...Object.keys(after)])].sort()) {
 		const was = before[task] ?? [];
 		const is = after[task] ?? [];
 		const tooFewRuns = was.length < minimumRuns || is.length < minimumRuns;

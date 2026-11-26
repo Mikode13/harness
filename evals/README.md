@@ -93,7 +93,7 @@ spread of the runs before it.
   is a regression, whatever it saves.
 
 Measure the baseline first, three runs at least, to see the spread. `evals:compare` leaves a
-task out of the verdict when either side has fewer than three runs, and says so.
+task out of the verdict when either side has fewer than three runs, or none, and says so.
 
 ## A task's files
 

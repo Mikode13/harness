@@ -240,6 +240,13 @@ describe('compare', () => {
 		expect(compare(before, after).tasks[0]?.measures.passRate?.move).toBe('unknown');
 	});
 
+	it('names a task one side never ran among those left out', () => {
+		const before = { a: runs([1, 1.1, 1.2]), b: runs([2, 2.2, 2.4]), c: runs([3, 3.1, 3.2]) };
+		const after = { a: runs([0.5, 0.6, 0.7]), b: runs([1, 1.1, 1.2]) };
+
+		expect(compare(before, after)).toMatchObject({ cheaper: ['a', 'b'], tooFewRuns: ['c'] });
+	});
+
 	it('leaves the cost of a run with unreported usage unknown', () => {
 		const before = { a: runs([1]) };
 		const after = { a: [{ ...run(0.1), unreported: true }] };
