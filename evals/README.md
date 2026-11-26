@@ -92,7 +92,8 @@ spread of the runs before it.
 - **The change works** when it is cheaper in at least two tasks and worse in none. Worse in any
   is a regression, whatever it saves.
 
-Measure the baseline first, three runs at least, to see the spread.
+Measure the baseline first, three runs at least, to see the spread. `evals:compare` leaves a
+task out of the verdict when either side has fewer than three runs, and says so.
 
 ## A task's files
 

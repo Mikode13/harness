@@ -1,10 +1,15 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { ProgressEvent, RunEntry } from '../../src/index.ts';
 import { compare, moveOf } from '../lib/compare.ts';
 import { itemsOf, planCoverage, rubricScore } from '../lib/judge.ts';
 import { metricsOf } from '../lib/metrics.ts';
 import { costOf } from '../lib/prices.ts';
-import type { TaskResult } from '../lib/runners.ts';
+import { runHidden, type TaskResult } from '../lib/runners.ts';
+import { loadTask } from '../lib/tasks.ts';
+import { prepareWorkspace, removeWorkspace } from '../lib/workspace.ts';
 import { type RunSummary, summaryOf } from '../lib/summary.ts';
 
 const tokens = { inputTokens: 100, readCacheTokens: 900, writtenCacheTokens: 0, outputTokens: 10 };
@@ -223,6 +228,18 @@ describe('compare', () => {
 		expect(compare(before, after).tasks[0]?.cost.move).toBe('same');
 	});
 
+	it('leaves out a task with fewer than three runs on a side', () => {
+		const before = { a: runs([1]), b: runs([2, 2.2]) };
+		const after = { a: runs([0.1]), b: runs([0.5, 0.6]) };
+
+		expect(compare(before, after)).toMatchObject({
+			cheaper: [],
+			tooFewRuns: ['a', 'b'],
+			verdict: 'inconclusive',
+		});
+		expect(compare(before, after).tasks[0]?.measures.passRate?.move).toBe('unknown');
+	});
+
 	it('leaves the cost of a run with unreported usage unknown', () => {
 		const before = { a: runs([1]) };
 		const after = { a: [{ ...run(0.1), unreported: true }] };
@@ -246,5 +263,45 @@ describe('summaryOf', () => {
 		} satisfies TaskResult;
 
 		expect(summaryOf(result).mutantsKilled).toBe(0);
+	});
+});
+
+describe('runHidden', () => {
+	const hiddenRun = (test: string) => {
+		const task = loadTask('bugfix');
+		const workspace = prepareWorkspace(task);
+		const directory = mkdtempSync(join(tmpdir(), 'eval-hidden-'));
+		mkdirSync(join(directory, 'hidden', 'tests', 'hidden'), { recursive: true });
+		writeFileSync(join(directory, 'hidden', 'tests', 'hidden', 'probe.hidden.test.ts'), test);
+		try {
+			return runHidden({ ...task, directory, hidden: 'hidden' }, workspace, directory);
+		} finally {
+			removeWorkspace(workspace);
+			rmSync(directory, { recursive: true, force: true });
+		}
+	};
+
+	it('passes a run whose tests all pass', () => {
+		const hidden = hiddenRun(
+			"import { expect, it } from 'vitest';\nit('passes', () => {\n\texpect(1).toBe(1);\n});\n",
+		);
+
+		expect(hidden).toEqual({ passed: 1, total: 1, failed: [] });
+	});
+
+	it('fails a run Vitest fails outside its tests, though every test passed', () => {
+		const hidden = hiddenRun(
+			"import { expect, it } from 'vitest';\nit('passes, then lets an error escape', () => {\n\tsetTimeout(() => {\n\t\tthrow new Error('escaped');\n\t}, 0);\n\texpect(1).toBe(1);\n});\nit('waits for it', async () => {\n\tawait new Promise(resolve => setTimeout(resolve, 50));\n});\n",
+		);
+
+		expect(hidden?.passed).toBeLessThan(hidden?.total ?? 0);
+		expect(hidden?.failed.join('\n')).toContain('outside any test');
+	});
+
+	it('fails a hidden file that does not load', () => {
+		const hidden = hiddenRun("import { missing } from '../../src/missing.ts';\nmissing();\n");
+
+		expect(hidden?.passed).toBe(0);
+		expect(hidden?.failed.length).toBeGreaterThan(0);
 	});
 });

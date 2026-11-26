@@ -3364,7 +3364,8 @@ tags: #mikode-harness #evals #cost #quality
   the seeded bugs it names and the clean change it approves.
 - **A change works** when, over at least three runs a side, its median cost is below every run
   before it in at least two tasks, and no task passes less, approves falsely more, or scores
-  below the spread of its runs before. `evals:compare` applies that rule.
+  below the spread of its runs before. `evals:compare` applies that rule, and leaves out a task
+  with fewer than three runs on a side.
 - **Every task is checked offline** by `pnpm run test:evals`: it cannot be passed as it starts,
   its reference passes everything, each mutant is a real bug the hidden tests and the reference's
   tests catch, and each seeded bug fails a hidden test.

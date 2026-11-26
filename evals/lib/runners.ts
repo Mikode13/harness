@@ -94,7 +94,12 @@ export interface HiddenTests {
 }
 
 interface VitestReport {
-	testResults?: { assertionResults?: { status?: string; fullName?: string }[] }[];
+	testResults?: {
+		name?: string;
+		status?: string;
+		message?: string;
+		assertionResults?: { status?: string; fullName?: string }[];
+	}[];
 }
 
 /** Copies the task's hidden tests in and runs them alone. */
@@ -102,20 +107,39 @@ export function runHidden(task: Task, workspace: string, folder: string): Hidden
 	if (task.hidden === undefined) return undefined;
 	applyOverlay(task, workspace, task.hidden);
 	const report = join(folder, 'hidden-tests.json');
-	runCheck(workspace, 'test', ['--reporter=json', `--outputFile=${report}`, 'tests/hidden']);
+	const run = runCheck(workspace, 'test', [
+		'--reporter=json',
+		`--outputFile=${report}`,
+		'tests/hidden',
+	]);
 	let parsed: VitestReport = {};
 	try {
 		parsed = JSON.parse(readFileSync(report, 'utf8')) as VitestReport;
 	} catch {
 		// Vitest writes no report when the tests cannot even load: every hidden test failed.
 	}
-	const results = (parsed.testResults ?? []).flatMap(file => file.assertionResults ?? []);
+	const files = parsed.testResults ?? [];
+	const results = files.flatMap(file => file.assertionResults ?? []);
+	const failed = results.flatMap(result =>
+		result.status === 'passed' ? [] : [result.fullName ?? 'a test that did not load'],
+	);
+	// A file that failed with none of its tests failing did not load, or failed outside a test.
+	const brokenFiles = files.flatMap(file =>
+		file.status === 'failed' &&
+		(file.assertionResults ?? []).every(test => test.status === 'passed')
+			? [`${file.name ?? 'a hidden test file'}: ${file.message ?? 'it failed outside its tests'}`]
+			: [],
+	);
+	// Vitest fails a run for what no test owns, such as an error thrown after the test that caused it.
+	const outside =
+		!run.passed && failed.length === 0 && brokenFiles.length === 0
+			? [`Vitest failed the run outside any test:\n${run.output.slice(-2000)}`]
+			: [];
+	const extra = [...brokenFiles, ...outside];
 	return {
 		passed: results.filter(result => result.status === 'passed').length,
-		total: Math.max(results.length, 1),
-		failed: results.flatMap(result =>
-			result.status === 'passed' ? [] : [result.fullName ?? 'a test that did not load'],
-		),
+		total: Math.max(results.length + extra.length, 1),
+		failed: [...failed, ...extra],
 	};
 }
 

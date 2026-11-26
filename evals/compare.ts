@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { compare } from './lib/compare.ts';
+import { compare, minimumRuns } from './lib/compare.ts';
 import type { RunSummary } from './lib/summary.ts';
 
 // pnpm passes a `--` before the arguments through as one of them.
@@ -29,5 +29,5 @@ for (const task of result.tasks) {
 	}
 }
 process.stdout.write(
-	`\nCheaper past the spread in: ${result.cheaper.join(', ') || 'none'}\nWorse in: ${result.worse.join(', ') || 'none'}\nVerdict: ${result.verdict}\n`,
+	`\nCheaper past the spread in: ${result.cheaper.join(', ') || 'none'}\nWorse in: ${result.worse.join(', ') || 'none'}\n${result.tooFewRuns.length > 0 ? `Left out, with fewer than ${String(minimumRuns)} runs a side: ${result.tooFewRuns.join(', ')}\n` : ''}Verdict: ${result.verdict}\n`,
 );
