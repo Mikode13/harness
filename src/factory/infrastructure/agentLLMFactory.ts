@@ -296,7 +296,8 @@ function withRoleModels(
 	}
 	const chosen = { ...base };
 	for (const [role, value] of Object.entries(given as Record<string, unknown>)) {
-		if (!(role in base)) {
+		// `in` would accept names every object inherits, such as `constructor`.
+		if (!Object.hasOwn(base, role)) {
 			throw new InvalidAgentConfigError(
 				`roles names a role that does not exist: ${role}; expected planner, executor or reviewer`,
 			);

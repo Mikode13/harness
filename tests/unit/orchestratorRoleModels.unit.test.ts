@@ -107,6 +107,16 @@ describe('createLLMOrchestrator roles', () => {
 			'a role that does not exist',
 			{ critic: { provider: 'openai', model: 'gpt-6-astra', reasoningEffort: 'high' } },
 		],
+		[
+			'a name every object inherits',
+			{ constructor: { provider: 'openai', model: 'gpt-6-astra', reasoningEffort: 'high' } },
+		],
+		[
+			'__proto__ from parsed JSON',
+			JSON.parse(
+				'{ "__proto__": { "provider": "openai", "model": "x", "reasoningEffort": "high" } }',
+			),
+		],
 		['a role with no model', { reviewer: { provider: 'openai', reasoningEffort: 'high' } }],
 		[
 			'a role on an unknown provider',

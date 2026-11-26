@@ -138,7 +138,7 @@ export function forbiddenMatches(workspace: string, patterns: readonly string[])
 		for (const entry of readdirSync(directory, { withFileTypes: true })) {
 			const path = join(directory, entry.name);
 			if (entry.isDirectory()) {
-				if (entry.name !== 'hidden') walk(path);
+				if (relative(workspace, path) !== join('tests', 'hidden')) walk(path);
 				continue;
 			}
 			const text = readFileSync(path, 'utf8');

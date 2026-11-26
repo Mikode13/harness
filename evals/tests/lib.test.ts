@@ -10,7 +10,12 @@ import { loadRouterCases, problemsOf, type RouterCases } from '../lib/router.ts'
 import { costOf } from '../lib/prices.ts';
 import { rolesFromArguments, runHidden, runMutants, type TaskResult } from '../lib/runners.ts';
 import { loadTask } from '../lib/tasks.ts';
-import { prepareWorkspace, removeWorkspace, restoreConfiguration } from '../lib/workspace.ts';
+import {
+	forbiddenMatches,
+	prepareWorkspace,
+	removeWorkspace,
+	restoreConfiguration,
+} from '../lib/workspace.ts';
 import { type RunSummary, summaryOf } from '../lib/summary.ts';
 
 const tokens = { inputTokens: 100, readCacheTokens: 900, writtenCacheTokens: 0, outputTokens: 10 };
@@ -338,6 +343,25 @@ describe('runMutants', () => {
 			expect(mutants?.baselinePassed).toBe(false);
 			expect(mutants?.killed).toEqual([]);
 			expect(mutants?.survived.length).toBeGreaterThan(0);
+		} finally {
+			removeWorkspace(workspace);
+		}
+	});
+});
+
+describe('forbiddenMatches', () => {
+	it('scans every folder but the hidden tests, one named hidden included', () => {
+		const task = loadTask('strict-lint');
+		const workspace = prepareWorkspace(task);
+		try {
+			for (const folder of [join('src', 'hidden'), join('tests', 'hidden')]) {
+				mkdirSync(join(workspace, folder), { recursive: true });
+				writeFileSync(join(workspace, folder, 'quiet.ts'), '// @ts-ignore\nexport {};\n');
+			}
+
+			expect(forbiddenMatches(workspace, ['@ts-ignore'])).toEqual([
+				'src/hidden/quiet.ts: @ts-ignore',
+			]);
 		} finally {
 			removeWorkspace(workspace);
 		}
