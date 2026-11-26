@@ -41,6 +41,7 @@ import {
 	forbiddenMatches,
 	prepareWorkspace,
 	removeWorkspace,
+	restoreConfiguration,
 	runCheck,
 	stateDirectoryOf,
 	taskCommands,
@@ -223,10 +224,19 @@ export interface TaskResult {
 	hidden?: HiddenTests;
 	checks: Record<CheckName, boolean>;
 	forbidden: string[];
+	/**
+	 * Configuration files the run changed or added, such as the ESLint or TypeScript settings. They
+	 * are put back before the checks, which judge the code by the task's own rules, and a run that
+	 * changed any did not pass.
+	 */
+	configurationChanged: string[];
 	mutants?: Mutants;
 	/** The reviewer approved every phase of the last prompt, yet a hidden test or a check fails. */
 	falseApproval: boolean;
-	/** Passed: every hidden test and every check pass, and nothing forbidden is left. */
+	/**
+	 * Passed: every hidden test and every check pass, by the task's own configuration, which the
+	 * run left as it was, and nothing forbidden is left.
+	 */
 	passed: boolean;
 	quality?: { score: number | undefined; judges: Judged<RubricVerdict>[] };
 	workspace: string;
@@ -279,6 +289,8 @@ export async function runTask(task: Task, settings: RunSettings): Promise<TaskRe
 
 	const diff = changesSinceStart(workspace);
 	writeFileSync(join(settings.folder, 'changes.diff'), diff);
+	// The checks judge by the task's rules: a run that relaxed them gets them back, and fails.
+	const configurationChanged = restoreConfiguration(workspace);
 	// The checks see what the agent left, before the hidden tests are copied in.
 	const checks = Object.fromEntries(
 		checkNames.map(check => [check, runCheck(workspace, check).passed]),
@@ -289,7 +301,8 @@ export async function runTask(task: Task, settings: RunSettings): Promise<TaskRe
 	const passed =
 		(hidden === undefined || hidden.passed === hidden.total) &&
 		Object.values(checks).every(Boolean) &&
-		forbidden.length === 0;
+		forbidden.length === 0 &&
+		configurationChanged.length === 0;
 	const last = prompts.at(-1)?.response;
 	const approvedAll =
 		last?.phases !== undefined &&
@@ -315,6 +328,7 @@ export async function runTask(task: Task, settings: RunSettings): Promise<TaskRe
 		...(hidden ? { hidden } : {}),
 		checks,
 		forbidden,
+		configurationChanged,
 		...(mutants ? { mutants } : {}),
 		falseApproval: approvedAll && !passed,
 		passed,

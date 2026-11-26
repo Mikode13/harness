@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -9,7 +9,7 @@ import { metricsOf } from '../lib/metrics.ts';
 import { costOf } from '../lib/prices.ts';
 import { runHidden, runMutants, type TaskResult } from '../lib/runners.ts';
 import { loadTask } from '../lib/tasks.ts';
-import { prepareWorkspace, removeWorkspace } from '../lib/workspace.ts';
+import { prepareWorkspace, removeWorkspace, restoreConfiguration } from '../lib/workspace.ts';
 import { type RunSummary, summaryOf } from '../lib/summary.ts';
 
 const tokens = { inputTokens: 100, readCacheTokens: 900, writtenCacheTokens: 0, outputTokens: 10 };
@@ -276,6 +276,7 @@ describe('summaryOf', () => {
 			cost: 1,
 			checks: { test: false, typecheck: true, lint: true },
 			forbidden: [],
+			configurationChanged: [],
 			mutants: { killed: [], survived: ['a.ts', 'b.ts'], baselinePassed: false },
 			falseApproval: false,
 			passed: false,
@@ -336,6 +337,33 @@ describe('runMutants', () => {
 			expect(mutants?.baselinePassed).toBe(false);
 			expect(mutants?.killed).toEqual([]);
 			expect(mutants?.survived.length).toBeGreaterThan(0);
+		} finally {
+			removeWorkspace(workspace);
+		}
+	});
+});
+
+describe('restoreConfiguration', () => {
+	it('puts back the configuration a run changed, removes what it added, and names both', () => {
+		const task = loadTask('strict-lint');
+		const workspace = prepareWorkspace(task);
+		try {
+			const eslint = readFileSync(join(workspace, 'eslint.config.js'), 'utf8');
+			writeFileSync(join(workspace, 'eslint.config.js'), 'export default [];\n');
+			writeFileSync(join(workspace, 'vitest.config.ts'), 'export default {};\n');
+			mkdirSync(join(workspace, 'src', 'nested'), { recursive: true });
+			writeFileSync(join(workspace, 'src', 'nested', 'tsconfig.json'), '{}');
+			writeFileSync(join(workspace, 'src', 'ok.ts'), 'export const ok = 1;\n');
+
+			expect(restoreConfiguration(workspace)).toEqual([
+				'eslint.config.js',
+				'src/nested/tsconfig.json',
+				'vitest.config.ts',
+			]);
+			expect(readFileSync(join(workspace, 'eslint.config.js'), 'utf8')).toBe(eslint);
+			expect(existsSync(join(workspace, 'vitest.config.ts'))).toBe(false);
+			expect(existsSync(join(workspace, 'src', 'ok.ts'))).toBe(true);
+			expect(restoreConfiguration(workspace)).toEqual([]);
 		} finally {
 			removeWorkspace(workspace);
 		}

@@ -74,6 +74,43 @@ export function changesSinceStart(workspace: string): string {
 	return git(workspace, ['diff', first, '--', '.', ':(exclude)tests/hidden']);
 }
 
+// What decides how the checks judge the code: a run that changes one has changed its own judge.
+const configuration = [
+	/(^|\/)package\.json$/u,
+	/(^|\/)tsconfig[^/]*\.json$/u,
+	/(^|\/)eslint\.config\.[cm]?[jt]s$/u,
+	/(^|\/)\.eslintrc[^/]*$/u,
+	/(^|\/)\.eslintignore$/u,
+	/(^|\/)prettier\.config\.[cm]?[jt]s$/u,
+	/(^|\/)\.prettierrc[^/]*$/u,
+	/(^|\/)\.prettierignore$/u,
+	/(^|\/)vite(st)?\.(config|workspace)\.[cm]?[jt]s$/u,
+	/(^|\/)\.gitignore$/u,
+];
+
+/**
+ * Puts back every configuration file the run changed, as the task started, and removes those it
+ * added, so the checks judge the code by the task's own rules. Returns the files it put back or
+ * removed: a run that changed any did not pass, whatever the checks say after.
+ */
+export function restoreConfiguration(workspace: string): string[] {
+	const first = git(workspace, ['rev-list', '--max-parents=0', 'HEAD']).trim();
+	const changed = git(workspace, ['status', '--porcelain', '--untracked-files=all', '--no-renames'])
+		.split('\n')
+		.filter(line => line.length > 3)
+		.map(line => line.slice(3))
+		.filter(
+			path => !path.startsWith('tests/hidden/') && configuration.some(rule => rule.test(path)),
+		);
+	for (const path of changed) {
+		const tracked =
+			spawnSync('git', ['cat-file', '-e', `${first}:${path}`], { cwd: workspace }).status === 0;
+		if (tracked) git(workspace, ['checkout', first, '--', path]);
+		else rmSync(join(workspace, path), { force: true });
+	}
+	return changed.sort();
+}
+
 /** The test files under `tests/`, the hidden ones left out, relative to the workspace. */
 export function testFiles(workspace: string, folder = 'tests'): string[] {
 	const found: string[] = [];

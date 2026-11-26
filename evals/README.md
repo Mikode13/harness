@@ -118,7 +118,11 @@ installs nothing.
 `pnpm run test:evals` checks every task with no model: that it cannot be passed as it starts,
 that its reference passes every check and hidden test, that every mutant is a real bug caught by
 the hidden tests and by the reference's tests, and that every seeded bug fails a hidden test
-while the clean change passes. An eval that fails these measures nothing.
+while the clean change passes. An eval that fails these measures nothing. It takes minutes, since
+it runs each task's tests, types and lint, so it stays out of `pnpm test`: run it after changing
+a task, a runner, or what the orchestrator gives the evals, such as its roles' tools. The metrics'
+tests, including one that reads a real orchestrator's record over a faked SDK, take seconds and
+run in `pnpm test`, so pre-push and CI catch a change to `src/` that stops an event they count.
 
 ## Adding a task
 
