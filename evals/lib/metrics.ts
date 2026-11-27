@@ -28,7 +28,10 @@ export interface RunMetrics {
 	cost: number | undefined;
 	/** Of the prompt tokens, the share read from the cache. */
 	cacheShare: number;
-	/** Completed or failed calls of each tool, by its name. */
+	/**
+	 * Calls of each tool that ended, completed, failed or sent off to subagents such as `explore`,
+	 * by its name.
+	 */
 	toolCalls: Record<string, number>;
 	/** Calls of each tool that ended in an error, such as a patch that did not apply. */
 	toolErrors: Record<string, number>;
@@ -129,6 +132,12 @@ export function metricsOf(entries: readonly RunEntry[], models: AgentModels): Ru
 				return;
 			}
 			case 'tool': {
+				// `sent` ends a call that started subagents, such as `explore`: it ran, and its
+				// subagents' own calls arrive as theirs.
+				if (event.status === 'sent') {
+					plus(toolCalls, event.name);
+					return;
+				}
 				if (event.status !== 'completed' && event.status !== 'error') return;
 				plus(toolCalls, event.name);
 				if (event.status === 'error') plus(toolErrors, event.name);

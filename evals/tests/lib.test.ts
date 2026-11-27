@@ -78,6 +78,22 @@ describe('metricsOf', () => {
 		expect(metrics.byModel).toEqual({ opus: tokens, haiku: tokens });
 	});
 
+	it('counts a call that sent subagents off, as explore does, once', () => {
+		const explore = (status: 'in_progress' | 'sent'): ProgressEvent => ({
+			type: 'tool',
+			id: 'call-1',
+			name: 'explore',
+			status,
+			agent: 'planner',
+		});
+		const metrics = metricsOf([progress(explore('in_progress')), progress(explore('sent'))], {
+			planner: 'opus',
+		});
+
+		expect(metrics.toolCalls).toEqual({ explore: 1 });
+		expect(metrics.toolErrors).toEqual({});
+	});
+
 	it('counts a read with the text editor, and prices a call without usage as unknown', () => {
 		const metrics = metricsOf(
 			[
