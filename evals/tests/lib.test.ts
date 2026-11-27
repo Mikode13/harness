@@ -15,6 +15,7 @@ import {
 	prepareWorkspace,
 	removeWorkspace,
 	restoreConfiguration,
+	testFiles,
 } from '../lib/workspace.ts';
 import { type RunSummary, summaryOf } from '../lib/summary.ts';
 
@@ -514,5 +515,32 @@ describe("the router's cases", () => {
 			'a names a route not in its catalog: missing',
 			'the pair p has 1 cases, not 2',
 		]);
+	});
+});
+
+describe('testFiles', () => {
+	it("finds the agents' test and spec files, and leaves the hidden tests out", () => {
+		const workspace = mkdtempSync(join(tmpdir(), 'eval-tests-'));
+		try {
+			mkdirSync(join(workspace, 'tests', 'hidden'), { recursive: true });
+			mkdirSync(join(workspace, 'tests', 'unit'), { recursive: true });
+			for (const file of [
+				'a.test.ts',
+				'unit/b.spec.ts',
+				'unit/c.spec.mts',
+				'helper.ts',
+				'hidden/d.test.ts',
+			]) {
+				writeFileSync(join(workspace, 'tests', file), '');
+			}
+
+			expect(testFiles(workspace)).toEqual([
+				join('tests', 'a.test.ts'),
+				join('tests', 'unit', 'b.spec.ts'),
+				join('tests', 'unit', 'c.spec.mts'),
+			]);
+		} finally {
+			rmSync(workspace, { recursive: true, force: true });
+		}
 	});
 });

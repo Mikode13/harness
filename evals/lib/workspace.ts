@@ -111,6 +111,9 @@ export function restoreConfiguration(workspace: string): string[] {
 	return changed.sort();
 }
 
+// What Vitest runs by default: a `.test` or `.spec` file, in any of the languages it takes.
+const testFile = /\.(?:test|spec)\.[cm]?[jt]sx?$/u;
+
 /** The test files under `tests/`, the hidden ones left out, relative to the workspace. */
 export function testFiles(workspace: string, folder = 'tests'): string[] {
 	const found: string[] = [];
@@ -120,7 +123,7 @@ export function testFiles(workspace: string, folder = 'tests'): string[] {
 			const path = join(directory, entry.name);
 			if (entry.isDirectory()) {
 				if (relative(workspace, path) !== join('tests', 'hidden')) walk(path);
-			} else if (entry.name.endsWith('.test.ts')) {
+			} else if (testFile.test(entry.name)) {
 				found.push(relative(workspace, path));
 			}
 		}
