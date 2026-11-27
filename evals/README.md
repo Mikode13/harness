@@ -81,7 +81,8 @@ judge sees the request, the rubric and the diff, never which configuration made 
   judges, from 0 to 1. Only the rubric's own items count, each once, and one a judge left out
   scores 0.
 - A plan's coverage is the share of its checklist the judges find covered, counted the same
-  way.
+  way. Whether the planner gave a plan at all is kept apart, with or without judges, so a run
+  with no plan is a missing plan, not an unknown coverage.
 - A review is correct when it approves the clean change, and rejects each seeded bug with
   feedback the judges agree names it; with no judge answering, it does not count as found. Recall is the bugs found; false alarms, the clean change
   rejected.
@@ -106,8 +107,10 @@ the same way twice, so a number only moves when the median after the change is p
 spread of the runs before it.
 
 - **Cheaper:** the median cost is below every run before.
-- **Worse:** a lower pass rate, more false approvals, or a quality, coverage, recall or mutant
-  score whose median is past the spread on its wrong side.
+- **Worse:** a lower pass rate, fewer plans given, more false approvals, or a quality, coverage,
+  recall or mutant score whose median is past the spread on its wrong side.
+- **Unknown cost:** a run with any usage unreported, a step without tokens or a failed call whose
+  end says so, has no cost, and cannot make a task cheaper.
 - **The change works** when it is cheaper in at least two tasks and worse in none. Worse in any
   is a regression, whatever it saves.
 

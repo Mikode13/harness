@@ -126,7 +126,15 @@ const measures: Record<
 		pick: run => (run.falseApproval === undefined ? undefined : Number(run.falseApproval)),
 		higherIsBetter: false,
 	},
+	// A plan's coverage is only judged when there is a plan: whether there was one is a rate.
+	planRate: {
+		pick: run => (run.planProduced === undefined ? undefined : Number(run.planProduced)),
+		higherIsBetter: true,
+	},
 };
+
+/** The measures compared as a rate of runs, where one run fewer is a move. */
+const rates = new Set(['passRate', 'falseApprovals', 'planRate']);
 
 /**
  * A run's cost at the prices of the table as it is now, so both sides of a comparison are priced
@@ -163,7 +171,7 @@ export function compare(
 		for (const [name, { pick, higherIsBetter }] of Object.entries(measures)) {
 			const a = numbers(was, pick);
 			const b = numbers(is, pick);
-			const isRate = name === 'passRate' || name === 'falseApprovals';
+			const isRate = rates.has(name);
 			const beforeValue = isRate ? rate(a) : median(a);
 			const afterValue = isRate ? rate(b) : median(b);
 			if (beforeValue === undefined || afterValue === undefined) continue;

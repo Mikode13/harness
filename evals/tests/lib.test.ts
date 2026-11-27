@@ -254,6 +254,30 @@ describe('compare', () => {
 		expect(compare(before, after).tasks[0]?.cost.move).toBe('same');
 	});
 
+	it('calls a planner that stopped giving plans a regression, whatever the other tasks save', () => {
+		const plans = (produced: boolean): RunSummary[] =>
+			[1, 1.1, 1.2].map(cost => {
+				const summary: RunSummary = { ...run(cost), planProduced: produced };
+				delete summary.quality;
+				if (produced) summary.coverage = 1;
+				return summary;
+			});
+		const before = { plan: plans(true), a: runs([1, 1.1, 1.2]), b: runs([2, 2.2, 2.4]) };
+		const after = { plan: plans(false), a: runs([0.5, 0.6, 0.7]), b: runs([1, 1.1, 1.2]) };
+		const comparison = compare(before, after);
+
+		expect(comparison.tasks.find(each => each.task === 'plan')?.measures.planRate).toEqual({
+			before: 1,
+			after: 0,
+			move: 'worse',
+		});
+		expect(comparison).toMatchObject({
+			cheaper: ['a', 'b'],
+			worse: ['plan'],
+			verdict: 'regression',
+		});
+	});
+
 	it('leaves out a task with fewer than three runs on a side', () => {
 		const before = { a: runs([1]), b: runs([2, 2.2]) };
 		const after = { a: runs([0.1]), b: runs([0.5, 0.6]) };
@@ -561,5 +585,57 @@ describe('testFiles', () => {
 		} finally {
 			rmSync(workspace, { recursive: true, force: true });
 		}
+	});
+});
+
+describe('a run whose usage went unreported at its end', () => {
+	it('has no cost, and cannot make a task cheaper', () => {
+		const failed: RunEntry = {
+			version: 1,
+			type: 'end',
+			outcome: 'failed',
+			failure: {
+				recoverable: false,
+				message: 'The provider failed',
+				cause: 'a call failed before it reported its usage',
+				usageUnreported: true,
+			},
+		};
+		const metrics = metricsOf([failed], { executor: 'opus' });
+
+		expect(metrics.unreported).toBe(true);
+		expect(metrics.cost).toBeUndefined();
+
+		const summary = (unreported: boolean, cost: number): RunSummary => ({
+			cost: unreported ? undefined : cost,
+			tokensByModel: unreported
+				? {}
+				: {
+						opus: {
+							inputTokens: cost * 250_000,
+							readCacheTokens: 0,
+							writtenCacheTokens: 0,
+							outputTokens: 0,
+						},
+					},
+			unreported,
+			passed: true,
+			seconds: 1,
+		});
+		const before = { a: [1, 1.1, 1.2].map(cost => summary(false, cost)) };
+		const after = { a: [summary(true, 0), summary(true, 0), summary(false, 0.5)] };
+
+		expect(compare(before, after).tasks[0]?.cost.move).toBe('unknown');
+	});
+
+	it('has no cost when a completed run says a call reported no usage', () => {
+		const completed: RunEntry = {
+			version: 1,
+			type: 'end',
+			outcome: 'completed',
+			response: { response: 'done', duration: 1 },
+		};
+
+		expect(metricsOf([completed], {}).cost).toBeUndefined();
 	});
 });

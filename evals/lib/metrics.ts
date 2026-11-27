@@ -24,6 +24,11 @@ export interface RunMetrics {
 	byModel: Record<string, Tokens>;
 	/** Calls whose usage the provider did not report: they make the cost unknown, not free. */
 	unreportedSteps: number;
+	/**
+	 * Some usage went unreported: a step without tokens, or a run whose end says so, such as a call
+	 * that failed with no `step` of its own. The cost is then unknown, never what was reported.
+	 */
+	unreported: boolean;
 	/** In USD at list prices, or `undefined` when a model's price or a call's usage is unknown. */
 	cost: number | undefined;
 	/** Of the prompt tokens, the share read from the cache. */
@@ -111,6 +116,7 @@ export function metricsOf(entries: readonly RunEntry[], models: AgentModels): Ru
 	const readers = new Map<string, Set<string>>();
 	const byModel: Record<string, Tokens> = {};
 	let unreportedSteps = 0;
+	let endUnreported = false;
 	let repeatedReads = 0;
 	let questions = 0;
 	let outcome: RunMetrics['outcome'] = 'none';
@@ -184,7 +190,14 @@ export function metricsOf(entries: readonly RunEntry[], models: AgentModels): Ru
 				break;
 			case 'end':
 				outcome = entry.outcome;
-				if (entry.outcome === 'failed') failure = entry.failure.message;
+				if (entry.outcome === 'failed') {
+					failure = entry.failure.message;
+					if (entry.failure.usageUnreported) endUnreported = true;
+				}
+				// A response's tokens are missing when a call of the run reported no usage.
+				if (entry.outcome === 'completed' && entry.response.tokens === undefined) {
+					endUnreported = true;
+				}
 				break;
 			default:
 				break;
@@ -194,16 +207,20 @@ export function metricsOf(entries: readonly RunEntry[], models: AgentModels): Ru
 	const usages = Object.values(byAgent);
 	const tokens = usages.reduce((sum, usage) => add(sum, usage.tokens), zero());
 	const prompt = tokens.inputTokens + tokens.readCacheTokens + tokens.writtenCacheTokens;
+	const unreported = unreportedSteps > 0 || endUnreported;
 	return {
 		byAgent,
 		tokens,
 		byModel,
 		unreportedSteps,
-		cost: usages.reduce<number | undefined>(
-			(sum, usage) =>
-				sum === undefined || usage.cost === undefined ? undefined : sum + usage.cost,
-			0,
-		),
+		unreported,
+		cost: unreported
+			? undefined
+			: usages.reduce<number | undefined>(
+					(sum, usage) =>
+						sum === undefined || usage.cost === undefined ? undefined : sum + usage.cost,
+					0,
+				),
 		cacheShare: prompt === 0 ? 0 : tokens.readCacheTokens / prompt,
 		toolCalls,
 		toolErrors,

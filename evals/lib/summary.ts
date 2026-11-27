@@ -14,8 +14,10 @@ export interface RunSummary {
 	passed?: boolean;
 	/** The judges' rubric score, 0 to 1. */
 	quality?: number;
-	/** A plan's share of the checklist covered, 0 to 1. */
+	/** A plan's share of the checklist covered, 0 to 1, when a judge graded it. */
 	coverage?: number;
+	/** The planner gave a plan to carry out: known with or without judges. */
+	planProduced?: boolean;
 	/** A review's bugs found, and its correct changes rejected, each 0 to 1. */
 	recall?: number;
 	falseAlarms?: number;
@@ -44,7 +46,7 @@ function usageOf(metrics: readonly RunMetrics[]): Pick<RunSummary, 'tokensByMode
 				: { ...tokens };
 		}
 	}
-	return { tokensByModel, unreported: metrics.some(each => each.unreportedSteps > 0) };
+	return { tokensByModel, unreported: metrics.some(each => each.unreported) };
 }
 
 /** The numbers of one run. */
@@ -71,6 +73,7 @@ export function summaryOf(result: EvalResult): RunSummary {
 				cost: result.metrics.cost,
 				...usageOf([result.metrics]),
 				...(result.coverage === undefined ? {} : { coverage: result.coverage }),
+				planProduced: result.plan !== undefined,
 				seconds: result.seconds,
 			};
 		case 'review':
