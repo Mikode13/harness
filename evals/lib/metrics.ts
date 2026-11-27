@@ -37,7 +37,11 @@ export interface RunMetrics {
 	toolErrors: Record<string, number>;
 	/** Runs of each configured command, by its program, such as `vitest`, and how many failed. */
 	commands: Record<string, { runs: number; failed: number }>;
-	/** Reads of a file that some agent of the run had already read, by any agent. */
+	/**
+	 * Agents that read a file another agent of the run had read before them, counted once per
+	 * agent and file: what one agent's handover left another to read again. An agent paging
+	 * through a file, or reading its own again, adds nothing.
+	 */
 	repeatedReads: number;
 	/** Files that more than one agent read. */
 	sharedReads: number;
@@ -152,7 +156,7 @@ export function metricsOf(entries: readonly RunEntry[], models: AgentModels): Ru
 				if (isRead(event.name, event.summary)) {
 					for (const path of readPaths(event.summary)) {
 						const seen = readers.get(path) ?? new Set<string>();
-						if (seen.size > 0) repeatedReads++;
+						if (seen.size > 0 && !seen.has(agent)) repeatedReads++;
 						seen.add(agent);
 						readers.set(path, seen);
 					}

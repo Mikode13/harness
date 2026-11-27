@@ -86,7 +86,7 @@ retryable provider failure.
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm run check       # prettier --check, eslint --max-warnings 0, tsc --noEmit (src, tests, cli)
+pnpm run check       # prettier --check, eslint --max-warnings 0, tsc --noEmit (src, tests, cli, evals)
 pnpm test            # the offline unit suite: core, cli and the evals' metrics
 pnpm run pack:check  # builds and asserts the exact published file set
 pnpm run dev         # the interactive CLI, against real providers

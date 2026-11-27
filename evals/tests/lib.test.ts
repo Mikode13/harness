@@ -62,6 +62,7 @@ describe('metricsOf', () => {
 				progress(read('src/a.ts:1-200', 'planner')),
 				progress(read('src/a.ts:1-200', 'executor')),
 				progress(read('src/a.ts:201-400', 'executor')),
+				progress(read('src/a.ts:1-200', 'planner')),
 				progress({ type: 'workflowStage', stage: 'review', attempt: 1 }),
 				{ version: 1, type: 'end', outcome: 'cancelled', by: 'abort' },
 			],
@@ -71,7 +72,9 @@ describe('metricsOf', () => {
 		expect(Object.keys(metrics.byAgent)).toEqual(['planner', 'planner/explorer']);
 		expect(metrics.byAgent.planner?.cost).toBeCloseTo((100 * 4 + 900 * 0.2 + 10 * 20) / 1e6);
 		expect(metrics.cacheShare).toBeCloseTo(0.9);
-		expect(metrics.repeatedReads).toBe(2);
+		// The executor read the planner's file: once, however many pages, and the planner's own
+		// second read is no handover.
+		expect(metrics.repeatedReads).toBe(1);
 		expect(metrics.sharedReads).toBe(1);
 		expect(metrics.stages).toEqual({ review: 1 });
 		expect(metrics.outcome).toBe('cancelled');

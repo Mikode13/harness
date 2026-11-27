@@ -94,8 +94,9 @@ agents' own implementation, score 0.
 
 **How the agents worked together**, from the record: each role's rounds, counted from the
 orchestrator's `workflowStage` events, questions, tool calls
-and errors, command runs and failures, files read again after another agent read them (with the
-read tools or Claude's text editor), and a
+and errors, command runs and failures, files read again after another agent read them, once per
+agent and file, so paging and an agent's own re-reads do not count (with the read tools or
+Claude's text editor), and a
 **false approval**: the reviewer approved every phase, yet a hidden test or a check fails.
 
 ## Comparing two measurements
