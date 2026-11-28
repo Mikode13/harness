@@ -3,7 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { ProgressEvent, RunEntry } from '../../src/index.ts';
-import { acceptanceOf, compare, describeAcceptance, moveOf } from '../lib/compare.ts';
+import {
+	acceptanceOf,
+	compare,
+	describeAcceptance,
+	type Measurement,
+	moveOf,
+	sideOf,
+} from '../lib/compare.ts';
 import { itemsOf, planCoverage, rubricScore } from '../lib/judge.ts';
 import { metricsOf } from '../lib/metrics.ts';
 import { loadRouterCases, problemsOf, type RouterCases } from '../lib/router.ts';
@@ -659,5 +666,62 @@ describe('a run whose usage went unreported at its end', () => {
 		};
 
 		expect(metricsOf([completed], {}).cost).toBeUndefined();
+	});
+});
+
+describe('sideOf', () => {
+	const run = (cost: number): RunSummary => ({
+		cost,
+		tokensByModel: {},
+		unreported: false,
+		passed: true,
+		seconds: 1,
+	});
+	const measurement = (
+		folder: string,
+		summaries: Measurement['summaries'],
+		meta: Partial<Measurement['meta']> = {},
+	): Measurement => ({
+		folder,
+		meta: {
+			commit: 'a',
+			dirty: false,
+			profile: 'default',
+			path: 'workflow',
+			judges: ['opus', 'astra'],
+			...meta,
+		},
+		summaries,
+	});
+
+	it('joins measurements of one harness, a task measured again taking the place of its runs', () => {
+		const side = sideOf(
+			[
+				measurement('night', { bugfix: [run(1)], complex: [run(9)] }),
+				measurement('again', { complex: [run(2)] }, { commit: 'b', judges: ['astra', 'opus'] }),
+			],
+			() => true,
+		);
+
+		expect(side.problems).toEqual([]);
+		expect(side.summaries).toEqual({ bugfix: [run(1)], complex: [run(2)] });
+		expect(side.sources).toEqual({ bugfix: 'night', complex: 'again' });
+	});
+
+	it('refuses measurements of another src/, another setting, or uncommitted changes', () => {
+		const side = sideOf(
+			[
+				measurement('night', { bugfix: [run(1)] }),
+				measurement('other', {}, { commit: 'b' }),
+				measurement('anthropic', {}, { profile: 'anthropic' }),
+				measurement('dirty', {}, { dirty: true }),
+			],
+			(first, second) => first === second,
+		);
+
+		expect(side.problems).toHaveLength(3);
+		expect(side.problems.join('\n')).toMatch(/other ran another harness/u);
+		expect(side.problems.join('\n')).toMatch(/anthropic ran other roles/u);
+		expect(side.problems.join('\n')).toMatch(/dirty ran with uncommitted changes/u);
 	});
 });

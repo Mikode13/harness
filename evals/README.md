@@ -40,6 +40,7 @@ pnpm run evals -- --task complex --profile anthropic
 pnpm run evals -- --task bugfix --path agent --model anthropic:sonnet:high
 pnpm run evals -- --task review-seeded --role reviewer=anthropic:sonnet:high
 pnpm run evals:compare -- evals/results/<before> evals/results/<after>
+pnpm run evals:compare -- evals/results/<before> evals/results/<again> vs evals/results/<after>
 pnpm run test:evals                            # the tasks' own checks, offline, free
 ```
 
@@ -146,6 +147,12 @@ spread of the runs before it.
 It prints each side's acceptance too, as `2 of 3 accepted, $0.412 and 310 s per accepted
 solution`, which the rule does not weigh: read it beside the verdict, above all when comparing two
 paths or a cheaper model, which can save per run and lose per solution.
+
+A side can be several measurements, with `vs` between the sides. They must have run the same
+`src/`, by git, with the same roles, path and judges, and none with uncommitted changes in `src/`;
+a task in a later one takes the place of the same task in an earlier one. So a task whose runs
+failed for a reason outside the harness, such as a refused key or a computer that went to sleep,
+is measured again alone instead of the whole baseline.
 
 Measure the baseline first, three runs at least, to see the spread. `evals:compare` leaves a
 task out of the verdict when either side has fewer than three runs, or none, and says so; a

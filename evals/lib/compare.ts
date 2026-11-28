@@ -217,3 +217,61 @@ export function compare(
 		verdict: worse.length > 0 ? 'regression' : cheaper.length >= 2 ? 'works' : 'inconclusive',
 	};
 }
+
+/** One measurement as `run.ts` leaves it: what it ran, and each task's runs. */
+export interface Measurement {
+	folder: string;
+	meta: {
+		commit: string;
+		dirty: boolean;
+		profile: string;
+		path: string;
+		roles?: unknown;
+		judges: readonly string[];
+	};
+	summaries: Record<string, RunSummary[]>;
+}
+
+/** One side of a comparison, made of one measurement or more of the same harness. */
+export interface Side {
+	summaries: Record<string, RunSummary[]>;
+	/** The folder each task's runs come from. */
+	sources: Record<string, string>;
+	/** Why the measurements cannot make one side: each problem, in words. */
+	problems: string[];
+}
+
+/**
+ * Joins measurements of the same harness and settings into one side. A task in a later
+ * measurement replaces the same task of an earlier one, so a task measured again, after its runs
+ * failed for a reason outside the harness, takes the place of those runs instead of adding to
+ * them. `sameSource` says whether two commits hold the same `src/`.
+ */
+export function sideOf(
+	measurements: readonly Measurement[],
+	sameSource: (first: string, second: string) => boolean,
+): Side {
+	const side: Side = { summaries: {}, sources: {}, problems: [] };
+	const [first] = measurements;
+	if (first === undefined) return { ...side, problems: ['No measurement was given'] };
+	const settings = ({ meta }: Measurement) =>
+		JSON.stringify([meta.profile, meta.path, meta.roles ?? null, [...meta.judges].sort()]);
+	for (const measurement of measurements) {
+		const { folder, meta } = measurement;
+		if (measurements.length > 1 && meta.dirty) {
+			side.problems.push(`${folder} ran with uncommitted changes in src/, which cannot be matched`);
+		} else if (measurement !== first && !sameSource(first.meta.commit, meta.commit)) {
+			side.problems.push(`${folder} ran another harness: src/ differs from ${first.folder}'s`);
+		}
+		if (settings(measurement) !== settings(first)) {
+			side.problems.push(
+				`${folder} ran other roles, path or judges than ${first.folder}, so its numbers do not mix`,
+			);
+		}
+		for (const [task, runs] of Object.entries(measurement.summaries)) {
+			side.summaries[task] = runs;
+			side.sources[task] = folder;
+		}
+	}
+	return side;
+}
