@@ -330,9 +330,12 @@ export interface TaskResult {
 	mutants?: Mutants;
 	/** The reviewer approved every phase of the last prompt, yet a hidden test or a check fails. */
 	falseApproval: boolean;
+	/** Every prompt of the task ran, and the harness finished each without failing. */
+	completed: boolean;
 	/**
-	 * Passed: every hidden test and every check pass, by the task's own configuration, which the
-	 * run left as it was, and nothing forbidden is left.
+	 * Passed: the harness finished every prompt, every hidden test and every check pass, by the
+	 * task's own configuration, which the run left as it was, and nothing forbidden is left. Code
+	 * that passes after a workflow that failed, say in its review, was never delivered.
 	 */
 	passed: boolean;
 	quality?: { score: number | undefined; judges: Judged<RubricVerdict>[] };
@@ -461,7 +464,11 @@ export async function runTask(task: Task, settings: RunSettings): Promise<TaskRe
 	const hidden = runHidden(task, workspace, settings.folder);
 	const forbidden = forbiddenMatches(workspace, task.forbidden);
 	const mutants = runMutants(task, workspace);
+	const completed =
+		prompts.length === task.prompts.length &&
+		prompts.every(({ metrics }) => metrics.outcome === 'completed');
 	const passed =
+		completed &&
 		(hidden === undefined || hidden.passed === hidden.total) &&
 		Object.values(checks).every(Boolean) &&
 		forbidden.length === 0 &&
@@ -494,6 +501,7 @@ export async function runTask(task: Task, settings: RunSettings): Promise<TaskRe
 		configurationChanged,
 		...(mutants ? { mutants } : {}),
 		falseApproval: approvedAll && !passed,
+		completed,
 		passed,
 		...(quality ? { quality } : {}),
 		workspace,
@@ -598,8 +606,13 @@ export interface ReviewResult {
 	cases: ReviewCaseResult[];
 	/** Changes with a bug the reviewer rejected for that bug, of those with one. */
 	recall: number;
-	/** Correct changes the reviewer rejected, of those without a bug. */
+	/**
+	 * Correct changes the reviewer rejected, of those without a bug. A reviewer that failed, or
+	 * gave no decision, raised no alarm: that case fails the run, as `completed` shows.
+	 */
 	falseAlarms: number;
+	/** The reviewer finished every case without failing. */
+	completed: boolean;
 	cost: number | undefined;
 }
 
@@ -736,7 +749,10 @@ export async function runReview(task: Task, settings: RunSettings): Promise<Revi
 		cases,
 		recall: bugs.length === 0 ? 1 : bugs.filter(result => result.correct).length / bugs.length,
 		falseAlarms:
-			clean.length === 0 ? 0 : clean.filter(result => !result.correct).length / clean.length,
+			clean.length === 0
+				? 0
+				: clean.filter(result => result.decision === 'rejected').length / clean.length,
+		completed: cases.every(result => result.metrics.outcome === 'completed'),
 		cost: cases.reduce<number | undefined>(
 			(sum, result) =>
 				sum === undefined || result.metrics.cost === undefined

@@ -158,5 +158,13 @@ for (const task of tasks) {
 
 process.stdout.write('\n');
 for (const [task, summary] of Object.entries(summaries)) {
-	process.stdout.write(`${task}: ${describeAcceptance(acceptanceOf(summary))}\n`);
+	const failed = summary.filter(run => run.completed === false).length;
+	const plans = summary.filter(run => run.planProduced !== undefined);
+	const line =
+		plans.length > 0
+			? `${String(plans.filter(run => run.planProduced).length)} of ${String(plans.length)} plans produced`
+			: describeAcceptance(acceptanceOf(summary));
+	const note =
+		failed > 0 ? `; the harness failed in ${String(failed)} of ${String(summary.length)}` : '';
+	process.stdout.write(`${task}: ${line}${note}\n`);
 }

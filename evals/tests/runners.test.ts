@@ -95,6 +95,7 @@ describe('runTask', () => {
 		expect(result.hidden?.passed).toBeLessThan(result.hidden?.total ?? 0);
 		expect(result.passed).toBe(false);
 		expect(result.falseApproval).toBe(true);
+		expect(result.completed).toBe(true);
 		expect(readFileSync(join(run.folder, 'record-1.jsonl'), 'utf8')).toContain('"type":"end"');
 		// The history the harness kept is beside the workspace, and goes with it.
 		expect(existsSync(stateDirectoryOf(result.workspace))).toBe(true);
@@ -117,6 +118,9 @@ describe('runTask with a refused key', () => {
 
 		expect(result.prompts).toHaveLength(1);
 		expect(result.prompts[0]?.metrics.outcome).toBe('failed');
+		// Whatever the checks say of the code left, a workflow that failed delivered nothing.
+		expect(result.completed).toBe(false);
+		expect(result.passed).toBe(false);
 		expect(failuresOf(result)).toEqual([
 			'OpenAI rejected the request: 401 Incorrect API key provided',
 		]);
@@ -185,7 +189,14 @@ describe('runReview', () => {
 			unreported: true,
 			cost: undefined,
 		});
-		expect(summaryOf(result)).toMatchObject({ cost: undefined, unreported: true });
+		expect(summaryOf(result)).toMatchObject({
+			cost: undefined,
+			unreported: true,
+			completed: false,
+			passed: false,
+		});
+		// The reviewer that failed rejected nothing: no alarm, whichever case it was.
+		expect(result.falseAlarms).toBe(0);
 	});
 
 	it('scores a reviewer that approves everything: no bug found, no false alarm', async () => {

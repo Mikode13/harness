@@ -12,6 +12,8 @@ export interface RunSummary {
 	unreported: boolean;
 	/** A task's hidden tests and checks all pass; a review's every decision is correct. */
 	passed?: boolean;
+	/** The harness finished every prompt or case without failing. */
+	completed?: boolean;
 	/** The judges' rubric score, 0 to 1. */
 	quality?: number;
 	/** A plan's share of the checklist covered, 0 to 1, when a judge graded it. */
@@ -59,6 +61,7 @@ export function summaryOf(result: EvalResult): RunSummary {
 				cost: result.cost,
 				...usageOf(result.prompts.map(prompt => prompt.metrics)),
 				passed: result.passed,
+				completed: result.completed,
 				...(result.quality?.score === undefined ? {} : { quality: result.quality.score }),
 				// Tests that fail without a mutant catch none: they score 0, not every mutant killed.
 				...(mutants && total > 0
@@ -81,6 +84,7 @@ export function summaryOf(result: EvalResult): RunSummary {
 				cost: result.cost,
 				...usageOf(result.cases.map(each => each.metrics)),
 				passed: result.cases.every(each => each.correct),
+				completed: result.completed,
 				recall: result.recall,
 				falseAlarms: result.falseAlarms,
 				seconds: result.cases.reduce((sum, each) => sum + each.seconds, 0),

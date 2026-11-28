@@ -329,6 +329,7 @@ describe('summaryOf', () => {
 			configurationChanged: [],
 			mutants: { killed: [], survived: ['a.ts', 'b.ts'], baselinePassed: false },
 			falseApproval: false,
+			completed: true,
 			passed: false,
 			workspace: '/tmp/none',
 		} satisfies TaskResult;
