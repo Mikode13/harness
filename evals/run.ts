@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { type JudgeName, judges } from './lib/judge.ts';
+import { problemsWith, providersOf } from './lib/preflight.ts';
 import {
 	paths,
 	type Profile,
@@ -15,19 +16,21 @@ import {
 	type RunSettings,
 } from './lib/runners.ts';
 import { acceptanceOf, describeAcceptance } from './lib/compare.ts';
-import { type EvalResult, type RunSummary, summaryOf } from './lib/summary.ts';
+import { type EvalResult, failuresOf, type RunSummary, summaryOf } from './lib/summary.ts';
 import { loadTask, taskNames } from './lib/tasks.ts';
 import { removeWorkspace } from './lib/workspace.ts';
 
 const usage = `pnpm run evals -- [--task <name>]... [--runs 3] [--profile default|anthropic|openai]
                   [--path workflow|agent] [--model provider:model:effort]
                   [--role role=provider:model:effort]... [--judges opus,astra|none]
-                  [--pause-minutes <n>] [--keep-workspaces]
+                  [--pause-minutes <n>] [--keep-workspaces] [--skip-preflight]
 
 Runs each task --runs times against the harness in this checkout, and writes every result to
 evals/results/<time>-<profile>-<path>/. --path agent carries a whole task out with one agent on
 the executor's model instead of the workflow, and skips the plan and review tasks. --model puts
 every role, and that agent, on one model; --role puts one role on its own, after --model.
+Before it starts, it lists each provider's models, which costs nothing, to check that the keys
+the roles and the judges need are set and accepted; --skip-preflight leaves that out.
 Needs ANTHROPIC_API_KEY and OPENAI_API_KEY. Tasks: ${taskNames().join(', ')}.`;
 
 // pnpm passes a `--` before the arguments through as one of them.
@@ -44,6 +47,7 @@ const { values } = parseArgs({
 		judges: { type: 'string', default: 'opus,astra' },
 		'pause-minutes': { type: 'string' },
 		'keep-workspaces': { type: 'boolean', default: false },
+		'skip-preflight': { type: 'boolean', default: false },
 		help: { type: 'boolean', default: false },
 	},
 });
@@ -84,6 +88,14 @@ const chosenTasks = (values.task ?? taskNames()).map(name =>
 const tasks = path === 'agent' ? chosenTasks.filter(task => task.kind === 'task') : chosenTasks;
 for (const task of chosenTasks.filter(each => !tasks.includes(each))) {
 	process.stdout.write(`Skipping ${task.name}: --path agent runs whole tasks only\n`);
+}
+
+// A refused key fails every run at once; better to learn it now than after the session's pauses.
+if (!values['skip-preflight']) {
+	const problems = await problemsWith(
+		providersOf({ profile, path, ...(roles ? { roles } : {}) }, chosenJudges),
+	);
+	if (problems.length > 0) fail(`Nothing was run:\n- ${problems.join('\n- ')}`);
 }
 
 const stamp = new Date().toISOString().replace(/[:.]/gu, '-');
@@ -137,6 +149,7 @@ for (const task of tasks) {
 		(summaries[task.name] ??= []).push(summary);
 		writeFileSync(join(root, 'summary.json'), JSON.stringify(summaries, null, '\t'));
 		process.stdout.write(`${task.name} #${String(run)}: ${JSON.stringify(summary)}\n`);
+		for (const failure of failuresOf(result)) process.stdout.write(`  failed: ${failure}\n`);
 		if (!values['keep-workspaces'] && 'workspace' in result) {
 			removeWorkspace(result.workspace);
 		}

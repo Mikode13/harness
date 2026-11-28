@@ -439,11 +439,15 @@ export async function runTask(task: Task, settings: RunSettings): Promise<TaskRe
 		} catch {
 			// The record's end says how the run failed.
 		}
+		const metrics = metricsOf(recorder.entries, models);
 		prompts.push({
-			metrics: metricsOf(recorder.entries, models),
+			metrics,
 			seconds: (Date.now() - started) / 1000,
 			...(response ? { response } : {}),
 		});
+		// A prompt that failed before any call to a model, such as on a refused key, leaves the
+		// next nothing to build on: going on would only wait out the pauses for the same failure.
+		if (metrics.outcome === 'failed' && Object.keys(metrics.byAgent).length === 0) break;
 	}
 
 	const diff = changesSinceStart(workspace);

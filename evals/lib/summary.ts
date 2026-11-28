@@ -87,3 +87,14 @@ export function summaryOf(result: EvalResult): RunSummary {
 			};
 	}
 }
+
+/** Why the runs of a result failed, each once, for the person watching the measurement. */
+export function failuresOf(result: EvalResult): string[] {
+	const metrics =
+		result.kind === 'task'
+			? result.prompts.map(prompt => prompt.metrics)
+			: result.kind === 'plan'
+				? [result.metrics]
+				: result.cases.map(each => each.metrics);
+	return [...new Set(metrics.flatMap(each => (each.failure === undefined ? [] : [each.failure])))];
+}

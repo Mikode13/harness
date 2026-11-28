@@ -25,6 +25,15 @@ or include the exported keys in agent prompts. Keep credentials outside the task
 each fixture is copied into the workspace the agent uses. The offline suite
 (`pnpm run test:evals`) needs no keys.
 
+Before anything is paid for, the runner lists the models of every provider the chosen roles and
+judges call, which costs nothing, and stops with the reason when a key is missing or refused. It
+names the key by its last four characters, so a key the shell still holds from before shows
+there. `--skip-preflight` leaves the check out.
+
+A run that fails prints why under its line, as `failed: <message>: <cause>`. A prompt that fails
+before any call to a model ends its session there, so `session` does not wait out its pauses for
+the same failure.
+
 ```sh
 pnpm run evals -- --runs 3                     # every task, 3 runs each, the default roles
 pnpm run evals -- --task complex --profile anthropic

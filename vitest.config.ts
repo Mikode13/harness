@@ -35,7 +35,11 @@ export default defineConfig({
 					// What keeps the evals in step with src/, such as the events the metrics read,
 					// in seconds and offline: part of `pnpm test`, so pre-push and CI run it.
 					name: 'evals',
-					include: ['evals/tests/lib.test.ts', 'evals/tests/record.test.ts'],
+					include: [
+						'evals/tests/lib.test.ts',
+						'evals/tests/record.test.ts',
+						'evals/tests/preflight.test.ts',
+					],
 					testTimeout: 60_000,
 				},
 			},

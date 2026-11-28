@@ -191,7 +191,8 @@ export function metricsOf(entries: readonly RunEntry[], models: AgentModels): Ru
 			case 'end':
 				outcome = entry.outcome;
 				if (entry.outcome === 'failed') {
-					failure = entry.failure.message;
+					// The cause is what says why, such as the provider's own words for a refused key.
+					failure = `${entry.failure.message}: ${entry.failure.cause}`.slice(0, 500);
 					if (entry.failure.usageUnreported) endUnreported = true;
 				}
 				// A response's tokens are missing when a call of the run reported no usage.

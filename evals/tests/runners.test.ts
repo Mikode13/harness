@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
 import { UnrecoverableError } from '../../src/index.ts';
 import { runPlan, runReview, runTask, type RunSettings } from '../lib/runners.ts';
-import { summaryOf } from '../lib/summary.ts';
+import { failuresOf, summaryOf } from '../lib/summary.ts';
 import { loadTask } from '../lib/tasks.ts';
 import { removeWorkspace, stateDirectoryOf } from '../lib/workspace.ts';
 
@@ -99,6 +99,27 @@ describe('runTask', () => {
 		// The history the harness kept is beside the workspace, and goes with it.
 		expect(existsSync(stateDirectoryOf(result.workspace))).toBe(true);
 		expect(summaryOf(result)).toMatchObject({ passed: false, falseApproval: true });
+	});
+});
+
+describe('runTask with a refused key', () => {
+	it('stops a session after a prompt that failed before any call, and says why', async () => {
+		everyRoleSays(doneAndApproved);
+		vi.spyOn(LLMAgent.prototype, 'run').mockRejectedValue(
+			new UnrecoverableError('OpenAI rejected the request', {
+				cause: '401 Incorrect API key provided',
+			}),
+		);
+		const session = loadTask('session');
+		expect(session.prompts.length).toBeGreaterThan(1);
+		const result = await runTask(session, { ...settings(), pauseMinutes: 0 });
+		workspaces.push(result.workspace);
+
+		expect(result.prompts).toHaveLength(1);
+		expect(result.prompts[0]?.metrics.outcome).toBe('failed');
+		expect(failuresOf(result)).toEqual([
+			'OpenAI rejected the request: 401 Incorrect API key provided',
+		]);
 	});
 });
 
