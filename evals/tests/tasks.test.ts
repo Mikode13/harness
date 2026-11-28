@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -72,6 +72,8 @@ describe.each(tasks.filter(task => task.kind === 'review'))('the review task $na
 		(_, known) => {
 			const root = workspace(task);
 			applyOverlay(task, root, known.change);
+			// The reviewer is shown these checks: a bug must hide from the visible tests.
+			expect(runCheck(root, 'test')).toMatchObject({ passed: true });
 			const hidden = runHidden(task, root, folder());
 			expect(runCheck(root, 'typecheck')).toMatchObject({ passed: true });
 			expect(runCheck(root, 'lint')).toMatchObject({ passed: true });
@@ -81,6 +83,21 @@ describe.each(tasks.filter(task => task.kind === 'review'))('the review task $na
 				expect(hidden?.failed.length ?? 0).toBeGreaterThan(0);
 				expect(known.key).toBeDefined();
 			}
+		},
+	);
+
+	// Each change with a bug has the correct one's tests but one, weakened to miss the bug: the
+	// correct change's tests catch it, so only that test, read closely, gives it away.
+	const [correct] = Object.values(review?.cases ?? {}).filter(each => each.expected === 'approved');
+	it.each(Object.entries(review?.cases ?? {}).filter(([, known]) => known.expected === 'rejected'))(
+		"has a case %s whose bug the correct change's tests catch",
+		(_, known) => {
+			const root = workspace(task);
+			applyOverlay(task, root, known.change);
+			cpSync(join(task.directory, correct?.change ?? '', 'tests'), join(root, 'tests'), {
+				recursive: true,
+			});
+			expect(runCheck(root, 'test')).toMatchObject({ passed: false });
 		},
 	);
 });

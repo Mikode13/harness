@@ -392,6 +392,27 @@ describe('runMutants', () => {
 			removeWorkspace(workspace);
 		}
 	});
+
+	it("says why, when the agents' tests fail on the reference", () => {
+		const task = loadTask('complex');
+		const workspace = prepareWorkspace(task, [task.reference ?? '']);
+		try {
+			// Tests that need what only the agents' file has cannot judge a mutant of the reference.
+			const target = join(workspace, 'src/eventLog.ts');
+			writeFileSync(target, `${readFileSync(target, 'utf8')}\nexport const ownOnly = 1;\n`);
+			writeFileSync(
+				join(workspace, 'tests/own.test.ts'),
+				"import { expect, it } from 'vitest';\nimport * as log from '../src/eventLog.ts';\nit('has its own export', () => {\n\texpect(Object.keys(log)).toContain('ownOnly');\n});\n",
+			);
+			const mutants = runMutants(task, workspace);
+
+			expect(mutants?.baselinePassed).toBe(false);
+			expect(mutants?.baselineFailure?.on).toBe('reference');
+			expect(mutants?.baselineFailure?.output).toContain('ownOnly');
+		} finally {
+			removeWorkspace(workspace);
+		}
+	});
 });
 
 describe('forbiddenMatches', () => {

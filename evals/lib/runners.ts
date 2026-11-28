@@ -258,6 +258,11 @@ export interface Mutants {
 	 * agents' own implementation, so no mutant counts as killed.
 	 */
 	baselinePassed: boolean;
+	/**
+	 * Why the baseline failed, so a score of 0 can be told from a measure that went wrong: on which
+	 * file, `own` the agents' or `reference`, and the end of the tests' output.
+	 */
+	baselineFailure?: { on: 'own' | 'reference'; output: string };
 }
 
 /**
@@ -276,17 +281,27 @@ export function runMutants(
 	// The agents may never have written it: then no test of theirs can kill a mutant of it.
 	if (!existsSync(file)) return { killed: [], survived: names, baselinePassed: false };
 	const original = readFileSync(file);
+	let output = '';
 	const passWith = (content: Buffer): boolean => {
 		writeFileSync(file, content);
-		return tests.length > 0 && runCheck(workspace, 'test', [...tests]).passed;
+		if (tests.length === 0) {
+			output = 'The agents left no tests.';
+			return false;
+		}
+		const run = runCheck(workspace, 'test', [...tests]);
+		output = run.output.slice(-4000);
+		return run.passed;
 	};
 	const killed: string[] = [];
 	const survived: string[] = [];
 	let baselinePassed: boolean;
+	let baselineFailure: Mutants['baselineFailure'];
 	try {
+		const own = passWith(original);
+		if (!own) baselineFailure = { on: 'own', output };
 		baselinePassed =
-			passWith(original) &&
-			passWith(readFileSync(join(task.directory, task.reference ?? '', target)));
+			own && passWith(readFileSync(join(task.directory, task.reference ?? '', target)));
+		if (own && !baselinePassed) baselineFailure = { on: 'reference', output };
 		for (const name of names) {
 			if (!baselinePassed) {
 				survived.push(name);
@@ -298,7 +313,7 @@ export function runMutants(
 	} finally {
 		writeFileSync(file, original);
 	}
-	return { killed, survived, baselinePassed };
+	return { killed, survived, baselinePassed, ...(baselineFailure ? { baselineFailure } : {}) };
 }
 
 /** The average of the judges' scores, from 0 to 1, over the judges that answered. */

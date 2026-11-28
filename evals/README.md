@@ -111,13 +111,16 @@ judge sees the request, the rubric and the diff, never which configuration made 
   with no plan is a missing plan, not an unknown coverage.
 - A review is correct when it approves the clean change, and rejects each seeded bug with
   feedback the judges agree names it; with no judge answering, it does not count as found. Recall is the bugs found; false alarms, the clean change
-  rejected.
+  rejected. A case whose reviewer failed rejected nothing: it fails the run, and raises no alarm.
+  The clean change tests every point of its request, as its plan's done criterion asks; each
+  change with a bug has the same tests but one, weakened so that it misses the bug.
 
 **The agents' own tests**, for `complex`: its mutants are the reference with one bug each,
 swapped in for `src/eventLog.ts` one at a time and run against the tests the agents wrote. The
 share they fail is how well those tests catch bugs. They must pass both on the agents' own file
 and on the reference's, which every mutant copies: tests that do not, which may only expect the
-agents' own implementation, score 0.
+agents' own implementation, score 0. The result's `mutants.baselineFailure` says on which file
+they failed, and how.
 
 **How the agents worked together**, from the record: each role's rounds, counted from the
 orchestrator's `workflowStage` events, questions, tool calls
@@ -200,8 +203,8 @@ installs nothing.
 
 `pnpm run test:evals` checks every task with no model: that it cannot be passed as it starts,
 that its reference passes every check and hidden test, that every mutant is a real bug caught by
-the hidden tests and by the reference's tests, and that every seeded bug fails a hidden test
-while the clean change passes. An eval that fails these measures nothing. It takes minutes, since
+the hidden tests and by the reference's tests, and that every seeded bug fails a hidden test and
+the clean change's tests while its own visible tests pass, as the clean change's do. An eval that fails these measures nothing. It takes minutes, since
 it runs each task's tests, types and lint, so it stays out of `pnpm test`: run it after changing
 a task, a runner, or what the orchestrator gives the evals, such as its roles' tools. The metrics'
 tests, including one that reads a real orchestrator's record over a faked SDK, take seconds and
