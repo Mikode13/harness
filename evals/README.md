@@ -7,6 +7,24 @@ impressions.
 Each task brings its own small repository, so it never depends on the harness's history and stays
 valid as the harness changes: what varies between two measurements is the harness alone.
 
+## Running the evals
+
+The default live evals use both provider APIs and incur charges. Export `ANTHROPIC_API_KEY`
+(Claude) and `OPENAI_API_KEY` in the shell that launches the runner, or inject them as CI
+secrets. The current shell session is enough. In Bash, these prompts hide the values and keep
+them out of shell history:
+
+```bash
+read -rsp 'Anthropic API key: ' ANTHROPIC_API_KEY && echo
+read -rsp 'OpenAI API key: ' OPENAI_API_KEY && echo
+export ANTHROPIC_API_KEY OPENAI_API_KEY
+```
+
+The runner uses these keys to authenticate API requests. It does not load a repository `.env`
+or include the exported keys in agent prompts. Keep credentials outside the task fixtures:
+each fixture is copied into the workspace the agent uses. The offline suite
+(`pnpm run test:evals`) needs no keys.
+
 ```sh
 pnpm run evals -- --runs 3                     # every task, 3 runs each, the default roles
 pnpm run evals -- --task complex --profile anthropic
@@ -16,8 +34,7 @@ pnpm run evals:compare -- evals/results/<before> evals/results/<after>
 pnpm run test:evals                            # the tasks' own checks, offline, free
 ```
 
-`pnpm run evals` needs `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`, and spends money: the judges
-and every role run on the providers' APIs. Results go to `evals/results/`, which git ignores.
+Results go to `evals/results/`, which git ignores.
 
 ## The tasks
 

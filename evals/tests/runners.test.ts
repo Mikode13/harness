@@ -3,6 +3,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { LLMAgent } from '../../src/engines/domain/model/llmAgent.ts';
+import { UnrecoverableError } from '../../src/index.ts';
 import { runPlan, runReview, runTask, type RunSettings } from '../lib/runners.ts';
 import { summaryOf } from '../lib/summary.ts';
 import { loadTask } from '../lib/tasks.ts';
@@ -68,6 +70,7 @@ const settings = (): RunSettings => {
 afterEach(() => {
 	for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true });
 	for (const workspace of workspaces.splice(0)) removeWorkspace(workspace);
+	vi.restoreAllMocks();
 	vi.clearAllMocks();
 });
 
@@ -148,6 +151,22 @@ describe('runPlan', () => {
 });
 
 describe('runReview', () => {
+	it('keeps the cost unknown when the reviewer fails before reporting a step', async () => {
+		everyRoleSays('{"decision":"approved"}');
+		vi.spyOn(LLMAgent.prototype, 'run').mockRejectedValueOnce(
+			new UnrecoverableError('Review failed', { cause: 'Missing usage', usageUnreported: true }),
+		);
+		const result = await runReview({ ...loadTask('review-seeded'), checks: [] }, settings());
+
+		expect(result.cases[0]?.metrics).toMatchObject({
+			outcome: 'failed',
+			byAgent: {},
+			unreported: true,
+			cost: undefined,
+		});
+		expect(summaryOf(result)).toMatchObject({ cost: undefined, unreported: true });
+	});
+
 	it('scores a reviewer that approves everything: no bug found, no false alarm', async () => {
 		everyRoleSays('{"decision":"approved"}');
 		const result = await runReview(loadTask('review-seeded'), settings());

@@ -22,6 +22,7 @@ import {
 	type SessionSnapshot,
 	type Verification,
 } from '../../src/index.ts';
+import { recordedFailureOf } from '../../src/agent/domain/recordingAgent.ts';
 import { orchestratorRolesFor } from '../../src/factory/infrastructure/agentFactory.ts';
 import { orchestratorRolesOf } from '../../src/factory/infrastructure/agentLLMFactory.ts';
 import { reviewerPrompt } from '../../src/orchestration/domain/model/phasedOrchestrator.ts';
@@ -692,12 +693,7 @@ export async function runReview(task: Task, settings: RunSettings): Promise<Revi
 				version: 1,
 				type: 'end',
 				outcome: 'failed',
-				failure: {
-					recoverable: false,
-					message: error instanceof Error ? error.message : String(error),
-					cause: '',
-					usageUnreported: false,
-				},
+				failure: recordedFailureOf(error),
 			});
 		}
 		const { decision, feedback } = decisionOf(answer);
