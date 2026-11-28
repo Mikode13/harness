@@ -29,6 +29,7 @@ import {
 	type AgentProvider,
 	type CreateOrchestratorOptions,
 	type ReasoningEffort,
+	type RoleModel,
 } from './types.ts';
 
 export function isAgentProvider(value: string): value is AgentProvider {
@@ -124,11 +125,7 @@ export function createAgent(
 	return new RecordingAgent({ inner: new RetryingAgent({ inner: engine, logger }), logger });
 }
 
-export interface Role {
-	provider: AgentProvider;
-	model: AgentModel;
-	reasoningEffort: ReasoningEffort;
-}
+export type Role = RoleModel;
 
 // A stronger model plans and reviews; a cheaper one executes the plan. Every model and effort
 // here is one both the Agent SDKs and the model APIs accept, so either path can run a role.

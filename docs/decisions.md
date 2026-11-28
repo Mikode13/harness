@@ -3337,3 +3337,106 @@ tags: #mikode-harness #persistence #orchestration #api-design
 - A consumer that wants to offer a cut-short prompt again keeps its own record of it, as the durable task record of the consumer (Mikode13/engineering#53) would.
 - Checkpoints inside a run remain open under #136.
 - The agent `createLLMOrchestrator` returns keeps a run's record too (#177): `RecordingSessionAgent`, the `RecordingAgent` outside it, still offers its `snapshot()`.
+
+## The harness is measured on tasks of its own, graded from outside it
+
+tags: #mikode-harness #evals #cost #quality
+
+**Decision:**
+
+- **Each task brings its own repository,** under `evals/tasks/`, over a shared base, with its
+  prompts, hidden tests and a reference solution. A task never depends on the harness's history,
+  so it stays valid as the harness changes, and two measurements differ only in the harness.
+- **Three kinds:** a whole task through `createLLMOrchestrator`; the planner alone, stopped at
+  "Carry out this plan?"; and the reviewer alone on known changes, sent exactly as a run's review
+  sends them. The last two isolate a role, so a cheaper model in it shows its effect there.
+- **Cost comes from the run's record,** each step's tokens by agent and by model, priced at list
+  prices kept in `evals/lib/prices.ts`, with the date and source of each. A result keeps its
+  tokens by model, and a comparison prices both sides with the table as it is then, so a price
+  change never reads as a change of the harness. A step whose usage went unreported makes the
+  cost unknown.
+- **Quality is graded by two judges, Claude Opus 5.5 and GPT-6 Astra, through their providers'
+  SDKs,** never through the harness, so no change to the harness can change a grade, and two
+  families show a judge that favors its own kind of answer as a disagreement. Each sees the
+  request, a rubric and the diff, never the configuration.
+- **A task passes** when its hidden tests, its `test`, `typecheck` and `lint`, and its forbidden
+  patterns all pass. The agents' own tests are graded by the mutants they kill, and a review by
+  the seeded bugs it names and the clean change it approves.
+- **A change works** when, over at least three runs a side, its median cost is below every run
+  before it in at least two tasks, and no task passes less, gives fewer plans, approves falsely more, or scores
+  below the spread of its runs before. `evals:compare` applies that rule, and leaves out a task
+  with fewer than three runs on a side.
+- **Every task is checked offline** by `pnpm run test:evals`: it cannot be passed as it starts,
+  its reference passes everything, each mutant is a real bug the hidden tests and the reference's
+  tests catch, and each seeded bug fails a hidden test.
+
+**Context:** #180 planned an evaluation, and #185 asks to lower what model-API runs cost. The
+maintainer asked on 2026-11-25 for measurements before any optimization, on independent tasks
+rather than #22 again, with one medium-sized task that grades the quality of the code and how
+the agents work together, since the router comes next and must not lose quality with cheaper
+models. He chose Opus 5.5 and GPT-6 Astra as judges, called through the SDKs.
+
+**Alternatives considered:**
+
+- **Tasks from the harness's own history,** as #20 and #22 were run in October. Not chosen: the
+  harness had to go back to an old commit, the run of #20 could read its own solution, and a task
+  ages with the code it was cut from.
+- **One judge.** Cheaper, but a judge of the same family as a role may favor its answers, and
+  one judge's noise could not be told apart from a real change.
+- **Judges through `createLLMAgent`.** Less code, but the harness under test would then grade
+  itself: a change to its prompts or its client could move every score.
+- **Stryker for the agents' tests.** It mutates whatever the agents wrote, so two runs would be
+  graded on different mutants. Fixed mutants of a fixed public API compare across runs.
+
+**Consequences:**
+
+- Inside the package and not from `src/index.ts`, `reviewerPrompt` in `phasedOrchestrator.ts`
+  is exported, and `orchestratorRolesOf` gives the roles an orchestrator built, so the reviewer
+  eval runs the orchestrator's own reviewer, its tools and explorers included, on the prompt a
+  run's review sends. The evals also read `orchestratorRolesFor`, to price each role's steps.
+- A judge's score counts the rubric's or checklist's own items, each once, and an item it left
+  out as missed, so a judge that skips or repeats items cannot raise a score. The agents' tests
+  kill no mutant unless they pass both on their own file and on the reference's, which every
+  mutant copies, and a rejection of a seeded bug counts only when the judges that answered agree
+  it names the bug.
+- `createLLMOrchestrator` takes a model per role, through `roles` (see the next entry), so an
+  eval can run every role, or the agent alone, on one model, and change one role's model at a
+  time. Choosing a route among agents and workflows (#17) is another decision, measured by its
+  own cases; see `evals/router/`.
+- A run of every task costs a few dollars, most of it `complex`, and `session` waits twelve
+  minutes. The results stay out of git, in `evals/results/`; what a measurement teaches goes to
+  `learnings.md`.
+
+## Each role of `createLLMOrchestrator` can run on a model of its own
+
+tags: #mikode-harness #orchestration #api-design #cost
+
+**Decision:** `createLLMOrchestrator` takes `roles`, the provider, model and reasoning effort of
+each role it names, over the ones `provider` chooses. A role left out keeps its own. The explorers
+a role sends, the committer and the summary of what the user undid follow their role's provider, on
+its cheaper model, as before. The option is checked when the orchestrator is built: an unknown
+role, a provider that does not exist or a role without a model and an effort is an
+`InvalidAgentConfigError`, and a model or effort its provider does not support is refused by that
+role's client, as `createLLMAgent` refuses it. `RoleModel` and `RoleModels` are public.
+
+**Context:** the evals of #186 need to change one role's model at a time, such as the reviewer's
+on `review-seeded`, and to run the workflow and a single agent on the same model, so that a
+difference is the coordination's and not the models'. With three fixed profiles neither was
+possible. Choosing a cheaper model per role is also what #185 measures.
+
+**Alternatives considered:**
+
+- **A model per role without a provider,** read from the profile. Not chosen: a model belongs to
+  one provider, so a role moved to another model would silently keep a provider that cannot run
+  it.
+- **Partial roles, only a model or only an effort.** Not chosen: an effort valid for one
+  provider's model is not for another's, and a whole triple is checked as one.
+- **Leaving it to the router.** The router of #17 chooses which agent or workflow handles a
+  request; it does not configure the roles inside one.
+
+**Consequences:**
+
+- A `feat`: `CreateLLMOrchestratorOptions.roles`, `RoleModel` and `RoleModels` are new, and an
+  orchestrator without `roles` is built as before.
+- A snapshot restored with other `roles` goes on with them, as one restored with another
+  `provider` does: the conversations carry no model.

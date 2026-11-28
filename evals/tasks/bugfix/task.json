@@ -1,0 +1,9 @@
+{
+	"kind": "task",
+	"description": "A reported bug in a small parser, with its cause one line away from the symptom: search, read, a small fix and a regression test. Cents.",
+	"prompts": ["prompt.txt"],
+	"hidden": "hidden",
+	"forbidden": ["eslint-disable", "@ts-ignore", "@ts-expect-error", "\\bas any\\b"],
+	"rubric": "rubric.txt",
+	"reference": "reference"
+}

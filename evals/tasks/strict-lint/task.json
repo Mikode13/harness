@@ -1,0 +1,9 @@
+{
+	"kind": "task",
+	"description": "Code whose tests pass but which fails tsc and the strict lint: the command loop that cost the most in October. Cents.",
+	"prompts": ["prompt.txt"],
+	"hidden": "hidden",
+	"forbidden": ["eslint-disable", "@ts-ignore", "@ts-expect-error", "\\bas any\\b"],
+	"rubric": "rubric.txt",
+	"reference": "reference"
+}

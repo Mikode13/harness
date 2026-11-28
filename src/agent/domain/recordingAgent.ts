@@ -289,7 +289,7 @@ function recordedApprover(approve: Approver, recorder: RunRecorder): Approver {
 }
 
 /** The failure a run rejected with, as its record's end says it. */
-function failureOf(error: unknown): RecordedFailure {
+export function recordedFailureOf(error: unknown): RecordedFailure {
 	if (!(error instanceof RecoverableError || error instanceof UnrecoverableError)) {
 		// Nothing should reach here unclassified; the record still says the run failed.
 		return {
@@ -333,7 +333,7 @@ function endOf(error: unknown, signal: AbortSignal): RunEntry {
 		const timedOut = isTimeout(error) || (signal.aborted && isTimeout(signal.reason));
 		return { version: 1, type: 'end', outcome: 'cancelled', by: timedOut ? 'timeout' : 'abort' };
 	}
-	return { version: 1, type: 'end', outcome: 'failed', failure: failureOf(error) };
+	return { version: 1, type: 'end', outcome: 'failed', failure: recordedFailureOf(error) };
 }
 
 /**

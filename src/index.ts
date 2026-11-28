@@ -22,6 +22,7 @@ export {
 	type RoleSteps,
 	type RoleTokens,
 	type RoleAgents,
+	type RoleModels,
 	type CompactionMode,
 } from './factory/infrastructure/agentLLMFactory.ts';
 export type { FileTool, WorkspaceOptions } from './tools/infrastructure/fileTools.ts';
@@ -46,6 +47,7 @@ export {
 	type AgentProvider,
 	type CreateOrchestratorOptions,
 	type ReasoningEffort,
+	type RoleModel,
 } from './factory/infrastructure/types.ts';
 export {
 	type Agent,

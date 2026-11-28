@@ -1,0 +1,14 @@
+{
+	"extends": "@mikode13/tsconfig/node",
+	"compilerOptions": {
+		"types": ["node"],
+		"rewriteRelativeImportExtensions": true,
+		"customConditions": ["mikode-harness-source"],
+		// `pnpm run evals` runs it, and src/, through Node's type stripping.
+		"erasableSyntaxOnly": true,
+		"noEmit": true
+	},
+	"include": ["**/*.ts", "../src/**/*.ts"],
+	// Each task's files belong to the repository the task starts from, with its own configuration.
+	"exclude": ["tasks", "results"]
+}

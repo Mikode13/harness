@@ -1,0 +1,11 @@
+{
+	"kind": "task",
+	"description": "Three prompts that build on each other, with a six-minute pause between them and the session saved and restored in between: what a person's pauses cost through the cache, and whether a restored session goes on as one that never stopped. Cents, and about fifteen minutes.",
+	"prompts": ["prompt-1.txt", "prompt-2.txt", "prompt-3.txt"],
+	"pauseMinutes": 6,
+	"restoreBetween": true,
+	"hidden": "hidden",
+	"forbidden": ["eslint-disable", "@ts-ignore", "@ts-expect-error", "\\bas any\\b"],
+	"rubric": "rubric.txt",
+	"reference": "reference"
+}

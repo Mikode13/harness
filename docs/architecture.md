@@ -16,7 +16,9 @@ crossing the seam legible to its consumers. It does not own terminal or network 
 composition for a consumer's own use case, memory, or scheduling.
 
 This document covers the published package under `src/`. The `cli/` workspace project in the
-same repository is a development-only consumer and is not part of the published artifact.
+same repository is a development-only consumer and is not part of the published artifact, and so
+is `evals/`, which measures the harness on tasks; see
+[`evals/README.md`](../evals/README.md).
 
 ## Architectural shape
 
@@ -465,7 +467,8 @@ types. For the model-backed agent's tools it also exports the `Tool`, `ToolSumma
 `createWorkspace` and `createWorkspaceTools`, and, for an agent offered to another as a tool,
 `agentAsTool` and the `AgentAsToolOptions` and `DelegationTool` types. For agents that change
 files it exports `createFileTools` and the `FileTool`, `WorkspaceOptions`, `WorkspaceRoot`,
-`SecretRules`, `CreateLLMOrchestratorOptions`, `RoleSteps`, `RoleTokens`, `RoleAgents` and
+`SecretRules`, `CreateLLMOrchestratorOptions`, `RoleSteps`, `RoleTokens`, `RoleAgents`,
+`RoleModels`, `RoleModel` and
 `CompactionMode` types, and for the commands they run the `Commands`, `CommandDefinition`,
 `CommandArgument`, `CommandParameter` and `CommandRole` types, and `Formatter` for the formatter
 their edits run. For the history of what those runs wrote it exports `createHistory`, the
@@ -993,6 +996,20 @@ at a time, and reads what the user sends meanwhile" in [`decisions.md`](decision
   WebSocket consumer would call `Agent.run()` per request and want none of it. It stays out of
   the tarball too — `files` lists `dist` only, and `scripts/pack-check.mjs` fails on anything
   else reaching it.
+- **`evals/` measures the harness from outside it.** It runs the factories on tasks that each
+  bring their own repository, reads cost and teamwork from each run's record, and has two judges
+  grade quality through the providers' SDKs, never through the harness, so a change to `src/`
+  cannot change how its result is graded. It reaches into `src/` past the public API for three
+  things, which a change to them must keep working for it: `orchestratorRolesFor`, the models of
+  each profile's roles, to price their steps; `orchestratorRolesOf`, the roles an orchestrator
+  built, so its reviewer eval runs the reviewer exactly as a run builds it; and `reviewerPrompt`,
+  so that eval sends a known change exactly as a run's review would. It stays out of the tarball,
+  as `cli/` does, and its tasks' repositories stay out of the repository's lint and formatting,
+  since one breaks the rules on purpose. Each run keeps the workspace's history beside its
+  temporary workspace, and removes both. A run on its `agent` path builds one agent with
+  `createLLMAgent` and `createFileTools`, the public API, and its `--model` and `--role` reach
+  the roles through `createLLMOrchestrator`'s `roles`. `evals/router/` holds the router's golden
+  cases as data, checked offline, with no runner until the router of #17 exists.
 - **Only the executor edits files, and only a destructive call is held back.**
   `createLLMOrchestrator` gives its planner and reviewer reading tools only, so they edit nothing
   through a file tool; the executor changes files only in a `write` root, each change recorded

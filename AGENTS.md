@@ -86,11 +86,16 @@ retryable provider failure.
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm run check       # prettier --check, eslint --max-warnings 0, tsc --noEmit (src, tests, cli)
-pnpm test            # the offline unit suite, core and cli
+pnpm run check       # prettier --check, eslint --max-warnings 0, tsc --noEmit (src, tests, cli, evals)
+pnpm test            # the offline unit suite: core, cli and the evals' metrics
 pnpm run pack:check  # builds and asserts the exact published file set
 pnpm run dev         # the interactive CLI, against real providers
+pnpm run test:evals  # the eval tasks' own checks, offline: minutes, after changing a task or a runner
+pnpm run evals       # the evals, against real providers: it spends money, see evals/README.md
 ```
+
+Before and after a change meant to lower cost or keep quality, such as a prompt, the cache or a
+model, measure it with `pnpm run evals` and compare with `pnpm run evals:compare`.
 
 `pre-push` runs `pnpm run check && pnpm test`. CI repeats both and adds `build` and
 `pack:check`.
